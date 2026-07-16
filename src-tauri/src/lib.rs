@@ -572,10 +572,27 @@ pub fn run() {
                 .separator()
                 .text("quit", "Quit Muster")
                 .build()?;
+            // Monochrome `>_` glyph, rendered as a macOS template image so it
+            // adapts to the light/dark menu bar. Falls back to the app icon.
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
+                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
             TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
+                .icon_as_template(true)
                 .tooltip("Muster")
                 .menu(&tray_menu)
+                // Double-click the icon → show the window. NOTE: on macOS the tray
+                // crate never emits DoubleClick (it's Windows/Linux-only), so there
+                // the "Show Muster" menu item is the reliable path; this handler
+                // covers the other platforms.
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
+                        if let Some(w) = tray.app_handle().get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| {
                     let id = event.id().0.as_str();
                     match id {
