@@ -48,7 +48,23 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Muster ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install."
+          # Install instructions are embedded in every release body so the
+          # top-of-list (latest) release always carries them — GitHub can't pin
+          # a release, so "always in the newest one" is the equivalent.
+          releaseBody: |
+            ## Install (macOS, Apple Silicon)
+
+            1. Download **Muster_*_aarch64.dmg** from the assets below.
+            2. Muster is self-signed (not notarized by Apple), so macOS Gatekeeper blocks the first launch. Clear the quarantine flag once:
+               ```sh
+               xattr -dr com.apple.quarantine ~/Downloads/Muster_*.dmg
+               ```
+            3. Open the `.dmg`, drag **Muster** into Applications, and launch it. If it's still blocked:
+               ```sh
+               xattr -dr com.apple.quarantine /Applications/Muster.app
+               ```
+
+            Requires `claude` on your `PATH`. Apple Silicon (M-series) only — Intel Macs aren't supported by this build. Muster keeps itself up to date after install (checks the latest release on launch; never auto-installs).
           releaseDraft: false
           prerelease: false
           # tauri-action generates and uploads latest.json when the updater is

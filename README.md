@@ -64,7 +64,7 @@ Then in the window: click **Launch Claude ▸**, pick a project, accept Claude's
 ## Known limitations
 
 - **macOS-first.** The generated hooks currently assume a macOS shell (`/usr/bin/curl`, `/bin/cat`); Windows needs a PowerShell/`curl.exe` variant.
-- **Observe-only permissions.** `PermissionRequest` events are reported, not answered. A blocking permission hook that returns a decision to Claude is a later phase.
+- **Apple Silicon only.** Release builds target `aarch64`; Intel Macs aren't covered.
 
 ## License
 
