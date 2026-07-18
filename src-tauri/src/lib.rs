@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use tauri::menu::MenuBuilder;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -1509,6 +1509,18 @@ fn read_transcript(cwd: String, session_id: String, limit: usize) -> Result<Vec<
     Ok(msgs)
 }
 
+// ---------- app quit ----------
+
+/// Actually terminate the app. The Cmd+Q accelerator is bound to our own menu
+/// item (see the app menu in `run`), which asks the frontend to confirm instead
+/// of quitting; the frontend calls this once the user (or an empty session list)
+/// has approved the quit. Kept as a command so the *only* immediate-exit paths
+/// are this and the tray's "Quit Muster".
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    app.exit(0);
+}
+
 // ---------- macOS menu-bar (tray) ----------
 
 #[derive(serde::Deserialize)]
@@ -1632,6 +1644,11 @@ pub fn run() {
                             }
                             let _ = app.emit("tray-check-updates", ());
                         }
+                        // Cmd+Q is handled by the app menu's own quit item, but that
+                        // MenuEvent also reaches this handler — every menu handler shares
+                        // one global listener list — so swallow it here instead of letting
+                        // it fall through to the session catch-all below.
+                        "quit-confirm" => {}
                         sid => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -1642,6 +1659,60 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // ---- App menu with a Cmd+Q catcher ----
+            // Cmd+Q is a "special Apple event" that Tauri does not reliably surface
+            // as an app/window event on macOS (tauri-apps/tauri#9198), so
+            // RunEvent::ExitRequested/prevent_exit can't be trusted to intercept it.
+            // Instead we *own* the Quit item: binding our own menu item to Cmd+Q means
+            // the keystroke fires `on_menu_event` (deterministic) rather than the OS
+            // `terminate:`. The handler asks the frontend to confirm; only `confirm_quit`
+            // actually exits. Replacing the default menu means we must re-add the Edit
+            // submenu ourselves, or Cmd+C/X/V/Z/A stop working in the app's inputs.
+            let quit_item = MenuItemBuilder::with_id("quit-confirm", "Quit Muster")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let app_menu = SubmenuBuilder::new(app, "Muster")
+                .about(None)
+                .separator()
+                .services()
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .item(&quit_item)
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let window_menu = SubmenuBuilder::new(app, "Window")
+                .minimize()
+                .fullscreen()
+                .separator()
+                .close_window()
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&app_menu, &edit_menu, &window_menu])
+                .build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id().0.as_str() == "quit-confirm" {
+                    // Surface the window so the confirm dialog has context, then let the
+                    // frontend decide (it quits straight away when nothing is running).
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit("quit-requested", ());
+                }
+            });
 
             Ok(())
         })
@@ -1668,7 +1739,8 @@ pub fn run() {
             read_transcript,
             find_project_icon,
             write_debug_file,
-            update_tray
+            update_tray,
+            confirm_quit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

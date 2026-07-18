@@ -1879,6 +1879,28 @@ setTimeout(() => checkForUpdates(false), 3000);
 // either way ("you're on the latest version"), so the menu item always answers.
 listen("tray-check-updates", () => { void checkForUpdates(true); });
 
+// Cmd+Q guard. Cmd+Q is bound to our own menu item in the backend (macOS doesn't
+// reliably surface the OS quit as a Tauri event — see tauri#9198), so the keystroke
+// arrives here as `quit-requested` rather than tearing the app down. We only nag
+// when something would actually be lost — an idle Muster quits immediately, keeping
+// the Cmd+Q muscle memory intact.
+listen("quit-requested", async () => {
+  const live = [...sessions.values()].filter((s) => s.phase !== "ended");
+  const agents = live.filter((s) => !s.shell).length;
+  const terms = live.filter((s) => s.shell).length;
+  if (agents + terms === 0) { await invoke("confirm_quit"); return; }
+  const parts: string[] = [];
+  if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
+  if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
+  const ok = await ask(`${parts.join(" and ")} still running — quitting ends ${agents + terms === 1 ? "it" : "them"}.`, {
+    title: "Quit Muster?",
+    kind: "warning",
+    okLabel: "Quit",
+    cancelLabel: "Cancel",
+  });
+  if (ok) await invoke("confirm_quit");
+});
+
 // ---------- debug console wiring ----------
 $("dbgBtn").addEventListener("click", () => toggleDbg());
 $("dbgClose").addEventListener("click", () => toggleDbg(false));
