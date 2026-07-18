@@ -103,8 +103,16 @@ type Risk = "low" | "med" | "high";
 interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
 // A single item from a TodoWrite payload (the plan Claude keeps for itself).
 interface Todo { content: string; status: string }
-// Uncommitted "working set" summary from the git_diffstat backend command.
-interface DiffStat { added: number; removed: number; files: number; untracked: number; dirty: number }
+// Uncommitted "working set" summary from the git_diffstat backend command, plus
+// where the branch sits against its upstream (ahead/behind are as of the last
+// fetch, not live — see upstream_state in lib.rs).
+interface DiffStat {
+  added: number; removed: number; files: number; untracked: number; dirty: number;
+  upstream: string | null; ahead: number; behind: number;
+}
+// Result of a fetch/pull/push. `suggest` is set when the action was refused (or
+// git failed) and there's a command worth handing to a real terminal.
+interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
 interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
   branch: string; worktree: string | null; title: string;
@@ -378,7 +386,7 @@ async function refreshSessionStats(s: Sess) {
   // so comparing rounded values avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
   const sig = (g: DiffStat | null, r: { cpu: number; memMb: number } | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}` : "-") + "|" + (r ? `${Math.round(r.cpu)}/${Math.round(r.memMb)}` : "-");
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|" + (r ? `${Math.round(r.cpu)}/${Math.round(r.memMb)}` : "-");
   const before = sig(s.git, s.res);
   s.git = git ?? null;
   s.res = res ? { cpu: res.cpu, memMb: res.mem_mb } : null;
@@ -980,10 +988,46 @@ function wsetHtml(s: Sess): string {
   const tot = g.added + g.removed || 1;
   const aw = Math.round((g.added / tot) * 100);
   const newBadge = g.untracked ? `<span class="unc">${g.untracked} new</span>` : "";
-  return `<div class="wset">
-    <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span></div>
-    <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>
-    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span></span>${newBadge}</div></div>`;
+  const dirty = g.files || g.untracked;
+  // The diff half is only worth drawing when something is actually uncommitted —
+  // a clean tree that's 5 behind still needs the branch/sync row below.
+  const diff = dirty
+    ? `<div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span></div>
+    <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`
+    : "";
+  const sync = g.upstream
+    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} — as of the last fetch">${
+        g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
+      }</span>`
+    : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
+  return `<div class="wset">${diff}
+    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span>${newBadge}</div>
+    ${gitBtnsHtml(s, g)}</div>`;
+}
+// Fetch / pull / push for the session's workdir.
+//
+// A button is only greyed out when there is genuinely *nothing to do* — never for
+// the awkward states. A diverged branch, or one with no upstream, keeps its button
+// live precisely because that's where the backend refuses with a suggestion and we
+// hand the user a prefilled terminal; disabling those would amputate the useful
+// half. "Nothing to do" needs a known upstream, since without one ahead/behind are
+// both 0 and would otherwise read as "nothing to push".
+function gitBtnsHtml(s: Sess, g: DiffStat): string {
+  const busy = gitBusy === s.id;
+  const up = !!g.upstream;
+  const btn = (op: string, label: string, off: string, hint: string) =>
+    `<button class="gitb" data-git="${op}" data-gitsid="${s.id}"${busy || off ? " disabled" : ""} title="${esc(off || hint)}">${label}</button>`;
+  const pullHint = !up ? "No upstream — opens a terminal to set one"
+    : g.ahead && g.behind ? `Diverged — opens a terminal to rebase`
+    : `git pull --ff-only (${g.behind} behind)`;
+  const pushHint = !up ? "No upstream — opens a terminal to publish the branch"
+    : g.behind ? "Behind — opens a terminal to pull first"
+    : `git push (${g.ahead} ahead)`;
+  return `<div class="gitrow${busy ? " busy" : ""}">
+    ${btn("fetch", "fetch", "", "git fetch --prune")}
+    ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
+    ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
+  </div>`;
 }
 function timelineHtml(s: Sess): string {
   const acts = s.activity.slice(0, 8);
@@ -1024,7 +1068,10 @@ function renderInspector(s: Sess | null) {
   html.push(vitalHtml(s));                                        // state, dwell, current tool
   html.push(gaugesHtml(s));                                       // TRACK — context + cost
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
-  if (s.git && (s.git.files || s.git.untracked)) html.push(wsetHtml(s)); // what's changed on disk
+  // What's changed on disk, and how the branch sits against its upstream. Shown
+  // for any repo session — a clean tree that's behind is exactly what you want to
+  // see, and it's the only place the fetch/pull/push buttons live.
+  if (s.git) html.push(wsetHtml(s));
   html.push(timelineHtml(s));                                     // activity, by tool
   if (s.res) html.push(resHtml(s));                              // REFERENCE — cpu/mem, pinned to the bottom
   $("inspector").innerHTML = html.join("");
@@ -1263,6 +1310,13 @@ function sessionActions(s: Sess): PalItem[] {
     a.push(mk("Answer it in the terminal", "❯", () => resolvePermission(s.pendingPermId!, "terminal")));
   }
   if (!s.shell) {
+    // Only offered for repo sessions — s.git is null when the workdir isn't one.
+    if (s.git) {
+      const b = s.git.behind, ah = s.git.ahead;
+      a.push(mk("Fetch from the remote", "↻", () => runGit(s.id, "fetch")));
+      a.push(mk(b ? `Pull ${b} commit${b === 1 ? "" : "s"}` : "Pull (fast-forward only)", "↓", () => runGit(s.id, "pull")));
+      a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
+    }
     a.push(mk("Open a terminal here", "❯", () => { setActive(s.id); openPlainTerminal(); }));
     a.push(mk("New worktree from here", "⑃", () => openWt(s.project, s.colorKey, false)));
   }
@@ -1479,9 +1533,10 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
-  const el = t.closest<HTMLElement>("[data-perm],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-ext],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-ext],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
+  else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.wt) openWorktreeSession(el.dataset.wt, el.dataset.wtbranch || "");
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
@@ -1612,8 +1667,66 @@ function openPlainTerminal() {
   if (termEngine === "embedded") { const c = activeProjectCtx(); launchShell(c?.project || basename(wd), wd); return; }
   invoke("open_terminal_here", { workdir: wd, engine: termEngine }).catch((e) => toast("terminal: " + e));
 }
+// Hand a command over to a terminal at `workdir` instead of running it ourselves.
+// The embedded engine can genuinely prefill: it opens a shell pane and types the
+// command *without* a newline, so the user reads it and presses Enter. External
+// terminal apps take a directory but no pending input, so there we open the
+// terminal and put the command on the clipboard — honest about the extra paste.
+async function handToTerminal(project: string, workdir: string, cmd: string) {
+  if (termEngine === "embedded") {
+    const id = await launchShell(project, workdir);
+    // The login shell needs a moment before its prompt will accept input.
+    setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
+    toast("Prefilled in a shell — press Enter to run");
+    return;
+  }
+  try { await navigator.clipboard.writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
+  invoke("open_terminal_here", { workdir, engine: termEngine })
+    .then(() => toast("Terminal opened — command copied: " + cmd))
+    .catch((e) => toast("terminal: " + e));
+}
+
+// Which session (if any) has a git action in flight — the buttons grey out while
+// it runs, since fetch/pull/push can take seconds against a slow remote.
+let gitBusy: string | null = null;
+// Run fetch/pull/push for a session's workdir. A refusal is not an error: the
+// backend declines the cases it can't finish safely and names the command that
+// would work, which we offer as a terminal handoff rather than a dead end.
+async function runGit(sessionId: string, op: string) {
+  const s = sessions.get(sessionId);
+  if (!s || gitBusy) return;
+  gitBusy = sessionId;
+  // Only ever paint the inspector when this session still owns it: the palette can
+  // fire a git action at a background session, and a terminal handoff switches the
+  // active session to the new shell mid-run.
+  const repaint = () => { if (activeId === s.id && !activeExtId) renderInspector(s); };
+  repaint();
+  try {
+    const r = await invoke<GitActionResult>("git_action", { workdir: s.workdir, op });
+    dlog(r.ok ? "info" : "warn", `git ${op} · ${s.project} · ${r.summary}`);
+    if (r.ok) {
+      toast(`${op}: ${r.summary}`);
+    } else if (r.suggest) {
+      // Keep the toast clickable-adjacent: say what blocked it, then hand it over.
+      toast(`${op}: ${r.summary} → opening a terminal`);
+      await handToTerminal(s.project, s.workdir, r.suggest);
+    } else {
+      toast(`${op}: ${r.summary}`);
+    }
+  } catch (e) {
+    dlog("error", `git ${op} failed: ${e}`);
+    toast(`git ${op}: ${e}`);
+  } finally {
+    gitBusy = null;
+    void refreshSessionStats(s);   // ahead/behind moved — re-read it
+    void refreshBranch(s).then((changed) => { if (changed) renderAll(); });
+    repaint();
+  }
+}
+
 // A plain login shell in an embedded xterm pane — no Claude, no telemetry.
-async function launchShell(project: string, workdir: string) {
+// Returns the new session id so a caller can write into the shell (see handToTerminal).
+async function launchShell(project: string, workdir: string): Promise<string> {
   const id = crypto.randomUUID();
   const colorKey = workdir;
   const pane = document.createElement("div");
@@ -1648,6 +1761,7 @@ async function launchShell(project: string, workdir: string) {
     term.writeln(`\r\n\x1b[31m[shell error] ${e}\x1b[0m`);
   }
   renderAll();
+  return id;
 }
 // "+ Session" starts a session in the current project (offering a worktree if it
 // already has one). With no active session there's no project context → palette.
@@ -1759,6 +1873,11 @@ $("fUpdate").addEventListener("click", runUpdate);
 $("fVer").addEventListener("click", () => checkForUpdates(true));
 // quiet check on launch, once the app has settled.
 setTimeout(() => checkForUpdates(false), 3000);
+// "Check for Updates…" in the menu-bar menu. Without this the only checks are the
+// one at launch and the easily-missed click on the version label, so a long-running
+// Muster never learns about a release until it's restarted. Manual → it reports
+// either way ("you're on the latest version"), so the menu item always answers.
+listen("tray-check-updates", () => { void checkForUpdates(true); });
 
 // ---------- debug console wiring ----------
 $("dbgBtn").addEventListener("click", () => toggleDbg());

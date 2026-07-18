@@ -746,6 +746,90 @@ fn git_head(workdir: String) -> Option<HeadInfo> {
     Some(HeadInfo { branch, short })
 }
 
+/// A `git` command hardened for running under a GUI app.
+///
+/// Three things are non-negotiable here, and each one has bitten this codebase's
+/// neighbours already:
+/// - `LC_ALL=C` — never parse localized output (the german-git-locale gotcha).
+/// - an augmented PATH — a Finder-launched app gets a stripped one, and `git` may
+///   well live in `/opt/homebrew/bin`.
+/// - every credential prompt disabled — a network op that decides to ask for an
+///   SSH passphrase or an HTTPS password has no tty to ask on, so without this it
+///   blocks forever and takes the invoke thread with it. `BatchMode=yes` makes ssh
+///   fail instead of prompting; an askpass that exits non-zero sends git back to
+///   the terminal prompt, which `GIT_TERMINAL_PROMPT=0` then refuses. Credential
+///   *helpers* (osxkeychain) are untouched, so stored HTTPS creds still work, as
+///   do keys already loaded in ssh-agent. Anything else fails fast and readably —
+///   which is exactly when we hand the user a terminal.
+fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    c.env("LC_ALL", "C")
+        .env("PATH", augmented_path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "/usr/bin/false")
+        .env("SSH_ASKPASS", "/usr/bin/false")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+        .arg("-C")
+        .arg(workdir)
+        .args(args);
+    c
+}
+
+/// Run a git command with a hard timeout. `Child::wait` has no timeout in std, so
+/// the wait happens on a scratch thread and we kill by pid if it overruns. Without
+/// this, a fetch against an unreachable remote hangs a Tauri worker thread for the
+/// rest of the app's life.
+fn git_run(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // wait_with_output consumes the child, so the timeout path kills by pid.
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(_) => {
+            let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            Err(format!("no answer after {secs}s — remote unreachable, or it wants credentials"))
+        }
+    }
+}
+
+/// Where this branch sits relative to its upstream: `(upstream_name, ahead, behind)`.
+/// All zeros with no name when the branch has no upstream, or HEAD is detached.
+///
+/// Note these counts are only as fresh as the last fetch — git compares against the
+/// local remote-tracking ref, not the network. That's why the UI pairs them with a
+/// fetch button rather than pretending they're live.
+fn upstream_state(workdir: &str) -> (Option<String>, u32, u32) {
+    let name = git_cmd(workdir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(name) = name else { return (None, 0, 0) };
+    // --left-right --count over the symmetric difference prints "behind\tahead":
+    // left side is upstream-only commits, right side is ours.
+    let (mut ahead, mut behind) = (0u32, 0u32);
+    if let Ok(o) = git_cmd(workdir, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]).output() {
+        if o.status.success() {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut it = text.split_whitespace();
+            behind = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ahead = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        }
+    }
+    (Some(name), ahead, behind)
+}
+
 #[derive(serde::Serialize)]
 struct DiffStat {
     /// Insertions in the uncommitted working tree (tracked files, vs HEAD).
@@ -758,6 +842,12 @@ struct DiffStat {
     untracked: u32,
     /// Total dirty entries (`git status --porcelain` line count).
     dirty: u32,
+    /// Upstream ref this branch tracks ("origin/main"), None if it tracks nothing.
+    upstream: Option<String>,
+    /// Commits we have that the upstream doesn't (as of the last fetch).
+    ahead: u32,
+    /// Commits the upstream has that we don't (as of the last fetch).
+    behind: u32,
 }
 
 /// A summary of a session's *uncommitted* work — the "working set" the inspector's
@@ -802,7 +892,148 @@ fn git_diffstat(workdir: String) -> Option<DiffStat> {
             }
         }
     }
-    Some(DiffStat { added, removed, files, untracked, dirty })
+    let (upstream, ahead, behind) = upstream_state(&workdir);
+    Some(DiffStat { added, removed, files, untracked, dirty, upstream, ahead, behind })
+}
+
+#[derive(serde::Serialize)]
+struct GitActionResult {
+    ok: bool,
+    /// One line for the toast.
+    summary: String,
+    /// Combined stdout+stderr, for the debug log.
+    output: String,
+    /// Set when the action can't be finished safely from a button. The UI offers to
+    /// open a terminal prefilled with this, rather than leaving the user guessing.
+    suggest: Option<String>,
+}
+
+/// Fetch / pull / push for a session's working directory — the "git fluff" a
+/// cockpit needs so you don't drop to a shell for the routine half of git.
+///
+/// The design rule is that **no button may leave the working tree in a state the
+/// UI can't explain**, because there is no conflict-resolution surface here. So:
+/// pull is `--ff-only` (it can never conflict, never half-merge, and git itself
+/// refuses when local edits would be clobbered), push never invents an upstream,
+/// and the cases we can predict — a diverged branch, a missing upstream, a stale
+/// branch that would be rejected — are refused *before* running git, with the
+/// command the user should run instead. Committing deliberately isn't here: it
+/// belongs to the session, not to a toolbar.
+///
+/// Every op is safe against a live Claude in the same worktree: fetch and push
+/// don't touch the working tree at all, and ff-only pull won't overwrite edits.
+#[tauri::command]
+fn git_action(workdir: String, op: String) -> Result<GitActionResult, String> {
+    if !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("not a directory: {workdir}"));
+    }
+    let branch = git_cmd(&workdir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let refuse = |summary: &str, suggest: &str| {
+        Ok(GitActionResult {
+            ok: false,
+            summary: summary.to_string(),
+            output: String::new(),
+            suggest: Some(suggest.to_string()),
+        })
+    };
+
+    let (upstream, ahead, behind) = upstream_state(&workdir);
+    let args: Vec<&str> = match op.as_str() {
+        // Read-only and always safe — this is what makes ahead/behind trustworthy.
+        "fetch" => vec!["fetch", "--prune"],
+        "pull" => {
+            let Some(branch) = branch.as_deref() else {
+                return refuse("detached HEAD — nothing to pull into", "git switch -");
+            };
+            if upstream.is_none() {
+                return refuse(
+                    &format!("{branch} tracks no upstream"),
+                    &format!("git branch --set-upstream-to=origin/{branch} {branch}"),
+                );
+            }
+            // Diverged: ff-only would fail anyway. Refusing up front lets us say why
+            // and hand over the rebase, instead of surfacing a raw git error.
+            if ahead > 0 && behind > 0 {
+                return refuse(
+                    &format!("diverged — {ahead} ahead, {behind} behind"),
+                    "git pull --rebase",
+                );
+            }
+            if behind == 0 {
+                return Ok(GitActionResult {
+                    ok: true,
+                    summary: "already up to date".into(),
+                    output: String::new(),
+                    suggest: None,
+                });
+            }
+            vec!["pull", "--ff-only"]
+        }
+        "push" => {
+            let Some(branch) = branch.as_deref() else {
+                return refuse("detached HEAD — nothing to push", "git switch -");
+            };
+            // Never invent a remote branch from a button: the first push of a branch
+            // is a publishing decision, so we hand it over instead.
+            if upstream.is_none() {
+                return refuse(
+                    &format!("{branch} tracks no upstream"),
+                    &format!("git push -u origin {branch}"),
+                );
+            }
+            if behind > 0 {
+                return refuse(
+                    &format!("{behind} behind — push would be rejected"),
+                    "git pull --ff-only && git push",
+                );
+            }
+            if ahead == 0 {
+                return Ok(GitActionResult {
+                    ok: true,
+                    summary: "nothing to push".into(),
+                    output: String::new(),
+                    suggest: None,
+                });
+            }
+            vec!["push"]
+        }
+        _ => return Err(format!("unknown git op: {op}")),
+    };
+
+    let out = git_run(git_cmd(&workdir, &args), 45)?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let combined = [stdout, stderr].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+
+    if out.status.success() {
+        // Re-read after a fetch: the whole point of fetching is the new behind count.
+        let summary = match op.as_str() {
+            "fetch" => match upstream_state(&workdir).2 {
+                0 => "fetched — up to date".into(),
+                n => format!("fetched — {n} behind"),
+            },
+            "pull" => format!("pulled {behind} commit{}", if behind == 1 { "" } else { "s" }),
+            _ => format!("pushed {ahead} commit{}", if ahead == 1 { "" } else { "s" }),
+        };
+        return Ok(GitActionResult { ok: true, summary, output: combined, suggest: None });
+    }
+
+    // git said no for a reason we didn't predict (local edits in the way, a hook
+    // rejecting the push, a protected branch, a host key we've never seen). Show
+    // its own first line — the truthful thing — and offer the same op in a shell.
+    let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").to_string();
+    Ok(GitActionResult {
+        ok: false,
+        summary: first,
+        output: combined,
+        suggest: Some(format!("git {}", args.join(" "))),
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1311,6 +1542,11 @@ fn update_tray(
     let menu = mb
         .separator()
         .text("show", "Show Muster")
+        // Keep this trio in sync with the initial menu built in `run()` — this
+        // command *replaces* the whole menu, so anything missing here vanishes the
+        // moment the frontend first renders.
+        .text("check-updates", "Check for Updates…")
+        .separator()
         .text("quit", "Quit Muster")
         .build()
         .map_err(|e| e.to_string())?;
@@ -1349,6 +1585,7 @@ pub fn run() {
             // rebuilt from the frontend via `update_tray`.
             let tray_menu = MenuBuilder::new(app)
                 .text("show", "Show Muster")
+                .text("check-updates", "Check for Updates…")
                 .separator()
                 .text("quit", "Quit Muster")
                 .build()?;
@@ -1383,6 +1620,18 @@ pub fn run() {
                                 let _ = w.set_focus();
                             }
                         }
+                        // Must be matched before the `sid` arm below, which treats
+                        // any unknown id as a session to select. The window is shown
+                        // first because the check reports itself as a toast/chip in
+                        // the UI — checking from a hidden window would look like a
+                        // menu item that does nothing.
+                        "check-updates" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                            let _ = app.emit("tray-check-updates", ());
+                        }
                         sid => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -1404,6 +1653,7 @@ pub fn run() {
             git_branch,
             git_head,
             git_diffstat,
+            git_action,
             session_resources,
             create_worktree,
             resolve_permission,
