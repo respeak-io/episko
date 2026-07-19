@@ -97,7 +97,9 @@ if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
 // killing the drop. Telemetry ticks call renderAll() constantly, so this guard
 // is what makes reordering actually work during live sessions.
 let draggingProjects = false;
-const MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
+// Leads with the bundled Nerd Font (see @font-face in styles.css) so the terminal
+// draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
+const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
 // ---------- model ----------
 type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -130,6 +132,22 @@ interface Sess {
 const sessions = new Map<string, Sess>();
 let activeId: string | null = null;
 let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
+
+// The WebGL/canvas renderer bakes a glyph texture atlas on first paint. If the
+// bundled Nerd Font (font-display:block) isn't ready yet, that atlas caches tofu
+// boxes for the icon glyphs and never repaints them on its own. So force the font
+// to load, then drop every open terminal's atlas once it's ready — the next frame
+// re-rasterizes with real glyphs. Terminals opened after this point are already fine.
+void (async () => {
+  try {
+    await Promise.all([
+      document.fonts.load(`${termFontSize}px "JetBrainsMono Nerd Font"`),
+      document.fonts.load(`bold ${termFontSize}px "JetBrainsMono Nerd Font"`),
+    ]);
+    await document.fonts.ready;
+  } catch { /* Font Loading API unavailable — the browser still applies the @font-face */ }
+  for (const s of sessions.values()) s.term?.clearTextureAtlas();
+})();
 
 // Account-wide rate limits. Every session's statusLine reports the same account
 // numbers, but only as fresh as *that* session last refreshed them — an idle
