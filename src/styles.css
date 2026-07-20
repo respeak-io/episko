@@ -526,6 +526,9 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wt-h { font-size: 14px; font-weight: 700; }
 .wt-sub { font-size: 11.5px; color: var(--muted); margin: 4px 0 14px; }
 .wt-lbl { font-size: 9px; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
+/* Sub-label on the same line: says the field takes existing branches too, without
+   shouting it in caps alongside the label itself. */
+.wt-hint { text-transform: none; letter-spacing: 0; font-weight: 500; opacity: .62; margin-left: 5px; }
 .wt-in { width: 100%; height: 32px; margin-top: 6px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); padding: 0 11px; font: 13px var(--font-mono); outline: none; }
 .wt-in:focus { border-color: var(--accent-line); }
 .wt-list { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 14px; }

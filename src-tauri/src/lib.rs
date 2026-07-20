@@ -1004,6 +1004,45 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     res
 }
 
+/// Local branches that `create_worktree` can still attach, most-recently-committed
+/// first. Branches already checked out in *some* worktree are filtered out: git
+/// refuses a second checkout of the same branch ("'x' is already used by worktree
+/// at ..."), so suggesting one would only funnel the user into that error toast.
+/// Nothing is hidden by this — a branch dropped here is, by definition, one that
+/// `list_worktrees` already surfaces in the dialog as a clickable row (or is the
+/// repo's own HEAD, which the "on <branch>" button covers).
+#[tauri::command]
+fn git_branch_list(repo_dir: String) -> Vec<String> {
+    // LC_ALL=C for the same reason as create_worktree: never depend on localized output.
+    let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
+
+    let taken: std::collections::HashSet<String> =
+        match git(&["-C", &repo_dir, "worktree", "list", "--porcelain"]) {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| l.strip_prefix("branch "))
+                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string())
+                .collect(),
+            _ => Default::default(),
+        };
+
+    let out = match git(&[
+        "-C", &repo_dir,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)",
+        "refs/heads",
+    ]) {
+        Ok(o) if o.status.success() => o,
+        _ => return vec![],
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|b| !b.is_empty() && !taken.contains(b))
+        .collect()
+}
+
 /// Current git branch for a working directory (None if not a repo / detached).
 #[tauri::command]
 fn git_branch(workdir: String) -> Option<String> {
@@ -2305,6 +2344,7 @@ pub fn run() {
             set_caffeinate,
             resolve_permission,
             list_worktrees,
+            git_branch_list,
             spawn_ghostty,
             spawn_shell,
             available_terminals,
@@ -2383,6 +2423,53 @@ mod tests {
     fn git_diff_returns_none_outside_a_repo() {
         let dir = scratch_dir();
         assert!(git_diff(dir.to_str().unwrap().to_string()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The picker must only offer branches `create_worktree` can actually attach.
+    /// git refuses to check a branch out twice, so a branch already claimed by any
+    /// worktree — including the repo's own HEAD — would fail with "already used by
+    /// worktree" if suggested.
+    #[test]
+    fn git_branch_list_skips_branches_already_checked_out() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&dir, &["branch", "test"]);
+        git(&dir, &["branch", "feature-x"]);
+
+        // Claim `test` with a worktree; `dev` is claimed by the main working tree.
+        let wt = dir.join("wt-test");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "test"]);
+
+        let branches = git_branch_list(dir.to_str().unwrap().to_string());
+        assert!(branches.contains(&"feature-x".to_string()), "free branch missing: {branches:?}");
+        assert!(!branches.contains(&"test".to_string()), "branch in a worktree offered: {branches:?}");
+        assert!(!branches.contains(&"dev".to_string()), "main worktree's HEAD offered: {branches:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The label says "New branch" but the field has always taken existing ones —
+    /// that's the whole point of the picker, so pin the attach path down.
+    #[test]
+    fn create_worktree_attaches_an_existing_branch() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&dir, &["branch", "test"]);
+
+        let path = create_worktree(dir.to_str().unwrap().to_string(), "test".into()).expect("attach failed");
+        let head = Command::new("git").current_dir(&path).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "test");
+
+        // The repo it was created from must be undisturbed — this is a second
+        // checkout, not a branch switch.
+        let orig = Command::new("git").current_dir(&dir).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&orig.stdout).trim(), "dev");
+
+        // Worktrees land in a *sibling* .cc-worktrees tree, never inside the repo.
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

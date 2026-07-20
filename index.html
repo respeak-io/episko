@@ -111,8 +111,9 @@
       <div class="wt-h">Worktrees</div>
       <div class="wt-sub" id="wtSub"></div>
       <div class="wt-list" id="wtList" hidden></div>
-      <label class="wt-lbl" for="wtBranch">New branch</label>
-      <input class="wt-in" id="wtBranch" spellcheck="false" placeholder="feature-x" autocomplete="off" />
+      <label class="wt-lbl" for="wtBranch">Branch <span class="wt-hint">new, or an existing one</span></label>
+      <input class="wt-in" id="wtBranch" spellcheck="false" placeholder="feature-x" autocomplete="off" list="wtBranches" />
+      <datalist id="wtBranches"></datalist>
       <div class="wt-btns">
         <button class="wt-cancel" id="wtCancel">Cancel</button>
         <button class="wt-alt" id="wtMain" hidden>without worktree</button>

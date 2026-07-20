@@ -1983,6 +1983,15 @@ async function openWt(project: string, repoDir: string, allowMain: boolean) {
   }
   const bi = $("wtBranch") as HTMLInputElement; bi.value = `agent-${n}`;
   ($("wtList") as HTMLElement).hidden = true; $("wtList").innerHTML = "";
+  // Offer the repo's branches so an existing one can be *picked* rather than recalled
+  // from memory — the input has always accepted them (create_worktree probes the ref
+  // and attaches), but nothing ever said so. Filtered backend-side to branches a
+  // worktree can still attach, so every suggestion is one that actually works.
+  $("wtBranches").innerHTML = "";
+  invoke<string[]>("git_branch_list", { repoDir }).then((bs) => {
+    if (!wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on / closed
+    $("wtBranches").innerHTML = bs.map((b) => `<option value="${esc(b)}"></option>`).join("");
+  }).catch(() => {});
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => { bi.focus(); bi.select(); }, 30);
   const wts = await invoke<{ path: string; branch: string; is_main: boolean }[]>("list_worktrees", { repoDir }).catch(() => [] as { path: string; branch: string; is_main: boolean }[]);
