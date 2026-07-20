@@ -1,3 +1,22 @@
+/* Bundled Nerd Font so the embedded terminal renders powerline / devicon glyphs
+   (oh-my-posh, starship, git prompts) identically on every OS — no OS font ships
+   these, so without this the glyphs fall back to tofu boxes. The "Mono" variant
+   keeps icons single-cell-width. TTF is fine: assets load from disk, not the net. */
+@font-face {
+  font-family: "JetBrainsMono Nerd Font";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("./assets/fonts/JetBrainsMonoNerdFontMono-Bold.ttf") format("truetype");
+}
+
 :root {
   --bg: #100e15; --bg-2: #0b0a10; --panel: #16141d; --surface: #1b1824; --surface-2: #221e2d;
   --hair: rgba(255,255,255,.07); --hair-strong: rgba(255,255,255,.12); --lift: rgba(255,255,255,.05);
@@ -12,7 +31,7 @@
   --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-bash:#e0a44a; --tool-task:#6ad0b0; --tool-web:#f0a6d0; --tool-mcp:#9aa0b4;
   --radius:11px; --radius-sm:8px; --radius-lg:13px;
   --font-ui: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Berkeley Mono", Menlo, monospace;
+  --font-mono: "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", "Berkeley Mono", Menlo, monospace;
   color-scheme: dark;
 }
 :root[data-theme="light"] {
@@ -71,6 +90,56 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn-badge .bdot { width: 5px; height: 5px; border-radius: 50%; background: var(--rc, var(--st-attention)); }
 .ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
+
+/* caffeinate split button — icon toggles the last-used preset, caret opens the
+   preset dropdown. The whole control reflects on/off via the .on class. */
+.caf { display: inline-flex; align-items: stretch; height: 26px; border-radius: 8px; overflow: hidden; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
+.caf:hover { border-color: var(--hair-strong); }
+.caf-main, .caf-caret { border: 0; background: transparent; cursor: pointer; color: inherit; display: grid; place-items: center; padding: 0; }
+.caf-main { width: 28px; }
+.caf-caret { width: 15px; font-size: 8px; color: var(--muted-2); border-left: 1px solid var(--hair); }
+.caf-main:hover, .caf-caret:hover { color: var(--text); background: var(--lift); }
+.caf-ic { width: 16px; height: 16px; display: block; overflow: visible; }
+.caf-steam { opacity: 0; transition: opacity .25s; }
+.caf-cup, .caf-handle { transition: stroke .2s; }
+/* ARMED (.on) — accent tint. ASSERTING (a caffeinate child is actually running)
+   adds the glow + rising steam. Agent mode armed-but-idle is .on without
+   .asserting: a lit cup, quiet, waiting for the fleet to get busy. */
+.caf.on { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.caf.on .caf-caret { color: var(--accent-ink); border-left-color: var(--accent-line); }
+.caf.asserting { box-shadow: inset 0 1px 0 var(--lift), 0 0 12px -4px var(--accent-glow); }
+.caf.asserting .caf-steam { opacity: .85; }
+@media (prefers-reduced-motion: no-preference) {
+  .caf.asserting .caf-steam path { transform-box: fill-box; animation: caf-steam 2.1s ease-in-out infinite; }
+  .caf.asserting .caf-steam .s2 { animation-delay: .5s; }
+  .caf.asserting .caf-steam .s3 { animation-delay: 1s; }
+  @keyframes caf-steam { 0% { opacity: 0; transform: translateY(2.5px); } 45% { opacity: .85; } 100% { opacity: 0; transform: translateY(-2.5px); } }
+}
+
+/* caffeinate preset dropdown (reuses .menupop chrome) */
+.cafpop { min-width: 244px; }
+.cafpop .mp-main { flex: 1; }
+.cafpop .mp-flags { flex: none; margin-left: 8px; font: 10px var(--font-mono); color: var(--muted-2); background: var(--surface-2); border: 1px solid var(--hair); border-radius: 5px; padding: 1px 6px; }
+.cafpop .mp-item.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.cafpop .mp-item.on .mp-ic, .cafpop .mp-item.on .mp-l { color: var(--accent-ink); }
+.cafpop .mp-item.on .mp-flags { color: var(--accent-ink); border-color: var(--accent-line); background: transparent; }
+.cafpop .mp-item.cur .mp-ic { color: var(--accent-ink); }
+.cafpop .mp-sep { height: 1px; margin: 5px 7px; background: var(--hair); }
+.cafpop .mp-off .mp-ic { color: var(--st-attention); }
+.cafpop .mp-off .mp-l { color: var(--st-attention); }
+/* a preset row + its optional sub-controls (timer durations / agent switch) */
+.cafpop .caf-opt { display: flex; flex-direction: column; }
+.cafpop .caf-sub { display: flex; align-items: center; gap: 6px; padding: 0 10px 7px 36px; }
+.cafpop .caf-durs { gap: 5px; }
+.cafpop .caf-dur { flex: none; height: 22px; padding: 0 10px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.cafpop .caf-dur:hover { color: var(--text); border-color: var(--hair-strong); }
+.cafpop .caf-dur.on { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.cafpop .caf-switch-row { justify-content: space-between; }
+.cafpop .caf-sw-lbl { font-size: 10.5px; color: var(--muted); }
+.cafpop .caf-switch { flex: none; width: 30px; height: 17px; border-radius: 999px; cursor: pointer; padding: 0; border: 1px solid var(--hair-strong); background: var(--surface-2); position: relative; transition: background .15s, border-color .15s; }
+.cafpop .caf-switch .caf-knob { position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.cafpop .caf-switch.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.cafpop .caf-switch.on .caf-knob { transform: translateX(13px); background: var(--accent-ink); }
 @media (prefers-reduced-motion: no-preference) { .attn-badge .bdot { animation: pulse 1.5s ease-in-out infinite; } }
 
 /* left rail */
@@ -119,6 +188,8 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 /* pname flexes + truncates so a long name never wraps the header onto a 2nd row */
 .pname { flex: 0 1 auto; min-width: 0; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pcount { flex: none; margin-left: auto; font: 600 10px var(--font-mono); color: var(--muted-2); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
+/* project has uncommitted changes in one of its folders — sits right after the name */
+.pdirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
 .padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; }
 .padd:hover { color: var(--text); }
 .phead.empty-p .pname { color: var(--muted-2); font-weight: 550; }
@@ -144,6 +215,26 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .sctx { font: 10px var(--font-mono); color: var(--muted-2); }
 .g-work{color:var(--st-working);} .g-attn{color:var(--st-attention);} .g-done{color:var(--st-done);} .g-idle{color:var(--st-idle);} .g-error{color:var(--st-error);} .g-ended{color:var(--muted-2);}
 @media (prefers-reduced-motion: no-preference) { .g-work,.g-attn{ animation: pulse 1.5s ease-in-out infinite; } @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}} }
+
+/* ---- worktree grouping ---- */
+/* subheader mode: a ⑃-branch cluster header, its sessions nested under a tinted rule */
+/* padding-left 0 + a 13px glyph box centres the ⑃ (box centre 6.5px) on the
+   .wtsessions border-left below it (margin-left 6px + 0.5px half-border) */
+.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; }
+.wtglyph { flex: none; width: 13px; text-align: center; font-size: 11px; line-height: 1; }
+.wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
+.wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* toplevel mode: the branch suffix on a per-worktree group header */
+.pwt { margin-left: 5px; color: var(--muted-2); font-weight: 550; }
+/* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
+.srow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
+.srow.extrow.o3e { grid-template-columns: 14px minmax(0,1fr) auto auto auto; }
+.chip { display: inline-flex; align-items: center; overflow: hidden; font: 600 10px var(--font-mono); color: var(--wtc, var(--muted-2)); }
+.chip .fork { flex: none; }
+.chip .lbl { max-width: 0; opacity: 0; white-space: nowrap; transform: translateX(-3px); transition: max-width .22s ease, opacity .18s ease, transform .22s ease, margin-left .22s ease; }
+.srow.o3:hover .chip .lbl, .srow.o3e:hover .chip .lbl { max-width: 130px; opacity: 1; transform: none; margin-left: 4px; }
+@media (prefers-reduced-motion: reduce) { .chip .lbl { transition: none; } }
 
 /* minified icon-rail */
 .railmini { display: none; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; overflow-y: auto; }
@@ -279,6 +370,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wset .files { color: var(--muted); margin-left: auto; }
 .stackbar { height: 6px; border-radius: 3px; overflow: hidden; display: flex; background: var(--hair-strong); }
 .stackbar .sa { background: var(--st-done); } .stackbar .sd { background: var(--st-attention); }
+/* the +N −M card is a button into the diff viewer */
+.wpeek { display: flex; flex-direction: column; gap: 8px; cursor: pointer; }
+.wpeek-cue { margin-left: 8px; color: var(--muted-2); font-size: 12px; transition: color .12s; }
+.wpeek:hover .wpeek-cue { color: var(--accent-ink); } .wpeek:hover .files { color: var(--text); }
 .wset .branch { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .wset .branch .b { font-family: var(--font-mono); color: var(--accent-ink); }
 .wset .unc { margin-left: auto; font: 9.5px var(--font-mono); color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); padding: 2px 6px; border-radius: 5px; }
@@ -293,6 +388,53 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .gitrow .gitb:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--accent-ink); }
 .gitrow .gitb:disabled { opacity: .38; cursor: default; }
 .gitrow.busy { opacity: .6; }
+
+/* --- working-set diff viewer (modal) --- */
+.diffdlg { position: fixed; top: 8vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985); width: min(1000px, 94vw); max-height: 82vh; z-index: 41; display: flex; flex-direction: column; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
+.diffdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+.diff-head { display: flex; align-items: center; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--hair); flex: none; }
+.diff-title-wrap { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.diff-title-wrap b { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.diff-sub { font: 11px var(--font-mono); color: var(--muted); white-space: nowrap; flex: none; }
+.diff-sub .add { color: var(--st-done); } .diff-sub .del { color: var(--st-attention); }
+.diff-x { margin-left: auto; width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; flex: none; }
+.diff-x:hover { color: var(--text); border-color: var(--hair-strong); }
+.diff-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
+.diff-empty, .diff-trunc { color: var(--muted); font-size: 12px; padding: 16px; text-align: center; }
+.diff-trunc { color: var(--st-working); }
+
+.dfile { border: 1px solid var(--hair); border-radius: var(--radius-sm); margin-bottom: 9px; overflow: hidden; background: var(--bg-2); }
+.dfile:last-child { margin-bottom: 0; }
+.dfhead { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; background: var(--surface); user-select: none; }
+.dfhead:hover { background: var(--surface-2); }
+.dfile:not(.collapsed) .dfhead { border-bottom: 1px solid var(--hair); }
+.dfile.collapsed .dfbody { display: none; }
+.dfile.collapsed .dchev { transform: rotate(-90deg); }
+.dchev { color: var(--muted-2); font-size: 9px; transition: transform .12s; width: 10px; flex: none; }
+.dstat { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; font: 700 10px var(--font-mono); flex: none; }
+.dstat.s-mod { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 16%, transparent); }
+.dstat.s-add { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 16%, transparent); }
+.dstat.s-del { color: var(--st-attention); background: color-mix(in srgb, var(--st-attention) 16%, transparent); }
+.dstat.s-ren { color: var(--tool-read); background: color-mix(in srgb, var(--tool-read) 16%, transparent); }
+.dpath { font: 12px var(--font-mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-old { color: var(--muted); } .d-arr { color: var(--muted-2); margin: 0 5px; }
+.dcount { margin-left: auto; font: 11px var(--font-mono); flex: none; white-space: nowrap; }
+.dcount .add { color: var(--st-done); } .dcount .del { color: var(--st-attention); }
+.d-bin { color: var(--muted-2); font-size: 10px; }
+.d-binbody { color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; }
+
+.dhunk { border-top: 1px solid var(--hair); }
+.dhunk:first-child { border-top: none; }
+.dhh { padding: 3px 10px; font: 10.5px var(--font-mono); color: var(--muted-2); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.dhh-ctx { color: var(--muted); margin-left: 8px; }
+.dline { display: flex; font: 11.5px/1.55 var(--font-mono); }
+.dline .ln { flex: none; width: 40px; padding-right: 8px; text-align: right; color: var(--muted-2); opacity: .55; user-select: none; }
+.dsign { flex: none; width: 15px; text-align: center; color: var(--muted-2); user-select: none; }
+.lc { flex: 1; min-width: 0; padding-right: 10px; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dline.add { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
+.dline.add .dsign { color: var(--st-done); }
+.dline.del { background: color-mix(in srgb, var(--st-attention) 11%, transparent); }
+.dline.del .dsign { color: var(--st-attention); }
 
 /* --- timeline (colour by tool, latency bar) --- */
 .tl2 { display: flex; flex-direction: column; }

@@ -55,8 +55,8 @@ Muster keeps itself up to date after that: it checks the latest GitHub release o
 ### Run it
 
 ```sh
-npm install          # first time
-npm run tauri dev
+pnpm install          # first time
+pnpm tauri dev
 ```
 
 Then in the window: click **Launch Claude ▸**, pick a project, accept Claude's workspace-trust prompt in the terminal (first time in a directory), and ask it something. Watch the status pill and chips update live.

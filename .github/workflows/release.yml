@@ -1,10 +1,13 @@
 name: release
 
 # Cut a release by pushing a version tag, e.g.:
-#   git tag v0.4.2 && git push origin v0.4.2
-# tauri-action builds the macOS (aarch64) bundle, signs the updater artifact with
-# the minisign key, creates the GitHub Release, and uploads the .dmg, the
-# .app.tar.gz(+.sig) updater artifact, and a latest.json the app's updater reads.
+#   git tag v0.4.4 && git push origin v0.4.4
+# A build matrix runs tauri-action on each OS: macOS (aarch64) produces the .dmg +
+# .app.tar.gz(+.sig) updater artifact, Windows (x64) produces the NSIS .exe / .msi +
+# their updater artifact. Every job targets the SAME tag, so tauri-action appends
+# its assets to the one GitHub Release and merges each platform into a single
+# latest.json the app's updater reads. The minisign key signs the updater artifacts
+# on every platform (OS code-signing is separate and not configured).
 on:
   push:
     tags:
@@ -15,19 +18,34 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-latest # arm64 runner → aarch64-apple-darwin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # arm64 runner → aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - platform: windows-latest # x64 → NSIS .exe + .msi
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: pnpm
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          # The Apple-Silicon target is only needed on the macOS runner; Windows
+          # builds for its host target (x86_64-pc-windows-msvc) with no extra target.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
@@ -35,7 +53,26 @@ jobs:
           workspaces: ./src-tauri -> target
 
       - name: Install frontend deps
-        run: npm ci
+        run: pnpm install --frozen-lockfile
+
+      # Windows OS code-signing (Azure Trusted Signing) is OPT-IN and gated on the
+      # AZURE_CLIENT_ID secret being present. Until Respeak's Azure account/profile +
+      # a service-principal secret exist, this is a no-op and the release builds
+      # unsigned exactly as before. See src-tauri/SIGNING.md.
+      - name: Detect Windows signing secrets
+        id: sign
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.AZURE_CLIENT_ID }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install trusted-signing-cli
+        if: steps.sign.outputs.enabled == 'true'
+        run: cargo install trusted-signing-cli
 
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0
@@ -45,14 +82,23 @@ jobs:
           # the pubkey baked into tauri.conf.json. Set both as repo secrets.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Azure Trusted Signing auth for the signCommand in tauri.signing.conf.json
+          # (only consumed when the overlay is merged in — see the args line below).
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Muster ${{ github.ref_name }}"
           # Install instructions are embedded in every release body so the
           # top-of-list (latest) release always carries them — GitHub can't pin
-          # a release, so "always in the newest one" is the equivalent.
+          # a release, so "always in the newest one" is the equivalent. The first
+          # matrix job to run creates the release with this body; later jobs append
+          # their assets, so it must cover every platform.
           releaseBody: |
-            ## Install (macOS, Apple Silicon)
+            ## Install
+
+            **macOS (Apple Silicon)**
 
             1. Download **Muster_*_aarch64.dmg** from the assets below.
             2. Muster is self-signed (not notarized by Apple), so macOS Gatekeeper blocks the first launch. Clear the quarantine flag once:
@@ -63,10 +109,19 @@ jobs:
                ```sh
                xattr -dr com.apple.quarantine /Applications/Muster.app
                ```
+            Apple Silicon (M-series) only — Intel Macs aren't supported by this build.
 
-            Requires `claude` on your `PATH`. Apple Silicon (M-series) only — Intel Macs aren't supported by this build. Muster keeps itself up to date after install (checks the latest release on launch; never auto-installs).
+            **Windows (x64)**
+
+            1. Download **Muster_*_x64-setup.exe** (or the **.msi**) from the assets below.
+            2. Muster isn't code-signed, so Windows SmartScreen may warn on first run — click **More info → Run anyway**.
+
+            Requires `claude` on your `PATH`. Muster keeps itself up to date after install (checks the latest release on launch; never auto-installs).
           releaseDraft: false
           prerelease: false
           # tauri-action generates and uploads latest.json when the updater is
           # configured; the app's endpoint points at the release's latest.json.
-          args: --target aarch64-apple-darwin
+          # When Windows signing is enabled, merge the signCommand overlay via
+          # --config so tauri-action signs the .exe, NSIS setup, and .msi; otherwise
+          # pass the matrix args unchanged (unsigned, as today).
+          args: ${{ steps.sign.outputs.enabled == 'true' && format('{0} --config src-tauri/tauri.signing.conf.json', matrix.args) || matrix.args }}
