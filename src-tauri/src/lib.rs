@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use tauri::menu::MenuBuilder;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -39,6 +39,11 @@ struct AppState {
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
     next_perm: std::sync::atomic::AtomicU64,
+    /// The single running `caffeinate` child, if the user has toggled it on.
+    /// Started with `-w <our pid>` so it self-terminates if Muster ever dies
+    /// without a clean stop — no orphaned process keeps the Mac awake forever.
+    #[cfg(not(windows))]
+    caffeinate: Mutex<Option<std::process::Child>>,
 }
 
 /// Find a request header by (case-insensitive) name.
@@ -783,6 +788,62 @@ fn kill_session(state: State<AppState>, session_id: String) -> Result<(), String
     Ok(())
 }
 
+/// A caffeinate flag we're willing to pass through: a short-option cluster over
+/// the sleep-assertion letters (`-d -i -m -s -u`, or combined like `-dimsu`),
+/// the `-t` timeout switch, or a bare decimal number (its seconds argument).
+/// Everything the UI sends is a fixed preset, so this is just belt-and-braces
+/// against ever handing an arbitrary string to the shell-less spawn.
+#[cfg(not(windows))]
+fn valid_caffeinate_flag(f: &str) -> bool {
+    if let Some(rest) = f.strip_prefix('-') {
+        return !rest.is_empty() && rest.chars().all(|c| "dimsut".contains(c));
+    }
+    !f.is_empty() && f.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Toggle a macOS `caffeinate` power-assertion on or off. Only ever one child
+/// runs: any existing one is killed first, so switching presets is just a
+/// stop+restart. `active=false` (or an empty `flags`) simply stops it.
+#[cfg(not(windows))]
+#[tauri::command]
+fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<String>) -> Result<(), String> {
+    let mut guard = state.caffeinate.lock().unwrap();
+    // Tear down whatever's running (also reaps a child that self-exited on -t).
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if !active || flags.is_empty() {
+        return Ok(());
+    }
+    if let Some(bad) = flags.iter().find(|f| !valid_caffeinate_flag(f)) {
+        return Err(format!("refusing unknown caffeinate flag: {bad}"));
+    }
+    // `-w <our pid>`: caffeinate exits on its own the moment Muster does, so a
+    // crash or force-quit can't leave the display pinned awake.
+    let mut cmd = std::process::Command::new("/usr/bin/caffeinate");
+    cmd.arg("-w").arg(std::process::id().to_string());
+    for f in &flags {
+        cmd.arg(f);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = cmd.spawn().map_err(|e| format!("caffeinate: {e}"))?;
+    *guard = Some(child);
+    Ok(())
+}
+
+/// Windows has no `caffeinate` binary and no power-assertion equivalent wired up
+/// yet (that would be `SetThreadExecutionState`). The UI hides the control there,
+/// so this only exists to keep the command registered for the shared
+/// `invoke_handler!` list — reaching it means the frontend guard was bypassed.
+#[cfg(windows)]
+#[tauri::command]
+fn set_caffeinate(_state: State<AppState>, _active: bool, _flags: Vec<String>) -> Result<(), String> {
+    Err("keep-awake is not supported on Windows yet".into())
+}
+
 /// Create a git worktree with a new (or existing) branch off `repo_dir`.
 /// Returns the absolute worktree path. Worktrees live in a sibling
 /// `.cc-worktrees/<repo>/<branch>` folder so the repo stays clean.
@@ -939,6 +1000,28 @@ fn git_head(workdir: String) -> Option<HeadInfo> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
     Some(HeadInfo { branch, short })
+}
+
+/// Resolve `cwd` to its repo's MAIN worktree root and current branch. This is what
+/// lets external sessions running in different worktrees of one repo group under that
+/// repo (and merge into its project) instead of each cwd becoming its own top-level
+/// entry in the sidebar. One git call: line 1 = the common `.git` dir (its parent is
+/// the main worktree, identical for the main checkout AND every linked worktree),
+/// line 2 = the branch ("HEAD" when detached). (None, None) when `cwd` isn't a repo.
+fn git_repo_info(cwd: &str) -> (Option<String>, Option<String>) {
+    let out = match git_cmd(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir", "--abbrev-ref", "HEAD"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return (None, None),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let common = lines.next().unwrap_or("").trim();
+    let branch = lines.next().unwrap_or("").trim();
+    let root = std::path::Path::new(common).parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty());
+    let branch = if branch.is_empty() || branch == "HEAD" { None } else { Some(branch.to_string()) };
+    (root, branch)
 }
 
 /// A `git` command hardened for running under a GUI app.
@@ -1100,6 +1183,68 @@ fn git_diffstat(workdir: String) -> Option<DiffStat> {
     }
     let (upstream, ahead, behind) = upstream_state(&workdir);
     Some(DiffStat { added, removed, files, untracked, dirty, upstream, ahead, behind })
+}
+
+#[derive(serde::Serialize)]
+struct GitDiff {
+    /// Combined unified-diff patch for the working set: tracked changes vs HEAD,
+    /// followed by each untracked file rendered as a new-file diff. The frontend
+    /// parses this into files/hunks for the peek viewer.
+    patch: String,
+    /// True when we stopped early because the patch hit the size/file cap — the
+    /// viewer shows a "truncated" note so a partial diff can't read as complete.
+    truncated: bool,
+}
+
+/// The full *uncommitted* diff behind the working-set card, for the peek viewer.
+/// Tracked changes come from `diff HEAD`; untracked files are appended as new-file
+/// diffs via `diff --no-index` against `/dev/null` — which, unlike `add -N`, never
+/// touches the index (important while a live session may be staging/committing).
+/// `core.quotepath=false` keeps non-ASCII paths literal; a size + file-count cap
+/// stops a huge working tree from shipping a multi-MB payload into the webview.
+#[tauri::command]
+fn git_diff(workdir: String) -> Option<GitDiff> {
+    const CAP: usize = 800_000; // ~0.8 MB of patch text — ample for a peek
+    const MAX_UNTRACKED: usize = 300;
+
+    let tracked = git_cmd(&workdir, &["-c", "core.quotepath=false", "--no-optional-locks", "diff", "HEAD"])
+        .output()
+        .ok()?;
+    if !tracked.status.success() {
+        return None; // not a repo, or an unborn HEAD (no commits)
+    }
+    let mut patch = String::from_utf8_lossy(&tracked.stdout).into_owned();
+    let mut truncated = false;
+    if patch.len() > CAP {
+        patch.truncate(CAP);
+        truncated = true;
+    }
+
+    // Untracked files, each as its own new-file diff. `--no-index` exits 1 whenever
+    // the files differ (always, vs /dev/null), so we read stdout regardless of status.
+    if !truncated {
+        if let Ok(o) = git_cmd(&workdir, &["--no-optional-locks", "ls-files", "--others", "--exclude-standard", "-z"]).output() {
+            let listing = String::from_utf8_lossy(&o.stdout);
+            let others: Vec<&str> = listing.split('\0').filter(|s| !s.is_empty()).collect();
+            if others.len() > MAX_UNTRACKED {
+                truncated = true;
+            }
+            for f in others.into_iter().take(MAX_UNTRACKED) {
+                if patch.len() >= CAP {
+                    truncated = true;
+                    break;
+                }
+                if let Ok(d) = git_cmd(&workdir, &["-c", "core.quotepath=false", "diff", "--no-index", "--", "/dev/null", f]).output() {
+                    patch.push_str(&String::from_utf8_lossy(&d.stdout));
+                }
+            }
+            if patch.len() > CAP {
+                patch.truncate(CAP);
+                truncated = true;
+            }
+        }
+    }
+    Some(GitDiff { patch, truncated })
 }
 
 #[derive(serde::Serialize)]
@@ -1423,6 +1568,11 @@ struct ExternalSession {
     status_updated_at: Option<i64>,
     started_at: Option<i64>,
     version: String,
+    /// Main worktree root of this session's repo — the key the sidebar groups by, so
+    /// every worktree of one repo lands under it. None when cwd isn't a git repo.
+    repo_root: Option<String>,
+    /// Branch checked out in this session's cwd (None when detached / not a repo).
+    branch: Option<String>,
 }
 
 /// One `ps -o <fields>=` line for a single pid (trimmed), or None if the process
@@ -1522,6 +1672,8 @@ fn list_external_sessions(state: State<AppState>, exclude: Vec<String>) -> Vec<E
             status_updated_at: v.get("statusUpdatedAt").and_then(|x| x.as_i64()),
             started_at: v.get("startedAt").and_then(|x| x.as_i64()),
             version: v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            repo_root: None,
+            branch: None,
         });
     }
     if parsed.is_empty() {
@@ -1560,6 +1712,15 @@ fn list_external_sessions(state: State<AppState>, exclude: Vec<String>) -> Vec<E
     let self_pid = std::process::id();
     let owned = state.owned_pids.lock().unwrap().clone();
     parsed.retain(|s| !owned.contains(&s.pid) && !is_descendant_of(s.pid, self_pid));
+
+    // Enrich survivors with their repo root + branch so worktrees of one repo group
+    // together (and merge into that repo's project) rather than each cwd becoming its
+    // own top-level entry. After the filters, so no git runs on stale or owned pids.
+    for s in parsed.iter_mut() {
+        let (root, branch) = git_repo_info(&s.cwd);
+        s.repo_root = root;
+        s.branch = branch;
+    }
 
     // most-recently-active first
     parsed.sort_by(|a, b| b.status_updated_at.unwrap_or(0).cmp(&a.status_updated_at.unwrap_or(0)));
@@ -1744,6 +1905,18 @@ fn read_transcript(cwd: String, session_id: String, limit: usize) -> Result<Vec<
     Ok(msgs)
 }
 
+// ---------- app quit ----------
+
+/// Actually terminate the app. The Cmd+Q accelerator is bound to our own menu
+/// item (see the app menu in `run`), which asks the frontend to confirm instead
+/// of quitting; the frontend calls this once the user (or an empty session list)
+/// has approved the quit. Kept as a command so the *only* immediate-exit paths
+/// are this and the tray's "Quit Muster".
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    app.exit(0);
+}
+
 // ---------- macOS menu-bar (tray) ----------
 
 #[derive(serde::Deserialize)]
@@ -1811,6 +1984,8 @@ pub fn run() {
                 owned_pids: Mutex::new(HashSet::new()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
+                #[cfg(not(windows))]
+                caffeinate: Mutex::new(None),
             });
 
             let handle = app.handle().clone();
@@ -1867,6 +2042,11 @@ pub fn run() {
                             }
                             let _ = app.emit("tray-check-updates", ());
                         }
+                        // Cmd+Q is handled by the app menu's own quit item, but that
+                        // MenuEvent also reaches this handler — every menu handler shares
+                        // one global listener list — so swallow it here instead of letting
+                        // it fall through to the session catch-all below.
+                        "quit-confirm" => {}
                         sid => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -1878,6 +2058,60 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // ---- App menu with a Cmd+Q catcher ----
+            // Cmd+Q is a "special Apple event" that Tauri does not reliably surface
+            // as an app/window event on macOS (tauri-apps/tauri#9198), so
+            // RunEvent::ExitRequested/prevent_exit can't be trusted to intercept it.
+            // Instead we *own* the Quit item: binding our own menu item to Cmd+Q means
+            // the keystroke fires `on_menu_event` (deterministic) rather than the OS
+            // `terminate:`. The handler asks the frontend to confirm; only `confirm_quit`
+            // actually exits. Replacing the default menu means we must re-add the Edit
+            // submenu ourselves, or Cmd+C/X/V/Z/A stop working in the app's inputs.
+            let quit_item = MenuItemBuilder::with_id("quit-confirm", "Quit Muster")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let app_menu = SubmenuBuilder::new(app, "Muster")
+                .about(None)
+                .separator()
+                .services()
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .item(&quit_item)
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let window_menu = SubmenuBuilder::new(app, "Window")
+                .minimize()
+                .fullscreen()
+                .separator()
+                .close_window()
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&app_menu, &edit_menu, &window_menu])
+                .build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id().0.as_str() == "quit-confirm" {
+                    // Surface the window so the confirm dialog has context, then let the
+                    // frontend decide (it quits straight away when nothing is running).
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit("quit-requested", ());
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1888,9 +2122,11 @@ pub fn run() {
             git_branch,
             git_head,
             git_diffstat,
+            git_diff,
             git_action,
             session_resources,
             create_worktree,
+            set_caffeinate,
             resolve_permission,
             list_worktrees,
             spawn_ghostty,
@@ -1903,8 +2139,73 @@ pub fn run() {
             read_transcript,
             find_project_icon,
             write_debug_file,
-            update_tray
+            update_tray,
+            confirm_quit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A fresh, empty scratch directory under the OS temp dir. No randomness (pid +
+    /// an atomic counter keep it unique even under cargo's parallel test threads).
+    fn scratch_dir() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("muster_git_diff_test_{}_{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Run a git command in `dir`, asserting success. Identity/signing are passed via
+    /// `-c` so the test doesn't depend on (or touch) the developer's global gitconfig.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git").current_dir(dir).args(args).output().expect("failed to spawn git");
+        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn git_diff_reports_tracked_and_untracked_changes() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("tracked.txt"), "line1\nline2\nline3\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+
+        // Working-tree changes: edit the tracked file, add an untracked one.
+        std::fs::write(dir.join("tracked.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "brand new\n").unwrap();
+
+        let d = git_diff(dir.to_str().unwrap().to_string()).expect("git_diff returned None for a real repo");
+        assert!(!d.truncated);
+        // Tracked modification, diffed against HEAD.
+        assert!(d.patch.contains("diff --git a/tracked.txt b/tracked.txt"), "missing tracked diff:\n{}", d.patch);
+        assert!(d.patch.contains("+CHANGED") && d.patch.contains("-line2"));
+        // Untracked file rendered as a new-file diff.
+        assert!(d.patch.contains("diff --git a/new.txt b/new.txt"), "missing untracked diff:\n{}", d.patch);
+        assert!(d.patch.contains("new file mode") && d.patch.contains("+brand new"));
+
+        // Crucially, surfacing the untracked file must NOT have staged it — `--no-index`
+        // leaves the index untouched, which is why we use it over `git add -N`.
+        let st = Command::new("git").current_dir(&dir).args(["status", "--porcelain"]).output().unwrap();
+        let st = String::from_utf8_lossy(&st.stdout);
+        assert!(st.contains("?? new.txt"), "new.txt should still be untracked, got:\n{st}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_diff_returns_none_outside_a_repo() {
+        let dir = scratch_dir();
+        assert!(git_diff(dir.to_str().unwrap().to_string()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

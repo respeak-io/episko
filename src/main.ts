@@ -10,6 +10,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
+import { parsePatch, type DiffFile, type DiffHunk } from "./diff";
 
 function loadWebgl(term: Terminal) {
   try {
@@ -92,6 +93,30 @@ const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
 };
 let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";
 if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
+// --- sidebar worktree grouping -------------------------------------------------
+// Sessions of a repo already collapse into one project group (colorKey = repo root);
+// this decides how the worktrees WITHIN that group are shown. The distinguishing key
+// per worktree is s.workdir (the actual checkout dir); s.worktree holds its branch.
+//   off       — flat rows, branch only as a fallback label (legacy behaviour)
+//   subheader — a ⑃-branch header per worktree cluster, sessions nested under it
+//   toplevel  — each worktree becomes its own top-level group ("repo · branch")
+//   chip      — flat rows, each worktree row carries a colour-coded ⑃ chip
+// off/subheader/chip differ purely in the render layer; toplevel also splits
+// projectList() so close-navigation and the mini-rail stay coherent. A project with a
+// single checkout always renders flat, whatever the mode. Persisted under
+// cc-worktree-group; no in-app control yet — the settings window (separate branch)
+// will own the picker, until then flip it via setWtGroup() / localStorage.
+type WtGroup = "off" | "subheader" | "toplevel" | "chip";
+const WT_GROUPS: WtGroup[] = ["off", "subheader", "toplevel", "chip"];
+let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGroup) || "subheader";
+if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
+function setWtGroup(m: WtGroup) {
+  wtGroup = WT_GROUPS.includes(m) ? m : "subheader";
+  localStorage.setItem("cc-worktree-group", wtGroup);
+  renderAll();
+}
+// Dev affordance until the settings window ships: musterWtGroup("chip") in the console.
+(window as unknown as { musterWtGroup: typeof setWtGroup }).musterWtGroup = setWtGroup;
 // While a project group is being dragged, renderSidebar() must not rebuild the
 // #projects DOM — doing so would destroy the node the browser is dragging,
 // killing the drop. Telemetry ticks call renderAll() constantly, so this guard
@@ -187,11 +212,22 @@ function rlReset(reset: number | null): number | null {
 interface ExtSession {
   pid: number; session_id: string; cwd: string; name: string;
   status: string; status_updated_at?: number | null; started_at?: number | null; version: string;
+  // repo_root = the main worktree of this session's repo (backend-resolved), so all
+  // worktrees of one repo group under it; branch = the branch checked out in cwd.
+  repo_root?: string | null; branch?: string | null;
 }
 let externals: ExtSession[] = [];
 let activeExtId: string | null = null;      // session_id of the external session being mirrored
 let extTranscriptTimer: number | undefined;
 const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping", "done", ""].includes(e.status);
+
+// Uncommitted git state keyed by folder (a session's workdir or an external's cwd),
+// polled by refreshDirtyStates. It's the single source of truth for the sidebar's
+// "has changes" dot and the external inspector's diff card: s.git only stays fresh
+// for the *active* session, so nothing else can rely on it across every project.
+const dirtyByFolder = new Map<string, DiffStat | null>();
+const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untracked > 0);
+const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));
 
 // persisted daily usage rollup (survives app + system restarts)
 const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
@@ -444,6 +480,10 @@ async function refreshExternals() {
   try {
     const list = await invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] });
     externals = list;
+    // Scour each external repo for its logo, keyed by the same repo_root the sidebar
+    // groups by — otherwise ext-only projects would forever show the accent dot.
+    // probeIcon dedupes by key, so this hits the backend at most once per repo.
+    for (const e of externals) probeIcon(e.repo_root || e.cwd);
     if (activeExtId && !externals.some((e) => e.session_id === activeExtId)) {
       // the mirrored session ended — fall back to a Muster session or the empty state
       closeExternalView();
@@ -457,6 +497,26 @@ async function refreshExternals() {
     renderSidebar(); renderMini();
   } catch { /* backend not ready yet */ }
 }
+// Poll uncommitted git state for every folder in play (session workdirs + external
+// cwds), so the sidebar dot and the external diff card are accurate for all projects
+// at once — not just whichever session is active. git_diffstat is the same cheap
+// call the inspector already makes; here it fans out across the distinct folders.
+async function refreshDirtyStates() {
+  const folders = new Set<string>();
+  for (const s of sessions.values()) if (!s.shell && s.workdir) folders.add(s.workdir);
+  for (const e of externals) if (e.cwd) folders.add(e.cwd);
+  for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
+  const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
+  let changed = false;
+  await Promise.all([...folders].map(async (f) => {
+    const g = await invoke<DiffStat | null>("git_diffstat", { workdir: f }).catch(() => null);
+    if (sig(dirtyByFolder.get(f)) !== sig(g)) changed = true;
+    dirtyByFolder.set(f, g ?? null);
+  }));
+  if (!changed) return;
+  renderSidebar();
+  if (activeExtId) { const e = externals.find((x) => x.session_id === activeExtId); if (e) renderExtInspector(e); }
+}
 function openExternal(sid: string) {
   const e = externals.find((x) => x.session_id === sid);
   if (!e) return;
@@ -468,6 +528,7 @@ function openExternal(sid: string) {
   document.documentElement.style.setProperty("--accent", accentFor(e.cwd));
   renderExtHeader(e); renderExtInspector(e); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
+  void refreshDirtyStates(); // fill the working-set card promptly, not on the next poll tick
   loadTranscript(e, true);
   clearInterval(extTranscriptTimer);
   extTranscriptTimer = window.setInterval(() => {
@@ -511,11 +572,27 @@ function renderExtHeader(e: ExtSession) {
   $("hTitle").textContent = e.name || "";
   $("hPath").textContent = tilde(e.cwd);
 }
+// A read-only working-set peek for an external session's folder — the same card as a
+// Muster session's, minus the fetch/pull/push row (we don't drive this checkout).
+// Shown only when the folder actually has uncommitted changes.
+function extPeekHtml(e: ExtSession, g: DiffStat): string {
+  const tot = g.added + g.removed || 1;
+  const aw = Math.round((g.added / tot) * 100);
+  const newBadge = g.untracked ? ` · ${g.untracked} new` : "";
+  return `<div class="wset ext-wset">
+    <div class="lab" style="margin-bottom:2px">Working set · in this folder</div>
+    <div class="wpeek" data-diff="${esc(e.cwd)}" data-difftitle="${esc(basename(e.cwd))}" title="Open the uncommitted diff">
+      <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}${newBadge}</span><span class="wpeek-cue">⤢</span></div>
+      <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>
+    </div></div>`;
+}
 function renderExtInspector(e: ExtSession) {
   const working = extWorking(e);
   const pill = $("iPill"); pill.className = "pill " + (working ? "working" : "idle");
   $("iPillTxt").textContent = e.status || "external";
   const started = e.started_at ? new Date(e.started_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
+  const g = dirtyByFolder.get(e.cwd);
+  const peek = isDirty(g) ? extPeekHtml(e, g!) : "";
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">↗ Running outside Muster</div>
@@ -527,7 +604,7 @@ function renderExtInspector(e: ExtSession) {
       <div class="ext-meta"><span class="label">PID</span><span class="mono">${e.pid}</span></div>
       <button class="ext-jump-btn" data-jump="${e.pid}">↗ Jump to its terminal</button>
       <div class="ext-note">Muster can't drive this session — it was launched in another terminal. The panel on the left is a live read-only mirror of its transcript.</div>
-    </div>`;
+    </div>${peek}`;
 }
 
 // ---------- telemetry ----------
@@ -669,7 +746,49 @@ function applyStatusline(s: Sess, data: any) {
 }
 
 // ---------- rendering ----------
-interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[] }
+interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; wtBranch?: string }
+// A worktree cluster = the sessions of one project that share a checkout dir. Order
+// follows first appearance in the (already-sorted) session list, so the active/
+// attention sort still decides which worktree floats up. The repo-root checkout
+// (worktree === null) is the "main" cluster; its label is the live branch.
+interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
+function clusterByWorktree(p: ProjGroup): WtCluster[] {
+  const by = new Map<string, WtCluster>();
+  const order: WtCluster[] = [];
+  const bucket = (key: string, branch: string): WtCluster => {
+    let c = by.get(key);
+    if (!c) { c = { key, branch, isMain: key === p.path, sessions: [], externals: [] }; by.set(key, c); order.push(c); }
+    else if (!c.branch && branch) c.branch = branch;
+    return c;
+  };
+  for (const s of p.sessions) bucket(s.workdir || p.path, s.branch || s.worktree || "").sessions.push(s);
+  for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
+  // Label clusters that never carried a branch: the repo-root checkout is "main",
+  // any other bare dir falls back to its folder name.
+  for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
+  return order;
+}
+// A stable colour per branch, from the same hash as project accents so the sidebar's
+// colour language stays consistent (a branch and a project just seed different hues).
+const branchHue = (c: WtCluster) => accentFor(c.branch || c.key);
+// toplevel mode: explode any project whose sessions span >1 worktree into one group
+// per worktree. The root checkout keeps the project's identity (path/favourite/
+// externals); each worktree gets its own group keyed by its checkout dir, carrying
+// the branch in wtBranch. Single-checkout projects pass through untouched.
+function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
+  const out: ProjGroup[] = [];
+  for (const p of list) {
+    const cl = clusterByWorktree(p);
+    const wts = cl.filter((c) => !c.isMain);
+    if (!wts.length) { out.push(p); continue; }
+    const root = cl.find((c) => c.isMain);
+    // Keep the root group only when it carries something — root-checkout rows or a
+    // favourite (a launch target). Drops the phantom empty root of a worktree-only repo.
+    if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
+    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, wtBranch: c.branch });
+  }
+  return out;
+}
 function projectList(): ProjGroup[] {
   const list: ProjGroup[] = FAVORITES.map((f) => ({ name: f.name, path: f.path, accent: accentFor(f.path), sessions: [], externals: [] }));
   const byName = new Map(list.map((p) => [p.name, p]));
@@ -680,23 +799,31 @@ function projectList(): ProjGroup[] {
     p.sessions.push(s);
   }
   for (const e of externals) {
-    let p = byPath.get(e.cwd);
-    if (!p) { p = { name: basename(e.cwd), path: e.cwd, accent: accentFor(e.cwd), sessions: [], externals: [] }; list.push(p); byPath.set(e.cwd, p); byName.set(p.name, p); }
+    // Group by the repo's main worktree, not the raw cwd, so every worktree of one
+    // repo lands under it (and merges into that repo's favourite when paths match).
+    const key = e.repo_root || e.cwd;
+    let p = byPath.get(key);
+    if (!p) { p = { name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [] }; list.push(p); byPath.set(key, p); byName.set(p.name, p); }
     p.externals.push(e);
   }
+  // Sort sessions within each project first, then (in toplevel mode) split by
+  // worktree so each split group inherits the sorted order, then order the groups.
+  const sessCmp = sortMode === "active" ? (a: Sess, b: Sess) => b.lastActivity - a.lastActivity
+    : sortMode === "attention" ? (a: Sess, b: Sess) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince
+    : null;
+  if (sessCmp) for (const p of list) p.sessions.sort(sessCmp);
+  const groups = wtGroup === "toplevel" ? splitByWorktree(list) : list;
   if (sortMode === "active") {
-    for (const p of list) p.sessions.sort((a, b) => b.lastActivity - a.lastActivity);
-    list.sort((a, b) => projActivity(b) - projActivity(a));
+    groups.sort((a, b) => projActivity(b) - projActivity(a));
   } else if (sortMode === "attention") {
-    for (const p of list) p.sessions.sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
-    list.sort((a, b) => projUrgency(a) - projUrgency(b) || projWaitSince(a) - projWaitSince(b));
+    groups.sort((a, b) => projUrgency(a) - projUrgency(b) || projWaitSince(a) - projWaitSince(b));
   } else {
     // manual: the user's drag-drop order; unlisted projects keep their natural
     // order after listed ones (stable sort preserves ties).
     const rank = (path: string) => { const i = projOrder.indexOf(path); return i === -1 ? Number.MAX_SAFE_INTEGER : i; };
-    list.sort((a, b) => rank(a.path) - rank(b.path));
+    groups.sort((a, b) => rank(a.path) - rank(b.path));
   }
-  return list;
+  return groups;
 }
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
@@ -729,7 +856,9 @@ function nextAfterClose(s: Sess): Sess | null {
   return flat[fi + 1] || flat[fi - 1] || null;
 }
 
-function sessionRow(s: Sess): string {
+// `chip` (chip mode only) tags the row with its worktree's colour-coded branch,
+// which expands from a bare ⑃ to the branch name on row hover.
+function sessionRow(s: Sess, chip?: WtCluster): string {
   const k = statusKey(s);
   // Prefer the abbreviated title; fall back to the branch/worktree only until
   // Claude sets a title, so idle rows stay identifiable. (Branch is kept in the
@@ -738,17 +867,50 @@ function sessionRow(s: Sess): string {
   // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited)
   const glyph = s.shell ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
   const gcls = s.shell ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
-  return `<div class="srow ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
+  const chipHtml = chip
+    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+    : "";
+  return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
-    <span class="sbranch" title="${esc(label)}">${esc(label)}</span>
+    <span class="sbranch" title="${esc(label)}">${esc(label)}</span>${chipHtml}
     <span class="sctx">${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }
-function extRow(e: ExtSession): string {
+// The full body of a project group (owned sessions + external rows), shaped by the
+// worktree-grouping mode. subheader → ⑃ cluster headers with nested rows; chip →
+// flat rows each tagged with a colour-coded branch chip; off/toplevel → plain flat
+// rows. A single-checkout project (one cluster) always renders flat — nothing to
+// disambiguate. Externals cluster right alongside owned sessions (same checkout dir).
+function groupBody(p: ProjGroup): string {
+  const flat = () => p.sessions.map((s) => sessionRow(s)).join("") + p.externals.map((e) => extRow(e)).join("");
+  if (wtGroup === "subheader") {
+    const cl = clusterByWorktree(p);
+    if (cl.length >= 2) return cl.map((c) => {
+      const col = branchHue(c), n = c.sessions.length + c.externals.length;
+      const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
+      return `<div class="wthead"><span class="wtglyph" style="color:${col}">⑃</span>`
+        + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
+        + `<span class="wtcount">${n}</span></div>`
+        + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
+    }).join("");
+  } else if (wtGroup === "chip") {
+    const cl = clusterByWorktree(p);
+    if (cl.length >= 2) {
+      const byKey = new Map(cl.map((c) => [c.key, c]));
+      return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
+        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
+    }
+  }
+  return flat();
+}
+function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
-  return `<div class="srow extrow ${e.session_id === activeExtId ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
+  const chipHtml = chip
+    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+    : "";
+  return `<div class="srow extrow${chip ? " o3e" : ""} ${e.session_id === activeExtId ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
     <span class="sglyph ${working ? "g-work" : "g-idle"}">${working ? "●" : "○"}</span>
-    <span class="sbranch">${esc(e.name || basename(e.cwd))}</span>
+    <span class="sbranch">${esc(e.name || basename(e.cwd))}</span>${chipHtml}
     <span class="ext-tag" title="Running outside Muster · Claude v${esc(e.version)} · pid ${e.pid}">ext</span>
     <span class="sjump" data-jump="${e.pid}" title="Jump to its terminal ↗">↗</span></div>`;
 }
@@ -756,18 +918,23 @@ function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
   $("projects").innerHTML = projectList().map((p) => {
-    const rows = p.sessions.map(sessionRow).join("") + p.externals.map(extRow).join("");
+    const rows = groupBody(p);
     const total = p.sessions.length + p.externals.length;
     const isFav = FAVORITES.some((f) => f.path === p.path);
+    // Any member folder (a session's workdir or an external's cwd) with uncommitted
+    // changes lights the project's dot — so a dirty worktree marks its parent too.
+    const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
+    const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
+    const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span><span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
+      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
     } else if (isFav) {
       const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
-      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
+      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
     } else {
       // discovered via an external session only — not a saved project
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span><span class="pcount ext">${p.externals.length} ext</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
+      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}<span class="pcount ext">${p.externals.length} ext</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
     }
     return `<div class="pgroup" draggable="true" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
   }).join("");
@@ -1016,8 +1183,9 @@ function wsetHtml(s: Sess): string {
   // The diff half is only worth drawing when something is actually uncommitted —
   // a clean tree that's 5 behind still needs the branch/sync row below.
   const diff = dirty
-    ? `<div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span></div>
-    <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`
+    ? `<div class="wpeek" data-diff="${esc(s.workdir)}" data-difftitle="${esc(s.project + (s.branch ? " · " + s.branch : ""))}" title="Open the uncommitted diff">
+      <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span><span class="wpeek-cue">⤢</span></div>
+      <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div></div>`
     : "";
   const sync = g.upstream
     ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} — as of the last fetch">${
@@ -1053,6 +1221,72 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
   </div>`;
 }
+
+// ---------- working-set diff viewer ----------
+// Clicking the +N −M card opens a read-only peek at the uncommitted diff. The
+// backend (git_diff) hands us one combined unified-diff patch; parsePatch turns it
+// into files/hunks (in ./diff, unit-tested there). Rendering stays here, in the DOM.
+const DSTAT: Record<DiffFile["status"], [string, string]> = {
+  modified: ["M", "s-mod"], added: ["A", "s-add"], deleted: ["D", "s-del"], renamed: ["R", "s-ren"],
+};
+let diffOpen = false;
+// Keyed by folder (workdir/cwd), not session id, so the same viewer serves Muster's
+// own sessions and read-only external ones alike — both are just a git working tree.
+async function openDiff(workdir: string, title: string) {
+  if (!workdir) return;
+  diffOpen = true;
+  $("scrim").classList.add("show");
+  $("diffDlg").classList.add("show");
+  $("diffTitle").textContent = title || basename(workdir);
+  $("diffSub").textContent = "reading working tree…";
+  $("diffBody").innerHTML = `<div class="diff-empty">Reading the working tree…</div>`;
+  try {
+    const res = await invoke<{ patch: string; truncated: boolean } | null>("git_diff", { workdir });
+    if (!diffOpen) return; // closed while the diff was loading
+    renderDiffBody(res ? parsePatch(res.patch) : [], !!res?.truncated);
+  } catch (e) {
+    if (!diffOpen) return;
+    $("diffSub").textContent = "";
+    $("diffBody").innerHTML = `<div class="diff-empty">Couldn't read the diff.<br><span class="mono">${esc(String(e))}</span></div>`;
+  }
+}
+function closeDiff() {
+  diffOpen = false;
+  $("diffDlg").classList.remove("show");
+  if (!$("palette").classList.contains("show") && !$("wtDlg").classList.contains("show")) $("scrim").classList.remove("show");
+}
+function renderDiffBody(files: DiffFile[], truncated: boolean) {
+  const tot = files.reduce((a, f) => ({ add: a.add + f.added, rem: a.rem + f.removed }), { add: 0, rem: 0 });
+  $("diffSub").innerHTML = files.length
+    ? `<span class="add">+${tot.add}</span> <span class="del">−${tot.rem}</span> · ${files.length} file${files.length === 1 ? "" : "s"}`
+    : "";
+  if (!files.length) { $("diffBody").innerHTML = `<div class="diff-empty">No uncommitted changes to show.</div>`; return; }
+  const sections = files.map((f, i) => {
+    const [glyph, cls] = DSTAT[f.status];
+    const name = f.status === "renamed" && f.oldPath
+      ? `<span class="d-old">${esc(f.oldPath)}</span><span class="d-arr">→</span>${esc(f.path)}`
+      : esc(f.path);
+    const counts = f.binary ? `<span class="d-bin">binary</span>`
+      : `<span class="add">+${f.added}</span> <span class="del">−${f.removed}</span>`;
+    const body = f.binary
+      ? `<div class="d-binbody">Binary file — no textual diff.</div>`
+      : f.hunks.map(hunkHtml).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
+    return `<div class="dfile" data-fi="${i}">
+      <div class="dfhead" data-dtoggle="${i}"><span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${name}</span><span class="dcount">${counts}</span></div>
+      <div class="dfbody">${body}</div></div>`;
+  }).join("");
+  const note = truncated ? `<div class="diff-trunc">Diff truncated — too large to show in full. Open a terminal for the complete diff.</div>` : "";
+  $("diffBody").innerHTML = sections + note;
+}
+function hunkHtml(h: DiffHunk): string {
+  const rows = h.lines.map((l) => {
+    const sign = l.kind === "add" ? "+" : l.kind === "del" ? "−" : "";
+    return `<div class="dline ${l.kind}"><span class="ln">${l.oldNo ?? ""}</span><span class="ln">${l.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${esc(l.text)}</span></div>`;
+  }).join("");
+  const ctx = h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : "";
+  return `<div class="dhunk"><div class="dhh">⋯${ctx}</div>${rows}</div>`;
+}
+
 function timelineHtml(s: Sess): string {
   const acts = s.activity.slice(0, 8);
   if (!acts.length) return `<div><div class="lab" style="margin-bottom:6px">Activity</div><div class="insp-empty" style="padding:12px 0">No activity yet.</div></div>`;
@@ -1197,6 +1431,7 @@ function renderAll() {
     renderInspector(s); renderHeader(s);
   }
   updateTray();
+  reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
 }
 
 // ---------- debug console ----------
@@ -1233,7 +1468,8 @@ function dbgSnapshot() {
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
       lastEvent: s.lastEvent, external: s.external, branch: s.branch, workdir: s.workdir,
     })),
-    externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status })),
+    externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
+    dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),
     log: dbgLog.slice(-250),
   };
 }
@@ -1554,13 +1790,15 @@ document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   if (!t.closest("#colorPop, .pdot, .rm-dot")) closeColorPop();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
+  if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-ext],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-ext],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
+  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
   else if (el.dataset.wt) openWorktreeSession(el.dataset.wt, el.dataset.wtbranch || "");
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
@@ -1653,6 +1891,159 @@ $("enginePop").addEventListener("click", (e) => {
   if (!b) return;
   setEngine(b.dataset.engine as Engine);
   closeEnginePop();
+});
+
+// ---------- caffeinate (keep-awake) ----------
+// The top-bar split button drives a macOS `caffeinate` power assertion. The icon
+// toggles the last-used preset (one click); the caret opens the picker. Three
+// kinds of preset:
+//   • static  — fixed flags, on until you stop it (display / system / full)
+//   • timer   — a chosen duration (15m/1h/2h/4h), auto-off when it elapses
+//   • agents  — dynamic: hold the Mac awake ONLY while sessions are busy, and
+//               release when the fleet goes dormant; re-arms when work resumes
+// "Armed" (the user turned it on) is distinct from "asserting" (a caffeinate
+// child is actually running right now). For the agent mode those differ: armed
+// but idle shows the cup lit without steam; asserting adds the steam + glow.
+// reconcileCaf() is the single choke point — called on every renderAll(), it
+// diffs the desired flags against what's running and only pokes the backend on a
+// real change (same guarded-invoke pattern as updateTray).
+// `caffeinate` is a macOS binary with no Windows equivalent wired up yet, so the
+// whole control is hidden there (see initCaf) and reconcileCaf() bails out —
+// otherwise every renderAll() would fire an invoke that can only ever error.
+const IS_WINDOWS = navigator.userAgent.includes("Windows");
+type CafKind = "static" | "timer" | "agents";
+interface CafPreset { id: string; kind: CafKind; label: string; desc: string; glyph: string; flags?: string[] }
+const CAF_PRESETS: CafPreset[] = [
+  { id: "display", kind: "static", label: "Keep display awake", desc: "Screen + system stay on",     glyph: "☀", flags: ["-d"] },
+  { id: "system",  kind: "static", label: "Keep system awake",  desc: "Runs on; screen may sleep",   glyph: "⏻", flags: ["-i"] },
+  { id: "full",    kind: "static", label: "Fully caffeinated",  desc: "Display, disk & system",      glyph: "✺", flags: ["-dimsu"] },
+  { id: "timer",   kind: "timer",  label: "Timed",              desc: "Stay awake, then auto-off",   glyph: "◷" },
+  { id: "agents",  kind: "agents", label: "Until agents idle",  desc: "Awake only while agents work", glyph: "⟳" },
+];
+const CAF_DURATIONS: { sec: number; label: string }[] = [
+  { sec: 900, label: "15m" }, { sec: 3600, label: "1h" }, { sec: 7200, label: "2h" }, { sec: 14400, label: "4h" },
+];
+const cafPreset = (id: string): CafPreset => CAF_PRESETS.find((p) => p.id === id) || CAF_PRESETS[0];
+let cafPresetId = localStorage.getItem("cc-caffeinate") || CAF_PRESETS[0].id;
+if (!CAF_PRESETS.some((p) => p.id === cafPresetId)) cafPresetId = CAF_PRESETS[0].id;
+let cafTimerSec = parseInt(localStorage.getItem("cc-caf-timer") || "", 10) || 3600;
+if (!CAF_DURATIONS.some((d) => d.sec === cafTimerSec)) cafTimerSec = 3600;
+// agents mode: also count "waiting on you" (permission prompt / your turn) as
+// busy, so an unattended run's prompt keeps the screen up. User-toggled switch.
+let cafAgentsAwait = localStorage.getItem("cc-caf-await") !== "0";
+let cafArmed = false;         // the user turned it on
+let cafAssertKey = "";        // flags currently handed to the backend ("" = off)
+let cafTimerHandle: number | null = null;
+
+function cafPersist() {
+  localStorage.setItem("cc-caffeinate", cafPresetId);
+  localStorage.setItem("cc-caf-timer", String(cafTimerSec));
+  localStorage.setItem("cc-caf-await", cafAgentsAwait ? "1" : "0");
+}
+// Is any real (non-shell) session doing work worth staying awake for?
+function cafAgentsBusy(): boolean {
+  for (const s of sessions.values()) {
+    if (s.shell || s.phase === "ended") continue;
+    if (s.phase === "working" || s.phase === "thinking") return true;
+    if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
+  }
+  return false;
+}
+// The flags we WANT running now, or null for "assert nothing".
+function cafDesiredFlags(): string[] | null {
+  if (!cafArmed) return null;
+  const p = cafPreset(cafPresetId);
+  if (p.kind === "agents") return cafAgentsBusy() ? ["-i"] : null;
+  if (p.kind === "timer") return ["-di", "-t", String(cafTimerSec)];
+  return p.flags ?? null;
+}
+function cafArmTimer() {
+  if (cafTimerHandle !== null) { clearTimeout(cafTimerHandle); cafTimerHandle = null; }
+  if (cafArmed && cafPreset(cafPresetId).kind === "timer") {
+    cafTimerHandle = window.setTimeout(() => { cafArmed = false; reconcileCaf(); toast("Caffeinate ended"); }, cafTimerSec * 1000);
+  }
+}
+function reconcileCaf() {
+  if (IS_WINDOWS) return; // control hidden; the backend command only errors there
+  const flags = cafDesiredFlags();
+  const key = flags ? flags.join(" ") : "";
+  if (key !== cafAssertKey) {
+    cafAssertKey = key;
+    invoke("set_caffeinate", { active: !!flags, flags: flags ?? [] }).catch((e) => { cafAssertKey = ""; toast("caffeinate: " + e); });
+  }
+  renderCaf();
+}
+function renderCaf() {
+  const p = cafPreset(cafPresetId);
+  $("caf").classList.toggle("on", cafArmed);
+  $("caf").classList.toggle("asserting", cafAssertKey !== "");
+  $("cafMain").title = !cafArmed ? `Keep this Mac awake · ${p.label}`
+    : p.kind === "agents" ? (cafAssertKey ? "Awake — agents are working" : "Armed — sleeps until agents work")
+    : p.kind === "timer" ? `Awake · ${cafDurLabel(cafTimerSec)} timer — click to stop`
+    : `Awake · ${p.label} — click to stop`;
+}
+const cafDurLabel = (sec: number) => (CAF_DURATIONS.find((d) => d.sec === sec) || { label: sec + "s" }).label;
+
+// user actions -------------------------------------------------------------
+function cafToggle() { cafArmed = !cafArmed; cafPersist(); cafArmTimer(); reconcileCaf(); dlog("info", `caffeinate ${cafArmed ? "on · " + cafPresetId : "off"}`); }
+function cafPick(id: string) { cafPresetId = id; cafArmed = true; cafPersist(); cafArmTimer(); reconcileCaf(); dlog("info", `caffeinate on · ${id}`); }
+function cafStop() { cafArmed = false; cafPersist(); cafArmTimer(); reconcileCaf(); }
+function cafSetDuration(sec: number) { cafTimerSec = sec; cafPresetId = "timer"; cafArmed = true; cafPersist(); cafArmTimer(); reconcileCaf(); fillCafPop(); }
+function cafSetAwait(v: boolean) { cafAgentsAwait = v; cafPersist(); reconcileCaf(); fillCafPop(); }
+
+function fillCafPop() {
+  const rows = CAF_PRESETS.map((p) => {
+    const active = cafArmed && p.id === cafPresetId;
+    const last = !cafArmed && p.id === cafPresetId; // what a plain click would use
+    let right = "";
+    if (p.kind === "static") right = `<span class="mp-flags">${esc((p.flags ?? []).join(" "))}</span>`;
+    else if (p.kind === "agents") right = `<span class="mp-flags">-i</span>`;
+    const item = `<button class="mp-item ${active ? "on" : last ? "cur" : ""}" data-caf="${p.id}">`
+      + `<span class="mp-ic">${p.glyph}</span>`
+      + `<span class="mp-main"><span class="mp-l">${esc(p.label)}</span><span class="mp-s">${esc(p.desc)}</span></span>`
+      + right + `</button>`;
+    let sub = "";
+    if (p.kind === "timer") {
+      sub = `<div class="caf-sub caf-durs">` + CAF_DURATIONS.map((d) =>
+        `<button class="caf-dur ${d.sec === cafTimerSec ? "on" : ""}" data-cafdur="${d.sec}">${d.label}</button>`).join("") + `</div>`;
+    } else if (p.kind === "agents") {
+      sub = `<div class="caf-sub caf-switch-row">`
+        + `<span class="caf-sw-lbl">Stay awake while agents await you</span>`
+        + `<button class="caf-switch ${cafAgentsAwait ? "on" : ""}" role="switch" aria-checked="${cafAgentsAwait}" data-cafawait="1"><span class="caf-knob"></span></button></div>`;
+    }
+    return `<div class="caf-opt">${item}${sub}</div>`;
+  }).join("");
+  const off = cafArmed
+    ? `<div class="mp-sep"></div><button class="mp-item mp-off" data-caf="off"><span class="mp-ic">⏹</span><span class="mp-main"><span class="mp-l">Stop caffeinate</span></span></button>`
+    : "";
+  $("cafPop").innerHTML = rows + off;
+}
+function openCafPop() {
+  const r = $("caf").getBoundingClientRect();
+  const pop = $("cafPop");
+  fillCafPop();
+  const w = 260;
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+  pop.style.top = (r.bottom + 6) + "px";
+  pop.style.bottom = "auto";
+  pop.classList.add("show");
+}
+function closeCafPop() { $("cafPop").classList.remove("show"); }
+$("cafMain").addEventListener("click", (e) => { e.stopPropagation(); closeCafPop(); cafToggle(); });
+$("cafCaret").addEventListener("click", (e) => { e.stopPropagation(); $("cafPop").classList.contains("show") ? closeCafPop() : openCafPop(); });
+$("cafPop").addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  // Sub-controls rebuild the popover (fillCafPop), which detaches the clicked
+  // node — so stop the event before it reaches the document outside-click
+  // handler, which would then see a detached target and close the popover.
+  const dur = t.closest<HTMLElement>("[data-cafdur]");
+  if (dur) { e.stopPropagation(); cafSetDuration(+dur.dataset.cafdur!); return; } // keep open — sub-control
+  if (t.closest("[data-cafawait]")) { e.stopPropagation(); cafSetAwait(!cafAgentsAwait); return; } // keep open — sub-control
+  const b = t.closest<HTMLElement>("[data-caf]");
+  if (!b) return;
+  const id = b.dataset.caf!;
+  if (id === "off") cafStop(); else cafPick(id);
+  closeCafPop();
 });
 
 // Reactor click → jump straight to the longest-waiting session, or open a picker
@@ -1802,7 +2193,13 @@ $("wtGo").addEventListener("click", wtCreate);
 $("wtCancel").addEventListener("click", closeWt);
 $("wtMain").addEventListener("click", () => { if (!wtCtx) return; const { project, repoDir } = wtCtx; closeWt(); launch(project, repoDir, { colorKey: repoDir }); });
 $("wtBranch").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); wtCreate(); } else if (e.key === "Escape") closeWt(); });
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); });
+$("diffClose").addEventListener("click", closeDiff);
+// Collapse / expand a file section by clicking its header.
+$("diffBody").addEventListener("click", (e) => {
+  const h = (e.target as HTMLElement).closest<HTMLElement>("[data-dtoggle]");
+  if (h) h.parentElement!.classList.toggle("collapsed");
+});
 $("palInput").addEventListener("input", refreshPal);
 $("palInput").addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
@@ -1829,6 +2226,7 @@ window.addEventListener("keydown", (e) => {
   else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); bumpFont(0.5); }
   else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }
   else if (meta && e.key === "0") { e.preventDefault(); termFontSize = 12.5; applyFontSize(); toast("Terminal font 12.5px"); }
+  else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
 });
 new ResizeObserver(() => refit()).observe($("terminals"));
 
@@ -1914,6 +2312,28 @@ setTimeout(() => checkForUpdates(false), 3000);
 // either way ("you're on the latest version"), so the menu item always answers.
 listen("tray-check-updates", () => { void checkForUpdates(true); });
 
+// Cmd+Q guard. Cmd+Q is bound to our own menu item in the backend (macOS doesn't
+// reliably surface the OS quit as a Tauri event — see tauri#9198), so the keystroke
+// arrives here as `quit-requested` rather than tearing the app down. We only nag
+// when something would actually be lost — an idle Muster quits immediately, keeping
+// the Cmd+Q muscle memory intact.
+listen("quit-requested", async () => {
+  const live = [...sessions.values()].filter((s) => s.phase !== "ended");
+  const agents = live.filter((s) => !s.shell).length;
+  const terms = live.filter((s) => s.shell).length;
+  if (agents + terms === 0) { await invoke("confirm_quit"); return; }
+  const parts: string[] = [];
+  if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
+  if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
+  const ok = await ask(`${parts.join(" and ")} still running — quitting ends ${agents + terms === 1 ? "it" : "them"}.`, {
+    title: "Quit Muster?",
+    kind: "warning",
+    okLabel: "Quit",
+    cancelLabel: "Cancel",
+  });
+  if (ok) await invoke("confirm_quit");
+});
+
 // ---------- debug console wiring ----------
 $("dbgBtn").addEventListener("click", () => toggleDbg());
 $("dbgClose").addEventListener("click", () => toggleDbg(false));
@@ -1972,6 +2392,11 @@ setInterval(() => {
 refreshExternals();
 setInterval(refreshExternals, 3000);
 
+// keep the sidebar's "uncommitted changes" dot (and the external diff card) honest
+// for every project at once — s.git alone only covers the active session.
+refreshDirtyStates();
+setInterval(refreshDirtyStates, 5000);
+
 // keep each session's branch label honest — re-read the real HEAD so switching
 // branches inside a session (or a worktree) is reflected instead of the stale
 // creation-time name.
@@ -1979,4 +2404,10 @@ setInterval(refreshBranches, 4000);
 
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
+// No `caffeinate` on Windows — drop the control rather than leave a button whose
+// every click reports an error. Its listeners stay wired but unreachable.
+if (IS_WINDOWS) $("caf").style.display = "none";
+// caffeinate always starts off (its -w guard died with the last run); renderAll's
+// reconcileCaf() paints the button. Note this is the ONE place agent-mode could
+// auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
 renderAll();
