@@ -81,6 +81,17 @@ fn run_telemetry_server(server: tiny_http::Server, app: AppHandle) {
             if !data.is_object() {
                 data = serde_json::json!({});
             }
+            // Keep Claude's *runtime* id before forcing ours onto the payload. It
+            // rotates on /clear, /compact and /resume — and each rotation starts a
+            // NEW transcript file. So the runtime id, not our stable launch id, is
+            // what `--resume` must target; the frontend records it for restore.
+            // Routing still uses `session_id` (ours) and is unaffected.
+            if let Some(rt) = data.get("session_id").and_then(|v| v.as_str()) {
+                if rt != sid {
+                    let rt = rt.to_string();
+                    data["claude_session_id"] = serde_json::Value::String(rt);
+                }
+            }
             data["session_id"] = serde_json::Value::String(sid.clone());
         }
 
@@ -326,8 +337,16 @@ fn spawn_claude(
     workdir: String,
     rows: u16,
     cols: u16,
+    resume: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
+    // A resume must land in the session's ORIGINAL cwd: Claude looks the id up in
+    // `~/.claude/projects/<enc(cwd)>/`, so resuming from elsewhere fails with "no
+    // conversation found". Creating the dir would silently produce that failure
+    // against an empty project, so refuse up front with something actionable.
+    if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("can't resume: {workdir} no longer exists"));
+    }
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
@@ -339,8 +358,20 @@ fn spawn_claude(
 
     let claude = resolve_claude();
     let mut cmd = CommandBuilder::new(&claude);
-    cmd.arg("--session-id");
-    cmd.arg(&session_id);
+    // `--resume` and `--session-id` are mutually exclusive — resume adopts the
+    // stored id and ignores ours — so this is either/or, never both. `--settings`
+    // stays keyed to OUR launch uuid either way, so every hook still POSTs the
+    // `X-CC-Session` header the frontend routes by, whatever id Claude runs under.
+    match &resume {
+        Some(prev) => {
+            cmd.arg("--resume");
+            cmd.arg(prev);
+        }
+        None => {
+            cmd.arg("--session-id");
+            cmd.arg(&session_id);
+        }
+    }
     cmd.arg("--settings");
     cmd.arg(&settings_path);
     cmd.cwd(&workdir);
@@ -529,8 +560,12 @@ fn spawn_ghostty(
     workdir: String,
     accent: String,
     title: String,
+    resume: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
+    if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("can't resume: {workdir} no longer exists"));
+    }
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
@@ -544,8 +579,17 @@ fn spawn_ghostty(
     cmd.arg(format!("--working-directory={workdir}"));
     cmd.arg("-e");
     cmd.arg(resolve_claude());
-    cmd.arg("--session-id");
-    cmd.arg(&session_id);
+    // Either/or, never both — see the note in `spawn_claude`.
+    match &resume {
+        Some(prev) => {
+            cmd.arg("--resume");
+            cmd.arg(prev);
+        }
+        None => {
+            cmd.arg("--session-id");
+            cmd.arg(&session_id);
+        }
+    }
     cmd.arg("--settings");
     cmd.arg(&settings_path);
     for (k, v) in std::env::vars() {
@@ -600,6 +644,7 @@ fn spawn_external_terminal(
     _workdir: String,
     _engine: String,
     _title: String,
+    _resume: Option<String>,
 ) -> Result<(), String> {
     Err("external terminals aren't supported on Windows yet — use the embedded terminal".to_string())
 }
@@ -617,8 +662,12 @@ fn spawn_external_terminal(
     workdir: String,
     engine: String,
     title: String,
+    resume: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
+    if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("can't resume: {workdir} no longer exists"));
+    }
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
@@ -629,13 +678,17 @@ fn spawn_external_terminal(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let script = dir.join(format!("run-{session_id}.command"));
 
+    // Either/or, never both — see the note in `spawn_claude`.
+    let id_args = match &resume {
+        Some(prev) => format!("--resume {}", sh_quote(prev)),
+        None => format!("--session-id {}", sh_quote(&session_id)),
+    };
     let body = format!(
-        "#!/bin/zsh\n# Muster session: {title}\nexport PATH={path}\ncd {wd} || exit 1\nexec {claude} --session-id {sid} --settings {settings}\n",
+        "#!/bin/zsh\n# Muster session: {title}\nexport PATH={path}\ncd {wd} || exit 1\nexec {claude} {id_args} --settings {settings}\n",
         title = title.replace(['\n', '\r'], " "),
         path = sh_quote(&augmented_path()),
         wd = sh_quote(&workdir),
         claude = sh_quote(&claude),
-        sid = sh_quote(&session_id),
         settings = sh_quote(&settings_path),
     );
     std::fs::write(&script, body).map_err(|e| format!("write launcher: {e}"))?;
@@ -1813,6 +1866,139 @@ struct TranscriptMsg {
     text: String,
 }
 
+/// Claude stores a project's transcripts under `~/.claude/projects/<enc>/`, where
+/// `<enc>` is the cwd with every non-ASCII-alphanumeric char replaced by `-`.
+fn project_transcript_dir(cwd: &str) -> Option<std::path::PathBuf> {
+    let home = home_dir();
+    if home.is_empty() {
+        return None;
+    }
+    let enc: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    Some(std::path::Path::new(&home).join(".claude").join("projects").join(enc))
+}
+
+/// A finished (or at least not-currently-owned) session found on disk, offered to
+/// the user as restorable via `claude --resume <id>`.
+#[derive(serde::Serialize)]
+struct PastSession {
+    session_id: String,
+    title: String,
+    last_prompt: String,
+    mtime: u64,
+}
+
+/// Enumerate the transcripts Claude has written for `workdir`, newest first, so
+/// the frontend can label restorable sessions with something human-readable.
+///
+/// Titles come from the `ai-title` record Claude maintains; it is rewritten as the
+/// session evolves, so the LAST occurrence wins. That record type is internal to
+/// Claude Code and documented as unstable across releases, hence the fallback
+/// chain: `ai-title` → `last-prompt` → first user message → "" (caller labels it).
+/// Only the tail is scanned — `ai-title` recurs throughout the file, so a bounded
+/// read reliably catches the latest one without paying for a 4MB transcript.
+#[tauri::command]
+fn list_past_sessions(workdir: String) -> Result<Vec<PastSession>, String> {
+    let dir = match project_transcript_dir(&workdir) {
+        Some(d) => d,
+        None => return Err("no home directory".to_string()),
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(vec![]), // project never had a session — not an error
+    };
+
+    let mut out: Vec<PastSession> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let session_id = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let (title, last_prompt) = match transcript_meta(&path) {
+            Some(m) => m,
+            None => continue,
+        };
+        out.push(PastSession { session_id, title, last_prompt, mtime });
+    }
+
+    out.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    Ok(out)
+}
+
+/// Pull `(title, last_prompt)` out of one transcript. Split out of
+/// `list_past_sessions` so it can be tested against a fixture file without
+/// touching `$HOME` (which the parallel test threads share).
+fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    const CAP: u64 = 512 * 1024;
+    let mut reader = BufReader::new(file);
+    if len > CAP {
+        reader.seek(SeekFrom::Start(len - CAP)).ok()?;
+        let mut discard = String::new(); // drop the partial first line
+        let _ = reader.read_line(&mut discard);
+    }
+
+    let (mut title, mut last_prompt, mut first_user) = (String::new(), String::new(), String::new());
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+            // Both records recur through the file and are rewritten as the session
+            // evolves — the LAST occurrence is the current one, so keep overwriting.
+            "ai-title" => {
+                if let Some(s) = v.get("aiTitle").and_then(|x| x.as_str()) {
+                    title = s.trim().to_string();
+                }
+            }
+            "last-prompt" => {
+                if let Some(s) = v.get("lastPrompt").and_then(|x| x.as_str()) {
+                    last_prompt = s.trim().to_string();
+                }
+            }
+            "user" if first_user.is_empty() => {
+                if let Some(serde_json::Value::String(s)) =
+                    v.get("message").and_then(|m| m.get("content"))
+                {
+                    first_user = s.trim().chars().take(200).collect();
+                }
+            }
+            _ => {}
+        }
+    }
+    if title.is_empty() {
+        title = if !last_prompt.is_empty() { last_prompt.clone() } else { first_user };
+    }
+    if title.chars().count() > 120 {
+        title = title.chars().take(120).collect::<String>() + "…";
+    }
+    Some((title, last_prompt))
+}
+
 /// Read a read-only slice of an external session's transcript. The transcript
 /// lives at `~/.claude/projects/<enc>/<session_id>.jsonl`, where `<enc>` is the
 /// cwd with every non-alphanumeric char replaced by `-`. Only the tail (≤512KB)
@@ -1821,18 +2007,8 @@ struct TranscriptMsg {
 #[tauri::command]
 fn read_transcript(cwd: String, session_id: String, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let home = home_dir();
-    if home.is_empty() {
-        return Err("no home directory".to_string());
-    }
-    let enc: String = cwd
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let path = std::path::Path::new(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&enc)
+    let path = project_transcript_dir(&cwd)
+        .ok_or_else(|| "no home directory".to_string())?
         .join(format!("{session_id}.jsonl"));
     let file = std::fs::File::open(&path).map_err(|e| format!("transcript not found: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
@@ -2137,6 +2313,7 @@ pub fn run() {
             list_external_sessions,
             focus_external_session,
             read_transcript,
+            list_past_sessions,
             find_project_icon,
             write_debug_file,
             update_tray,
@@ -2206,6 +2383,95 @@ mod tests {
     fn git_diff_returns_none_outside_a_repo() {
         let dir = scratch_dir();
         assert!(git_diff(dir.to_str().unwrap().to_string()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `ai-title` and `last-prompt` are rewritten repeatedly as a session evolves,
+    /// so the newest one at the end of the file has to win over the earlier ones.
+    #[test]
+    fn transcript_meta_takes_the_last_title_and_prompt() {
+        let dir = scratch_dir();
+        let path = dir.join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","message":{"content":"the very first thing I asked"}}"#, "\n",
+                r#"{"type":"ai-title","aiTitle":"An early guess"}"#, "\n",
+                r#"{"type":"last-prompt","lastPrompt":"an early prompt"}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#, "\n",
+                r#"{"type":"ai-title","aiTitle":"What it settled on"}"#, "\n",
+                r#"{"type":"last-prompt","lastPrompt":"the latest prompt"}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let (title, last) = transcript_meta(&path).unwrap();
+        assert_eq!(title, "What it settled on");
+        assert_eq!(last, "the latest prompt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The record types are internal to Claude Code and documented as unstable, so a
+    /// transcript without `ai-title` must still yield something human-readable.
+    #[test]
+    fn transcript_meta_falls_back_when_no_ai_title() {
+        let dir = scratch_dir();
+
+        // No ai-title → the last prompt stands in.
+        let a = dir.join("a.jsonl");
+        std::fs::write(
+            &a,
+            concat!(
+                r#"{"type":"user","message":{"content":"opening message"}}"#, "\n",
+                r#"{"type":"last-prompt","lastPrompt":"what I asked most recently"}"#, "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(transcript_meta(&a).unwrap().0, "what I asked most recently");
+
+        // Neither → the first user message stands in.
+        let b = dir.join("b.jsonl");
+        std::fs::write(&b, "{\"type\":\"user\",\"message\":{\"content\":\"opening message\"}}\n").unwrap();
+        assert_eq!(transcript_meta(&b).unwrap().0, "opening message");
+
+        // Garbage lines are skipped, not fatal — a torn write must not lose the title.
+        let c = dir.join("c.jsonl");
+        std::fs::write(
+            &c,
+            concat!("not json at all\n", r#"{"type":"ai-title","aiTitle":"Survived"}"#, "\n", "{\"truncated\":"),
+        )
+        .unwrap();
+        assert_eq!(transcript_meta(&c).unwrap().0, "Survived");
+
+        // An empty transcript yields an empty title (the frontend labels it).
+        let d = dir.join("d.jsonl");
+        std::fs::write(&d, "").unwrap();
+        assert_eq!(transcript_meta(&d).unwrap().0, "");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A transcript bigger than the 512KB tail cap must still surface the newest
+    /// title — the whole point of scanning the tail rather than the head.
+    #[test]
+    fn transcript_meta_reads_the_tail_of_a_large_transcript() {
+        let dir = scratch_dir();
+        let path = dir.join("big.jsonl");
+        let filler = format!(
+            "{}\n",
+            serde_json::json!({ "type": "assistant", "message": { "content": "x".repeat(4000) } })
+        );
+        let mut body = String::new();
+        body.push_str(r#"{"type":"ai-title","aiTitle":"Stale head title"}"#);
+        body.push('\n');
+        while body.len() < 900 * 1024 {
+            body.push_str(&filler);
+        }
+        body.push_str(r#"{"type":"ai-title","aiTitle":"Fresh tail title"}"#);
+        body.push('\n');
+        std::fs::write(&path, &body).unwrap();
+
+        assert!(body.len() as u64 > 512 * 1024, "fixture must exceed the tail cap");
+        assert_eq!(transcript_meta(&path).unwrap().0, "Fresh tail title");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

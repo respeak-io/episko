@@ -610,6 +610,21 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .ext-jump-btn { margin-top: 4px; height: 32px; border-radius: 8px; cursor: pointer; font: 700 12px var(--font-ui); color: #16121f; border: 0; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); box-shadow: 0 5px 14px -8px var(--accent-glow); }
 .ext-jump-btn:hover { filter: brightness(1.06); }
 .ext-note { font-size: 10.5px; line-height: 1.6; color: var(--muted-2); }
+.ext-note.warn { color: var(--st-attention); }
+.ext-forget-btn { height: 28px; border-radius: 8px; cursor: pointer; font: 600 11px var(--font-ui); color: var(--muted-2); background: var(--surface-2); border: 1px solid var(--hair); }
+.ext-forget-btn:hover { color: var(--st-attention); border-color: var(--st-attention); }
+
+/* ---------- dormant (restorable) sessions ---------- */
+/* A session from a previous run. Deliberately quieter than a live row — dimmed,
+   with the ended glyph — so "was running" never reads as "is running". */
+.srow.pastrow { grid-template-columns: 14px 1fr auto; opacity: .62; }
+.srow.pastrow:hover, .srow.pastrow.active { opacity: 1; }
+.srow.pastrow .sbranch { font-style: italic; }
+.past-tag { font: 600 8.5px var(--font-mono); letter-spacing: .04em; color: var(--muted-2); white-space: nowrap; }
+.srow.pastrow.active .past-tag { color: var(--accent-ink); }
+.srow.pastrow:hover .past-tag { opacity: 0; }          /* the ✕ takes this slot on hover */
+.srow.pastrow.busy .sglyph { color: var(--st-attention); }
+.srow.pastrow.busy .past-tag { color: var(--st-attention); }
 
 /* ---------- debug console ---------- */
 .dbg-btn { position: relative; flex: none; width: 22px; height: 19px; display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); opacity: .7; transition: opacity .15s, border-color .15s; }

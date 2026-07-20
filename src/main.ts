@@ -146,6 +146,11 @@ interface DiffStat {
 interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
 interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
+  // resumeId = the id `claude --resume` must target. It starts equal to `id` (we
+  // launch with --session-id id) but tracks Claude's *runtime* id, which rotates
+  // on /clear, /compact and /resume — each rotation opening a NEW transcript file.
+  // Restoring `id` after a compaction would resurrect the pre-compaction thread.
+  resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null; subagents: number;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
@@ -217,8 +222,67 @@ interface ExtSession {
   repo_root?: string | null; branch?: string | null;
 }
 let externals: ExtSession[] = [];
-let activeExtId: string | null = null;      // session_id of the external session being mirrored
-let activeExtPid: number | null = null;     // its pid — stable across session_id rotation, used to re-bind
+
+// ---------- restorable sessions ----------
+// Muster's launch uuid IS Claude's --session-id, so every session we launch already
+// has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
+// therefore not about capturing conversation state — Claude already has it — but
+// about remembering which sessions were on screen at quit, and with what identity.
+interface Restorable {
+  id: string;          // the original launch uuid (roster key, stable across restarts)
+  resumeId: string;    // what to hand `claude --resume`
+  project: string; workdir: string; colorKey: string;
+  worktree: string | null; branch: string;
+  title: string;       // last known label; refreshed from the transcript on load
+  lastActivity: number;
+}
+let dormants: Restorable[] = [];
+
+// The roster is "what was open when Muster last closed". Closing a session removes
+// it — an explicit close means done, so only survivors come back. Shell panes are
+// excluded: a login shell has no transcript and nothing to resume.
+function rosterEntry(s: Sess): Restorable {
+  return {
+    id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: s.workdir,
+    colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
+    title: s.title, lastActivity: s.lastActivity,
+  };
+}
+function saveRoster() {
+  const open = [...sessions.values()].filter((s) => !s.shell && s.workdir).map(rosterEntry);
+  // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
+  // restores only some of them doesn't quietly discard the rest.
+  const live = new Set(open.map((r) => r.id));
+  const keep = dormants.filter((d) => !live.has(d.id));
+  localStorage.setItem("cc-restore", JSON.stringify([...open, ...keep].slice(0, 60)));
+}
+// Debounced, but with a ceiling: a busy session emits telemetry continuously, and a
+// pure trailing debounce would reset forever and never write at all. Force a save
+// once the roster has been stale for MAX_STALE regardless of how noisy it is.
+let rosterTimer: number | undefined;
+let rosterSavedAt = Date.now();
+const ROSTER_MAX_STALE = 20000;
+function queueRosterSave() {
+  if (Date.now() - rosterSavedAt > ROSTER_MAX_STALE) { flushRoster(); return; }
+  clearTimeout(rosterTimer);
+  rosterTimer = window.setTimeout(flushRoster, 1500);
+}
+function flushRoster() { clearTimeout(rosterTimer); rosterSavedAt = Date.now(); saveRoster(); }
+// The stage shows exactly ONE thing: a live Muster session (activeId), a live
+// external session mirrored read-only, or a dormant session restorable from a past
+// run. Holding the two read-only kinds in a single discriminated pointer — rather
+// than a flag per kind — is what stops them fighting over the stage on the next
+// render tick (see the note in renderAll).
+//
+// The "ext" kind also carries the session's `pid`, because its `id` is Claude's
+// runtime session_id and that ROTATES on /clear, /compact and /resume. The pid is
+// what stays stable, so refreshExternals re-binds through it instead of dropping
+// the selection (which used to silently jump the sidebar to an unrelated session).
+// Same rule as Sess.resumeId and the telemetry path: hold the stable handle.
+let mirror: { kind: "ext"; id: string; pid: number } | { kind: "past"; id: string } | null = null;
+const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
+const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
+const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 let extTranscriptTimer: number | undefined;
 const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping", "done", ""].includes(e.status);
 
@@ -310,7 +374,7 @@ const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…"
 const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
 
 // ---------- launch ----------
-async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}) {
+async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}) {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
   const accent = accentFor(colorKey);
@@ -338,7 +402,8 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
   }
 
   const s: Sess = {
-    id, project, accent, workdir, colorKey, branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
+    id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
@@ -350,12 +415,16 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
     if (c !== s.title) { s.title = c; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   setActive(id);
-  dlog("info", `launch ${project} · ${id.slice(0, 8)} · ${termEngine}${opts.worktree ? " · worktree" : ""}`);
+  // A restored session takes over its roster entry: drop the dormant row so the
+  // sidebar doesn't show the same conversation twice, live and dormant.
+  if (opts.resume) dormants = dormants.filter((d) => d.resumeId !== opts.resume);
+  queueRosterSave();
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
   try {
-    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project });
-    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80 });
+    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null });
+    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null });
   } catch (e) {
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
     toast("launch failed: " + e);
@@ -402,6 +471,7 @@ function closeSession(id: string) {
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
   sessions.delete(id);
+  flushRoster(); // an explicit close means done — it should not come back on restart
   if (wasActive) {
     activeId = null;
     if (next) { setActive(next.id); return; }
@@ -451,7 +521,7 @@ async function refreshSessionStats(s: Sess) {
   const before = sig(s.git, s.res);
   s.git = git ?? null;
   s.res = res ? { cpu: res.cpu, memMb: res.mem_mb } : null;
-  if (sig(s.git, s.res) !== before && activeId === s.id && !activeExtId) renderInspector(s);
+  if (sig(s.git, s.res) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
 // Re-derive a session's branch label from its live git HEAD, so it reflects the
@@ -485,15 +555,16 @@ async function refreshExternals() {
     // groups by — otherwise ext-only projects would forever show the accent dot.
     // probeIcon dedupes by key, so this hits the backend at most once per repo.
     for (const e of externals) probeIcon(e.repo_root || e.cwd);
-    if (activeExtId) {
+    if (extMirrorId()) {
       // Re-resolve the mirrored session. If its id rotated (/clear·/compact·/resume
       // rewrite ~/.claude/sessions/<pid>.json with a new session_id), re-bind by the
       // stable pid instead of dropping the selection — otherwise the sidebar silently
       // jumps to an unrelated session (and e.g. the ❯ Terminal button then targets it).
-      const e = externals.find((x) => x.session_id === activeExtId)
-        ?? (activeExtPid != null ? externals.find((x) => x.pid === activeExtPid) : undefined);
+      const pid = extMirrorPid();
+      const e = externals.find((x) => x.session_id === extMirrorId())
+        ?? (pid != null ? externals.find((x) => x.pid === pid) : undefined);
       if (e) {
-        activeExtId = e.session_id; activeExtPid = e.pid;
+        mirror = { kind: "ext", id: e.session_id, pid: e.pid };
         renderExtHeader(e); renderExtInspector(e);
       } else {
         // Truly gone — fall back to a Muster session or the empty state.
@@ -524,13 +595,12 @@ async function refreshDirtyStates() {
   }));
   if (!changed) return;
   renderSidebar();
-  if (activeExtId) { const e = externals.find((x) => x.session_id === activeExtId); if (e) renderExtInspector(e); }
+  if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) renderExtInspector(e); }
 }
 function openExternal(sid: string) {
   const e = externals.find((x) => x.session_id === sid);
   if (!e) return;
-  activeExtId = sid;
-  activeExtPid = e.pid;
+  mirror = { kind: "ext", id: sid, pid: e.pid };
   activeId = null;
   for (const x of sessions.values()) x.pane.classList.remove("active");
   ($("empty") as HTMLElement).style.display = "none";
@@ -542,27 +612,129 @@ function openExternal(sid: string) {
   loadTranscript(e, true);
   clearInterval(extTranscriptTimer);
   extTranscriptTimer = window.setInterval(() => {
-    const cur = externals.find((x) => x.session_id === activeExtId);
+    const cur = externals.find((x) => x.session_id === extMirrorId());
     if (cur) loadTranscript(cur, false);
   }, 2500);
 }
 function closeExternalView() {
-  if (activeExtId == null) return;
-  activeExtId = null;
-  activeExtPid = null;
+  if (mirror == null) return;
+  mirror = null;   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
   ($("extPane") as HTMLElement).hidden = true;
+}
+// ---------- dormant (restorable) sessions ----------
+// Clicking a dormant row mirrors its transcript read-only — the same pane an
+// external session uses — so the user can confirm *which* conversation this is
+// before deciding to bring it back.
+function openDormant(id: string) {
+  const d = dormants.find((x) => x.id === id);
+  if (!d) return;
+  mirror = { kind: "past", id };
+  activeId = null;
+  for (const x of sessions.values()) x.pane.classList.remove("active");
+  ($("empty") as HTMLElement).style.display = "none";
+  ($("extPane") as HTMLElement).hidden = false;
+  clearInterval(extTranscriptTimer); // a finished transcript doesn't grow — no polling
+  document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
+  renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
+  $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
+  loadTranscriptInto(d.workdir, d.resumeId, true, () => pastMirrorId() === id);
+}
+function renderPastHeader(d: Restorable) {
+  ($("btnClose") as HTMLButtonElement).hidden = true;
+  $("hProj").textContent = d.project;
+  const hb = $("hBranch"); hb.textContent = "restorable"; hb.hidden = false; hb.classList.add("ext-chip");
+  $("hTitle").textContent = d.title || "";
+  $("hPath").textContent = tilde(d.workdir);
+}
+function renderPastInspector(d: Restorable) {
+  const busy = dormantBusy(d);
+  const pill = $("iPill"); pill.className = "pill idle";
+  $("iPillTxt").textContent = "not running";
+  const action = busy
+    ? `<div class="ext-note warn">This session is running right now — in Muster or another terminal. Resuming it a second time would interleave both conversations into one transcript, so it can't be restored until the other one exits.</div>`
+    : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
+       <div class="ext-note">Claude picks the conversation back up where it left off. It may offer to compact the context first — that's normal for a long session.</div>`;
+  $("inspector").innerHTML = `
+    <div class="ext-card">
+      <div class="ext-hl">· From your last run</div>
+      <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
+      <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
+      ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
+      <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
+      <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
+      ${action}
+      <button class="ext-forget-btn" data-forget="${esc(d.id)}">Remove from list</button>
+      <div class="ext-note">Removing only clears this row from Muster. The conversation stays on disk — <span class="mono">/resume</span> inside any Claude session in this folder always lists them all.</div>
+    </div>`;
+}
+function resumeDormant(id: string) {
+  const d = dormants.find((x) => x.id === id);
+  if (!d) return;
+  if (dormantBusy(d)) { toast("That session is already running"); return; }
+  closeExternalView();
+  launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId });
+}
+function forgetDormant(id: string) {
+  dormants = dormants.filter((x) => x.id !== id);
+  if (pastMirrorId() === id) {
+    closeExternalView();
+    const next = orderedSessions()[0];
+    if (next) setActive(next.id);
+    else ($("empty") as HTMLElement).style.display = "grid";
+  }
+  flushRoster();
+  renderAll();
+}
+// On boot: reconcile the roster against what Claude actually has on disk. An entry
+// with no transcript can't be resumed — a session launched but never prompted never
+// writes one — so it's dropped rather than shown as a row that would fail on click.
+// Titles are refreshed from disk too: `ai-title` beats our in-memory OSC title and,
+// unlike it, exists for sessions launched into an external terminal.
+async function loadDormants() {
+  let roster: Restorable[] = [];
+  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
+  if (!Array.isArray(roster) || !roster.length) return;
+  const live = new Set([...sessions.keys()]);
+  const byDir = new Map<string, Restorable[]>();
+  for (const r of roster) {
+    if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
+    if (live.has(r.id)) continue;
+    if (!r.resumeId) r.resumeId = r.id;
+    const arr = byDir.get(r.workdir);
+    if (arr) arr.push(r); else byDir.set(r.workdir, [r]);
+  }
+  const found: Restorable[] = [];
+  await Promise.all([...byDir.entries()].map(async ([workdir, entries]) => {
+    const past = await invoke<{ session_id: string; title: string; mtime: number }[]>("list_past_sessions", { workdir }).catch(() => []);
+    const byId = new Map(past.map((p) => [p.session_id.toLowerCase(), p]));
+    for (const r of entries) {
+      const hit = byId.get(r.resumeId.toLowerCase());
+      if (!hit) continue; // no transcript → nothing to resume
+      found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.mtime ? hit.mtime * 1000 : r.lastActivity });
+    }
+  }));
+  found.sort((a, b) => b.lastActivity - a.lastActivity);
+  dormants = found;
+  if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
+  flushRoster();
+  renderAll();
 }
 function jumpExternal(pid: number) {
   invoke("focus_external_session", { pid }).catch((e) => toast("jump failed: " + e));
 }
 async function loadTranscript(e: ExtSession, initial: boolean) {
+  await loadTranscriptInto(e.cwd, e.session_id, initial, () => extMirrorId() === e.session_id);
+}
+// `stillCurrent` is re-checked after the await: the user can click away mid-flight,
+// and a late reply must not paint over whatever mirror is on the stage by then.
+async function loadTranscriptInto(cwd: string, sessionId: string, initial: boolean, stillCurrent: () => boolean) {
   try {
-    const msgs = await invoke<{ role: string; text: string }[]>("read_transcript", { cwd: e.cwd, sessionId: e.session_id, limit: 80 });
-    if (activeExtId !== e.session_id) return; // switched away mid-flight
+    const msgs = await invoke<{ role: string; text: string }[]>("read_transcript", { cwd, sessionId, limit: 80 });
+    if (!stillCurrent()) return;
     renderTranscript(msgs, initial);
   } catch (err) {
-    if (activeExtId === e.session_id) $("extBody").innerHTML = `<div class="ext-empty">Couldn't read the transcript.<br><span class="mono">${esc(String(err))}</span></div>`;
+    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Couldn't read the transcript.<br><span class="mono">${esc(String(err))}</span></div>`;
   }
 }
 function renderTranscript(msgs: { role: string; text: string }[], initial: boolean) {
@@ -757,7 +929,11 @@ function applyStatusline(s: Sess, data: any) {
 }
 
 // ---------- rendering ----------
-interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; wtBranch?: string }
+// `dormants` are restorable-from-last-run rows. They hang off the project group
+// rather than the worktree clusters: a dormant session has no live checkout state
+// to cluster by, and pinning them below the live rows keeps the distinction between
+// "running now" and "was running before" visually obvious.
+interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string }
 // A worktree cluster = the sessions of one project that share a checkout dir. Order
 // follows first appearance in the (already-sorted) session list, so the active/
 // attention sort still decides which worktree floats up. The repo-root checkout
@@ -796,17 +972,17 @@ function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
     // Keep the root group only when it carries something — root-checkout rows or a
     // favourite (a launch target). Drops the phantom empty root of a worktree-only repo.
     if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
-    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, wtBranch: c.branch });
+    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch });
   }
   return out;
 }
 function projectList(): ProjGroup[] {
-  const list: ProjGroup[] = FAVORITES.map((f) => ({ name: f.name, path: f.path, accent: accentFor(f.path), sessions: [], externals: [] }));
+  const list: ProjGroup[] = FAVORITES.map((f) => ({ name: f.name, path: f.path, accent: accentFor(f.path), sessions: [], externals: [], dormants: [] }));
   const byName = new Map(list.map((p) => [p.name, p]));
   const byPath = new Map(list.map((p) => [p.path, p]));
   for (const s of sessions.values()) {
     let p = byName.get(s.project) || byPath.get(s.colorKey);
-    if (!p) { p = { name: s.project, path: s.colorKey, accent: accentFor(s.colorKey), sessions: [], externals: [] }; list.push(p); byName.set(s.project, p); byPath.set(s.colorKey, p); }
+    if (!p) { p = { name: s.project, path: s.colorKey, accent: accentFor(s.colorKey), sessions: [], externals: [], dormants: [] }; list.push(p); byName.set(s.project, p); byPath.set(s.colorKey, p); }
     p.sessions.push(s);
   }
   for (const e of externals) {
@@ -814,8 +990,13 @@ function projectList(): ProjGroup[] {
     // repo lands under it (and merges into that repo's favourite when paths match).
     const key = e.repo_root || e.cwd;
     let p = byPath.get(key);
-    if (!p) { p = { name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [] }; list.push(p); byPath.set(key, p); byName.set(p.name, p); }
+    if (!p) { p = { name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [], dormants: [] }; list.push(p); byPath.set(key, p); byName.set(p.name, p); }
     p.externals.push(e);
+  }
+  for (const d of dormants) {
+    let p = byName.get(d.project) || byPath.get(d.colorKey);
+    if (!p) { p = { name: d.project, path: d.colorKey, accent: accentFor(d.colorKey), sessions: [], externals: [], dormants: [] }; list.push(p); byName.set(d.project, p); byPath.set(d.colorKey, p); }
+    p.dormants.push(d);
   }
   // Sort sessions within each project first, then (in toplevel mode) split by
   // worktree so each split group inherits the sorted order, then order the groups.
@@ -914,12 +1095,46 @@ function groupBody(p: ProjGroup): string {
   }
   return flat();
 }
+// Dormant rows always sit below the live ones, outside any worktree cluster.
+function dormantRows(p: ProjGroup): string {
+  return p.dormants.map((d) => dormantRow(d)).join("");
+}
+function dormantRow(d: Restorable): string {
+  const busy = dormantBusy(d);
+  const label = d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
+  const when = relTime(d.lastActivity);
+  const tip = busy
+    ? "This session is running somewhere else right now — resuming it would interleave both transcripts"
+    : `Restore this session · last active ${when}`;
+  return `<div class="srow pastrow${busy ? " busy" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
+    <span class="sglyph g-ended">·</span>
+    <span class="sbranch">${esc(label)}</span>
+    <span class="past-tag">${busy ? "busy" : when}</span>
+    <span class="sclose" data-forget="${d.id}" title="Remove from list — the conversation stays on disk">✕</span></div>`;
+}
+// A session that's live right now must not be offered for restore: Claude doesn't
+// lock the transcript, so a second --resume of the same id silently interleaves
+// both conversations into one file.
+function dormantBusy(d: Restorable): boolean {
+  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
+  return externals.some((e) => e.session_id === d.resumeId);
+}
+function relTime(ms: number): string {
+  const d = Date.now() - ms;
+  if (!(ms > 0) || d < 0) return "—";
+  const m = Math.round(d / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
   const chipHtml = chip
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
-  return `<div class="srow extrow${chip ? " o3e" : ""} ${e.session_id === activeExtId ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
+  return `<div class="srow extrow${chip ? " o3e" : ""} ${e.session_id === extMirrorId() ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
     <span class="sglyph ${working ? "g-work" : "g-idle"}">${working ? "●" : "○"}</span>
     <span class="sbranch">${esc(e.name || basename(e.cwd))}</span>${chipHtml}
     <span class="ext-tag" title="Running outside Muster · Claude v${esc(e.version)} · pid ${e.pid}">ext</span>
@@ -929,7 +1144,7 @@ function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
   $("projects").innerHTML = projectList().map((p) => {
-    const rows = groupBody(p);
+    const rows = groupBody(p) + dormantRows(p);
     const total = p.sessions.length + p.externals.length;
     const isFav = FAVORITES.some((f) => f.path === p.path);
     // Any member folder (a session's workdir or an external's cwd) with uncommitted
@@ -944,8 +1159,11 @@ function renderSidebar() {
       const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
       head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
     } else {
-      // discovered via an external session only — not a saved project
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}<span class="pcount ext">${p.externals.length} ext</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
+      // discovered via an external session or a restorable one only — not a saved project
+      const tail = p.externals.length
+        ? `<span class="pcount ext">${p.externals.length} ext</span>`
+        : `<span class="pcount ext">${p.dormants.length} past</span>`;
+      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
     }
     return `<div class="pgroup" draggable="true" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
   }).join("");
@@ -1022,7 +1240,7 @@ function renderMini() {
         : `data-launch="${esc(p.path)}" data-proj="${esc(p.name)}"`;
       const ic = iconFor(p.path);
       const glyph = ic ? `<img class="rm-icon" src="${ic}" alt="" />` : `<span class="rm-dot"></span>`;
-      const onCls = p.name === activeProj || (activeExtId && p.externals.some((e) => e.session_id === activeExtId)) ? "on" : "";
+      const onCls = p.name === activeProj || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
@@ -1434,8 +1652,11 @@ function renderAll() {
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Muster session's telemetry tick blank the
   // external header/inspector ~1s after clicking it.
-  if (activeExtId) {
-    const e = externals.find((x) => x.session_id === activeExtId);
+  if (pastMirrorId()) {
+    const d = dormants.find((x) => x.id === pastMirrorId());
+    if (d) { renderPastHeader(d); renderPastInspector(d); }
+  } else if (extMirrorId()) {
+    const e = externals.find((x) => x.session_id === extMirrorId());
     if (e) { renderExtHeader(e); renderExtInspector(e); }
   } else {
     const s = activeId ? sessions.get(activeId) ?? null : null;
@@ -1473,7 +1694,7 @@ function renderDbgBadge() {
 function dbgSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
-    version: appVersion, activeId, activeExtId, termEngine, rateLimits: rl, telemetry: telem,
+    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl, telemetry: telem,
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
@@ -1778,7 +1999,17 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   const s = sid ? sessions.get(sid) : undefined;
   if (!s) { telem.dropped++; dlog("warn", `${kind} telemetry for unrouted session ${sid ? sid.slice(0, 8) : "?"} — dropped`); return; }
   telem.routed++;
+  // Claude's own id, preserved by the telemetry server before it forced ours on.
+  // It rotates on /clear, /compact and /resume — and each rotation opens a fresh
+  // transcript — so this, not s.id, is what a later --resume has to target.
+  const rt: string | undefined = data.claude_session_id?.toLowerCase?.();
+  if (rt && rt !== s.resumeId) {
+    dlog("info", `session ${s.id.slice(0, 8)} rotated id → ${rt.slice(0, 8)} (restore now targets it)`);
+    s.resumeId = rt;
+    flushRoster(); // rare and load-bearing — never let a debounce lose this one
+  }
   if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
+  queueRosterSave();
   renderAll();
 });
 // menu-bar (tray) menu → jump to the clicked session
@@ -1805,7 +2036,9 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-ext],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
+  // (and dispatched) ahead of it or the row's own click would swallow them.
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
@@ -1815,7 +2048,10 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
   else if (el.dataset.jump) jumpExternal(+el.dataset.jump);
+  else if (el.dataset.resume) resumeDormant(el.dataset.resume);
+  else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
+  else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
@@ -2075,14 +2311,17 @@ $("inspBtn").addEventListener("click", toggleInsp);
 function activeProjectCtx(): { project: string; path: string } | null {
   // For an external session use its repo root, not the worktree cwd, so launching a
   // session / opening a worktree from it operates on the repo (and groups under it).
-  if (activeExtId) { const e = externals.find((x) => x.session_id === activeExtId); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
+  if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
+  // A dormant session already stores colorKey (the repo key), so it needs no such resolution.
+  if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); if (d) return { project: d.project, path: d.colorKey }; }
   const s = activeId ? sessions.get(activeId) : null;
   return s ? { project: s.project, path: s.colorKey } : null;
 }
 // The active session's *actual* cwd (the worktree dir for worktree sessions, not
 // the color-grouping repo key) — used when opening a plain terminal there.
 function activeCwd(): string | null {
-  if (activeExtId) { const e = externals.find((x) => x.session_id === activeExtId); return e ? e.cwd : null; }
+  if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); return e ? e.cwd : null; }
+  if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); return d ? d.workdir : null; }
   const s = activeId ? sessions.get(activeId) : null;
   return s ? s.workdir : null;
 }
@@ -2097,11 +2336,13 @@ function openPlainTerminal() {
   // under its repo (as a worktree cluster) rather than appearing as its own project.
   // The active session/external always shares the shell's cwd, so it labels the cluster.
   const s = activeId ? sessions.get(activeId) : null;
-  const e = activeExtId ? externals.find((x) => x.session_id === activeExtId) : undefined;
-  const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : wd;
-  const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : null;
-  const branch = s ? s.branch : (e?.branch || "");
-  launchShell(s ? s.project : basename(colorKey), wd, { colorKey, worktree, branch });
+  const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
+  // A dormant session can also own the stage; it already stores the repo key.
+  const d = pastMirrorId() ? dormants.find((x) => x.id === pastMirrorId()) : undefined;
+  const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : d ? d.colorKey : wd;
+  const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : d ? d.worktree : null;
+  const branch = s ? s.branch : (e?.branch || d?.branch || "");
+  launchShell(s ? s.project : (d?.project ?? basename(colorKey)), wd, { colorKey, worktree, branch });
 }
 // Hand a command over to a terminal at `workdir` instead of running it ourselves.
 // The embedded engine can genuinely prefill: it opens a shell pane and types the
@@ -2135,7 +2376,7 @@ async function runGit(sessionId: string, op: string) {
   // Only ever paint the inspector when this session still owns it: the palette can
   // fire a git action at a background session, and a terminal handoff switches the
   // active session to the new shell mid-run.
-  const repaint = () => { if (activeId === s.id && !activeExtId) renderInspector(s); };
+  const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
   repaint();
   try {
     const r = await invoke<GitActionResult>("git_action", { workdir: s.workdir, op });
@@ -2181,7 +2422,9 @@ async function launchShell(project: string, workdir: string, opts: { colorKey?: 
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   term.attachCustomKeyEventHandler(macShellKeys(id)); // Terminal.app-style ⌥/⌘ nav for the shell
   const s: Sess = {
-    id, project, accent: accentFor(colorKey), workdir, colorKey, branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
+    // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
+    id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
@@ -2385,7 +2628,7 @@ invoke<string[]>("available_terminals").then((ids) => {
 // keep rate-limit reset countdowns fresh (and flip a maxed meter back to 0 once
 // its window resets) even when no new telemetry is arriving.
 setInterval(() => {
-  if (activeExtId) return; // the external mirror manages its own refresh
+  if (mirror) return; // a read-only mirror owns the stage — don't paint over it
   const s = activeId ? sessions.get(activeId) ?? null : null;
   renderInspector(s);
   renderFoot();
@@ -2397,7 +2640,7 @@ setInterval(() => {
 // place we deviate from the render-everything pattern, and it's why the pulse is
 // smooth while "waiting 3:40" counts up live.
 setInterval(() => {
-  if (activeExtId) return;
+  if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (!s || s.shell) return;
   const el = document.getElementById("iDwell");
@@ -2406,7 +2649,7 @@ setInterval(() => {
 
 // Refresh the active session's working-set diff + CPU/RAM on a slow cadence.
 setInterval(() => {
-  if (activeExtId) return;
+  if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (s) void refreshSessionStats(s);
 }, 4000);
@@ -2414,6 +2657,13 @@ setInterval(() => {
 // discover Claude Code sessions running outside Muster and keep them fresh.
 refreshExternals();
 setInterval(refreshExternals, 3000);
+
+// surface the sessions that were open when Muster last closed, so they can be
+// resumed instead of lost. Read-only until the user actually clicks Resume.
+void loadDormants();
+// Nothing else persists the roster on the way out: closeSession and the telemetry
+// tick both save, but a quit with live, quiet sessions would otherwise write nothing.
+window.addEventListener("beforeunload", flushRoster);
 
 // keep the sidebar's "uncommitted changes" dot (and the external diff card) honest
 // for every project at once — s.git alone only covers the active session.
