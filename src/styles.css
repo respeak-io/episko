@@ -538,8 +538,13 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wt-btns button { height: 32px; padding: 0 13px; border-radius: 8px; cursor: pointer; font: 600 12px var(--font-ui); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
 .wt-btns button:hover { filter: brightness(1.08); }
 .wt-cancel { margin-right: auto; }
-.wt-alt { max-width: 190px; overflow: hidden; }
-.wt-mainbr { display: inline-block; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; font-family: var(--font-mono); }
+/* Ellipsise at the BUTTON, not the branch span. The span was an inline-block with
+   overflow:hidden, whose baseline is its bottom margin edge — so `vertical-align`
+   had to fake the alignment, and the fake broke because the mono face (JetBrains)
+   and the UI face (SF Pro) have different ascent/descent. Left as a plain inline,
+   the branch shares the button's baseline for free, whatever the two fonts do. */
+.wt-alt { max-width: 190px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wt-mainbr { font-family: var(--font-mono); }
 .wt-go { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); color: #16121f; border-color: transparent; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
