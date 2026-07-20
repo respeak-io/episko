@@ -31,10 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: pnpm
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,7 +53,7 @@ jobs:
           workspaces: ./src-tauri -> target
 
       - name: Install frontend deps
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # Windows OS code-signing (Azure Trusted Signing) is OPT-IN and gated on the
       # AZURE_CLIENT_ID secret being present. Until Respeak's Azure account/profile +

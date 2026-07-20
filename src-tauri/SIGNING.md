@@ -115,10 +115,10 @@ password), `APPLE_TEAM_ID`. Own decision, own account — the Azure profile does
 The only blocker for a local `tauri build` is the updater key (#1). Generate a throwaway one:
 
 ```powershell
-npm run tauri signer generate -- -w $env:USERPROFILE\.tauri\muster_test.key -p ""
+pnpm tauri signer generate -- -w $env:USERPROFILE\.tauri\muster_test.key -p ""
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $env:USERPROFILE\.tauri\muster_test.key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-npm run tauri build
+pnpm tauri build
 ```
 
 A throwaway key means the produced updater `.sig` won't verify against real releases — fine

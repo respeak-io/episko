@@ -23,10 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: pnpm
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -40,13 +44,13 @@ jobs:
           workspaces: ./src-tauri -> target
 
       - name: Install frontend deps
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # Typechecks (tsc) and builds the frontend. Must run before cargo, because
       # Tauri's `generate_context!` embeds `frontendDist` (../dist) at compile time
       # and errors if it's missing.
       - name: Build frontend (tsc + vite)
-        run: npm run build
+        run: pnpm build
 
       - name: Cargo check
         working-directory: ./src-tauri
