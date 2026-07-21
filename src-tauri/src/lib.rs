@@ -75,8 +75,23 @@ fn run_telemetry_server(server: tiny_http::Server, app: AppHandle) {
         let stable_sid = header_value(&request, "X-CC-Session").or_else(|| query_param(&url, "sid"));
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
-        let mut data: serde_json::Value =
-            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+        // A parse failure here silently degrades the whole pane (session shows but
+        // no model/cost/phase) — e.g. the PowerShell-BOM class of bug — so it must
+        // be loud. Log length + error only, never the body (it can carry prompts).
+        let mut data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                if !body.is_empty() {
+                    log::warn!(
+                        "telemetry: dropping unparseable {} payload ({} bytes, sid {}): {e}",
+                        url,
+                        body.len(),
+                        stable_sid.as_deref().unwrap_or("?")
+                    );
+                }
+                serde_json::Value::Null
+            }
+        };
         if let Some(sid) = &stable_sid {
             if !data.is_object() {
                 data = serde_json::json!({});
@@ -384,6 +399,10 @@ fn spawn_claude(
     cmd.env("CC_LAUNCHER_SESSION", &session_id);
     apply_utf8_locale(&mut cmd);
 
+    log::info!(
+        "spawn claude · {session_id} · {workdir}{}",
+        resume.as_deref().map(|r| format!(" · resume {r}")).unwrap_or_default()
+    );
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
 
@@ -441,6 +460,7 @@ fn stream_pty_session(
 
     std::thread::spawn(move || {
         let code = child.wait().map(|s| s.exit_code()).unwrap_or(0);
+        log::info!("pty exit · {session_id} · code {code}");
         if let Some(st) = app.try_state::<AppState>() {
             st.sessions.lock().unwrap().remove(&session_id);
             if let Some(p) = child_pid {
@@ -833,6 +853,7 @@ fn resolve_permission(state: State<AppState>, id: String, behavior: String) {
 fn kill_session(state: State<AppState>, session_id: String) -> Result<(), String> {
     let killed = state.sessions.lock().unwrap().remove(&session_id);
     if let Some(mut s) = killed {
+        log::info!("kill session · {session_id}");
         let _ = s.killer.kill();
         if let Some(p) = s.pid {
             state.owned_pids.lock().unwrap().remove(&p);
@@ -2256,18 +2277,68 @@ fn update_tray(
     Ok(())
 }
 
+/// Log every panic — message, location, thread, backtrace — before the process
+/// dies. A panic that unwinds out of `main` terminates a GUI app *cleanly* as far
+/// as the OS is concerned: no crash dump, no WER/CrashReporter entry, the window
+/// just vanishes. This hook is the only on-disk trace of that failure class. It
+/// writes through the `log` facade (→ the rolling muster.log) AND appends raw to
+/// `panic.log` in the same directory, in case the logger itself is what broke.
+fn install_panic_hook(log_dir: std::path::PathBuf) {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current();
+        let msg = format!(
+            "panic on thread '{}': {info}\n{backtrace}",
+            thread.name().unwrap_or("<unnamed>")
+        );
+        log::error!("{msg}");
+        let _ = std::fs::create_dir_all(&log_dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("panic.log"))
+        {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(f, "[unix {secs}] {msg}\n");
+        }
+        prev(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("muster".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(1_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Before anything that can panic: from here on, panics leave a trace.
+            install_panic_hook(app.path().app_log_dir()?);
+            log::info!("muster v{} starting", app.package_info().version);
+
             let server = tiny_http::Server::http("127.0.0.1:0")
                 .expect("bind telemetry server on 127.0.0.1");
             let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
-            println!("[cc-launcher] telemetry server on 127.0.0.1:{port}");
+            log::info!("telemetry server on 127.0.0.1:{port}");
 
             app.manage(AppState {
                 port,
@@ -2435,8 +2506,20 @@ pub fn run() {
             update_tray,
             confirm_quit
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // Record clean shutdowns: a log that ends WITHOUT one of these lines is an
+        // abnormal termination — that alone answers "did it crash or was it quit?".
+        .run(|_app, event| match event {
+            tauri::RunEvent::ExitRequested { code, .. } => {
+                log::info!(
+                    "exit requested{}",
+                    code.map(|c| format!(" (code {c})")).unwrap_or_default()
+                );
+            }
+            tauri::RunEvent::Exit => log::info!("exit · clean shutdown"),
+            _ => {}
+        });
 }
 
 #[cfg(test)]
