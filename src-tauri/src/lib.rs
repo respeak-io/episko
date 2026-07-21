@@ -808,6 +808,21 @@ fn write_debug_file(contents: String) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Tee a frontend `dlog()` line into the backend rolling log (muster.log), tagged
+/// `[ui]`. The UI's event stream is otherwise only an in-memory ring mirrored to
+/// the *overwritten* muster-debug.json snapshot — so it doesn't survive a crash.
+/// Forwarding it here puts the whole timeline (UI + backend) in one durable,
+/// time-ordered file: after #12 the backend was crash-visible but the UI half
+/// wasn't. Fire-and-forget from the frontend; a dropped line is not worth an error.
+#[tauri::command]
+fn log_frontend(level: String, msg: String) {
+    match level.as_str() {
+        "error" => log::error!("[ui] {msg}"),
+        "warn" => log::warn!("[ui] {msg}"),
+        _ => log::info!("[ui] {msg}"),
+    }
+}
+
 #[tauri::command]
 fn write_pty(state: State<AppState>, session_id: String, data: String) -> Result<(), String> {
     let mut map = state.sessions.lock().unwrap();
@@ -2503,6 +2518,7 @@ pub fn run() {
             list_past_sessions,
             find_project_icon,
             write_debug_file,
+            log_frontend,
             update_tray,
             confirm_quit
         ])
