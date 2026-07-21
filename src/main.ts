@@ -1963,39 +1963,48 @@ function toast(m: string) { const el = $("toast"); el.textContent = m; el.classL
 
 // ---------- worktree dialog ----------
 let wtCtx: { project: string; repoDir: string } | null = null;
+type BranchInfo = { name: string; current: boolean; checked_out: boolean; ahead: number; behind: number; rel: string; unix: number };
+
 async function openWt(project: string, repoDir: string, allowMain: boolean) {
   wtCtx = { project, repoDir };
   const n = [...sessions.values()].filter((s) => s.project === project).length + 1;
-  $("wtSub").textContent = allowMain ? `${project} already has a running session — open a worktree or make a new one.` : `Open an existing worktree, or create one for ${project}.`;
+  ($("wtH") as HTMLElement).textContent = allowMain ? "New session" : "New worktree";
+  $("wtSub").textContent = allowMain
+    ? `${project} already has a running session — start another below.`
+    : `Start a session in a worktree of ${project}.`;
+  // The "start here — no worktree" escape hatch: what makes a worktree one option
+  // rather than the only path. Shown first, above the worktree options. Only in
+  // allowMain mode — the ⑃ Worktree button asked for a worktree explicitly. The label
+  // refines to the real branch once git answers; the branch stays a plain inline span
+  // so it shares the button's baseline (see the .wt-here note in styles.css).
   const mainBtn = $("wtMain") as HTMLElement;
+  ($("wtOr") as HTMLElement).hidden = !allowMain;
   mainBtn.hidden = !allowMain;
   if (allowMain) {
-    // Default to a neutral label; refine it to the actual current branch once git answers.
-    mainBtn.innerHTML = "without worktree";
+    mainBtn.innerHTML = "Start here — no worktree";
     mainBtn.title = "Start a session in the repo itself — no new worktree";
     invoke<string | null>("git_branch", { workdir: repoDir }).then((b) => {
       if (!wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on / closed
       if (b) {
-        mainBtn.innerHTML = `on <span class="wt-mainbr">${esc(b)}</span>`;
+        mainBtn.innerHTML = `Start here on <span class="wt-mainbr">${esc(b)}</span> — no worktree`;
         mainBtn.title = `Start a session on the current branch (${b}) — no new worktree`;
       }
     }).catch(() => {});
   }
   const bi = $("wtBranch") as HTMLInputElement; bi.value = `agent-${n}`;
   ($("wtList") as HTMLElement).hidden = true; $("wtList").innerHTML = "";
-  // Offer the repo's branches so an existing one can be *picked* rather than recalled
-  // from memory — the input has always accepted them (create_worktree probes the ref
-  // and attaches), but nothing ever said so. Filtered backend-side to branches a
-  // worktree can still attach, so every suggestion is one that actually works.
+  ($("wtBranchList") as HTMLElement).hidden = true; $("wtBranchList").innerHTML = "";
   $("wtBranches").innerHTML = "";
-  invoke<string[]>("git_branch_list", { repoDir }).then((bs) => {
-    if (!wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on / closed
-    $("wtBranches").innerHTML = bs.map((b) => `<option value="${esc(b)}"></option>`).join("");
-  }).catch(() => {});
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => { bi.focus(); bi.select(); }, 30);
   const wts = await invoke<{ path: string; branch: string; is_main: boolean }[]>("list_worktrees", { repoDir }).catch(() => [] as { path: string; branch: string; is_main: boolean }[]);
   if (wtCtx && wtCtx.repoDir === repoDir) renderWtList(wts);
+  // Show the repo's branches so an existing one can be *picked* rather than recalled.
+  // The input has always accepted existing names (create_worktree probes the ref and
+  // attaches); the list makes that browsable, with a staleness + ahead/behind cue so
+  // it's obvious which branches are worth starting on.
+  const branches = await invoke<BranchInfo[]>("git_branch_list", { repoDir }).catch(() => [] as BranchInfo[]);
+  if (wtCtx && wtCtx.repoDir === repoDir) renderBranchList(branches);
 }
 function renderWtList(wts: { path: string; branch: string; is_main: boolean }[]) {
   const nonMain = wts.filter((w) => !w.is_main);
@@ -2007,6 +2016,27 @@ function renderWtList(wts: { path: string; branch: string; is_main: boolean }[])
     return `<button class="wt-item" data-wt="${esc(w.path)}" data-wtbranch="${esc(w.branch)}"><span class="wt-br">⑃ ${esc(w.branch)}</span><span class="wt-open">${isOpen ? "open" : "→"}</span></button>`;
   }).join("");
 }
+// Branches you could start a *new* worktree on. The current branch (the "start here"
+// button) and any already checked out in a worktree (the list above) are excluded —
+// git refuses to check either out a second time, so offering them would only error.
+function renderBranchList(bs: BranchInfo[]) {
+  const cur = bs.find((b) => b.current)?.name || "the current branch";
+  const pick = bs.filter((b) => !b.current && !b.checked_out);
+  $("wtBranches").innerHTML = pick.map((b) => `<option value="${esc(b.name)}"></option>`).join("");
+  const el = $("wtBranchList") as HTMLElement;
+  if (!pick.length) { el.innerHTML = ""; el.hidden = true; return; }
+  el.hidden = false;
+  const STALE = 45 * 86400, now = Date.now() / 1000;
+  el.innerHTML = `<div class="wt-lbl">Or pick a branch</div>` + pick.map((b) => {
+    const stale = b.unix > 0 && now - b.unix > STALE;
+    const ab = (b.ahead ? `<span class="wt-ab wt-ahead" title="${b.ahead} commit(s) ${esc(b.name)} has that ${esc(cur)} doesn't">↑${b.ahead}</span>` : "")
+      + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) behind ${esc(cur)}">↓${b.behind}</span>` : "");
+    return `<button class="wt-item wt-branch${stale ? " stale" : ""}" data-branch="${esc(b.name)}" title="Create a worktree on ${esc(b.name)} and start a session">`
+      + `<span class="wt-br">${esc(b.name)}</span>`
+      + `<span class="wt-bmeta">${ab}<span class="wt-when">${esc(b.rel || "")}</span></span>`
+      + `</button>`;
+  }).join("");
+}
 function openWorktreeSession(path: string, branch: string) {
   if (!wtCtx) return;
   const { project, repoDir } = wtCtx;
@@ -2016,10 +2046,10 @@ function openWorktreeSession(path: string, branch: string) {
   launch(project, path, { colorKey: repoDir, worktree: branch, branch });
 }
 function closeWt() { $("wtDlg").classList.remove("show"); if (!$("palette").classList.contains("show")) $("scrim").classList.remove("show"); wtCtx = null; }
-async function wtCreate() {
+// Create a worktree on `branch` (new or existing) and launch a session in it. Shared
+// by the free-text field (wtCreate) and one-click branch rows (data-branch).
+async function createWorktreeOn(branch: string) {
   if (!wtCtx) return;
-  const branch = ($("wtBranch") as HTMLInputElement).value.trim();
-  if (!branch) { toast("Enter a branch name"); return; }
   const { project, repoDir } = wtCtx;
   closeWt();
   try {
@@ -2027,6 +2057,11 @@ async function wtCreate() {
     launch(project, path, { colorKey: repoDir, worktree: branch, branch });
     toast(`Worktree ${branch} created`);
   } catch (e) { toast("worktree: " + e); }
+}
+function wtCreate() {
+  const branch = ($("wtBranch") as HTMLInputElement).value.trim();
+  if (!branch) { toast("Enter a branch name"); return; }
+  createWorktreeOn(branch);
 }
 
 // ---------- events ----------
@@ -2088,12 +2123,13 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-branch],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
   else if (el.dataset.wt) openWorktreeSession(el.dataset.wt, el.dataset.wtbranch || "");
+  else if (el.dataset.branch) createWorktreeOn(el.dataset.branch);
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();

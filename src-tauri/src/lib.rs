@@ -1004,15 +1004,32 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     res
 }
 
-/// Local branches that `create_worktree` can still attach, most-recently-committed
-/// first. Branches already checked out in *some* worktree are filtered out: git
-/// refuses a second checkout of the same branch ("'x' is already used by worktree
-/// at ..."), so suggesting one would only funnel the user into that error toast.
-/// Nothing is hidden by this — a branch dropped here is, by definition, one that
-/// `list_worktrees` already surfaces in the dialog as a clickable row (or is the
-/// repo's own HEAD, which the "on <branch>" button covers).
+/// One local branch, with enough context for the worktree picker to tell whether
+/// it's worth starting on. `current` is the branch the repo's HEAD is on (offered
+/// as the "start here" button, not in the pick list). `checked_out` means some
+/// worktree already holds it — git refuses a second checkout, so it can't take a
+/// new worktree and instead appears in the existing-worktrees list. `ahead`/`behind`
+/// are versus the current HEAD; `rel`/`unix` describe the last commit (staleness).
+#[derive(serde::Serialize, Debug)]
+struct BranchInfo {
+    name: String,
+    current: bool,
+    checked_out: bool,
+    ahead: u32,
+    behind: u32,
+    rel: String,
+    unix: i64,
+}
+
+/// Local branches for the worktree picker, most-recently-committed first, each with
+/// staleness + ahead/behind context (see `BranchInfo`). Nothing is filtered here —
+/// the frontend hides `current` and `checked_out` from the pickable list; returning
+/// them with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP
+/// so a repo with hundreds of refs can't spawn an unbounded rev-list-per-ref; the cap
+/// keeps the newest branches, which is what the picker shows first anyway.
 #[tauri::command]
-fn git_branch_list(repo_dir: String) -> Vec<String> {
+fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
+    const BRANCH_LIST_CAP: usize = 80;
     // LC_ALL=C for the same reason as create_worktree: never depend on localized output.
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
 
@@ -1026,21 +1043,62 @@ fn git_branch_list(repo_dir: String) -> Vec<String> {
             _ => Default::default(),
         };
 
+    // The branch HEAD points at (None when detached — then there is no "current").
+    let current = git(&["-C", &repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Tab-separated so neither the branch name nor the relative date can collide with
+    // the delimiter (a relative date is "3 days ago" — spaces, never tabs).
     let out = match git(&[
         "-C", &repo_dir,
         "for-each-ref",
         "--sort=-committerdate",
-        "--format=%(refname:short)",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)",
         "refs/heads",
     ]) {
         Ok(o) if o.status.success() => o,
         _ => return vec![],
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|b| !b.is_empty() && !taken.contains(b))
-        .collect()
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let mut res = Vec::new();
+    for line in text.lines().take(BRANCH_LIST_CAP) {
+        let mut parts = line.splitn(3, '\t');
+        let name = match parts.next() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let rel = parts.next().unwrap_or("").to_string();
+        let is_current = current.as_deref() == Some(name.as_str());
+
+        // ahead/behind vs current HEAD. `--left-right --count HEAD...<b>` prints
+        // "<left>\t<right>": left = commits in HEAD not in the branch (branch is that
+        // far *behind*), right = commits in the branch not in HEAD (branch *ahead*).
+        // The current branch is definitionally 0/0, so skip the extra process for it.
+        let (mut ahead, mut behind) = (0u32, 0u32);
+        if !is_current {
+            if let Ok(o) = git(&["-C", &repo_dir, "rev-list", "--left-right", "--count",
+                &format!("HEAD...refs/heads/{name}")]) {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout);
+                    let mut it = s.split_whitespace();
+                    behind = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    ahead = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                }
+            }
+        }
+
+        res.push(BranchInfo {
+            checked_out: taken.contains(&name),
+            current: is_current,
+            name, ahead, behind, rel, unix,
+        });
+    }
+    res
 }
 
 /// Current git branch for a working directory (None if not a repo / detached).
@@ -2426,26 +2484,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The picker must only offer branches `create_worktree` can actually attach.
-    /// git refuses to check a branch out twice, so a branch already claimed by any
-    /// worktree — including the repo's own HEAD — would fail with "already used by
-    /// worktree" if suggested.
+    /// The picker leans on these flags to decide what's pickable: it hides `current`
+    /// (the "start here" button) and `checked_out` (git refuses a second checkout, so
+    /// those sit in the existing-worktrees list instead). ahead/behind must be
+    /// oriented from the branch's point of view versus the current HEAD.
     #[test]
-    fn git_branch_list_skips_branches_already_checked_out() {
+    fn git_branch_list_flags_state_and_orients_ahead_behind() {
         let dir = scratch_dir();
         git(&dir, &["init", "-q", "-b", "dev"]);
-        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
         git(&dir, &["branch", "test"]);
         git(&dir, &["branch", "feature-x"]);
+
+        // feature-x gains 2 commits; dev then gains 1 → feature-x is 2 ahead, 1 behind.
+        git(&dir, &["checkout", "-q", "feature-x"]);
+        commit(&dir, "fx1");
+        commit(&dir, "fx2");
+        git(&dir, &["checkout", "-q", "dev"]);
+        commit(&dir, "dev1");
 
         // Claim `test` with a worktree; `dev` is claimed by the main working tree.
         let wt = dir.join("wt-test");
         git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "test"]);
 
-        let branches = git_branch_list(dir.to_str().unwrap().to_string());
-        assert!(branches.contains(&"feature-x".to_string()), "free branch missing: {branches:?}");
-        assert!(!branches.contains(&"test".to_string()), "branch in a worktree offered: {branches:?}");
-        assert!(!branches.contains(&"dev".to_string()), "main worktree's HEAD offered: {branches:?}");
+        let bs = git_branch_list(dir.to_str().unwrap().to_string());
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+
+        // dev is `current`; it's also `checked_out` because the main working tree holds
+        // it — the frontend hides it via `current`, so that overlap is harmless.
+        assert!(by("dev").current, "dev should be current: {bs:?}");
+        assert!(by("test").checked_out && !by("test").current, "test should be checked_out: {bs:?}");
+        let fx = by("feature-x");
+        assert!(!fx.current && !fx.checked_out, "feature-x should be free: {bs:?}");
+        assert_eq!((fx.ahead, fx.behind), (2, 1), "feature-x should be 2 ahead / 1 behind dev: {bs:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

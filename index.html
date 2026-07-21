@@ -108,15 +108,18 @@
     </div>
 
     <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true">
-      <div class="wt-h">Worktrees</div>
+      <div class="wt-h" id="wtH">New session</div>
       <div class="wt-sub" id="wtSub"></div>
+      <!-- The no-worktree option leads, so a worktree reads as one choice, not the only one -->
+      <button class="wt-here" id="wtMain" hidden>Start here — no worktree</button>
+      <div class="wt-or" id="wtOr" hidden>or in a worktree</div>
       <div class="wt-list" id="wtList" hidden></div>
-      <label class="wt-lbl" for="wtBranch">Branch <span class="wt-hint">new, or an existing one</span></label>
+      <div class="wt-branches" id="wtBranchList" hidden></div>
+      <label class="wt-lbl" for="wtBranch">New branch <span class="wt-hint">or type any existing one</span></label>
       <input class="wt-in" id="wtBranch" spellcheck="false" placeholder="feature-x" autocomplete="off" list="wtBranches" />
       <datalist id="wtBranches"></datalist>
       <div class="wt-btns">
         <button class="wt-cancel" id="wtCancel">Cancel</button>
-        <button class="wt-alt" id="wtMain" hidden>without worktree</button>
         <button class="wt-go" id="wtGo">Create worktree ▸</button>
       </div>
     </div>
