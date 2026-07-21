@@ -87,6 +87,15 @@ Muster's launch uuid **is** Claude's `--session-id`, so every session it launche
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
 
+## Worktrees
+
+The worktree dialog (`openWt`) is the whole surface: it starts sessions *and* manages the worktrees themselves. `create_worktree` puts them in a sibling `.cc-worktrees/<repo>/<branch>` tree; `list_worktrees` returns each with the state that decides what's safe (`dirty`, `unmerged`, `locked`, `exists`); `remove_worktree` is the inverse of create.
+
+- **Reachable without a running session.** The ⑃ toolbar button and "＋ Session" both need an active session, so a repo with nothing open used to have no route to its worktrees at all — hence the per-project ⑃ in the sidebar header (`data-wtopen`).
+- **The two kinds of loss are guarded separately**, same rule as `git_action`: never destroy work the UI can't explain. Uncommitted changes exist *only* in the checkout, so removal is refused (`needs_force`) until the caller has been told the count. Commits live on the branch, which `worktree remove` never touches — so the branch is deleted only on request and only via `git branch -d`, which re-checks mergedness itself. **Never `-D`.**
+- **The "is a session running in there" guard lives in the frontend**, because only it knows which panes point where. The backend can't see Muster's session map.
+- Clicking an existing worktree always starts a **new** session in it (a second agent on one branch is a normal thing to want); the "n open" chip is what jumps to a running one.
+
 ## Notes on scope & doc drift
 
 macOS-only assumptions are pervasive and intentional for now: `osascript`, `open -a`, `/bin/zsh` wrappers, hard-coded app paths, `/usr/bin/curl`. Windows would need a PowerShell/`curl.exe` variant of the generated hooks.

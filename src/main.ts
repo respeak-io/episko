@@ -438,10 +438,20 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
 }
 
 // Offer a worktree when launching into a repo that already has a session.
-async function requestLaunch(project: string, path: string) {
+//
+// Which of the two happens can't be known without asking git, and on a cold repo that
+// answer is not instant — so the control that was pressed spins for the duration
+// rather than a click appearing to do nothing. The branch git just told us is handed
+// to the dialog, which would otherwise ask again and render its "start here on <b>"
+// button a beat late.
+async function requestLaunch(project: string, path: string, trigger?: HTMLElement | null) {
   if ([...sessions.values()].some((s) => s.colorKey === path)) {
-    const br = await invoke<string | null>("git_branch", { workdir: path });
-    if (br) { openWt(project, path, true); return; }
+    trigger?.classList.add("busy");
+    let br: string | null = null;
+    try { br = await invoke<string | null>("git_branch", { workdir: path }); }
+    catch { /* not a repo, or git is unhappy — fall through to a plain launch */ }
+    finally { trigger?.classList.remove("busy"); }
+    if (br) { openWt(project, path, true, br); return; }
   }
   launch(project, path, { colorKey: path });
 }
@@ -1152,18 +1162,23 @@ function renderSidebar() {
     const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
     const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
     const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
+    // Worktrees, straight from the project — the only way in used to be a running
+    // session (the ⑃ toolbar button and "+ Session" both need one), so a repo with
+    // nothing open had no route to its own worktrees at all. In a split group this
+    // targets the worktree's own checkout, which is its repo as far as git cares.
+    const wtBtn = `<span class="pwtb" data-wtopen="${esc(p.path)}" data-proj="${esc(p.name)}" title="Worktrees of ${esc(p.name)} — start a session on another branch, or clean one up">⑃</span>`;
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
+      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span>${wtBtn}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
     } else if (isFav) {
       const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
-      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
+      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}${wtBtn}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
     } else {
       // discovered via an external session or a restorable one only — not a saved project
       const tail = p.externals.length
         ? `<span class="pcount ext">${p.externals.length} ext</span>`
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
+      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}${wtBtn}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch a Muster session here">＋</span></div>`;
     }
     return `<div class="pgroup" draggable="true" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
   }).join("");
@@ -1850,7 +1865,7 @@ function sessionActions(s: Sess): PalItem[] {
       a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { setActive(s.id); openPlainTerminal(); }));
-    a.push(mk("New worktree from here", "⑃", () => openWt(s.project, s.colorKey, false)));
+    a.push(mk("Worktrees of this project…", "⑃", () => openWt(s.project, s.colorKey, false)));
   }
   a.push(mk("Close session", "✕", () => closeSession(s.id)));
   return a;
@@ -1962,16 +1977,25 @@ let toastT: number | undefined;
 function toast(m: string) { const el = $("toast"); el.textContent = m; el.classList.add("show"); clearTimeout(toastT); toastT = window.setTimeout(() => el.classList.remove("show"), 1900); }
 
 // ---------- worktree dialog ----------
+// Both the "where should this session run" picker and the only place worktrees are
+// managed: every existing one is listed with the state that decides what's safe to do
+// with it (sessions running inside, uncommitted work, unmerged commits), can take a
+// new session, and can be removed. Without the removal half you can create worktrees
+// here but only clean them up in a shell — which is how they pile up.
 let wtCtx: { project: string; repoDir: string } | null = null;
 type BranchInfo = { name: string; current: boolean; checked_out: boolean; ahead: number; behind: number; rel: string; unix: number };
+type Worktree = { path: string; branch: string; is_main: boolean; dirty: number; unmerged: number; locked: boolean; exists: boolean };
+type WtRemoval = { removed: boolean; needs_force: boolean; dirty: number; branch_kept: boolean; summary: string };
+let wtCache: Worktree[] = [];
 
-async function openWt(project: string, repoDir: string, allowMain: boolean) {
+async function openWt(project: string, repoDir: string, allowMain: boolean, branch?: string) {
   wtCtx = { project, repoDir };
+  wtCache = [];
   const n = [...sessions.values()].filter((s) => s.project === project).length + 1;
-  ($("wtH") as HTMLElement).textContent = allowMain ? "New session" : "New worktree";
+  ($("wtH") as HTMLElement).textContent = allowMain ? "New session" : "Worktrees";
   $("wtSub").textContent = allowMain
     ? `${project} already has a running session — start another below.`
-    : `Start a session in a worktree of ${project}.`;
+    : `Start a session in a worktree of ${project} — or clean one up.`;
   // The "start here — no worktree" escape hatch: what makes a worktree one option
   // rather than the only path. Shown first, above the worktree options. Only in
   // allowMain mode — the ⑃ Worktree button asked for a worktree explicitly. The label
@@ -1981,39 +2005,93 @@ async function openWt(project: string, repoDir: string, allowMain: boolean) {
   ($("wtOr") as HTMLElement).hidden = !allowMain;
   mainBtn.hidden = !allowMain;
   if (allowMain) {
-    mainBtn.innerHTML = "Start here — no worktree";
-    mainBtn.title = "Start a session in the repo itself — no new worktree";
-    invoke<string | null>("git_branch", { workdir: repoDir }).then((b) => {
-      if (!wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on / closed
-      if (b) {
-        mainBtn.innerHTML = `Start here on <span class="wt-mainbr">${esc(b)}</span> — no worktree`;
-        mainBtn.title = `Start a session on the current branch (${b}) — no new worktree`;
-      }
-    }).catch(() => {});
+    // The branch is what makes this button concrete ("start here on dev"), so it
+    // shouldn't arrive after the button does. `requestLaunch` already asked git — it
+    // only opens this dialog when the folder *is* a repo — so it hands the answer
+    // down and the label is right on first paint. Any other caller gets a placeholder
+    // holding the branch's place until git answers.
+    if (branch) setWtMainLabel(mainBtn, branch);
+    else {
+      mainBtn.innerHTML = `Start here on <span class="wt-mainbr sk-inline"></span> — no worktree`;
+      mainBtn.title = "Start a session in the repo itself — no new worktree";
+      invoke<string | null>("git_branch", { workdir: repoDir }).then((b) => {
+        if (wtCtx?.repoDir !== repoDir) return; // dialog moved on / closed
+        if (b) setWtMainLabel(mainBtn, b);
+        else mainBtn.innerHTML = "Start here — no worktree"; // detached, or not a repo
+      }).catch(() => { mainBtn.innerHTML = "Start here — no worktree"; });
+    }
   }
   const bi = $("wtBranch") as HTMLInputElement; bi.value = `agent-${n}`;
-  ($("wtList") as HTMLElement).hidden = true; $("wtList").innerHTML = "";
-  ($("wtBranchList") as HTMLElement).hidden = true; $("wtBranchList").innerHTML = "";
   $("wtBranches").innerHTML = "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => { bi.focus(); bi.select(); }, 30);
-  const wts = await invoke<{ path: string; branch: string; is_main: boolean }[]>("list_worktrees", { repoDir }).catch(() => [] as { path: string; branch: string; is_main: boolean }[]);
-  if (wtCtx && wtCtx.repoDir === repoDir) renderWtList(wts);
+  loadWtLists(repoDir);
+}
+// The branch stays a plain inline span so it shares the button's baseline (see the
+// .wt-here note in styles.css).
+function setWtMainLabel(btn: HTMLElement, branch: string) {
+  btn.innerHTML = `Start here on <span class="wt-mainbr">${esc(branch)}</span> — no worktree`;
+  btn.title = `Start a session on the current branch (${branch}) — no new worktree`;
+}
+// Skeleton rows standing in for a list git hasn't answered for yet. Both lists cost
+// several git calls (the worktree list probes each checkout for dirt and unmerged
+// commits; the branch list runs a rev-list per branch), so on a big or cold repo the
+// dialog would otherwise sit visibly empty — which reads as "this repo has none"
+// rather than "still counting". Placeholder rows say which, and reserve the space so
+// the real ones don't shove the input and buttons down as they land.
+function wtSkeleton(label: string, rows: number): string {
+  return `<div class="wt-lbl">${esc(label)}</div>`
+    + `<div class="wt-item skel" aria-hidden="true"><span class="sk sk-br"></span><span class="sk sk-meta"></span></div>`.repeat(rows);
+}
+function showWtSkeletons() {
+  for (const [id, label, rows] of [["wtList", "Existing worktrees", 2], ["wtBranchList", "Or pick a branch", 3]] as const) {
+    const el = $(id) as HTMLElement;
+    el.innerHTML = wtSkeleton(label, rows);
+    el.hidden = false;
+    el.setAttribute("aria-busy", "true");
+  }
+}
+// Both lists, re-read from git. Called on open and after every change (a removal frees
+// a branch back into the picker, or takes it away entirely), each guarded by the
+// dialog still pointing at the repo it was asked about.
+async function loadWtLists(repoDir: string) {
+  showWtSkeletons();
+  const wts = await invoke<Worktree[]>("list_worktrees", { repoDir }).catch(() => [] as Worktree[]);
+  if (wtCtx?.repoDir !== repoDir) return;
+  // Every repo has at least its own main working tree, so an empty list means this
+  // folder isn't one — say so now rather than after a create attempt fails.
+  if (!wts.length) { const p = wtCtx.project; closeWt(); toast(`${p} isn't a git repository`); return; }
+  wtCache = wts; renderWtList(wts);
   // Show the repo's branches so an existing one can be *picked* rather than recalled.
   // The input has always accepted existing names (create_worktree probes the ref and
   // attaches); the list makes that browsable, with a staleness + ahead/behind cue so
   // it's obvious which branches are worth starting on.
   const branches = await invoke<BranchInfo[]>("git_branch_list", { repoDir }).catch(() => [] as BranchInfo[]);
-  if (wtCtx && wtCtx.repoDir === repoDir) renderBranchList(branches);
+  if (wtCtx?.repoDir === repoDir) renderBranchList(branches);
 }
-function renderWtList(wts: { path: string; branch: string; is_main: boolean }[]) {
+// Sessions Muster owns in a given checkout — the guard on removing it, and the "n open"
+// chip's jump target. Externals are counted separately: we can't close those for you.
+function sessionsIn(path: string): Sess[] { return [...sessions.values()].filter((s) => s.workdir === path); }
+function renderWtList(wts: Worktree[]) {
   const nonMain = wts.filter((w) => !w.is_main);
   const el = $("wtList");
+  el.removeAttribute("aria-busy"); // whatever happens next replaces the skeleton
   if (!nonMain.length) { el.innerHTML = ""; (el as HTMLElement).hidden = true; return; }
   (el as HTMLElement).hidden = false;
   el.innerHTML = `<div class="wt-lbl">Existing worktrees</div>` + nonMain.map((w) => {
-    const isOpen = [...sessions.values()].some((s) => s.workdir === w.path);
-    return `<button class="wt-item" data-wt="${esc(w.path)}" data-wtbranch="${esc(w.branch)}"><span class="wt-br">⑃ ${esc(w.branch)}</span><span class="wt-open">${isOpen ? "open" : "→"}</span></button>`;
+    const open = sessionsIn(w.path);
+    const ext = externals.filter((e) => e.cwd === w.path).length;
+    const tags = (open.length ? `<span class="wt-open on" data-wtjump="${esc(open[0].id)}" title="Jump to the session running here">${open.length} open</span>` : "")
+      + (ext ? `<span class="wt-tag" title="Running outside Muster">${ext} ext</span>` : "")
+      + (w.dirty ? `<span class="wt-dirty" title="${w.dirty} uncommitted change${w.dirty === 1 ? "" : "s"} — removing the worktree would discard them">●${w.dirty}</span>` : "")
+      + (w.unmerged ? `<span class="wt-ab wt-ahead" title="${w.unmerged} commit${w.unmerged === 1 ? "" : "s"} not in the current branch — the branch keeps them either way">↑${w.unmerged}</span>` : "")
+      + (w.locked ? `<span class="wt-tag">locked</span>` : "")
+      + (!w.exists ? `<span class="wt-tag gone" title="The folder is gone — only git's bookkeeping is left">missing</span>` : "");
+    const tip = w.exists ? `${tilde(w.path)}\nStart a session here` : `${tilde(w.path)}\nThe folder no longer exists`;
+    return `<div class="wt-item wt-wt${w.exists ? "" : " gone"}" data-wt="${esc(w.path)}" data-wtbranch="${esc(w.branch)}" title="${esc(tip)}">`
+      + `<span class="wt-br">⑃ ${esc(w.branch || basename(w.path))}</span>`
+      + `<span class="wt-bmeta">${tags}<span class="wt-rm" data-wtrm="${esc(w.path)}" title="Remove this worktree…">✕</span></span>`
+      + `</div>`;
   }).join("");
 }
 // Branches you could start a *new* worktree on. The current branch (the "start here"
@@ -2024,6 +2102,7 @@ function renderBranchList(bs: BranchInfo[]) {
   const pick = bs.filter((b) => !b.current && !b.checked_out);
   $("wtBranches").innerHTML = pick.map((b) => `<option value="${esc(b.name)}"></option>`).join("");
   const el = $("wtBranchList") as HTMLElement;
+  el.removeAttribute("aria-busy"); // whatever happens next replaces the skeleton
   if (!pick.length) { el.innerHTML = ""; el.hidden = true; return; }
   el.hidden = false;
   const STALE = 45 * 86400, now = Date.now() / 1000;
@@ -2037,12 +2116,15 @@ function renderBranchList(bs: BranchInfo[]) {
       + `</button>`;
   }).join("");
 }
+// Start a session in an existing worktree. Always a *new* one, even when the worktree
+// already has sessions: this dialog exists to start work, and a second agent on the
+// same branch is a normal thing to want. Jumping to a running one is the "n open"
+// chip's job (and the sidebar's).
 function openWorktreeSession(path: string, branch: string) {
   if (!wtCtx) return;
   const { project, repoDir } = wtCtx;
+  if (!wtCache.find((w) => w.path === path)?.exists) { toast("That folder is gone — remove the worktree"); return; }
   closeWt();
-  const existing = [...sessions.values()].find((s) => s.workdir === path);
-  if (existing) { setActive(existing.id); return; }
   launch(project, path, { colorKey: repoDir, worktree: branch, branch });
 }
 function closeWt() { $("wtDlg").classList.remove("show"); if (!$("palette").classList.contains("show")) $("scrim").classList.remove("show"); wtCtx = null; }
@@ -2062,6 +2144,68 @@ function wtCreate() {
   const branch = ($("wtBranch") as HTMLInputElement).value.trim();
   if (!branch) { toast("Enter a branch name"); return; }
   createWorktreeOn(branch);
+}
+// Remove a worktree from the list. The dialog stays open — cleanup is usually a
+// sweep, not a single act.
+//
+// Everything the user needs to judge it goes in the prompt *before* the removal, and
+// the two kinds of loss are handled separately: uncommitted changes die with the
+// checkout (so they're named, and the backend still refuses until we force), while
+// commits live on the branch, which survives unless it's fully merged. Sessions
+// running inside are refused outright rather than killed — only the frontend knows
+// which panes point where, so this guard can't live in the backend.
+async function removeWorktree(path: string) {
+  if (!wtCtx) return;
+  const { repoDir } = wtCtx;
+  const w = wtCache.find((x) => x.path === path);
+  if (!w) return;
+  const live = sessionsIn(path);
+  if (live.length) { toast(`Close the ${live.length} session${live.length === 1 ? "" : "s"} running there first`); return; }
+  if (externals.some((e) => e.cwd === path)) { toast("A session outside Muster is running there"); return; }
+  if (w.locked) { toast("Locked — run `git worktree unlock` first"); return; }
+
+  const label = w.branch || basename(path);
+  // Only tidy the branch away when it holds nothing the repo doesn't already have;
+  // the backend's `branch -d` re-checks that, so a race can't lose commits.
+  const dropBranch = !!w.branch && w.branch !== "(detached)" && w.unmerged === 0;
+  const lines = [`${tilde(path)}`, ""];
+  if (!w.exists) lines.push("The folder is already gone — this just clears git's bookkeeping.");
+  else if (w.dirty) lines.push(`${w.dirty} uncommitted change${w.dirty === 1 ? "" : "s"} here will be lost.`);
+  else lines.push("The checkout is clean — nothing uncommitted to lose.");
+  lines.push(dropBranch
+    ? `The branch ${label} is fully merged, so it goes too.`
+    : w.unmerged
+      ? `The branch ${label} stays, keeping its ${w.unmerged} unmerged commit${w.unmerged === 1 ? "" : "s"}.`
+      : `The branch ${label} stays.`);
+  const ok = await ask(lines.join("\n"), {
+    title: `Remove the worktree ${label}?`,
+    kind: w.dirty ? "warning" : "info",
+    okLabel: dropBranch ? "Remove worktree & branch" : "Remove worktree",
+    cancelLabel: "Keep",
+  });
+  if (!ok) return;
+
+  try {
+    let r = await invoke<WtRemoval>("remove_worktree", { repoDir, path, force: w.dirty > 0, deleteBranch: dropBranch });
+    // It went dirty between listing and now — re-ask with the real count rather than
+    // forcing on the user's behalf.
+    if (r.needs_force) {
+      const sure = await ask(`${r.summary} — appeared since this list was drawn.\n\nRemove it anyway and discard them?`, {
+        title: `Remove the worktree ${label}?`, kind: "warning", okLabel: "Discard & remove", cancelLabel: "Keep",
+      });
+      if (!sure) return;
+      r = await invoke<WtRemoval>("remove_worktree", { repoDir, path, force: true, deleteBranch: dropBranch });
+    }
+    toast(r.summary);
+    dlog("info", `worktree removed · ${label} · ${path}`);
+    // The roster can still point at a folder that no longer exists; drop those so a
+    // dead worktree doesn't offer a restore that can only fail.
+    const before = dormants.length;
+    dormants = dormants.filter((d) => d.workdir !== path);
+    if (dormants.length !== before) flushRoster();
+    if (wtCtx?.repoDir === repoDir) loadWtLists(repoDir);
+    renderAll();
+  } catch (e) { toast("worktree: " + e); }
 }
 
 // ---------- events ----------
@@ -2123,11 +2267,16 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-branch],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wtrm],[data-wtjump],[data-wtopen],[data-wt],[data-branch],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
+  // The ✕ and the "n open" chip sit INSIDE a data-wt row, so they must be matched
+  // ahead of it or the row's own click (start a session) would swallow them.
+  else if (el.dataset.wtrm) removeWorktree(el.dataset.wtrm);
+  else if (el.dataset.wtjump) { const id = el.dataset.wtjump; closeWt(); setActive(id); }
+  else if (el.dataset.wtopen) openWt(el.dataset.proj || basename(el.dataset.wtopen), el.dataset.wtopen, false);
   else if (el.dataset.wt) openWorktreeSession(el.dataset.wt, el.dataset.wtbranch || "");
   else if (el.dataset.branch) createWorktreeOn(el.dataset.branch);
   else if (el.dataset.close) closeSession(el.dataset.close);
@@ -2139,7 +2288,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
-  else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
+  // On a project row data-launch sits on the whole header — spin its ＋ / "launch →"
+  // affordance rather than blanking the row.
+  else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch, el.querySelector<HTMLElement>(".padd, .plaunch") || el);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
   else if (el.dataset.toast) toast(el.dataset.toast);
@@ -2532,9 +2683,9 @@ async function launchShell(project: string, workdir: string, opts: { colorKey?: 
 }
 // "+ Session" starts a session in the current project (offering a worktree if it
 // already has one). With no active session there's no project context → palette.
-$("btnNew").addEventListener("click", () => {
+$("btnNew").addEventListener("click", (e) => {
   const c = activeProjectCtx();
-  if (c) requestLaunch(c.project, c.path); else openPalette();
+  if (c) requestLaunch(c.project, c.path, e.currentTarget as HTMLElement); else openPalette();
 });
 $("btnWorktree").addEventListener("click", () => { const c = activeProjectCtx(); if (!c) { toast("No active session"); return; } openWt(c.project, c.path, false); });
 $("btnTerm").addEventListener("click", openPlainTerminal);

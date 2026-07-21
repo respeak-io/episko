@@ -67,6 +67,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .label { font-size: 9px; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
 .lit { background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 [hidden] { display: none !important; }
+/* Inline placeholder for a word that arrives late (the branch in "start here on <b>"),
+   sized like the text it stands in for so the line doesn't reflow when it lands. */
+.sk-inline { display: inline-block; width: 4.5em; height: .72em; border-radius: 5px; background: var(--surface-2); }
+@media (prefers-reduced-motion: no-preference) { .sk-inline { animation: pulse 1.5s ease-in-out infinite; } }
 
 /* top bar */
 .top { grid-area: top; display: flex; align-items: center; gap: 11px; padding: 0 12px; background: linear-gradient(180deg, var(--lift), transparent 60%), var(--panel); border-bottom: 1px solid var(--hair); }
@@ -192,6 +196,11 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .pdirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
 .padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; }
 .padd:hover { color: var(--text); }
+/* worktrees of this project — revealed on row hover (like .premove) so the resting
+   header keeps a single obvious action, ＋ */
+.pwtb { flex: none; font-size: 11px; color: var(--muted-2); padding: 0 1px; cursor: pointer; opacity: 0; transition: opacity .12s, color .12s; }
+.phead:hover .pwtb { opacity: .75; }
+.pwtb:hover { color: var(--text); opacity: 1; }
 .phead.empty-p .pname { color: var(--muted-2); font-weight: 550; }
 .phead.empty-p .pdot { opacity: .5; }
 .plaunch { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); opacity: 0; transition: opacity .12s; }
@@ -535,8 +544,40 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wt-list .wt-lbl { margin-bottom: 4px; }
 .wt-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair); background: var(--surface); color: var(--text); text-align: left; }
 .wt-item:hover { border-color: var(--hair-strong); background: var(--surface-2); }
-.wt-br { font: 12px var(--font-mono); }
+.wt-br { font: 12px var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wt-open { margin-left: auto; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+
+/* existing-worktree rows: a row is a target (start a session here) carrying its own
+   state and a remove button, so the list doubles as the worktree manager */
+.wt-wt .wt-bmeta { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: none; }
+.wt-wt .wt-open { margin-left: 0; }
+.wt-open.on { color: var(--st-done); cursor: pointer; }
+.wt-open.on:hover { text-decoration: underline; }
+.wt-tag { font: 9.5px var(--font-mono); color: var(--muted-2); padding: 0 5px; border-radius: 5px; border: 1px solid var(--hair); line-height: 16px; }
+.wt-tag.gone { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 35%, transparent); }
+/* uncommitted work — the one thing removal would actually destroy, so it reads warm */
+.wt-dirty { font: 10px var(--font-mono); color: var(--st-working); }
+.wt-item.gone { opacity: .6; }
+.wt-item.gone:hover { opacity: .85; }
+.wt-rm { font-size: 10px; color: var(--muted-2); opacity: 0; padding: 0 2px; cursor: pointer; transition: opacity .12s, color .12s; }
+.wt-item:hover .wt-rm { opacity: .75; }
+.wt-rm:hover { color: var(--st-attention); opacity: 1; }
+
+/* skeleton rows while git answers — same box as a real row so nothing jumps when the
+   list lands. Inert: no hover lift, no pointer. */
+.wt-item.skel, .wt-item.skel:hover { cursor: default; border-color: var(--hair); background: var(--surface); }
+.wt-item.skel .sk { height: 10px; border-radius: 5px; background: var(--surface-2); }
+.wt-item.skel .sk-br { width: 44%; }
+.wt-item.skel .sk-meta { margin-left: auto; width: 20%; }
+/* stagger the widths so a stack of placeholders doesn't read as a rendered table */
+.wt-item.skel:nth-child(3) .sk-br { width: 32%; }
+.wt-item.skel:nth-child(4) .sk-br { width: 52%; }
+.wt-item.skel:nth-child(4) .sk-meta { width: 14%; }
+@media (prefers-reduced-motion: no-preference) {
+  .wt-item.skel .sk { animation: pulse 1.5s ease-in-out infinite; }
+  .wt-item.skel:nth-child(3) .sk { animation-delay: .12s; }
+  .wt-item.skel:nth-child(4) .sk { animation-delay: .24s; }
+}
 
 /* "Start here — no worktree" — the escape hatch, styled as a real primary-ish option
    (accent wash, full width, leads the dialog) so a worktree doesn't read as the only
@@ -717,3 +758,18 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 ::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
 
 @media (max-width: 1080px) { .app, .app.insp-off { grid-template-columns: 224px minmax(0,1fr); } .insp { display: none; } }
+
+/* A control whose click kicked off an async decision — `requestLaunch` has to ask git
+   whether the folder is a repo before it knows whether to launch or offer worktrees,
+   and until that lands the click looks like it did nothing. The label goes transparent
+   rather than away, so the control keeps its exact size and nothing around it shifts,
+   and a spinner takes its place. Last in the file on purpose: it has to out-rank the
+   colour every one of those controls sets for itself, without reaching for !important. */
+.busy { position: relative; pointer-events: none; color: transparent; }
+.plaunch.busy { opacity: 1; }   /* hover-revealed at rest — but a spinner must be seen */
+.busy::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 11px; height: 11px; margin: -6px 0 0 -6px;
+  border-radius: 50%; border: 1.5px solid var(--hair-strong); border-top-color: var(--accent);
+}
+@media (prefers-reduced-motion: no-preference) { .busy::after { animation: spin .7s linear infinite; } }
+@keyframes spin { to { transform: rotate(360deg); } }

@@ -967,41 +967,199 @@ struct Worktree {
     path: String,
     branch: String,
     is_main: bool,
+    /// Uncommitted entries in this checkout (`git status --porcelain` lines,
+    /// untracked included). This is exactly what removing the worktree would
+    /// destroy, so the UI leads with it before asking to remove.
+    dirty: u32,
+    /// Commits on this branch that the repo's HEAD doesn't have. Removing a worktree
+    /// never touches the branch, so these are safe either way — but they decide
+    /// whether the branch can also be tidied away with it (`branch -d`).
+    unmerged: u32,
+    /// `git worktree lock`ed. Removal needs an explicit unlock, so the UI says that
+    /// instead of surfacing a raw git failure.
+    locked: bool,
+    /// The checkout dir is still on disk. A worktree whose folder was deleted by hand
+    /// lingers in git's metadata until a `worktree prune` — those are removable, but
+    /// not startable.
+    exists: bool,
 }
 
-/// List the git worktrees for a repo (parsed from `git worktree list --porcelain`).
-/// The first entry is the main working tree.
+/// Uncommitted entries in a checkout, untracked included (removing a worktree deletes
+/// those too, so they count as work at risk). `--no-optional-locks` so we never fight
+/// a live `git` in that tree.
+fn dirty_count(dir: &str) -> u32 {
+    git_cmd(dir, &["--no-optional-locks", "status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.is_empty()).count() as u32)
+        .unwrap_or(0)
+}
+
+/// List the git worktrees for a repo (parsed from `git worktree list --porcelain`),
+/// each with the state the worktree manager needs to decide what's safe: uncommitted
+/// work, unmerged commits, lock, and whether the dir still exists. The first entry is
+/// the main working tree. The per-worktree probes are a couple of cheap local git
+/// calls each — a repo has a handful of worktrees, not hundreds.
 #[tauri::command]
 fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
-    let out = sys_command("git")
-        .arg("-C").arg(&repo_dir).args(["worktree", "list", "--porcelain"])
-        .output();
+    let out = git_cmd(&repo_dir, &["worktree", "list", "--porcelain"]).output();
     let out = match out {
         Ok(o) if o.status.success() => o,
         _ => return vec![],
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut res: Vec<Worktree> = Vec::new();
-    let mut cur_path: Option<String> = None;
-    let mut cur_branch = String::new();
-    let flush = |res: &mut Vec<Worktree>, path: Option<String>, branch: String| {
-        if let Some(path) = path {
-            let is_main = res.is_empty();
-            res.push(Worktree { path, branch, is_main });
-        }
+    // (path, branch, locked) for the record currently being parsed.
+    let mut cur: Option<(String, String, bool)> = None;
+    let flush = |res: &mut Vec<Worktree>, cur: Option<(String, String, bool)>| {
+        let (path, branch, locked) = match cur {
+            Some(c) => c,
+            None => return,
+        };
+        let is_main = res.is_empty();
+        let exists = std::path::Path::new(&path).is_dir();
+        let dirty = if exists { dirty_count(&path) } else { 0 };
+        // vs the repo we were asked about — the same reference point git_branch_list
+        // uses for ahead/behind, so both lists tell one consistent story.
+        let unmerged = if is_main || branch.is_empty() || branch == "(detached)" {
+            0
+        } else {
+            count_commits(&repo_dir, &format!("HEAD..refs/heads/{branch}"))
+        };
+        res.push(Worktree { path, branch, is_main, dirty, unmerged, locked, exists });
     };
     for line in text.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            flush(&mut res, cur_path.take(), std::mem::take(&mut cur_branch));
-            cur_path = Some(p.to_string());
+            flush(&mut res, cur.take());
+            cur = Some((p.to_string(), String::new(), false));
         } else if let Some(b) = line.strip_prefix("branch ") {
-            cur_branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
+            if let Some(c) = cur.as_mut() {
+                c.1 = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
+            }
         } else if line.starts_with("detached") {
-            cur_branch = "(detached)".to_string();
+            if let Some(c) = cur.as_mut() {
+                c.1 = "(detached)".to_string();
+            }
+        } else if line == "locked" || line.starts_with("locked ") {
+            if let Some(c) = cur.as_mut() {
+                c.2 = true;
+            }
         }
     }
-    flush(&mut res, cur_path.take(), cur_branch);
+    flush(&mut res, cur.take());
     res
+}
+
+/// `git rev-list --count <range>`, 0 on any failure. That default reads as "nothing
+/// unmerged", which would be the dangerous way round if it were load-bearing — it
+/// isn't: 0 only ever *permits* the safe `git branch -d`, which refuses an unmerged
+/// branch on its own. The count is a UI hint; git remains the authority.
+fn count_commits(dir: &str, range: &str) -> u32 {
+    git_cmd(dir, &["rev-list", "--count", range])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0)
+}
+
+#[derive(serde::Serialize)]
+struct WtRemoval {
+    removed: bool,
+    /// Refused: the checkout holds uncommitted work. The UI re-asks naming `dirty`,
+    /// then calls back with `force`. Nothing was touched.
+    needs_force: bool,
+    dirty: u32,
+    /// The branch outlived the worktree — either we weren't asked to delete it, or
+    /// `git branch -d` refused because it holds unmerged commits. We never force-delete
+    /// a branch: the checkout is disposable, commits are not.
+    branch_kept: bool,
+    /// One line for the toast.
+    summary: String,
+}
+
+/// Remove a worktree (and optionally tidy away its branch). The inverse of
+/// `create_worktree`, and the reason the worktree list is a manager rather than a
+/// picker — without it, cleanup means dropping to a shell.
+///
+/// Same design rule as `git_action`: never destroy work the UI can't explain. Two
+/// guards, one per kind of loss. Uncommitted changes live *only* in the checkout, so
+/// they're refused unless the caller explicitly forces (having been told the count).
+/// Commits live on the branch, which `worktree remove` doesn't touch at all — so the
+/// branch is deleted only on request and only via the safe `branch -d`, which refuses
+/// unmerged work on its own. Sessions running inside the worktree are the frontend's
+/// guard: it knows which panes point where.
+#[tauri::command]
+fn remove_worktree(repo_dir: String, path: String, force: bool, delete_branch: bool) -> Result<WtRemoval, String> {
+    // Compare resolved paths: git prints its own canonical form, which on macOS
+    // (/var → /private/var) and Windows (8.3 names, drive case) need not match the
+    // string the frontend is holding.
+    let same = |a: &str, b: &str| {
+        let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| std::path::PathBuf::from(p));
+        canon(a) == canon(b)
+    };
+    let all = list_worktrees(repo_dir.clone());
+    if all.is_empty() {
+        return Err("not a git repository".into());
+    }
+    let target = all
+        .iter()
+        .find(|w| same(&w.path, &path))
+        .ok_or_else(|| "not a worktree of this repository".to_string())?;
+    if target.is_main {
+        return Err("that's the repository itself, not a worktree".into());
+    }
+    if target.locked {
+        return Err("this worktree is locked — run `git worktree unlock` first".into());
+    }
+    let branch = target.branch.clone();
+    let dirty = target.dirty;
+    if dirty > 0 && !force {
+        return Ok(WtRemoval {
+            removed: false,
+            needs_force: true,
+            dirty,
+            branch_kept: true,
+            summary: format!("{dirty} uncommitted change{} in that worktree", if dirty == 1 { "" } else { "s" }),
+        });
+    }
+
+    let mut args: Vec<&str> = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(&path);
+    let out = git_cmd(&repo_dir, &args).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // A worktree whose folder was deleted by hand can't be "removed" — it's
+        // pruned. Fall back to that rather than making the user learn the difference.
+        if !target.exists {
+            let _ = git_cmd(&repo_dir, &["worktree", "prune"]).output();
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { "git worktree remove failed".into() } else { err });
+        }
+    }
+    let _ = git_cmd(&repo_dir, &["worktree", "prune"]).output();
+
+    // `-d` (never `-D`): git re-checks mergedness itself, so a branch that gained
+    // commits since we listed it survives regardless of what we decided up here.
+    let mut branch_kept = true;
+    if delete_branch && !branch.is_empty() && branch != "(detached)" {
+        if let Ok(o) = git_cmd(&repo_dir, &["branch", "-d", &branch]).output() {
+            branch_kept = !o.status.success();
+        }
+    }
+    let label = if branch.is_empty() { "worktree".to_string() } else { branch.clone() };
+    let summary = if !branch_kept {
+        format!("Removed {label} + branch")
+    } else if dirty > 0 {
+        format!("Removed {label} · {dirty} uncommitted change{} discarded", if dirty == 1 { "" } else { "s" })
+    } else {
+        format!("Removed worktree {label}")
+    };
+    Ok(WtRemoval { removed: true, needs_force: false, dirty, branch_kept, summary })
 }
 
 /// One local branch, with enough context for the worktree picker to tell whether
@@ -2402,6 +2560,7 @@ pub fn run() {
             set_caffeinate,
             resolve_permission,
             list_worktrees,
+            remove_worktree,
             git_branch_list,
             spawn_ghostty,
             spawn_shell,
@@ -2438,6 +2597,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Where `create_worktree` puts this repo's worktrees. Tests must delete only this,
+    /// never the shared `.cc-worktrees` parent — sibling tests run in parallel out of
+    /// the same temp dir, and pulling that tree out from under them makes their
+    /// checkouts vanish mid-assertion.
+    fn wt_root(repo: &Path) -> PathBuf {
+        repo.parent().unwrap().join(".cc-worktrees").join(repo.file_name().unwrap())
     }
 
     /// Run a git command in `dir`, asserting success. Identity/signing are passed via
@@ -2541,7 +2708,63 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&orig.stdout).trim(), "dev");
 
         // Worktrees land in a *sibling* .cc-worktrees tree, never inside the repo.
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
+        // Clean only this repo's subtree: .cc-worktrees itself is shared by every
+        // test running in parallel out of the same temp dir.
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remove flow's whole safety story lives in these two guards: uncommitted
+    /// work is refused until the caller has been told how much it is about to lose,
+    /// and the branch (where committed work lives) outlives the checkout unless it is
+    /// fully merged. Both are checked here against a real repo.
+    #[test]
+    fn remove_worktree_guards_uncommitted_work_and_unmerged_branches() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        let repo = dir.to_str().unwrap().to_string();
+
+        // A dirty worktree: refused without force, and nothing is touched by the refusal.
+        let dirty_wt = create_worktree(repo.clone(), "dirty-one".into()).expect("create failed");
+        std::fs::write(std::path::Path::new(&dirty_wt).join("scratch.txt"), "work in progress").unwrap();
+        let r = remove_worktree(repo.clone(), dirty_wt.clone(), false, false).expect("should refuse, not error");
+        assert!(
+            !r.removed && r.needs_force && r.dirty == 1,
+            "dirty worktree must be refused: removed={} needs_force={} dirty={}",
+            r.removed, r.needs_force, r.dirty
+        );
+        assert!(std::path::Path::new(&dirty_wt).is_dir(), "a refusal must not remove anything");
+        // Forced, it goes — and the branch is kept because we didn't ask for it.
+        let r = remove_worktree(repo.clone(), dirty_wt.clone(), true, false).expect("forced removal failed");
+        assert!(r.removed && r.branch_kept, "forced removal should remove the worktree and keep the branch");
+        assert!(!std::path::Path::new(&dirty_wt).is_dir(), "the checkout should be gone");
+        assert!(list_worktrees(repo.clone()).iter().all(|w| w.branch != "dirty-one"), "git should no longer list it");
+
+        // A clean worktree whose branch has its own commit: the branch survives even
+        // when deletion is requested, because `branch -d` refuses unmerged work.
+        let keep_wt = create_worktree(repo.clone(), "has-commits".into()).expect("create failed");
+        commit(std::path::Path::new(&keep_wt), "work only on this branch");
+        let listed = list_worktrees(repo.clone());
+        let w = listed.iter().find(|w| w.branch == "has-commits").expect("worktree missing");
+        assert_eq!((w.dirty, w.unmerged, w.is_main), (0, 1, false), "clean checkout, 1 commit ahead of dev");
+        let r = remove_worktree(repo.clone(), keep_wt.clone(), false, true).expect("removal failed");
+        assert!(r.removed && r.branch_kept, "unmerged branch must survive its worktree");
+        let refs = Command::new("git").current_dir(&dir).args(["branch", "--list", "has-commits"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&refs.stdout).trim().is_empty(), "branch has-commits should still exist");
+
+        // A clean, fully-merged branch is the one case where the branch goes too.
+        let tidy_wt = create_worktree(repo.clone(), "nothing-new".into()).expect("create failed");
+        let r = remove_worktree(repo.clone(), tidy_wt.clone(), false, true).expect("removal failed");
+        assert!(r.removed && !r.branch_kept, "a merged branch should be tidied away with its worktree");
+        let refs = Command::new("git").current_dir(&dir).args(["branch", "--list", "nothing-new"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&refs.stdout).trim().is_empty(), "branch nothing-new should be gone");
+
+        // The repo itself is never removable through this door.
+        assert!(remove_worktree(repo.clone(), repo.clone(), true, false).is_err(), "the main worktree must be refused");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
