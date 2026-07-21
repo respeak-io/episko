@@ -1722,6 +1722,10 @@ function dlog(lvl: DbgLvl, msg: string) {
   if (dbgLog.length > 400) dbgLog.splice(0, dbgLog.length - 400);
   renderDbgBadge();
   if (dbgOpen) renderDbgPanel();
+  // Tee into the backend rolling log so the UI event stream survives a crash and
+  // lands in one durable timeline with the backend's own lines (see log_frontend).
+  // Fire-and-forget: the in-memory ring above is the source of truth for the panel.
+  invoke("log_frontend", { level: lvl, msg }).catch(() => {});
 }
 function dbgIssues() { return dbgLog.reduce((n, e) => n + (e.lvl === "info" ? 0 : 1), 0); }
 function renderDbgBadge() {
