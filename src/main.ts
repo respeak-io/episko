@@ -19,6 +19,20 @@ function loadWebgl(term: Terminal) {
     term.loadAddon(w);
   } catch { /* WebGL unavailable — DOM renderer is fine */ }
 }
+// Platform-aware shortcut hints. Display only: the key handlers already accept
+// both modifiers (`e.metaKey || e.ctrlKey`), so only the glyphs differ per OS.
+const IS_MAC = navigator.userAgent.includes("Mac");
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+/** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
+const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
+// index.html hard-codes the mac glyphs; rewrite its static bits once on other
+// platforms (everything rendered from TS goes through MOD/chord instead).
+if (!IS_MAC) {
+  document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.textContent = "Ctrl"; });
+  document.querySelectorAll<HTMLElement>("[title]").forEach((el) => { if (el.title.includes("⌘")) el.title = el.title.replace(/⌘/g, "Ctrl+"); });
+  const fk = document.querySelector(".fseg.fk");
+  if (fk) fk.textContent = `${chord("K")} · ${chord("1")}–9 switch · ${chord("B")} sidebar · ${chord("I")} inspector · ${chord("±")} font`;
+}
 // macOS terminal key conventions for the embedded shell. xterm.js emits xterm's
 // modified-arrow sequences (Option+Left = \e[1;3D etc.), which a plain login zsh
 // doesn't bind by default — so word-nav keys self-insert garbage like ";3D".
@@ -1230,7 +1244,7 @@ function initProjectDnD() {
 function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
   $("railmini").innerHTML =
-    `<button class="rm-btn" data-rail="1" title="Expand sidebar (⌘B)">»</button>` +
+    `<button class="rm-btn" data-rail="1" title="Expand sidebar (${chord("B")})">»</button>` +
     projectList().map((p) => {
       const first = p.sessions[0];
       const firstExt = p.externals[0];
@@ -1244,7 +1258,7 @@ function renderMini() {
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
-    `<button class="rm-btn rm-add" data-pal="1" title="New session (⌘K)">＋</button>`;
+    `<button class="rm-btn rm-add" data-pal="1" title="New session (${chord("K")})">＋</button>`;
 }
 function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
@@ -1859,8 +1873,8 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: addProject },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: cycleSort },
-  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: toggleInsp, sc: ["⌘", "I"] },
-  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: toggleRail, sc: ["⌘", "B"] },
+  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: toggleInsp, sc: [MOD, "I"] },
+  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: toggleRail, sc: [MOD, "B"] },
   { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: toggleTheme },
 ];
 function buildPalGroups(raw: string): PalGroup[] {
@@ -1883,7 +1897,7 @@ function buildPalGroups(raw: string): PalGroup[] {
     const i = order.get(s.id);
     const label = `${s.project} · ${s.title || s.branch || (s.shell ? "shell" : "session")}`;
     const sub = s.shell ? "shell" : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
-    return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? ["⌘", String(i + 1)] : undefined, session: s, run: () => setActive(s.id) };
+    return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? [MOD, String(i + 1)] : undefined, session: s, run: () => setActive(s.id) };
   });
   const launchCands: PalItem[] = FAVORITES.map((f) => ({ kind: "launch", key: "launch:" + f.path, label: `Launch ${f.name}`, labelHtml: esc(`Launch ${f.name}`), sub: tilde(f.path), sw: accentFor(f.path), icon: iconFor(f.path) || undefined, run: () => requestLaunch(f.name, f.path) }));
   const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: c.sc, run: c.run }));
@@ -1922,7 +1936,7 @@ function renderPal() {
       const i = idx++;
       const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
       const sh = it.shortcut ? `<span class="pal-sh">${it.shortcut.map((k) => `<span class="k">${esc(k)}</span>`).join("")}</span>`
-        : it.session ? `<span class="pal-sh actions"><span class="k">⌘K</span></span>` : "";
+        : it.session ? `<span class="pal-sh actions"><span class="k">${chord("K")}</span></span>` : "";
       return `<div class="pal-item ${i === palSel ? "on" : ""}" data-i="${i}"><span class="pal-ic">${ic}</span><span class="pal-main"><span class="pm">${it.labelHtml}</span>${it.sub ? `<span class="ps">${esc(it.sub)}</span>` : ""}</span>${sh}</div>`;
     }).join("");
     return `<div class="pal-gh">${esc(g.name)}${g.count ? `<span class="gc">${g.count}</span>` : ""}</div>${rows}`;
@@ -1932,7 +1946,7 @@ function renderPal() {
   const foot = $("palFoot");
   foot.innerHTML = palPage === "actions"
     ? `<span>↵ run</span><span>⌫ back</span><span class="sp"></span><span>esc close</span>`
-    : `<span class="pf-mode">⟩ command</span><span>@ project</span><span>/ state</span><span class="sp"></span><span>⌘K actions · esc</span>`;
+    : `<span class="pf-mode">⟩ command</span><span>@ project</span><span>/ state</span><span class="sp"></span><span>${chord("K")} actions · esc</span>`;
   $("palList").querySelector(".pal-item.on")?.scrollIntoView({ block: "nearest" });
 }
 function refreshPal() { palGroups = buildPalGroups(($("palInput") as HTMLInputElement).value); palFlat = palGroups.flatMap((g) => g.items); palSel = 0; renderPal(); }
@@ -2676,9 +2690,11 @@ setTimeout(() => checkForUpdates(false), 3000);
 // either way ("you're on the latest version"), so the menu item always answers.
 listen("tray-check-updates", () => { void checkForUpdates(true); });
 
-// Cmd+Q guard. Cmd+Q is bound to our own menu item in the backend (macOS doesn't
-// reliably surface the OS quit as a Tauri event — see tauri#9198), so the keystroke
-// arrives here as `quit-requested` rather than tearing the app down. We only nag
+// Quit guard. On macOS, Cmd+Q is bound to our own menu item in the backend (macOS
+// doesn't reliably surface the OS quit as a Tauri event — see tauri#9198); on
+// Windows the backend intercepts CloseRequested (closing the window is the quit
+// gesture there — it has no app menu). Both arrive here as `quit-requested`
+// rather than tearing the app down. We only nag
 // when something would actually be lost — an idle Muster quits immediately, keeping
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {

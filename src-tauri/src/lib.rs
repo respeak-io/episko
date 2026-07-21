@@ -14,7 +14,9 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::MenuBuilder;
+#[cfg(target_os = "macos")]
+use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -2342,6 +2344,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Windows analog of the macOS Cmd+Q catcher in `setup` below: Windows gets
+        // no app menu (see there), so quitting means closing the window. Intercept
+        // the close and run the same frontend confirm flow — only `confirm_quit`
+        // actually exits, and the frontend calls it straight away when idle.
+        .on_window_event(|window, event| {
+            #[cfg(windows)]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("quit-requested", ());
+            }
+            #[cfg(not(windows))]
+            let _ = (window, event);
+        })
         .setup(|app| {
             let server = tiny_http::Server::http("127.0.0.1:0")
                 .expect("bind telemetry server on 127.0.0.1");
@@ -2427,7 +2442,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // ---- App menu with a Cmd+Q catcher ----
+            // ---- App menu with a Cmd+Q catcher (macOS only) ----
             // Cmd+Q is a "special Apple event" that Tauri does not reliably surface
             // as an app/window event on macOS (tauri-apps/tauri#9198), so
             // RunEvent::ExitRequested/prevent_exit can't be trusted to intercept it.
@@ -2436,50 +2451,63 @@ pub fn run() {
             // `terminate:`. The handler asks the frontend to confirm; only `confirm_quit`
             // actually exits. Replacing the default menu means we must re-add the Edit
             // submenu ourselves, or Cmd+C/X/V/Z/A stop working in the app's inputs.
-            let quit_item = MenuItemBuilder::with_id("quit-confirm", "Quit Muster")
-                .accelerator("CmdOrCtrl+Q")
-                .build(app)?;
-            let app_menu = SubmenuBuilder::new(app, "Muster")
-                .about(None)
-                .separator()
-                .services()
-                .separator()
-                .hide()
-                .hide_others()
-                .show_all()
-                .separator()
-                .item(&quit_item)
-                .build()?;
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .undo()
-                .redo()
-                .separator()
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
-            let window_menu = SubmenuBuilder::new(app, "Window")
-                .minimize()
-                .fullscreen()
-                .separator()
-                .close_window()
-                .build()?;
-            let menu = MenuBuilder::new(app)
-                .items(&[&app_menu, &edit_menu, &window_menu])
-                .build()?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id().0.as_str() == "quit-confirm" {
-                    // Surface the window so the confirm dialog has context, then let the
-                    // frontend decide (it quits straight away when nothing is running).
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
+            //
+            // Never install this on Windows: `set_menu` would render it as an
+            // in-window menu bar full of mac-only items — and muda's predefined
+            // Hide item there does a raw Win32 ShowWindow(SW_HIDE) behind tao's
+            // visibility flags, after which tao's show() no-ops and the window is
+            // unrecoverable, tray "Show Muster" included (muda 0.19.3
+            // windows/mod.rs:1217 vs tao 0.35.3 window_state.rs apply_diff).
+            // Windows needs no menu at all: WebView2 handles the edit shortcuts
+            // natively, and quitting goes through the CloseRequested hook on the
+            // builder above.
+            #[cfg(target_os = "macos")]
+            {
+                let quit_item = MenuItemBuilder::with_id("quit-confirm", "Quit Muster")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let app_menu = SubmenuBuilder::new(app, "Muster")
+                    .about(None)
+                    .separator()
+                    .services()
+                    .separator()
+                    .hide()
+                    .hide_others()
+                    .show_all()
+                    .separator()
+                    .item(&quit_item)
+                    .build()?;
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                let window_menu = SubmenuBuilder::new(app, "Window")
+                    .minimize()
+                    .fullscreen()
+                    .separator()
+                    .close_window()
+                    .build()?;
+                let menu = MenuBuilder::new(app)
+                    .items(&[&app_menu, &edit_menu, &window_menu])
+                    .build()?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id().0.as_str() == "quit-confirm" {
+                        // Surface the window so the confirm dialog has context, then let the
+                        // frontend decide (it quits straight away when nothing is running).
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("quit-requested", ());
                     }
-                    let _ = app.emit("quit-requested", ());
-                }
-            });
+                });
+            }
 
             Ok(())
         })
