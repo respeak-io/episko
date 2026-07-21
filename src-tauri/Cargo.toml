@@ -28,4 +28,8 @@ base64 = "0.22.1"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Crash forensics: rolling file log + panic hook. The app previously wrote no
+# logs at all — a panic that unwound out of main left zero trace on disk.
+log = "0.4"
+tauri-plugin-log = "2"
 
