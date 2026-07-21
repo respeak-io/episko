@@ -1623,12 +1623,54 @@ function openUsagePop() {
   const r = $("fUsageSeg").getBoundingClientRect();
   const pop = $("usagePop");
   renderUsagePop();
+  closeFootMenus("usagePop");
   pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + "px";
   pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
   pop.style.top = "auto";
   pop.classList.add("show");
 }
 function closeUsagePop() { $("usagePop").classList.remove("show"); }
+// Only one floating footer/overlay menu may be open at a time: every open* closes
+// the rest first. (The footer triggers stopPropagation, so the document-level
+// outside-click close never fires for them — this is what keeps them exclusive.)
+function closeFootMenus(keep?: string) {
+  const menus: [string, () => void][] = [
+    ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
+    ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
+  ];
+  for (const [id, close] of menus) if (id !== keep) close();
+}
+// Keyboard shortcuts, listed in the footer's ⌘ Shortcuts popover. Keep in sync with
+// the global keydown handler (the sole source of truth for what these actually do).
+const SHORTCUTS: { label: string; chords: string[][] }[] = [
+  { label: "Command palette", chords: [["⌘", "K"]] },
+  { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
+  { label: "Open a terminal here", chords: [["⌘", "T"]] },
+  { label: "Toggle sidebar", chords: [["⌘", "B"]] },
+  { label: "Toggle inspector", chords: [["⌘", "I"]] },
+  { label: "Settings", chords: [["⌘", ","]] },
+  { label: "Terminal font size", chords: [["⌘", "+"], ["⌘", "−"], ["⌘", "0"]] },
+];
+function renderShortPop() {
+  const rows = SHORTCUTS.map((s) => {
+    const keys = s.chords
+      .map((c) => `<span class="sc-chord">${c.map((k) => `<kbd>${esc(k)}</kbd>`).join("")}</span>`)
+      .join(`<span class="sc-or">/</span>`);
+    return `<div class="sc-row"><span class="sc-desc">${esc(s.label)}</span><span class="sc-keys">${keys}</span></div>`;
+  }).join("");
+  $("shortPop").innerHTML = `<div class="sc-h">Keyboard shortcuts</div>${rows}`;
+}
+function openShortPop() {
+  const r = $("fShortSeg").getBoundingClientRect();
+  const pop = $("shortPop");
+  renderShortPop();
+  closeFootMenus("shortPop");
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 300)) + "px";
+  pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  pop.style.top = "auto";
+  pop.classList.add("show");
+}
+function closeShortPop() { $("shortPop").classList.remove("show"); }
 // The fleet's "needs you" set — sessions with a blocking permission, an error, or
 // finished and awaiting your reply — most urgent first (waiting wins), longest in
 // that state first. Independent of the sidebar sort so the reactor is stable.
@@ -1660,6 +1702,7 @@ function badgeLabel(s: Sess) { return s.title || (s.worktree ? `⑃ ${s.branch}`
 function openAttnPop(list: Sess[]) {
   const r = $("attnBadge").getBoundingClientRect();
   const pop = $("attnPop");
+  closeFootMenus("attnPop");
   pop.innerHTML = list.map((s) => {
     const k = statusKey(s);
     const reason = s.attention || PILL_TEXT[s.phase];
@@ -1869,13 +1912,16 @@ function sessionActions(s: Sess): PalItem[] {
     }
     a.push(mk("Open a terminal here", "❯", () => { setActive(s.id); openPlainTerminal(); }));
     a.push(mk("New worktree from here", "⑃", () => openWt(s.project, s.colorKey, false)));
+    // Only when this session lives in a worktree (not the repo's main checkout):
+    // clean up its worktree (and merged branch) without dropping to a shell.
+    if (s.worktree) a.push(mk("Remove this worktree…", "⌫", () => removeWorktreeSession(s)));
   }
   a.push(mk("Close session", "✕", () => closeSession(s.id)));
   return a;
 }
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: addProject },
-  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal },
+  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal, sc: ["⌘", "T"] },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: toggleInsp, sc: ["⌘", "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: toggleRail, sc: ["⌘", "B"] },
@@ -1993,6 +2039,7 @@ function toast(m: string) { const el = $("toast"); el.textContent = m; el.classL
 // ---------- worktree dialog ----------
 let wtCtx: { project: string; repoDir: string } | null = null;
 type BranchInfo = { name: string; current: boolean; checked_out: boolean; ahead: number; behind: number; rel: string; unix: number };
+type WtInfo = { path: string; branch: string; is_main: boolean; dirty: boolean; merged: boolean };
 
 async function openWt(project: string, repoDir: string, allowMain: boolean) {
   wtCtx = { project, repoDir };
@@ -2026,7 +2073,7 @@ async function openWt(project: string, repoDir: string, allowMain: boolean) {
   $("wtBranches").innerHTML = "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => { bi.focus(); bi.select(); }, 30);
-  const wts = await invoke<{ path: string; branch: string; is_main: boolean }[]>("list_worktrees", { repoDir }).catch(() => [] as { path: string; branch: string; is_main: boolean }[]);
+  const wts = await invoke<WtInfo[]>("list_worktrees", { repoDir }).catch(() => [] as WtInfo[]);
   if (wtCtx && wtCtx.repoDir === repoDir) renderWtList(wts);
   // Show the repo's branches so an existing one can be *picked* rather than recalled.
   // The input has always accepted existing names (create_worktree probes the ref and
@@ -2035,14 +2082,25 @@ async function openWt(project: string, repoDir: string, allowMain: boolean) {
   const branches = await invoke<BranchInfo[]>("git_branch_list", { repoDir }).catch(() => [] as BranchInfo[]);
   if (wtCtx && wtCtx.repoDir === repoDir) renderBranchList(branches);
 }
-function renderWtList(wts: { path: string; branch: string; is_main: boolean }[]) {
+function renderWtList(wts: WtInfo[]) {
   const nonMain = wts.filter((w) => !w.is_main);
   const el = $("wtList");
   if (!nonMain.length) { el.innerHTML = ""; (el as HTMLElement).hidden = true; return; }
   (el as HTMLElement).hidden = false;
   el.innerHTML = `<div class="wt-lbl">Existing worktrees</div>` + nonMain.map((w) => {
     const isOpen = [...sessions.values()].some((s) => s.workdir === w.path);
-    return `<button class="wt-item" data-wt="${esc(w.path)}" data-wtbranch="${esc(w.branch)}"><span class="wt-br">⑃ ${esc(w.branch)}</span><span class="wt-open">${isOpen ? "open" : "→"}</span></button>`;
+    // A cleanliness cue, most-important-first: merged (safe to clean) → dirty
+    // (uncommitted work) → nothing. `open` sessions get no cue; the tree is live.
+    const tag = isOpen ? "" : w.merged ? `<span class="wt-tag merged">merged</span>` : w.dirty ? `<span class="wt-tag dirty">uncommitted</span>` : "";
+    const open = `<button class="wt-item" data-wt="${esc(w.path)}" data-wtbranch="${esc(w.branch)}"><span class="wt-br">⑃ ${esc(w.branch)}</span>${tag}<span class="wt-open">${isOpen ? "open" : "→"}</span></button>`;
+    // Remove control — hidden while a session is live in the worktree (close it
+    // first). A merged row also drops its branch (safe-delete); a dirty row's ✕
+    // hands the --force command to a terminal rather than clobbering the tree.
+    const title = w.dirty ? "Uncommitted changes — removing needs --force in a terminal"
+      : w.merged ? "Remove this worktree and delete its merged branch"
+      : "Remove this worktree (keeps the branch)";
+    const rm = isOpen ? "" : `<button class="wt-rm" title="${esc(title)}" data-wtrm="${esc(w.path)}" data-wtrmbranch="${esc(w.branch)}" data-wtrmdel="${w.merged ? "1" : "0"}">✕</button>`;
+    return `<div class="wt-row">${open}${rm}</div>`;
   }).join("");
 }
 // Branches you could start a *new* worktree on. The current branch (the "start here"
@@ -2092,6 +2150,65 @@ function wtCreate() {
   if (!branch) { toast("Enter a branch name"); return; }
   createWorktreeOn(branch);
 }
+// Remove an existing worktree from the dialog's list (the ✕ on a row). The backend
+// never forces: a dirty tree is refused and its --force command handed to a
+// terminal, so nothing uncommitted is ever clobbered by the click. On success the
+// list is refreshed in place so the row disappears.
+let wtRmBusy = false;
+async function removeWorktreeRow(path: string, branch: string, deleteBranch: boolean) {
+  if (!wtCtx || wtRmBusy) return;
+  const { project, repoDir } = wtCtx;
+  wtRmBusy = true;
+  try {
+    const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path, branch, deleteBranch });
+    dlog(r.ok ? "info" : "warn", `worktree remove · ${branch || path} · ${r.summary}`);
+    if (r.ok) {
+      toast(r.summary);
+      const wts = await invoke<WtInfo[]>("list_worktrees", { repoDir }).catch(() => [] as WtInfo[]);
+      if (wtCtx && wtCtx.repoDir === repoDir) renderWtList(wts);
+    } else if (r.suggest) {
+      // The force handoff must run from the repo root, never the worktree we're
+      // deleting (git refuses to remove the tree you're standing in).
+      toast(`${r.summary} → opening a terminal`);
+      await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir });
+    } else {
+      toast(r.summary);
+    }
+  } catch (e) {
+    dlog("error", `worktree remove failed: ${e}`);
+    toast("worktree: " + e);
+  } finally {
+    wtRmBusy = false;
+    renderAll();
+  }
+}
+// The action-panel "Remove this worktree" flow: guard uncommitted work, then close
+// the session and remove its worktree (safe-deleting the branch if it's merged).
+async function removeWorktreeSession(s: Sess) {
+  const repoDir = s.colorKey, path = s.workdir, branch = s.branch;
+  // Never close a session that still has a dirty tree — hand the decision (and a
+  // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
+  // enough to try", since the backend still refuses (without forcing) if it's wrong.
+  const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
+  if (ds && ds.dirty > 0) {
+    toast(`${branch || "worktree"}: uncommitted changes — commit or discard first`);
+    await handToTerminal(s.project, path, "git status", { colorKey: repoDir, worktree: s.worktree, branch });
+    return;
+  }
+  closeSession(s.id);
+  await invoke("kill_session", { sessionId: s.id }).catch(() => {}); // ensure the backend guard sees it gone
+  try {
+    const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path, branch, deleteBranch: true });
+    dlog(r.ok ? "info" : "warn", `worktree remove · ${branch || path} · ${r.summary}`);
+    if (r.ok) toast(r.summary);
+    else if (r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(s.project, repoDir, r.suggest, { colorKey: repoDir }); }
+    else toast(r.summary);
+  } catch (e) {
+    dlog("error", `worktree remove failed: ${e}`);
+    toast("worktree: " + e);
+  }
+  renderAll();
+}
 
 // ---------- settings dialog ----------
 // A sidebar-tab settings window built on the shared #scrim + `.show` overlay (same
@@ -2099,10 +2216,12 @@ function wtCreate() {
 // that writes its cc-* key through the SAME setter the rest of the app uses, so a
 // change here is instantly live and persisted — there is no separate settings store.
 type SetSeg = { value: string; label: string; sub?: string; glyph?: string };
-// A control is either a segmented picker (radio-style) or the font stepper.
+// A control is a segmented picker (radio-style), the font stepper, or the worktree-
+// grouping preview grid (segmented pick shown as live mini-sidebars instead of text).
 type SetControl =
   | { kind: "seg"; set: string; label: string; hint?: string; active: () => string; segs: () => SetSeg[] }
-  | { kind: "font"; label: string; hint?: string };
+  | { kind: "font"; label: string; hint?: string }
+  | { kind: "wtpreview"; label: string; hint?: string; active: () => string };
 interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[] }
 
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
@@ -2141,9 +2260,9 @@ const SET_TABS: SetTab[] = [
   {
     id: "worktrees", label: "Worktrees", glyph: "⑃",
     controls: () => [
-      { kind: "seg", set: "wtgroup", label: "Worktree grouping", hint: "How several checkouts of one repo are shown within its project group.",
-        active: () => wtGroup,
-        segs: () => WT_GROUP_SEGS },
+      { kind: "wtpreview", label: "Worktree grouping",
+        hint: "How several checkouts of one repo are shown within its project group. Pick the look that reads best for you.",
+        active: () => wtGroup },
     ],
   },
 ];
@@ -2161,10 +2280,76 @@ function renderSettings() {
     `<button class="set-tab ${t.id === setTab ? "on" : ""}" data-settab="${t.id}"><span class="set-tglyph">${t.glyph}</span>${esc(t.label)}</button>`
   ).join("");
   const tab = SET_TABS.find((t) => t.id === setTab) || SET_TABS[0];
-  $("setBody").innerHTML = tab.controls().map(renderSetControl).join("");
+  // Preserve scroll across the full-body rebuild so picking a card lower in the
+  // (scrollable) Worktrees grid doesn't jump the view back to the top.
+  const body = $("setBody");
+  const sc = body.scrollTop;
+  body.innerHTML = tab.controls().map(renderSetControl).join("");
+  body.scrollTop = sc;
+}
+// Demo roster for the worktree-grouping previews: one repo, a main checkout plus two
+// worktrees, so each grouping mode visibly differs. Static on purpose — the preview
+// is about layout, not live state — and self-contained so it never drags the real
+// sidebar renderers (status glyphs, close buttons, telemetry) into a settings pane.
+const WT_DEMO_HUE: Record<string, string> = { dev: "#818cf8", "agent-1": "#2dd4bf", "agent-2": "#f472b6" };
+const WT_DEMO_ORDER = ["dev", "agent-1", "agent-2"];
+const WT_DEMO: { title: string; st: "work" | "done"; ctx: number; branch: string }[] = [
+  { title: "Fix telemetry routing", st: "work", ctx: 12, branch: "dev" },
+  { title: "Bump CI actions",       st: "done", ctx: 61, branch: "dev" },
+  { title: "Worktree cleanup",      st: "work", ctx: 34, branch: "agent-1" },
+  { title: "Settings previews",     st: "done", ctx: 8,  branch: "agent-2" },
+];
+function wtDemoClusters() {
+  return WT_DEMO_ORDER.map((b) => ({ branch: b, hue: WT_DEMO_HUE[b], isMain: b === "dev", sessions: WT_DEMO.filter((s) => s.branch === b) }));
+}
+function wtDemoRow(s: (typeof WT_DEMO)[number], chip = false): string {
+  const chipHtml = chip ? `<span class="p-chip" style="--h:${WT_DEMO_HUE[s.branch]}">⑃ ${esc(s.branch)}</span>` : "";
+  return `<div class="p-row"><span class="p-dot p-${s.st}"></span><span class="p-lbl">${esc(s.title)}</span>${chipHtml}<span class="p-ctx">${s.ctx}%</span></div>`;
+}
+function wtDemoHead(name: string, count: number, wt?: string): string {
+  const suffix = wt ? `<span class="p-pwt">· ${esc(wt)}</span>` : "";
+  return `<div class="p-phead"><span class="p-pdot"></span><span class="p-pname">${esc(name)}${suffix}</span><span class="p-pcount">${count}</span></div>`;
+}
+// One mini-sidebar per grouping mode — mirrors groupBody()'s shape (off/toplevel flat,
+// subheader nested clusters, chip flat-with-branch-chips) so the card previews what the
+// real sidebar does.
+function wtPreviewBody(mode: WtGroup): string {
+  if (mode === "subheader") {
+    return wtDemoHead("muster", WT_DEMO.length) + wtDemoClusters().map((c) =>
+      `<div class="p-wthead"><span class="p-fork" style="color:${c.hue}">⑃</span>`
+      + `<span class="p-wtname" style="color:${c.hue}">${esc(c.branch)}</span>`
+      + `<span class="p-wtcount">${c.sessions.length}</span></div>`
+      + `<div class="p-wts" style="--h:${c.hue}">${c.sessions.map((s) => wtDemoRow(s)).join("")}</div>`
+    ).join("");
+  }
+  if (mode === "toplevel") {
+    const cs = wtDemoClusters();
+    const main = cs.find((c) => c.isMain)!;
+    let h = wtDemoHead("muster", main.sessions.length) + `<div class="p-rows">${main.sessions.map((s) => wtDemoRow(s)).join("")}</div>`;
+    for (const c of cs.filter((c) => !c.isMain)) h += wtDemoHead("muster", c.sessions.length, c.branch) + `<div class="p-rows">${c.sessions.map((s) => wtDemoRow(s)).join("")}</div>`;
+    return h;
+  }
+  const chip = mode === "chip";
+  return wtDemoHead("muster", WT_DEMO.length) + `<div class="p-rows">${WT_DEMO.map((s) => wtDemoRow(s, chip)).join("")}</div>`;
+}
+// The worktree-grouping picker as a grid of selectable, live-preview cards. Each card
+// carries the same data-set/data-val the seg picker uses, so the existing #setBody
+// click handler routes it through applySetting → setWtGroup with no new wiring.
+function renderWtPreview(active: string): string {
+  const cards = WT_GROUP_SEGS.map((m) => {
+    const on = m.value === active;
+    return `<button class="wtcard${on ? " on" : ""}" data-set="wtgroup" data-val="${esc(m.value)}" aria-pressed="${on}">`
+      + `<div class="wtcard-h"><span class="wtcard-glyph">${m.glyph || ""}</span><span class="wtcard-name">${esc(m.label)}</span><span class="wtcard-check">✓</span></div>`
+      + `<div class="p-mini">${wtPreviewBody(m.value as WtGroup)}</div>`
+      + `<div class="wtcard-desc">${esc(m.sub || "")}</div></button>`;
+  }).join("");
+  return `<div class="wt-grid has-sel">${cards}</div>`;
 }
 function renderSetControl(c: SetControl): string {
   const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
+  if (c.kind === "wtpreview") {
+    return `<div class="set-group">${head}${renderWtPreview(c.active())}</div>`;
+  }
   if (c.kind === "font") {
     return `<div class="set-group">${head}<div class="set-font">
       <button class="set-fbtn" data-setfont="-0.5" title="Smaller" aria-label="Smaller">−</button>
@@ -2250,15 +2435,18 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
+  if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wt],[data-branch],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-wtrm],[data-wt],[data-branch],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
+  // data-wtrm (the ✕) sits beside the data-wt row button, so match it first.
+  else if (el.dataset.wtrm) removeWorktreeRow(el.dataset.wtrm, el.dataset.wtrmbranch || "", el.dataset.wtrmdel === "1");
   else if (el.dataset.wt) openWorktreeSession(el.dataset.wt, el.dataset.wtbranch || "");
   else if (el.dataset.branch) createWorktreeOn(el.dataset.branch);
   else if (el.dataset.close) closeSession(el.dataset.close);
@@ -2287,6 +2475,7 @@ function normalizeHex(v: string): string | null {
 }
 function openColorPopover(key: string, x: number, y: number) {
   popKey = key;
+  closeFootMenus("colorPop");
   const cur = accentFor(key).toLowerCase();
   const pop = $("colorPop");
   pop.innerHTML =
@@ -2340,6 +2529,7 @@ function openEnginePopover() {
   const seg = $("fEngineSeg");
   const r = seg.getBoundingClientRect();
   const pop = $("enginePop");
+  closeFootMenus("enginePop");
   pop.innerHTML = availEngines.map((id) => {
     const d = engineDef(id);
     return `<button class="mp-item ${id === termEngine ? "on" : ""}" data-engine="${id}"><span class="mp-ic">${id === "embedded" ? "▤" : "⧉"}</span><span class="mp-main"><span class="mp-l">${esc(d.label)}</span><span class="mp-s">${esc(d.sub)}</span></span><span class="mp-check">✓</span></button>`;
@@ -2486,6 +2676,7 @@ function openCafPop() {
   const r = $("caf").getBoundingClientRect();
   const pop = $("cafPop");
   fillCafPop();
+  closeFootMenus("cafPop");
   const w = 260;
   pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
   pop.style.top = (r.bottom + 6) + "px";
@@ -2684,6 +2875,7 @@ $("btnTerm").addEventListener("click", openPlainTerminal);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/muster").catch(() => {}); });
 $("fEngineSeg").addEventListener("click", (e) => { e.stopPropagation(); $("enginePop").classList.contains("show") ? closeEnginePop() : openEnginePopover(); });
 $("fUsageSeg").addEventListener("click", (e) => { e.stopPropagation(); $("usagePop").classList.contains("show") ? closeUsagePop() : openUsagePop(); });
+$("fShortSeg").addEventListener("click", (e) => { e.stopPropagation(); $("shortPop").classList.contains("show") ? closeShortPop() : openShortPop(); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
 $("wtGo").addEventListener("click", wtCreate);
 $("wtCancel").addEventListener("click", closeWt);
@@ -2718,6 +2910,7 @@ window.addEventListener("keydown", (e) => {
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
   else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
   else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
+  else if (meta && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
   else if (meta && e.key >= "1" && e.key <= "9") { e.preventDefault(); const list = orderedSessions(); const s = list[+e.key - 1]; if (s) setActive(s.id); }
   else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); bumpFont(0.5); }
   else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }

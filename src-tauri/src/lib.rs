@@ -25,6 +25,9 @@ struct Session {
     /// OS pid of the spawned `claude` (embedded PTY only). Used to exclude our
     /// own sessions from `list_external_sessions` by pid rather than session id.
     pid: Option<u32>,
+    /// Working directory this session runs in. Lets `remove_worktree` refuse to
+    /// delete a worktree that still has a live embedded session inside it.
+    workdir: String,
 }
 
 struct AppState {
@@ -419,7 +422,7 @@ fn spawn_claude(
 
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
     );
 
     stream_pty_session(app, session_id, reader, child, child_pid);
@@ -536,7 +539,7 @@ fn spawn_shell(
     // and never registers in ~/.claude/sessions, so it can't leak as "external".
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
     );
     stream_pty_session(app, session_id, reader, child, child_pid);
     Ok(())
@@ -998,15 +1001,24 @@ fn create_worktree(repo_dir: String, branch: String) -> Result<String, String> {
     Err(String::from_utf8_lossy(&add.stderr).trim().to_string())
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 struct Worktree {
     path: String,
     branch: String,
     is_main: bool,
+    /// Working tree has uncommitted or untracked changes (`git status --porcelain`).
+    /// A dirty worktree can't be removed without `--force`, so the UI won't offer a
+    /// one-click removal for it. Always false for the main worktree (never removable).
+    dirty: bool,
+    /// This worktree's branch is fully merged into the MAIN worktree's branch (its
+    /// commits are an ancestor). Removing such a worktree — and safe-deleting its
+    /// branch — loses nothing, so the UI can surface it as the obvious cleanup.
+    merged: bool,
 }
 
 /// List the git worktrees for a repo (parsed from `git worktree list --porcelain`).
-/// The first entry is the main working tree.
+/// The first entry is the main working tree. Each linked worktree is enriched with
+/// `dirty` / `merged` cues so the picker can tell which are safe to clean up.
 #[tauri::command]
 fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     let out = sys_command("git")
@@ -1023,7 +1035,7 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     let flush = |res: &mut Vec<Worktree>, path: Option<String>, branch: String| {
         if let Some(path) = path {
             let is_main = res.is_empty();
-            res.push(Worktree { path, branch, is_main });
+            res.push(Worktree { path, branch, is_main, dirty: false, merged: false });
         }
     };
     for line in text.lines() {
@@ -1037,7 +1049,136 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
         }
     }
     flush(&mut res, cur_path.take(), cur_branch);
+
+    // Second pass: cleanliness cues for the linked worktrees. `merged` is measured
+    // against the main worktree's branch. Every git call here is best-effort — any
+    // hiccup just leaves the flag false, which only ever makes the UI more cautious.
+    let main_branch = res.iter().find(|w| w.is_main)
+        .map(|w| w.branch.clone())
+        .filter(|b| !b.is_empty() && b != "(detached)");
+    for w in res.iter_mut() {
+        if w.is_main {
+            continue;
+        }
+        w.dirty = sys_command("git")
+            .env("LC_ALL", "C")
+            .arg("-C").arg(&w.path)
+            .args(["--no-optional-locks", "status", "--porcelain"])
+            .output()
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false);
+        if let Some(mb) = &main_branch {
+            if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
+                // `merge-base --is-ancestor A B` exits 0 when A is an ancestor of B,
+                // i.e. this worktree's branch is fully contained in the main branch.
+                w.merged = sys_command("git")
+                    .env("LC_ALL", "C")
+                    .arg("-C").arg(&repo_dir)
+                    .args(["merge-base", "--is-ancestor",
+                        &format!("refs/heads/{}", w.branch),
+                        &format!("refs/heads/{mb}")])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+            }
+        }
+    }
     res
+}
+
+/// True when two paths point at the same location, tolerant of symlinks and
+/// trailing slashes. Falls back to a string compare when either can't be
+/// canonicalized (e.g. one has already been deleted).
+fn same_path(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Remove a linked git worktree, optionally safe-deleting its branch. Mirrors
+/// `git_action`'s rule that no button may leave state the UI can't explain: the
+/// destructive `--force` (worktree) and `-D` (branch) variants are NEVER run from
+/// here — on refusal we hand back the exact shell command to run in a terminal.
+///
+/// Two guards up front: refuse while a live embedded session runs in the worktree
+/// (close it first), and refuse the repo's main worktree. Beyond that, plain
+/// `git worktree remove` is the safety net — it declines a dirty/untracked tree on
+/// its own, so committed work is never at risk from a click.
+#[tauri::command]
+fn remove_worktree(
+    state: State<AppState>,
+    repo_dir: String,
+    path: String,
+    branch: String,
+    delete_branch: bool,
+) -> Result<GitActionResult, String> {
+    // The one guard that needs live app state: never yank a worktree out from under
+    // a running embedded session. The rest is pure git and lives in the helper.
+    let label = if branch.is_empty() { "worktree" } else { &branch };
+    if state.sessions.lock().unwrap().values().any(|s| same_path(&s.workdir, &path)) {
+        return Err(format!("a session is still running in {label} — close it first"));
+    }
+    remove_worktree_impl(&repo_dir, &path, &branch, delete_branch)
+}
+
+/// The git side of `remove_worktree`, free of app state so it's testable against a
+/// real temp repo. Refuses the main worktree; removes without `--force`; optionally
+/// safe-deletes the branch — handing back the force command on any refusal.
+fn remove_worktree_impl(
+    repo_dir: &str,
+    path: &str,
+    branch: &str,
+    delete_branch: bool,
+) -> Result<GitActionResult, String> {
+    let label = if branch.is_empty() { "worktree".to_string() } else { branch.to_string() };
+
+    if list_worktrees(repo_dir.to_string()).iter().any(|w| w.is_main && same_path(&w.path, path)) {
+        return Err("that's the repo's main worktree — it can't be removed".into());
+    }
+
+    let out = git_run(git_cmd(repo_dir, &["worktree", "remove", path]), 30)?;
+    if !out.status.success() {
+        let combined = [
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+        let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
+        return Ok(GitActionResult {
+            ok: false,
+            summary: first,
+            output: combined,
+            suggest: Some(format!("git worktree remove --force \"{path}\"")),
+        });
+    }
+
+    // Best-effort: drop the now-empty `.cc-worktrees/<repo>/` parent so the sibling
+    // tree doesn't accumulate empty dirs. `remove_dir` only succeeds when empty.
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+
+    if delete_branch && !branch.is_empty() && branch != "(detached)" {
+        // Safe-delete only: `git branch -d` refuses an unmerged branch. If it does,
+        // the worktree is already gone — report success and offer the force command.
+        let del = git_run(git_cmd(repo_dir, &["branch", "-d", branch]), 15)?;
+        if del.status.success() {
+            return Ok(GitActionResult {
+                ok: true,
+                summary: format!("Removed worktree and branch {branch}"),
+                output: String::new(),
+                suggest: None,
+            });
+        }
+        return Ok(GitActionResult {
+            ok: true,
+            summary: format!("Removed worktree — kept branch {branch} (not fully merged)"),
+            output: String::from_utf8_lossy(&del.stderr).trim().to_string(),
+            suggest: Some(format!("git branch -D \"{branch}\"")),
+        });
+    }
+
+    Ok(GitActionResult { ok: true, summary: format!("Removed worktree {label}"), output: String::new(), suggest: None })
 }
 
 /// One local branch, with enough context for the worktree picker to tell whether
@@ -1433,7 +1574,7 @@ fn git_diff(workdir: String) -> Option<GitDiff> {
     Some(GitDiff { patch, truncated })
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 struct GitActionResult {
     ok: bool,
     /// One line for the toast.
@@ -2506,6 +2647,7 @@ pub fn run() {
             set_caffeinate,
             resolve_permission,
             list_worktrees,
+            remove_worktree,
             git_branch_list,
             spawn_ghostty,
             spawn_shell,
@@ -2658,6 +2800,58 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&orig.stdout).trim(), "dev");
 
         // Worktrees land in a *sibling* .cc-worktrees tree, never inside the repo.
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cleanup path: `list_worktrees` must flag which linked worktrees are safe
+    /// to remove (merged, clean), and `remove_worktree_impl` must never force —
+    /// safe-deleting a merged branch, keeping an unmerged one, and refusing a dirty
+    /// tree with a `--force` handoff instead of clobbering it.
+    #[test]
+    fn worktree_cleanup_flags_and_safe_removal() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        let repo = dir.to_str().unwrap().to_string();
+
+        // Three linked worktrees: one at dev's tip (merged, clean), one advanced past
+        // dev (unmerged), and one with an untracked file (dirty).
+        let merged = create_worktree(repo.clone(), "merged-wt".into()).expect("merged worktree");
+        let ahead = create_worktree(repo.clone(), "ahead-wt".into()).expect("ahead worktree");
+        commit(Path::new(&ahead), "extra");
+        let dirty = create_worktree(repo.clone(), "dirty-wt".into()).expect("dirty worktree");
+        std::fs::write(Path::new(&dirty).join("scratch.txt"), "wip\n").unwrap();
+
+        let wts = list_worktrees(repo.clone());
+        let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
+        assert!(by("merged-wt").merged && !by("merged-wt").dirty, "merged-wt should be merged+clean: {wts:?}");
+        assert!(!by("ahead-wt").merged && !by("ahead-wt").dirty, "ahead-wt should be unmerged+clean: {wts:?}");
+        assert!(by("dirty-wt").dirty, "dirty-wt should be dirty: {wts:?}");
+        let main_path = wts.iter().find(|w| w.is_main).expect("a main worktree").path.clone();
+
+        // The main worktree can never be removed.
+        assert!(remove_worktree_impl(&repo, &main_path, "dev", false).is_err(), "main worktree must be refused");
+
+        // Merged + delete_branch: worktree gone, branch safe-deleted.
+        let r = remove_worktree_impl(&repo, &merged, "merged-wt", true).expect("remove merged");
+        assert!(r.ok, "merged removal should succeed: {r:?}");
+        assert!(!Path::new(&merged).exists(), "merged worktree dir should be gone");
+        let b = Command::new("git").current_dir(&dir).args(["branch", "--list", "merged-wt"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&b.stdout).trim().is_empty(), "merged branch should be deleted");
+
+        // Unmerged + delete_branch: worktree gone, branch KEPT with a force handoff.
+        let r = remove_worktree_impl(&repo, &ahead, "ahead-wt", true).expect("remove ahead");
+        assert!(r.ok && r.suggest.as_deref().unwrap_or("").contains("branch -D"), "unmerged branch delete should be handed off: {r:?}");
+        let b = Command::new("git").current_dir(&dir).args(["branch", "--list", "ahead-wt"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&b.stdout).trim().is_empty(), "unmerged branch should be kept");
+
+        // Dirty, no force: refused, tree untouched, force handoff offered.
+        let r = remove_worktree_impl(&repo, &dirty, "dirty-wt", false).expect("call returns");
+        assert!(!r.ok && r.suggest.as_deref().unwrap_or("").contains("--force"), "dirty removal should be refused with a force handoff: {r:?}");
+        assert!(Path::new(&dirty).exists(), "dirty worktree must not be clobbered");
+
         let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
         let _ = std::fs::remove_dir_all(&dir);
     }

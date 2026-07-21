@@ -77,7 +77,7 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .kbar:hover { border-color: var(--hair-strong); }
 .kbar span { font-size: 11px; }
 .kbd { margin-left: auto; display: flex; gap: 3px; }
-.kbd kbd, .empty kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
+.kbd kbd, .empty kbd, .shortpop kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
 .kbar > span:first-child { display: inline-flex; align-items: center; justify-content: center; width: 14px; }
 .top-right { display: flex; align-items: center; gap: 7px; }
 /* Header reactor: colour follows the fleet's most-urgent state (--rc), set by the
@@ -475,7 +475,6 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .foot .fmid { color: var(--muted-2); margin: 0 -2px; }
 .foot .fseg .fsub { margin-left: -3px; }
 .foot .spacer { margin-left: auto; }
-.foot .fk { color: var(--muted-2); }
 .foot .fsub { color: var(--muted-2); }
 .foot .fver { color: var(--muted-2); letter-spacing: .02em; cursor: pointer; padding: 0 4px; margin: 0 -4px; border-radius: 5px; }
 .foot .fver:hover { color: var(--accent-ink); background: var(--surface); }
@@ -486,6 +485,9 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .foot .fclick:hover { background: var(--surface); }
 .foot .fclick:hover b { color: var(--accent-ink); }
 .foot .fcaret { font-size: 7px; color: var(--muted-2); }
+/* The ⌘ key-cap that fronts the "Shortcuts" footer segment. */
+.foot .fkbd { display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px; padding: 0 3px; font: 10px var(--font-mono); border-radius: 4px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
+.foot .fclick:hover .fkbd { color: var(--accent-ink); border-color: var(--accent-line); }
 .foot .frepo { display: flex; align-items: center; gap: 4px; color: var(--muted); text-decoration: none; cursor: pointer; padding: 0 5px; margin: 0 -5px; border-radius: 5px; }
 .foot .frepo:hover { color: var(--accent-ink); background: var(--surface); }
 .foot .frepo .fcaret { font-size: 9px; }
@@ -537,6 +539,15 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wt-item:hover { border-color: var(--hair-strong); background: var(--surface-2); }
 .wt-br { font: 12px var(--font-mono); }
 .wt-open { margin-left: auto; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+/* An existing-worktree row: the open button + its ✕ remove control, side by side. */
+.wt-row { display: flex; align-items: center; gap: 6px; }
+.wt-row .wt-item { flex: 1 1 auto; min-width: 0; }
+.wt-rm { flex: none; width: 28px; align-self: stretch; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted-2); cursor: pointer; font-size: 12px; line-height: 1; }
+.wt-rm:hover { border-color: #f2555a; color: #f2555a; background: var(--surface-2); }
+/* Cleanliness cue chips inside a worktree row (merged = safe to clean, dirty = has work). */
+.wt-tag { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--hair); }
+.wt-tag.merged { color: #34d399; border-color: color-mix(in srgb, #34d399 40%, transparent); }
+.wt-tag.dirty { color: #d99b12; border-color: color-mix(in srgb, #facc15 45%, transparent); }
 
 /* "Start here — no worktree" — the escape hatch, styled as a real primary-ish option
    (accent wash, full width, leads the dialog) so a worktree doesn't read as the only
@@ -572,7 +583,9 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wt-go { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); color: #16121f; border-color: transparent; }
 
 /* settings dialog — sidebar-tab layout on the shared #scrim overlay */
-.setdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(620px, 94vw); max-height: min(560px, 88vh); z-index: 42; display: grid; grid-template-columns: 166px minmax(0,1fr); opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+/* Fixed footprint on purpose: one size shared by every tab, so switching tabs never
+   reflows the window. The busy tab (Worktrees) scrolls inside .set-body instead. */
+.setdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(700px, 94vw); height: min(564px, 90vh); z-index: 42; display: grid; grid-template-columns: 166px minmax(0,1fr); grid-template-rows: minmax(0,1fr); opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .setdlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
 .set-rail { display: flex; flex-direction: column; padding: 16px 10px; background: color-mix(in srgb, var(--bg-2) 55%, transparent); border-right: 1px solid var(--hair); }
 .set-title { font-size: 13px; font-weight: 700; letter-spacing: -.01em; padding: 0 8px 12px; }
@@ -581,8 +594,11 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .set-tab:hover { background: var(--surface); color: var(--text); }
 .set-tab.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); }
 .set-tglyph { flex: none; width: 16px; text-align: center; font-size: 12px; opacity: .9; }
-.set-pane { position: relative; min-width: 0; display: flex; }
-.set-body { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; }
+.set-pane { position: relative; min-width: 0; min-height: 0; display: flex; }
+.set-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; scrollbar-width: thin; scrollbar-color: var(--hair-strong) transparent; }
+.set-body::-webkit-scrollbar { width: 10px; }
+.set-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.set-body::-webkit-scrollbar-thumb:hover { background: var(--muted-2); border: 3px solid transparent; background-clip: padding-box; }
 .set-x { position: absolute; top: 12px; right: 12px; z-index: 1; width: 24px; height: 24px; border-radius: 7px; cursor: pointer; display: grid; place-items: center; font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .set-x:hover { color: var(--text); border-color: var(--hair-strong); }
 .set-group { display: flex; flex-direction: column; }
@@ -606,6 +622,48 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .set-fval { min-width: 58px; text-align: center; font-size: 13px; font-weight: 650; }
 .set-freset { margin-left: 6px; height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer; font: 600 11px var(--font-ui); color: var(--muted); background: transparent; border: 1px solid var(--hair); }
 .set-freset:hover { color: var(--text); border-color: var(--hair-strong); }
+
+/* ---- worktree grouping: selectable, live-preview cards (see renderWtPreview) ---- */
+.wt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.wtcard { display: flex; flex-direction: column; text-align: left; cursor: pointer; border: 1px solid var(--hair); border-radius: 11px; background: var(--surface); padding: 0; overflow: hidden; color: var(--text); font-family: var(--font-ui); transition: border-color .14s, background .14s, transform .14s, opacity .14s; }
+.wtcard:hover { border-color: var(--hair-strong); transform: translateY(-1px); }
+.wtcard:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+/* the chosen mode lifts; the rest recede so the pick reads at a glance */
+.wt-grid.has-sel .wtcard:not(.on) { opacity: .62; }
+.wt-grid.has-sel .wtcard:not(.on):hover { opacity: 1; }
+.wtcard.on { border-color: var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.wtcard-h { display: flex; align-items: center; gap: 8px; padding: 11px 12px 9px; }
+.wtcard-glyph { flex: none; width: 15px; text-align: center; font-size: 12px; color: var(--muted); }
+.wtcard.on .wtcard-glyph { color: var(--accent-ink); }
+.wtcard-name { font-weight: 650; font-size: 12px; }
+.wtcard-check { margin-left: auto; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 9px; color: #16121f; background: var(--accent); opacity: 0; transform: scale(.6); transition: opacity .14s, transform .14s; }
+.wtcard.on .wtcard-check { opacity: 1; transform: none; }
+.wtcard-desc { padding: 10px 12px 13px; font-size: 10px; line-height: 1.45; color: var(--muted-2); }
+.wtcard.on .wtcard-desc { color: var(--muted); }
+/* the mini-sidebar rendered inside each card */
+.p-mini { margin: 0 10px; padding: 9px 8px; border-radius: 8px; background: color-mix(in srgb, var(--bg-2) 70%, var(--panel)); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; min-height: 158px; }
+:root[data-theme="light"] .p-mini { background: var(--bg-2); }
+.p-phead { display: flex; align-items: center; gap: 6px; padding: 2px 4px 3px; }
+.p-phead + .p-phead { margin-top: 5px; }
+.p-pdot { flex: none; width: 8px; height: 8px; border-radius: 3px; background: var(--h, var(--accent)); box-shadow: 0 0 6px -1px var(--h, var(--accent)); }
+.p-pname { font-size: 10px; font-weight: 650; letter-spacing: -.01em; }
+.p-pwt { color: var(--muted-2); font-weight: 500; margin-left: 4px; }
+.p-pcount { margin-left: auto; font: 600 8px var(--font-mono); color: var(--muted-2); background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+.p-rows { display: flex; flex-direction: column; gap: 1px; padding-left: 6px; margin-left: 5px; border-left: 1px solid var(--hair); }
+.p-row { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-radius: 6px; }
+.p-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.p-work { background: var(--st-working); }
+.p-done { background: var(--st-done); }
+.p-idle { background: var(--st-idle); }
+.p-lbl { flex: 1 1 auto; min-width: 0; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-ctx { flex: none; font: 8.5px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.p-chip { flex: none; font: 600 8px var(--font-mono); color: var(--h); display: inline-flex; gap: 2px; }
+.p-wthead { display: flex; align-items: center; gap: 6px; padding: 4px 4px 1px 0; }
+.p-fork { flex: none; width: 11px; text-align: center; font-size: 9px; }
+.p-wtname { font: 600 9.5px var(--font-mono); letter-spacing: -.01em; }
+.p-wtcount { margin-left: auto; font: 600 8px var(--font-mono); color: var(--muted-2); }
+.p-wts { display: flex; flex-direction: column; gap: 1px; padding-left: 6px; margin-left: 5px; border-left: 1px solid color-mix(in srgb, var(--h, var(--hair)) 48%, transparent); }
+@media (prefers-reduced-motion: no-preference) { .p-work { animation: pulse 1.5s ease-in-out infinite; } }
 
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -653,6 +711,16 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .usagepop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 5px 2px 1px; border-top: 1px solid var(--hair); }
 .usagepop .up-foot b { color: var(--text); }
 .usagepop .up-note { font-size: 10px; color: var(--muted-2); padding: 2px; line-height: 1.4; }
+
+/* keyboard-shortcuts popover (⌘ Shortcuts footer segment) */
+.shortpop { min-width: 262px; gap: 1px; padding: 8px; }
+.shortpop .sc-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 5px; }
+.shortpop .sc-row { display: flex; align-items: center; gap: 12px; padding: 5px 4px; border-radius: 6px; }
+.shortpop .sc-row:hover { background: var(--surface); }
+.shortpop .sc-desc { font: 500 11.5px var(--font-ui); color: var(--text); }
+.shortpop .sc-keys { margin-left: auto; display: flex; align-items: center; gap: 5px; flex: none; }
+.shortpop .sc-chord { display: inline-flex; gap: 3px; }
+.shortpop .sc-or { color: var(--muted-2); font-size: 9px; }
 
 /* ---------- external (non-Muster) sessions ---------- */
 /* sidebar row for a session running in another terminal */
