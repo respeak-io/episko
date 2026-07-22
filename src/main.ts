@@ -2770,8 +2770,23 @@ function updateTray() {
   lastTraySig = sig;
   invoke("update_tray", { title, tooltip, items }).catch(() => {});
 }
+// ▶ Run and ❯ Terminal both act on the active project's directory, so with no
+// session, shell or mirrored external there is nothing for them to act on. Greying
+// them says so up front; a live button whose only response is an error toast reads
+// as if the click failed. The guards in openRunPicker/openPlainTerminal stay, since
+// ⌘⇧R and ⌘T bypass the button entirely.
+function syncStageButtons() {
+  const wd = activeCwd();
+  const set = (id: string, enabled: string) => {
+    const b = $(id) as HTMLButtonElement;
+    b.disabled = !wd;
+    b.title = wd ? enabled : "Start a session first — this runs in the active project";
+  };
+  set("btnRun", "Run a task or script from this project");
+  set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
+}
 function renderAll() {
-  renderSidebar(); renderMini(); renderFoot(); renderAttn();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
   // When mirroring an external session, activeId is null but the stage/inspector
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Muster session's telemetry tick blank the

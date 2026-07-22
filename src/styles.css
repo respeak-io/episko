@@ -273,7 +273,8 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
-.act:hover { color: var(--text); border-color: var(--hair-strong); }
+.act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
+.act:disabled { opacity: .35; cursor: default; box-shadow: none; }
 .act.primary { color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); border-color: transparent; box-shadow: 0 5px 14px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.3); }
 .act.icon { width: 27px; padding: 0; justify-content: center; }
 .act.icon.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
