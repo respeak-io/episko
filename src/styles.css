@@ -952,3 +952,66 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 ::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
 
 @media (max-width: 1080px) { .app, .app.insp-off { grid-template-columns: 224px minmax(0,1fr); } .insp { display: none; } }
+
+/* ---------- Usage-limit forecast ---------- */
+/* Footer % coloured by its forecast. ID+class so it beats `.foot .fseg b` and the
+   `.foot .fclick:hover b` accent — otherwise the class lands but the colour never
+   takes (a real specificity trap, since `.foot .fseg b` is 0,2,1 vs a bare class 0,1,0). */
+#fRl.s-ok, #fRl7.s-ok { color: var(--st-done); }
+#fRl.s-warn, #fRl7.s-warn { color: var(--st-working); }
+#fRl.s-bad, #fRl7.s-bad { color: var(--st-error); }
+.foot .freset { color: var(--muted-2); margin-left: 1px; }
+
+/* Shared verdict chip. */
+.vchip { flex: none; font: 700 9px var(--font-mono); letter-spacing: .03em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+.vchip.s-ok { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 15%, transparent); }
+.vchip.s-warn { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 15%, transparent); }
+.vchip.s-bad { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 16%, transparent); }
+.vchip.s-mut { color: var(--muted-2); background: var(--surface-2); }
+
+/* Popup: dual-track meter (solid = used now, hatched = projected by reset). */
+.usagepop .up-pct.s-ok { color: var(--st-done); } .usagepop .up-pct.s-warn { color: var(--st-working); } .usagepop .up-pct.s-bad { color: var(--st-error); }
+.usagepop .up-bar { position: relative; }
+.usagepop .up-bar i.up-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
+.usagepop .up-bar i.up-ghost { position: absolute; top: 0; height: 100%; opacity: .8; color: var(--accent); background-image: repeating-linear-gradient(45deg, currentColor 0 3px, transparent 3px 6px); transition: left .3s ease, width .3s ease; }
+.usagepop .up-bar.s-ok i.up-fill { background: var(--st-done); } .usagepop .up-bar.s-ok i.up-ghost { color: var(--st-done); }
+.usagepop .up-bar.s-warn i.up-fill { background: var(--st-working); } .usagepop .up-bar.s-warn i.up-ghost { color: var(--st-working); }
+.usagepop .up-bar.s-bad i.up-fill { background: var(--st-error); } .usagepop .up-bar.s-bad i.up-ghost { color: var(--st-error); }
+.usagepop .up-fore { display: flex; align-items: center; gap: 6px; font: 600 10px var(--font-mono); color: var(--muted); }
+.usagepop .up-fore .vchip { margin-left: auto; }
+
+/* Settings → Usage forecast block (sits between the stat tiles and the heatmap). */
+.fc-block .fc-hint { text-transform: none; letter-spacing: .01em; font-weight: 500; color: var(--muted-2); }
+.fc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 11px; }
+@media (max-width: 900px) { .fc-grid { grid-template-columns: 1fr; } }
+.fc-win { background: var(--surface); border: 1px solid var(--hair); border-radius: 12px; padding: 14px 14px 15px; }
+.fc-head { display: flex; align-items: baseline; gap: 8px; }
+.fc-name { font-size: 13px; font-weight: 700; }
+.fc-wsub { font: 600 10px var(--font-mono); color: var(--muted-2); }
+.fc-big { display: flex; align-items: flex-end; gap: 9px; margin: 8px 0 3px; }
+.fc-num { font: 800 32px/1 var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text); }
+.fc-num.s-ok { color: var(--st-done); } .fc-num.s-warn { color: var(--st-working); } .fc-num.s-bad { color: var(--st-error); }
+.fc-of { font: 600 10px var(--font-mono); color: var(--muted-2); padding-bottom: 4px; }
+.fc-big .vchip { margin-left: auto; margin-bottom: 4px; }
+.fc-bar { position: relative; height: 9px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.fc-bar i.up-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; background: var(--accent); transition: width .3s ease; }
+.fc-bar i.up-ghost { position: absolute; top: 0; height: 100%; opacity: .8; color: var(--accent); background-image: repeating-linear-gradient(45deg, currentColor 0 3px, transparent 3px 6px); }
+.fc-bar.s-ok i.up-fill { background: var(--st-done); } .fc-bar.s-ok i.up-ghost { color: var(--st-done); }
+.fc-bar.s-warn i.up-fill { background: var(--st-working); } .fc-bar.s-warn i.up-ghost { color: var(--st-working); }
+.fc-bar.s-bad i.up-fill { background: var(--st-error); } .fc-bar.s-bad i.up-ghost { color: var(--st-error); }
+.fc-scale { display: flex; justify-content: space-between; font: 600 9px var(--font-mono); color: var(--muted-2); margin-top: 4px; }
+.fc-tl { margin: 14px 0 4px; }
+.fc-tlab { display: flex; justify-content: space-between; font: 600 9.5px var(--font-mono); color: var(--muted-2); margin-bottom: 5px; }
+.fc-tltrack { position: relative; height: 22px; border-radius: 6px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--hair); }
+.fc-tlel { position: absolute; left: 0; top: 0; height: 100%; background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.fc-tlnow { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent-ink); }
+.fc-tlout { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--st-error); box-shadow: 0 0 6px var(--st-error); }
+.fc-tlreset { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); font: 700 9px var(--font-mono); color: var(--muted); }
+.fc-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hair); }
+.fc-k { font: 600 8.5px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); }
+.fc-v { font: 700 12.5px var(--font-mono); color: var(--text); margin-top: 2px; }
+.fc-v small { font-weight: 600; font-size: 9.5px; color: var(--muted-2); }
+.fc-v.s-ok { color: var(--st-done); } .fc-v.s-warn { color: var(--st-working); } .fc-v.s-bad { color: var(--st-error); }
+.fc-rec { display: flex; gap: 8px; align-items: flex-start; margin-top: 13px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.fc-recic { flex: none; margin-top: 1px; }
+.fc-rec b { color: var(--text); font-weight: 650; }

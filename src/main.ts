@@ -237,6 +237,106 @@ function rlReset(reset: number | null): number | null {
   return (reset != null && reset * 1000 <= Date.now()) ? null : reset;
 }
 
+// ---------- Usage-limit forecast ----------
+// A percentage alone can't tell you if you're in trouble: 62% burning fast is a
+// lockout, 68% sitting flat is fine. So we sample the (merged, monotonic) used-%
+// over time, estimate a burn rate, extrapolate it to the window's reset, and turn
+// that into a green/amber/red verdict. Samples are in-memory per app run — burn is
+// "unknown" until we've seen >=2 readings spanning a little time, and until then we
+// colour by level alone rather than invent a slope from a single reading.
+const H5_LEN = 5 * 3600, D7_LEN = 7 * 86400; // window lengths, seconds
+type RlWin = "h5" | "d7";
+interface RlSample { t: number; pct: number }
+const rlSamples: Record<RlWin, RlSample[]> = { h5: [], d7: [] };
+// look = how far back the slope is measured; minSpan = least span we'll trust.
+const BURN_CFG: Record<RlWin, { look: number; minSpan: number }> = {
+  h5: { look: 30 * 60_000, minSpan: 3 * 60_000 },
+  d7: { look: 6 * 3_600_000, minSpan: 15 * 60_000 },
+};
+function pushRlSample(win: RlWin, pct: number | null) {
+  if (pct == null) return;
+  const buf = rlSamples[win], now = Date.now(), last = buf[buf.length - 1];
+  if (last && now - last.t < 10_000 && pct === last.pct) return; // nothing new to record
+  buf.push({ t: now, pct });
+  const cutoff = now - BURN_CFG[win].look;
+  while (buf.length > 2 && buf[0].t < cutoff) buf.shift();
+}
+// %/hour at the recent pace, or null when there isn't enough to trust one.
+function burnRate(win: RlWin): number | null {
+  const buf = rlSamples[win];
+  if (buf.length < 2) return null;
+  const a = buf[0], b = buf[buf.length - 1], spanMs = b.t - a.t;
+  if (spanMs < BURN_CFG[win].minSpan) return null;
+  return Math.max(0, (b.pct - a.pct) / (spanMs / 3_600_000)); // usage only climbs; clamp jitter
+}
+
+type FcStatus = "ok" | "warn" | "bad";
+interface Forecast {
+  status: FcStatus; used: number | null; proj: number | null;
+  etaSec: number | null; secLeft: number | null; resetTs: number | null;
+  runsOut: boolean; hasRate: boolean;
+}
+function forecastWin(pct: number | null, reset: number | null, burnPerHr: number | null): Forecast {
+  const used = rlPct(pct, reset);
+  const resetTs = rlReset(reset);
+  const secLeft = resetTs != null ? Math.max(0, resetTs - Math.floor(Date.now() / 1000)) : null;
+  if (used == null) return { status: "ok", used: null, proj: null, etaSec: null, secLeft, resetTs, runsOut: false, hasRate: false };
+  // No trustworthy slope yet, or no active window → judge by level alone (treat as flat).
+  if (burnPerHr == null || secLeft == null) {
+    const status: FcStatus = used >= 100 ? "bad" : used >= 85 ? "warn" : "ok";
+    return { status, used, proj: used, etaSec: null, secLeft, resetTs, runsOut: used >= 100, hasRate: false };
+  }
+  const hLeft = secLeft / 3600;
+  const proj = used + burnPerHr * hLeft;
+  const etaHr = burnPerHr > 1e-6 ? (100 - used) / burnPerHr : Infinity; // hours until 100%
+  const runsOut = used >= 100 || etaHr <= hLeft;
+  const status: FcStatus = runsOut ? "bad" : (proj >= 80 || used >= 85) ? "warn" : "ok";
+  return { status, used, proj, etaSec: isFinite(etaHr) ? etaHr * 3600 : null, secLeft, resetTs, runsOut, hasRate: true };
+}
+const forecast5h = (): Forecast => forecastWin(rl.h5, rl.h5Reset, burnRate("h5"));
+const forecast7d = (): Forecast => forecastWin(rl.d7, rl.d7Reset, burnRate("d7"));
+
+// ---- forecast-vs-actual log: the substrate that makes the model improvable ----
+// On every window rotation we record what the closing window actually reached vs.
+// what we'd projected at its halfway mark. Purely a measurement store for now
+// (localStorage, capped) — nothing consumes it yet; it's what a future threshold-
+// calibration / error-band pass reads. Expensive to backfill, cheap to keep.
+interface FcLogEntry { w: RlWin; closed: number; final: number; midProj: number | null; err: number | null }
+const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
+const midSnap: Record<RlWin, { proj: number } | null> = { h5: null, d7: null };
+function maybeMidSnap(win: RlWin, reset: number | null) {
+  if (midSnap[win] || reset == null) return;
+  const len = win === "h5" ? H5_LEN : D7_LEN;
+  if (reset - Date.now() / 1000 > len / 2) return; // not yet past the halfway mark
+  const f = win === "h5" ? forecast5h() : forecast7d();
+  if (f.hasRate && f.proj != null) midSnap[win] = { proj: f.proj };
+}
+function logWindowClose(win: RlWin, finalPct: number | null) {
+  if (typeof finalPct !== "number") return;
+  const snap = midSnap[win];
+  const e: FcLogEntry = {
+    w: win, closed: Math.floor(Date.now() / 1000), final: finalPct,
+    midProj: snap ? snap.proj : null, err: snap ? finalPct - snap.proj : null,
+  };
+  fcLog.push(e);
+  if (fcLog.length > 200) fcLog.splice(0, fcLog.length - 200);
+  localStorage.setItem("cc-forecast-log", JSON.stringify(fcLog));
+  dlog("info", `forecast · ${win} window closed at ${Math.round(finalPct)}%` +
+    (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : ""));
+}
+// Called after each merge with the pre/post reset so we can spot a window rotation
+// (a genuinely later resets_at). On rotation the old window closed: log how it went,
+// and clear the burn samples so the new window's slope starts clean.
+function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number | null, newReset: number | null) {
+  if (newReset != null && prevReset != null && newReset > prevReset + 120) {
+    logWindowClose(win, prevPct);
+    rlSamples[win] = [];
+    midSnap[win] = null;
+  }
+  pushRlSample(win, rlPct(win === "h5" ? rl.h5 : rl.d7, newReset));
+  maybeMidSnap(win, newReset);
+}
+
 // Claude Code sessions started OUTSIDE Muster (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
@@ -1022,9 +1122,17 @@ function applyStatusline(s: Sess, data: any) {
   if (typeof cost === "number") { addUsage(cost - (s.cost ?? 0), s); s.cost = cost; pushHist(s.costHist, cost); }
   const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
   const r5 = data.rate_limits?.five_hour;
-  if (r5) [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
+  if (r5) {
+    const p = rl.h5, pr = rl.h5Reset;
+    [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
+    onRlUpdate("h5", p, pr, rl.h5Reset);
+  }
   const r7 = data.rate_limits?.seven_day;
-  if (r7) [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
+  if (r7) {
+    const p = rl.d7, pr = rl.d7Reset;
+    [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
+    onRlUpdate("d7", p, pr, rl.d7Reset);
+  }
   // Keep the worktree flag if the statusline reports one, but the branch label
   // itself comes from the live git HEAD poll (refreshBranches), not this field —
   // otherwise the two fight and the label flickers.
@@ -1423,6 +1531,15 @@ function fmtUntil(ts: number): string {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 }
+// A raw duration (seconds) — "2h 10m" / "3d 4h" / "45m". Like fmtUntil but for a
+// span we already hold, not a wall-clock target (used for forecast etas/headroom).
+function fmtSpan(sec: number): string {
+  sec = Math.max(0, Math.round(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 const mc = (v: number) => (v >= 80 ? "hot" : v >= 55 ? "warn" : "");
 function renderShellInspector(s: Sess) {
   const ended = s.phase === "ended";
@@ -1734,32 +1851,58 @@ function renderFoot() {
   const total = usage[todayKey()] || 0;
   $("fSessions").textContent = String(sessions.size);
   $("fCost").textContent = "$" + total.toFixed(2);
-  const r = rlPct(rl.h5, rl.h5Reset);
-  $("fRl").textContent = r != null ? Math.round(r) + "%" : "–";
-  const r7 = rlPct(rl.d7, rl.d7Reset);
-  $("fRl7").textContent = r7 != null ? Math.round(r7) + "%" : "–";
+  paintFootRl("fRl", "fRlReset", forecast5h());
+  paintFootRl("fRl7", "fRl7Reset", forecast7d());
   $("fEngine").textContent = engineDef(termEngine).label;
   if ($("usagePop").classList.contains("show")) renderUsagePop();
 }
-// One usage window (session/5h or weekly/7d): label, % meter, and reset time.
-function usageRow(label: string, sub: string, pct: number | null, reset: number | null): string {
-  const cls = pct == null ? "" : mc(pct);
-  const w = pct == null ? 0 : Math.min(100, Math.round(pct));
-  const pctTxt = pct == null ? "–" : Math.round(pct) + "%";
-  const resetTxt = reset != null
-    ? `resets ${fmtClock(reset)} · in ${fmtUntil(reset)}`
-    : (pct == null ? "no reading yet" : "no active window");
+// Colour the footer % by its forecast (not its raw level), and show a muted
+// countdown to that window's reset beside it — see the forecast section above.
+function paintFootRl(pctId: string, resetId: string, f: Forecast) {
+  const pctEl = $(pctId), resetEl = $(resetId);
+  pctEl.textContent = f.used != null ? Math.round(f.used) + "%" : "–";
+  pctEl.className = f.used == null ? "" : "s-" + f.status; // neutral until we have a reading
+  resetEl.textContent = f.resetTs != null ? "↻ " + fmtUntil(f.resetTs) : "";
+}
+// Plain-language forecast line for a window ("→ ~86% by reset" / "runs out …").
+function foreText(f: Forecast): string {
+  if (f.used == null) return "no reading yet";
+  if (!f.hasRate) return f.secLeft == null ? "no active window" : "gathering pace…";
+  if (f.runsOut && f.etaSec != null && f.secLeft != null)
+    return `on pace to hit 100% in ${fmtSpan(f.etaSec)} — ${fmtSpan(f.secLeft - f.etaSec)} before reset`;
+  return `at this pace → ~${Math.round(f.proj!)}% by reset`;
+}
+// The colour-coded verdict chip (empty until we have a trustworthy rate).
+function verdictChip(f: Forecast): string {
+  if (f.used == null || !f.hasRate) return "";
+  if (f.status === "bad" && f.etaSec != null && f.secLeft != null)
+    return `<span class="vchip s-bad">runs out ${fmtSpan(f.secLeft - f.etaSec)} early</span>`;
+  if (f.status === "warn") return `<span class="vchip s-warn">tight</span>`;
+  return `<span class="vchip s-ok">clear</span>`;
+}
+// One usage window (session/5h or weekly/7d): label, a dual-track meter (solid =
+// used now, hatched = projected by reset), the forecast line, and the reset time.
+function usageRow(label: string, sub: string, f: Forecast): string {
+  const cls = f.used == null ? "" : "s-" + f.status;
+  const pctTxt = f.used == null ? "–" : Math.round(f.used) + "%";
+  const usedW = f.used == null ? 0 : Math.min(100, Math.max(0, f.used));
+  const projW = f.proj == null ? usedW : Math.min(100, Math.max(0, f.proj));
+  const ghostW = Math.max(0, projW - usedW);
+  const resetTxt = f.resetTs != null
+    ? `resets ${fmtClock(f.resetTs)} · in ${fmtUntil(f.resetTs)}`
+    : (f.used == null ? "no reading yet" : "no active window");
   return `<div class="up-row">
     <div class="up-top"><span class="up-l">${label}</span><span class="up-sub">${sub}</span><span class="up-pct ${cls}">${pctTxt}</span></div>
-    <div class="up-bar ${cls}"><i style="width:${w}%"></i></div>
+    <div class="up-bar ${cls}"><i class="up-fill" style="width:${usedW}%"></i><i class="up-ghost" style="left:${usedW}%;width:${ghostW}%"></i></div>
+    <div class="up-fore"><span>${foreText(f)}</span>${verdictChip(f)}</div>
     <div class="up-reset">${resetTxt}</div>
   </div>`;
 }
 function renderUsagePop() {
   const noData = rl.h5 == null && rl.d7 == null;
   $("usagePop").innerHTML = `<div class="up-h">Claude usage limits</div>
-    ${usageRow("Session", "5-hour window", rlPct(rl.h5, rl.h5Reset), rlReset(rl.h5Reset))}
-    ${usageRow("Weekly", "7-day window", rlPct(rl.d7, rl.d7Reset), rlReset(rl.d7Reset))}
+    ${usageRow("Session", "5-hour window", forecast5h())}
+    ${usageRow("Weekly", "7-day window", forecast7d())}
     <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live · account-wide</span></div>
     ${noData ? `<div class="up-note">Appears once a running session reports a statusLine.</div>` : ""}`;
 }
@@ -2015,7 +2158,9 @@ function uTokenMix(): string {
 function uProjects(): string {
   const cur = usageWindow(usageRange);
   const proj: Record<string, number> = {};
-  for (const d of cur) if (d.u) for (const [p, v] of Object.entries(d.u.projects)) proj[p] = (proj[p] || 0) + v;
+  // `projects` can be absent on DayUsage entries written by an older cc-usage-tokens
+  // cache (the field was added after the scan shipped) — guard, or Object.entries throws.
+  for (const d of cur) if (d.u) for (const [p, v] of Object.entries(d.u.projects || {})) proj[p] = (proj[p] || 0) + v;
   const entries = Object.entries(proj).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!entries.length) return `<section class="u-card"><div class="label">Top projects</div><p class="u-hint">${tokenScanning ? "Scanning transcripts…" : "No token data in range yet."}</p></section>`;
   const maxw = entries[0][1] || 1;
@@ -2024,6 +2169,61 @@ function uProjects(): string {
     <table class="u-tbl"><thead><tr><th>Project</th><th class="u-num">Share</th><th class="u-num">Tokens</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
+// One window of the Usage-tab forecast card: current %, verdict, dual-track meter,
+// a timeline with the projected run-out marker, the raw numbers, and a plain-English
+// recommendation. Reads the same forecast()/burnRate() the footer & popup use.
+function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | null, len: number, burnUnit: string): string {
+  const cls = f.used == null ? "" : "s-" + f.status;
+  const pctTxt = f.used == null ? "–" : Math.round(f.used) + "%";
+  const usedW = f.used == null ? 0 : Math.min(100, Math.max(0, f.used));
+  const projW = f.proj == null ? usedW : Math.min(100, Math.max(0, f.proj));
+  const ghostW = Math.max(0, projW - usedW);
+  const elapsed = f.secLeft != null ? len - f.secLeft : 0;
+  const elapsedPct = Math.min(100, Math.max(0, elapsed / len * 100));
+  const outPct = (f.runsOut && f.etaSec != null && f.secLeft != null)
+    ? Math.min(100, Math.max(0, (elapsed + f.etaSec) / len * 100)) : null;
+  const vc = verdictChip(f);
+  const verdict = (f.used != null && f.used >= 100) ? `<span class="vchip s-bad">at cap</span>`
+    : vc || `<span class="vchip s-mut">level only</span>`;
+  const burnTxt = burnPerHr == null ? "—" : `${burnPerHr.toFixed(burnPerHr < 10 ? 1 : 0)} <small>${burnUnit}</small>`;
+  const etaTxt = (f.runsOut && f.etaSec != null && f.etaSec > 0) ? `${fmtSpan(f.etaSec)} <small>to cap</small>` : "—";
+  const projTxt = f.proj == null ? "—" : `~${Math.round(f.proj)}%`;
+  const resetInTxt = f.resetTs != null ? fmtUntil(f.resetTs) : "—";
+  let rec: string;
+  if (f.used == null) rec = `<span class="fc-recic">·</span><div>No reading yet — appears once a running session reports a statusLine.</div>`;
+  else if (f.used >= 100) rec = `<span class="fc-recic">✕</span><div><b>At the cap</b> — new work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
+  else if (!f.hasRate) rec = `<span class="fc-recic">·</span><div>Gathering pace — the forecast sharpens after a few statusLine ticks. Showing level only for now.</div>`;
+  else if (f.status === "bad") rec = `<span class="fc-recic">✕</span><div>On this pace you'll be <b>locked out ~${fmtSpan(f.secLeft! - f.etaSec!)} before reset</b>. Ease off, or move work to the other window.</div>`;
+  else if (f.status === "warn") rec = `<span class="fc-recic">!</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset — you can keep going, but there isn't much slack.</div>`;
+  else rec = `<span class="fc-recic">✓</span><div>Comfortable — projected <b>~${Math.round(f.proj!)}%</b> at reset. Nothing to manage here.</div>`;
+  return `<div class="fc-win">
+    <div class="fc-head"><span class="fc-name">${name}</span><span class="fc-wsub">${sub}</span></div>
+    <div class="fc-big"><span class="fc-num ${cls}">${pctTxt}</span><span class="fc-of">used</span>${verdict}</div>
+    <div class="fc-bar ${cls}"><i class="up-fill" style="width:${usedW}%"></i><i class="up-ghost" style="left:${usedW}%;width:${ghostW}%"></i></div>
+    <div class="fc-scale"><span>0%</span><span>▨ projected by reset</span><span>100%</span></div>
+    <div class="fc-tl">
+      <div class="fc-tlab"><span>window opened</span><span>resets ${f.resetTs != null ? fmtClock(f.resetTs) : "—"}</span></div>
+      <div class="fc-tltrack"><i class="fc-tlel" style="width:${elapsedPct}%"></i><i class="fc-tlnow" style="left:${elapsedPct}%"></i>${outPct != null ? `<i class="fc-tlout" style="left:${outPct}%"></i>` : ""}<span class="fc-tlreset">${resetInTxt} left</span></div>
+    </div>
+    <div class="fc-stats">
+      <div class="fc-stat"><div class="fc-k">Burn rate</div><div class="fc-v">${burnTxt}</div></div>
+      <div class="fc-stat"><div class="fc-k">Projected @ reset</div><div class="fc-v ${cls}">${projTxt}</div></div>
+      <div class="fc-stat"><div class="fc-k">Time to cap</div><div class="fc-v">${etaTxt}</div></div>
+      <div class="fc-stat"><div class="fc-k">Resets in</div><div class="fc-v">${resetInTxt}</div></div>
+    </div>
+    <div class="fc-rec">${rec}</div>
+  </div>`;
+}
+function forecastBlockHtml(): string {
+  const b7 = burnRate("d7");
+  return `<div class="fc-block">
+    <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?</span></div>
+    <div class="fc-grid">
+      ${fcWinHtml("Session", "5-hour window", forecast5h(), burnRate("h5"), H5_LEN, "%/hr")}
+      ${fcWinHtml("Weekly", "7-day window", forecast7d(), b7 == null ? null : b7 * 24, D7_LEN, "%/day")}
+    </div>
+  </div>`;
+}
 function usagePanelHtml(): string {
   const ranges = USAGE_RANGES.map(([n, l]) => `<button class="u-rbtn${n === usageRange ? " on" : ""}" data-urange="${n}">${l}</button>`).join("");
   return `<div class="u-pane">
@@ -2031,6 +2231,7 @@ function usagePanelHtml(): string {
       <p class="u-hint">Every session Muster launches, account-wide. History stays on this machine.</p></div>
       <div class="u-range">${ranges}</div></header>
     ${uTiles()}
+    ${forecastBlockHtml()}
     ${uHeatmap()}
     <div class="u-cols">${uBars()}<section class="u-card">${uModelMix()}${uTokenMix()}</section></div>
     ${uProjects()}
@@ -3636,6 +3837,7 @@ invoke<string[]>("available_terminals").then((ids) => {
 // keep rate-limit reset countdowns fresh (and flip a maxed meter back to 0 once
 // its window resets) even when no new telemetry is arriving.
 setInterval(() => {
+  if (settingsOpen() && setTab === "usage") renderSettings(); // keep the forecast countdowns/colours current
   if (mirror) return; // a read-only mirror owns the stage — don't paint over it
   const s = activeId ? sessions.get(activeId) ?? null : null;
   renderInspector(s);
