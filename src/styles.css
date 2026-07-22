@@ -516,6 +516,44 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .pal-foot .sp { flex: 1; }
 .pal-foot .pf-mode { color: var(--st-done); }
 
+/* ▶ Run picker — same glass treatment as the palette, narrower and denser since
+   every row is one command. Rows keep their source visible so it's obvious which
+   file a task came from. */
+.runpop { position: fixed; top: 15vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(480px, 92vw); z-index: 41; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.runpop.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+.run-h { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px 0; font-size: 13px; font-weight: 700; }
+.run-h .run-sub { font: 10px var(--font-mono); color: var(--muted-2); font-weight: 400; }
+#runInput { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: 13px var(--font-ui); padding: 9px 14px 11px; border-bottom: 1px solid var(--hair); }
+#runInput::placeholder { color: var(--muted-2); }
+.run-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.run-grp { display: flex; align-items: center; gap: 7px; padding: 10px 10px 3px; font: 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted-2); }
+.run-grp:first-child { padding-top: 4px; }
+.run-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); cursor: pointer; }
+.run-row.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.run-row .ic { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-size: 10px; flex: none; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
+.run-row.on .ic { color: var(--accent-ink); border-color: var(--accent-line); }
+.run-row .txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.run-row .txt b { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-row .txt small { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-row .end { font: 9px var(--font-mono); color: var(--muted-2); flex: none; }
+/* Blocked runnables stay listed — a missing row reads as "Muster didn't find it". */
+.run-row.blocked { opacity: .5; cursor: not-allowed; }
+.run-row.blocked .end { color: var(--st-working); }
+.run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
+.run-empty .dim { color: var(--muted-2); font-size: 10.5px; }
+.run-empty code { font: 10px var(--font-mono); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
+.run-foot { display: flex; gap: 14px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
+.run-foot kbd { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; margin-right: 2px; }
+
+/* task inspector actions */
+.tacts { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 12px; }
+.tact { font: 10.5px var(--font-ui); border: 1px solid var(--hair-strong); border-radius: 7px; padding: 5px 9px; background: var(--surface); color: var(--muted); cursor: pointer; text-align: left; }
+.tact:hover { background: var(--surface-2); color: var(--text); }
+.tact.hero { border-color: var(--accent-line); color: var(--accent-ink); width: 100%; }
+.tact.hero:hover { background: var(--accent-wash); }
+.ext-meta .mono.ok { color: var(--st-done); }
+.ext-meta .mono.bad { color: var(--st-error); }
+
 /* worktree dialog */
 .wtdlg { position: fixed; top: 22vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(420px, 92vw); z-index: 42; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); padding: 18px; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .wtdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }

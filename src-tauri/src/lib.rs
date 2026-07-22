@@ -7,6 +7,8 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod tasks;
+
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Mutex;
@@ -483,6 +485,104 @@ fn spawn_shell(
     let child_pid = child.process_id();
     // Deliberately NOT added to owned_pids: a plain shell isn't a claude process
     // and never registers in ~/.claude/sessions, so it can't leak as "external".
+    state.sessions.lock().unwrap().insert(
+        session_id.clone(),
+        Session { master: pair.master, writer, killer, pid: child_pid },
+    );
+    stream_pty_session(app, session_id, reader, child, child_pid);
+    Ok(())
+}
+
+/// The login shell used to run a `Shell` task, as `(program, args)` — the args end
+/// with the flag that takes the command string, so the caller just pushes the line.
+/// A *login* shell (not `-c` alone) so tasks inherit the same PATH, nvm/mise shims
+/// and aliases the user gets in their own terminal; a task that works in iTerm and
+/// fails in Muster is the whole class of bug this avoids.
+#[cfg(not(windows))]
+fn task_shell() -> (String, Vec<String>) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    (shell, vec!["-l".to_string(), "-c".to_string()])
+}
+
+#[cfg(windows)]
+fn task_shell() -> (String, Vec<String>) {
+    let (prog, mut args) = interactive_shell();
+    if prog.to_ascii_lowercase().ends_with("cmd.exe") {
+        args.push("/C".to_string());
+    } else {
+        args.push("-Command".to_string());
+    }
+    (prog, args)
+}
+
+/// Run a Runnable in an embedded PTY — the third kind of pane, after a `claude`
+/// session and a plain shell. Deliberately *not* instrumented: a task gets no
+/// `--settings` file, no telemetry, no cost, and its pid never enters `owned_pids`
+/// (it isn't a `claude` process and can't masquerade as an external session).
+///
+/// The exit code is what the frontend turns into done / error, and it arrives over
+/// the existing `pty-exit` event — no new channel.
+#[tauri::command]
+fn spawn_task(
+    app: AppHandle,
+    state: State<AppState>,
+    session_id: String,
+    spec: tasks::TaskSpec,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let tasks::TaskSpec { exec, cwd: workdir, env } = spec;
+    if !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("no such directory: {workdir}"));
+    }
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = match exec {
+        tasks::Exec::Argv { program, args } => {
+            if program.trim().is_empty() {
+                return Err("task has no command".into());
+            }
+            let mut c = CommandBuilder::new(&program);
+            for a in args {
+                c.arg(a);
+            }
+            c
+        }
+        tasks::Exec::Shell { line } => {
+            if line.trim().is_empty() {
+                return Err("task has no command".into());
+            }
+            let (shell, shell_args) = task_shell();
+            let mut c = CommandBuilder::new(&shell);
+            for a in shell_args {
+                c.arg(a);
+            }
+            c.arg(&line);
+            c
+        }
+    };
+    cmd.cwd(&workdir);
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", augmented_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    // The task's own env last, so a task can deliberately override any of the above.
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    apply_utf8_locale(&mut cmd);
+
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
+    let child_pid = child.process_id();
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
         Session { master: pair.master, writer, killer, pid: child_pid },
@@ -2131,6 +2231,8 @@ pub fn run() {
             list_worktrees,
             spawn_ghostty,
             spawn_shell,
+            spawn_task,
+            tasks::discover_runnables,
             available_terminals,
             spawn_external_terminal,
             open_terminal_here,

@@ -144,6 +144,26 @@ interface DiffStat {
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
 interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
+// What a pane actually contains. All three run in an identical PTY; the kind is
+// what decides whether telemetry, cost and git actions apply to it.
+//   claude — an instrumented `claude` session (the only kind with telemetry)
+//   shell  — a plain login shell (❯ Terminal)
+//   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
+// Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
+// rather than an embedded pane", and only ever applies to a claude session.
+type SessKind = "claude" | "shell" | "task";
+const isAgent = (s: Sess) => s.kind === "claude";
+
+// The resolved half of a Runnable — what the backend needs to actually start it.
+interface Exec { mode: "argv"; program: string; args: string[] }
+interface ExecShell { mode: "shell"; line: string }
+interface Runnable {
+  id: string; label: string; detail: string | null;
+  source: string; sourceFile: string; group: string | null;
+  exec: Exec | ExecShell; cwd: string; env: Record<string, string>;
+  background: boolean; blocked: string | null;
+}
+
 interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
   branch: string; worktree: string | null; title: string;
@@ -152,7 +172,9 @@ interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: { cpu: number; memMb: number } | null;
   lastEvent: string; activity: Act[];
-  external: boolean; shell?: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  // task panes only
+  run?: { id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean; startedAt: number; exitCode: number | null; tail: string[] };
 }
 const sessions = new Map<string, Sess>();
 let activeId: string | null = null;
@@ -342,7 +364,7 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
-    lastEvent: "", activity: [], external, term, fit, pane,
+    lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => {
@@ -438,7 +460,7 @@ function setActive(id: string) {
 // working-set diff (git_diffstat) and the claude process's CPU/RAM
 // (session_resources). Both are cheap and only fetched for the visible session.
 async function refreshSessionStats(s: Sess) {
-  if (s.shell || s.external) return;
+  if (!isAgent(s) || s.external) return;
   const [git, res] = await Promise.all([
     invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
     invoke<{ cpu: number; mem_mb: number } | null>("session_resources", { sessionId: s.id }).catch(() => null),
@@ -512,7 +534,7 @@ async function refreshExternals() {
 // call the inspector already makes; here it fans out across the distinct folders.
 async function refreshDirtyStates() {
   const folders = new Set<string>();
-  for (const s of sessions.values()) if (!s.shell && s.workdir) folders.add(s.workdir);
+  for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
   const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
@@ -839,7 +861,8 @@ function projectList(): ProjGroup[] {
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
 function urgencyRank(s: Sess): number {
-  if (s.shell) return 6;
+  if (s.kind === "shell") return 6;
+  if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
   if (s.phase === "done") return 2;  // your turn
@@ -874,17 +897,19 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
   // Prefer the abbreviated title; fall back to the branch/worktree only until
   // Claude sets a title, so idle rows stay identifiable. (Branch is kept in the
   // stage header — dropped here to save sidebar space.)
-  const label = s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
-  // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited)
-  const glyph = s.shell ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
-  const gcls = s.shell ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
+  const label = s.kind === "task" ? `▶ ${s.run?.label ?? "task"}` : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
+  // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited).
+  // tasks keep the status glyphs: an exit code *is* a done/error phase, so a red
+  // build reads exactly like a broken session in the rail.
+  const glyph = s.kind === "shell" ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
+  const gcls = s.kind === "shell" ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
   const chipHtml = chip
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
   return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
     <span class="sbranch" title="${esc(label)}">${esc(label)}</span>${chipHtml}
-    <span class="sctx">${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
+    <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }
 // The full body of a project group (owned sessions + external rows), shaped by the
@@ -1033,9 +1058,9 @@ function renderHeader(s: Sess | null) {
   const hb = $("hBranch"); hb.classList.remove("ext-chip");
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
-  if (s.shell) { hb.textContent = "shell"; hb.hidden = false; hb.classList.add("ext-chip"); }
+  if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
-  $("hTitle").textContent = s.shell ? "" : (s.title || "");
+  $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   $("hPath").textContent = tilde(s.workdir);
 }
 function fmtDur(ms: number) {
@@ -1057,6 +1082,186 @@ function renderShellInspector(s: Sess) {
       <div class="ext-note">A regular login shell running inside Muster — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
     </div>`;
 }
+// ---------- runnables (tasks & scripts) ----------
+// Discovery lives in Rust (src-tauri/src/tasks.rs) and only ever *parses* files —
+// it never executes the project to find out what it can do. This half is choosing
+// and observing.
+
+// Pins are personal, not project state, so they sit in localStorage beside
+// cc-favorites rather than in the repo. Keyed by project root → Runnable ids,
+// which discovery guarantees are stable across a rescan.
+const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
+function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
+function pinnedIds(key: string): string[] { return taskPins[key] || []; }
+function togglePin(key: string, id: string) {
+  const cur = pinnedIds(key);
+  taskPins[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!taskPins[key].length) delete taskPins[key];
+  saveTaskPins();
+  renderAll();
+}
+
+/// The command as a human reads it — the picker's subtitle and the inspector's
+/// "command" row both show exactly what will run.
+function execCmd(r: Runnable): string {
+  return r.exec.mode === "shell" ? r.exec.line : [r.exec.program, ...r.exec.args].join(" ");
+}
+
+// The trailing column in the sidebar, and the palette subtitle. A background run
+// never claims to be finished, so it reads "bg" for as long as it lives.
+function taskStateText(s: Sess): string {
+  const r = s.run;
+  if (!r) return "";
+  if (s.phase === "working") return r.background ? "bg" : fmtShort(Date.now() - r.startedAt);
+  if (r.exitCode == null) return "";
+  return r.exitCode === 0 ? fmtShort(Date.now() - r.startedAt) : `exit ${r.exitCode}`;
+}
+// "a, b and c" — the quit guard lists up to three kinds of running thing.
+function listPhrase(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+function fmtShort(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function renderTaskInspector(s: Sess) {
+  const r = s.run!;
+  const failed = r.exitCode != null && r.exitCode !== 0;
+  const running = r.exitCode == null;
+  const pill = $("iPill");
+  pill.className = "pill " + (running ? "working" : failed ? "error" : "done");
+  $("iPillTxt").textContent = running ? (r.background ? "running · background" : "running") : failed ? `exit ${r.exitCode}` : "passed";
+
+  // Offer the failure to a live agent in the same project — the one thing a plain
+  // terminal can't do. Only agents, and only when the run actually failed.
+  // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
+  // into, so offering the handoff there would fail at the click.
+  const targets = failed ? [...sessions.values()].filter((x) => isAgent(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
+  const handoff = targets.length
+    ? `<button class="tact hero" data-send="${targets[0].id}">↩ Send output to “${esc(targets[0].title || targets[0].branch || "session")}”</button>`
+    : "";
+
+  $("inspector").innerHTML = `
+    <div class="ext-card">
+      <div class="ext-hl">▶ ${esc(r.label)}</div>
+      <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
+      <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
+      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
+      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
+      ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
+    </div>
+    <div class="tacts">
+      ${handoff}
+      <button class="tact" data-rerun="1">⟳ Re-run</button>
+      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
+      ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
+    </div>`;
+
+  const insp = $("inspector");
+  insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
+  insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
+  insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
+  insp.querySelector("[data-send]")?.addEventListener("click", (e) => {
+    sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
+  });
+}
+
+// Type the failure into a Claude session's stdin — deliberately *without* a
+// trailing newline, so you read what's about to be sent and press Enter yourself.
+// Same contract as handToTerminal: Muster prefills, the human commits.
+function sendOutputToSession(task: Sess, targetId: string) {
+  const t = sessions.get(targetId);
+  if (!t?.term) { toast("That session is gone"); return; }
+  const r = task.run!;
+  const tail = r.tail.join("\n").trim();
+  const msg = `\`${r.cmd}\` failed with exit ${r.exitCode}:\n\n${tail}\n\nPlease fix it.`;
+  setActive(targetId);
+  invoke("write_pty", { sessionId: targetId, data: msg.replace(/\n/g, "\r") })
+    .then(() => toast("Pasted into the session — press Enter to send"))
+    .catch((e) => toast("send failed: " + e));
+}
+
+// Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
+// same xterm setup — because a task genuinely is just another pane.
+async function launchTask(r: Runnable, project: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string | null> {
+  if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return null; }
+  const id = crypto.randomUUID();
+  const colorKey = opts.colorKey ?? r.cwd;
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  $("terminals").appendChild(pane);
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  loadWebgl(term);
+  term.open(pane);
+  // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
+  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+
+  const cmd = execCmd(r);
+  const s: Sess = {
+    id, project, accent: accentFor(colorKey), workdir: r.cwd, colorKey,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
+    phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    lastEvent: "", activity: [],
+    kind: "task", external: false, term, fit, pane,
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [] },
+  };
+  sessions.set(id, s);
+  setActive(id);
+  dlog("info", `task ${r.id} · ${project} · ${cmd}`);
+  term.writeln(`\x1b[90m$ ${cmd}\x1b[0m\r\n`);
+  try {
+    await invoke("spawn_task", {
+      sessionId: id,
+      spec: { exec: r.exec, cwd: r.cwd, env: r.env },
+      rows: term.rows || 24, cols: term.cols || 80,
+    });
+  } catch (e) {
+    dlog("error", `task ${r.id} failed to start: ${e}`);
+    toast("task failed: " + e);
+    term.writeln(`\r\n\x1b[31m[task error] ${e}\x1b[0m`);
+    s.phase = "error";
+    s.run!.exitCode = -1;
+  }
+  renderAll();
+  return id;
+}
+
+// Re-running reuses nothing — it opens a fresh pane and closes the old one, so the
+// sidebar doesn't accumulate a row per attempt while the scrollback stays honest
+// about which attempt you're reading.
+async function rerunTask(s: Sess) {
+  const r = s.run; if (!r) return;
+  const spec = lastRunnableById.get(r.id);
+  if (!spec) { toast("Task definition is gone — rescan"); return; }
+  const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
+  closeSession(s.id);
+  await launchTask(spec, project, { colorKey, worktree, branch });
+}
+
+// The most recent discovery result, so a re-run doesn't need the picker open.
+const lastRunnableById = new Map<string, Runnable>();
+
+async function discoverTasks(workdir: string): Promise<Runnable[]> {
+  try {
+    const list = await invoke<Runnable[]>("discover_runnables", { workdir });
+    for (const r of list) lastRunnableById.set(r.id, r);
+    return list;
+  } catch (e) {
+    dlog("warn", `discover failed (${workdir}): ${e}`);
+    return [];
+  }
+}
+
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
 function toolVerb(tool: string): string {
@@ -1113,7 +1318,7 @@ function dwellText(s: Sess): string {
 // True when this is the "your turn" session that's been blocked longest — the one
 // to jump to first. Only meaningful when several are waiting.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && !x.shell && !x.attention);
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention);
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 // A mini area+line sparkline as an inline SVG. Fixed intrinsic size so the endpoint
@@ -1319,7 +1524,8 @@ function resHtml(s: Sess): string {
     <div class="rr"><span class="rk">mem</span><span class="rbar ${mc(memPct)}"><i style="width:${memPct}%"></i></span><span class="rv">${r.memMb.toFixed(0)} MB</span></div></div>`;
 }
 function renderInspector(s: Sess | null) {
-  if (s?.shell) { renderShellInspector(s); return; }
+  if (s?.kind === "shell") { renderShellInspector(s); return; }
+  if (s?.kind === "task") { renderTaskInspector(s); return; }
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
   $("iPillTxt").textContent = s ? (s.attention ? s.attention : PILL_TEXT[s.phase]) : "–";
@@ -1360,7 +1566,14 @@ function renderFoot() {
 // The fleet's "needs you" set — sessions with a blocking permission, an error, or
 // finished and awaiting your reply — most urgent first (waiting wins), longest in
 // that state first. Independent of the sidebar sort so the reactor is stable.
-function needsYou(s: Sess): boolean { return !s.shell && (!!s.attention || s.phase === "done" || s.phase === "error"); }
+// A failed run counts: the whole point of running tasks in Muster is that a red
+// build reaches you the same way a blocked session does. A *successful* run does
+// not — it settles quietly and auto-dismisses.
+function needsYou(s: Sess): boolean {
+  if (s.kind === "shell") return false;
+  if (s.kind === "task") return s.phase === "error";
+  return !!s.attention || s.phase === "done" || s.phase === "error";
+}
 function needsYouSessions(): Sess[] {
   return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
 }
@@ -1477,7 +1690,7 @@ function dbgSnapshot() {
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
-      lastEvent: s.lastEvent, external: s.external, branch: s.branch, workdir: s.workdir,
+      lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
     })),
     externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
     dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),
@@ -1517,7 +1730,7 @@ async function flushDebug() {
 // opens an action panel (jump, terminal, worktree, kill, answer permission) without
 // leaving the box — a page stack you back out of with Backspace/Esc.
 interface PalItem {
-  kind: "session" | "launch" | "command" | "action" | "fallback";
+  kind: "session" | "launch" | "command" | "action" | "task" | "fallback";
   key: string;                 // stable key for frecency (commands/launches)
   label: string; labelHtml: string; sub?: string;
   sw?: string; icon?: string; glyph?: string;
@@ -1580,7 +1793,7 @@ function sessionActions(s: Sess): PalItem[] {
     a.push(mk("Deny the pending permission", "✕", () => resolvePermission(s.pendingPermId!, "deny")));
     a.push(mk("Answer it in the terminal", "❯", () => resolvePermission(s.pendingPermId!, "terminal")));
   }
-  if (!s.shell) {
+  if (isAgent(s)) {
     // Only offered for repo sessions — s.git is null when the workdir isn't one.
     if (s.git) {
       const b = s.git.behind, ah = s.git.ahead;
@@ -1597,6 +1810,7 @@ function sessionActions(s: Sess): PalItem[] {
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: addProject },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal },
+  { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: toggleInsp, sc: ["⌘", "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: toggleRail, sc: ["⌘", "B"] },
@@ -1620,10 +1834,19 @@ function buildPalGroups(raw: string): PalGroup[] {
 
   const sessCands: PalItem[] = [...sessions.values()].filter(matchesState).map((s) => {
     const i = order.get(s.id);
-    const label = `${s.project} · ${s.title || s.branch || (s.shell ? "shell" : "session")}`;
-    const sub = s.shell ? "shell" : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
+    const label = `${s.project} · ${s.kind === "task" ? "▶ " + (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
+    const sub = s.kind === "shell" ? "shell"
+      : s.kind === "task" ? `task · ${taskStateText(s)}`
+      : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
     return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? ["⌘", String(i + 1)] : undefined, session: s, run: () => setActive(s.id) };
   });
+  // Tasks for the active project. Discovery is async, so this reads a cache the
+  // palette warms on open — an empty first frame is corrected in place.
+  const taskCands: PalItem[] = palTasks.map((r) => ({
+    kind: "task", key: "task:" + r.id, label: `Run ${r.label}`, labelHtml: esc(`Run ${r.label}`),
+    sub: `${r.source} · ${execCmd(r)}`, glyph: r.blocked ? "⃠" : "▶",
+    run: () => { const c = runTargetCtx(); if (c) void launchTask(r, c.project, { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch }); },
+  }));
   const launchCands: PalItem[] = FAVORITES.map((f) => ({ kind: "launch", key: "launch:" + f.path, label: `Launch ${f.name}`, labelHtml: esc(`Launch ${f.name}`), sub: tilde(f.path), sw: accentFor(f.path), icon: iconFor(f.path) || undefined, run: () => requestLaunch(f.name, f.path) }));
   const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: c.sc, run: c.run }));
   for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`, labelHtml: esc(`New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`), sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
@@ -1633,7 +1856,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   const byFrec = (a: PalItem, b: PalItem) => frecScore(b.key) - frecScore(a.key);
   const sessNatural = (a: PalItem, b: PalItem) => urgencyRank(a.session!) - urgencyRank(b.session!) || b.session!.lastActivity - a.session!.lastActivity;
 
-  const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands);
+  const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands), tsk = score(taskCands);
   const needy = sess.filter((i) => needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
   const rest = sess.filter((i) => !needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
 
@@ -1641,12 +1864,13 @@ function buildPalGroups(raw: string): PalGroup[] {
   const recentKeys = new Set<string>();
   if (mode !== "cmd" && needy.length) groups.push({ name: "Needs you", count: needy.length, items: needy });
   if (emptyTerm && mode === "all") {
-    const recent = [...cmds, ...launch].filter((i) => frecScore(i.key) > 0).sort(byFrec).slice(0, 3);
+    const recent = [...cmds, ...launch, ...tsk].filter((i) => frecScore(i.key) > 0).sort(byFrec).slice(0, 3);
     recent.forEach((i) => recentKeys.add(i.key));
     if (recent.length) groups.push({ name: "Recent", items: recent });
   }
   if (mode !== "cmd" && rest.length) groups.push({ name: "Sessions", count: rest.length, items: rest });
   if (mode === "all" || mode === "sess") { const l = launch.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (l.length) groups.push({ name: "Launch", items: l }); }
+  if (mode === "all" || mode === "sess") { const t = tsk.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (t.length) groups.push({ name: "Tasks", count: t.length, items: t }); }
   if (mode === "all" || mode === "cmd") { const c = cmds.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (c.length) groups.push({ name: "Commands", items: c }); }
   if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: addProject }] });
   return groups;
@@ -1675,7 +1899,18 @@ function renderPal() {
   $("palList").querySelector(".pal-item.on")?.scrollIntoView({ block: "nearest" });
 }
 function refreshPal() { palGroups = buildPalGroups(($("palInput") as HTMLInputElement).value); palFlat = palGroups.flatMap((g) => g.items); palSel = 0; renderPal(); }
-function openPalette() { palPage = "root"; palActionSess = null; palSel = 0; $("scrim").classList.add("show"); $("palette").classList.add("show"); ($("palInput") as HTMLInputElement).value = ""; refreshPal(); setTimeout(() => ($("palInput") as HTMLInputElement).focus(), 30); }
+let palTasks: Runnable[] = [];
+function openPalette() {
+  palPage = "root"; palActionSess = null; palSel = 0;
+  const c = runTargetCtx();
+  palTasks = [];
+  if (c) void discoverTasks(c.workdir).then((l) => { palTasks = l; if ($("palette").classList.contains("show")) refreshPal(); });
+  $("scrim").classList.add("show");
+  $("palette").classList.add("show");
+  ($("palInput") as HTMLInputElement).value = "";
+  refreshPal();
+  setTimeout(() => ($("palInput") as HTMLInputElement).focus(), 30);
+}
 function closePalette() { $("scrim").classList.remove("show"); $("palette").classList.remove("show"); palPage = "root"; palActionSess = null; }
 
 // ---------- panels / theme ----------
@@ -1762,15 +1997,54 @@ async function wtCreate() {
 // ---------- events ----------
 listen<{ sessionId: string; data: string }>("pty-output", (e) => {
   const s = sessions.get(e.payload.sessionId); if (!s?.term) return;
-  s.term.write(Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0)));
+  const bytes = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
+  s.term.write(bytes);
+  // A task keeps a small tail of its own output so a failure can be handed to a
+  // Claude session without re-reading the pane. Bounded hard — this is a hint for
+  // the agent, not a transcript.
+  if (s.run) {
+    const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim()) s.run.tail.push(line.trimEnd());
+    }
+    if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
+  }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   dlog("info", `pty-exit ${e.payload.sessionId.slice(0, 8)} · code ${e.payload.code}`);
   const s = sessions.get(e.payload.sessionId); if (!s) return;
-  s.phase = "ended"; s.attention = null;
-  s.term?.writeln(`\r\n\x1b[90m[claude exited: code ${e.payload.code}]\x1b[0m`);
+  const code = e.payload.code;
+  s.attention = null;
+  if (s.kind === "task") {
+    // The exit code *is* the phase — that's what buys tasks the sidebar glyphs,
+    // the attention badge and the tray without a line of new plumbing.
+    s.run!.exitCode = code;
+    setPhase(s, code === 0 ? "done" : "error");
+    s.term?.writeln(code === 0
+      ? `\r\n\x1b[32m✓ ${s.run!.label} — exit 0\x1b[0m`
+      : `\r\n\x1b[31m✕ ${s.run!.label} — exit ${code}\x1b[0m`);
+    if (code === 0) scheduleDismiss(s);
+    dlog(code === 0 ? "info" : "warn", `task ${s.run!.id} exit ${code}`);
+  } else {
+    s.phase = "ended";
+    s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+  }
   renderAll();
 });
+
+// A green run shouldn't linger — tasks are far more numerous and shorter-lived
+// than sessions, and without this the rail silently fills with ticks. A pane you
+// are actually looking at is never yanked away, and a failure never auto-closes.
+const DISMISS_MS = 20000;
+function scheduleDismiss(s: Sess) {
+  if (s.run?.background) return;
+  window.setTimeout(() => {
+    const cur = sessions.get(s.id);
+    if (!cur || cur.run?.exitCode !== 0) return;   // re-run or still failing → leave it
+    if (activeId === cur.id) return;               // you're reading it
+    closeSession(cur.id);
+  }, DISMISS_MS);
+}
 listen<{ kind: string; data: any }>("telemetry", (e) => {
   const { kind, data } = e.payload; if (!data) return;
   telem.rx++;
@@ -1954,7 +2228,7 @@ function cafPersist() {
 // Is any real (non-shell) session doing work worth staying awake for?
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
-    if (s.shell || s.phase === "ended") continue;
+    if (s.kind === "shell" || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
     if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
   }
@@ -2103,6 +2377,111 @@ function openPlainTerminal() {
   const branch = s ? s.branch : (e?.branch || "");
   launchShell(s ? s.project : basename(colorKey), wd, { colorKey, worktree, branch });
 }
+// ---------- the ▶ Run picker ----------
+// A popover over the stage, grouped by source so it's obvious where each task came
+// from. Blocked runnables stay visible but greyed: hiding them reads as "Muster
+// didn't find my task", which is the more expensive confusion.
+let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string } | null = null;
+let runList: Runnable[] = [];
+let runSel = 0;
+
+function runTargetCtx() {
+  const wd = activeCwd();
+  if (!wd) return null;
+  const s = activeId ? sessions.get(activeId) : null;
+  const e = activeExtId ? externals.find((x) => x.session_id === activeExtId) : undefined;
+  return {
+    workdir: wd,
+    project: s ? s.project : e ? basename(e.repo_root || e.cwd) : basename(wd),
+    colorKey: s ? s.colorKey : e ? (e.repo_root || e.cwd) : wd,
+    worktree: s ? s.worktree : null,
+    branch: s ? s.branch : (e?.branch || ""),
+  };
+}
+
+async function openRunPicker() {
+  const c = runTargetCtx();
+  if (!c) { toast("No active project"); return; }
+  runCtx = { project: c.project, colorKey: c.colorKey, worktree: c.worktree, branch: c.branch };
+  runList = await discoverTasks(c.workdir);
+  runSel = 0;
+  $("runSub").textContent = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · ${tilde(c.workdir)}`;
+  const pop = $("runPop");
+  pop.classList.add("show");
+  $("scrim").classList.add("show");
+  renderRunPicker("");
+  const inp = $("runInput") as HTMLInputElement;
+  inp.value = "";
+  setTimeout(() => inp.focus(), 20);
+}
+function closeRunPicker() {
+  $("runPop").classList.remove("show");
+  if (!$("palette").classList.contains("show")) $("scrim").classList.remove("show");
+  runCtx = null;
+}
+
+// Pinned first (they're the ones you run fifty times a day), then by source.
+function runGroups(term: string): { name: string; items: Runnable[] }[] {
+  const t = term.trim().toLowerCase();
+  const match = (r: Runnable) => !t || r.label.toLowerCase().includes(t) || execCmd(r).toLowerCase().includes(t) || (r.group || "").includes(t);
+  const list = runList.filter(match);
+  const pins = runCtx ? pinnedIds(runCtx.colorKey) : [];
+  const groups: { name: string; items: Runnable[] }[] = [];
+  const pinned = list.filter((r) => pins.includes(r.id));
+  if (pinned.length) groups.push({ name: "pinned", items: pinned });
+  const bySource = new Map<string, Runnable[]>();
+  for (const r of list) {
+    if (pins.includes(r.id)) continue;
+    if (!bySource.has(r.source)) bySource.set(r.source, []);
+    bySource.get(r.source)!.push(r);
+  }
+  const SOURCE_LABEL: Record<string, string> = { muster: ".muster/tasks.toml", npm: "package.json" };
+  for (const [src, items] of bySource) groups.push({ name: SOURCE_LABEL[src] || src, items });
+  return groups;
+}
+
+function renderRunPicker(term: string) {
+  const groups = runGroups(term);
+  const flat = groups.flatMap((g) => g.items);
+  if (runSel >= flat.length) runSel = Math.max(0, flat.length - 1);
+  const body = $("runList");
+  if (!flat.length) {
+    body.innerHTML = runList.length
+      ? `<div class="run-empty">Nothing matches “${esc(term)}”.</div>`
+      : `<div class="run-empty">No tasks found in this project.<br><span class="dim">Muster reads <code>package.json</code> scripts and <code>.muster/tasks.toml</code>.</span></div>`;
+    return;
+  }
+  let i = 0;
+  body.innerHTML = groups.map((g) => {
+    const rows = g.items.map((r) => {
+      const on = i === runSel ? " on" : "";
+      const idx = i++;
+      const pinned = runCtx && pinnedIds(runCtx.colorKey).includes(r.id);
+      return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(r))}">
+        <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
+        <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
+        <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+      </div>`;
+    }).join("");
+    return `<div class="run-grp">${esc(g.name)}</div>${rows}`;
+  }).join("");
+  body.querySelectorAll<HTMLElement>(".run-row").forEach((el) => {
+    el.addEventListener("click", () => { runSel = +el.dataset.i!; pickRun(false); });
+  });
+  body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function pickRun(pin: boolean) {
+  const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
+  const r = flat[runSel];
+  if (!r || !runCtx) return;
+  if (pin) { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
+  const ctx = runCtx;
+  closeRunPicker();
+  bumpFrec("task:" + r.id);
+  void launchTask(r, ctx.project, { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch });
+}
+
 // Hand a command over to a terminal at `workdir` instead of running it ourselves.
 // The embedded engine can genuinely prefill: it opens a shell pane and types the
 // command *without* a newline, so the user reads it and presses Enter. External
@@ -2186,7 +2565,7 @@ async function launchShell(project: string, workdir: string, opts: { colorKey?: 
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [],
-    external: false, shell: true, term, fit, pane,
+    kind: "shell", external: false, term, fit, pane,
   };
   sessions.set(id, s);
   setActive(id);
@@ -2209,6 +2588,17 @@ $("btnNew").addEventListener("click", () => {
 });
 $("btnWorktree").addEventListener("click", () => { const c = activeProjectCtx(); if (!c) { toast("No active session"); return; } openWt(c.project, c.path, false); });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+$("btnRun").addEventListener("click", () => { void openRunPicker(); });
+$("runInput").addEventListener("input", () => { runSel = 0; renderRunPicker(($("runInput") as HTMLInputElement).value); });
+$("runInput").addEventListener("keydown", (e) => {
+  const meta = e.metaKey || e.ctrlKey;
+  const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
+  if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
+  else if (e.key === "Enter") { e.preventDefault(); pickRun(meta); }
+  else if (meta && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeRunPicker(); }
+});
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/muster").catch(() => {}); });
 $("fEngineSeg").addEventListener("click", (e) => { e.stopPropagation(); $("enginePop").classList.contains("show") ? closeEnginePop() : openEnginePopover(); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
@@ -2216,7 +2606,7 @@ $("wtGo").addEventListener("click", wtCreate);
 $("wtCancel").addEventListener("click", closeWt);
 $("wtMain").addEventListener("click", () => { if (!wtCtx) return; const { project, repoDir } = wtCtx; closeWt(); launch(project, repoDir, { colorKey: repoDir }); });
 $("wtBranch").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); wtCreate(); } else if (e.key === "Escape") closeWt(); });
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeRunPicker(); });
 $("diffClose").addEventListener("click", closeDiff);
 // Collapse / expand a file section by clicking its header.
 $("diffBody").addEventListener("click", (e) => {
@@ -2342,13 +2732,16 @@ listen("tray-check-updates", () => { void checkForUpdates(true); });
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {
   const live = [...sessions.values()].filter((s) => s.phase !== "ended");
-  const agents = live.filter((s) => !s.shell).length;
-  const terms = live.filter((s) => s.shell).length;
-  if (agents + terms === 0) { await invoke("confirm_quit"); return; }
+  const agents = live.filter((s) => isAgent(s)).length;
+  const terms = live.filter((s) => s.kind === "shell").length;
+  const runs = live.filter((s) => s.kind === "task").length;
+  const total = agents + terms + runs;
+  if (total === 0) { await invoke("confirm_quit"); return; }
   const parts: string[] = [];
   if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
   if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
-  const ok = await ask(`${parts.join(" and ")} still running — quitting ends ${agents + terms === 1 ? "it" : "them"}.`, {
+  if (runs) parts.push(`${runs} ${runs === 1 ? "task" : "tasks"}`);
+  const ok = await ask(`${listPhrase(parts)} still running — quitting ends ${total === 1 ? "it" : "them"}.`, {
     title: "Quit Muster?",
     kind: "warning",
     okLabel: "Quit",
@@ -2399,7 +2792,7 @@ setInterval(() => {
 setInterval(() => {
   if (activeExtId) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
-  if (!s || s.shell) return;
+  if (!s || !isAgent(s)) return;
   const el = document.getElementById("iDwell");
   if (el) el.textContent = dwellText(s);
 }, 1000);

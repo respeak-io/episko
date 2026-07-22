@@ -37,9 +37,46 @@ Two hard constraints shape this code:
 - **Claude runs hooks/statusLine with a stripped PATH.** Generated commands use absolute `/usr/bin/curl` and `/bin/cat`, never bare `curl`. Likewise `resolve_claude()` probes known install locations (and falls back to the login shell) and `augmented_path()` rebuilds a usable PATH, because a GUI app launched from Finder also gets a stripped PATH.
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
+## Runnables — tasks & scripts (`src-tauri/src/tasks.rs`, `▶ Run`)
+
+Muster runs the task definitions a project already ships. A **`Runnable`** is one
+such definition (an npm script, an entry in `.muster/tasks.toml`; VS Code tasks,
+justfiles and Makefiles are the next providers). Discovery is in `tasks.rs`;
+execution reuses the existing PTY path, because **a task run is just another
+`Sess`** — see the `kind` discriminant below. That's what buys tasks the phase
+state machine, sidebar glyphs, attention badge, tray and ⌘1–9 for free: a run's
+**exit code is its phase** (0 → `done`, non-zero → `error`), delivered over the
+same `pty-exit` event as everything else.
+
+Two rules constrain `tasks.rs`:
+
+- **Discovery never executes the project.** Every provider parses a file. The
+  introspecting ones (`just --dump`, `task --list`, `make -qp`) *evaluate* what
+  they read — backtick variables and imports run shell at parse time — so they
+  stay out until there's a trust gate to put them behind. Adding a folder to
+  Muster must not run code from it.
+- **Ids are stable and namespaced** (`npm:test`, `muster:dev`). Pins
+  (`cc-task-pins`) and palette frecency key off them, so they must survive a
+  rescan; `dedupe_ids` guarantees uniqueness.
+
+`spawn_task` is the third PTY entry point after `spawn_claude` / `spawn_shell`.
+It takes a `TaskSpec { exec, cwd, env }` — a resolved subset of a `Runnable` — and
+is deliberately **un-instrumented**: no `--settings` file, no telemetry, no cost,
+and its pid never enters `owned_pids`. `Exec::Shell` runs through a *login* shell
+so tasks inherit the same PATH and version-manager shims the user's own terminal
+has (a task that works in iTerm and fails in Muster is the bug class this avoids).
+The `Exec` wire format is pinned by a round-trip test — the frontend hands a
+discovered `exec` straight back to `spawn_task`, so a rename there breaks every
+launch silently.
+
+Surfaces: the `▶ Run` header button (picker grouped by source), a **Tasks** group
+in ⌘K, and a task inspector offering re-run / pin / stop / *send output to a
+session*. Successful non-background runs auto-dismiss after 20s unless focused;
+failures persist and raise attention.
+
 ## Backend (`src-tauri/src/lib.rs`)
 
-A single file. `main.rs` only calls `muster_lib::run()`. `AppState` holds the telemetry `port`, a `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), and the held-open `pending` permission requests.
+`main.rs` only calls `muster_lib::run()`; `tasks.rs` holds runnable discovery. `AppState` holds the telemetry `port`, a `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), and the held-open `pending` permission requests.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `shell:true` on the frontend `Sess` and skip telemetry/cost.
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
@@ -47,8 +84,13 @@ A single file. `main.rs` only calls `muster_lib::run()`. `AppState` holds the te
 
 ## Frontend (`src/main.ts`, `index.html`, `src/styles.css`)
 
-One ~1000-line `main.ts`, no framework. State lives in a `sessions: Map<session_id, Sess>` plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+One large `main.ts`, no framework. State lives in a `sessions: Map<session_id, Sess>` plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
+- **`Sess.kind`** (`"claude" | "shell" | "task"`) decides whether telemetry, cost
+  and git actions apply to a pane — use the `isAgent(s)` helper rather than
+  re-testing the string. It is orthogonal to `Sess.external`, which means "the
+  terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
+  applies to a claude session.
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of the file. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **Persistence is all `localStorage`** (keys prefixed `cc-`): favorites, project drag order, color overrides, per-project icons, terminal engine, font size, and a daily cost rollup (`cc-usage`).

@@ -51,6 +51,7 @@
           </div>
           <div class="st-actions">
             <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
+            <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
             <button class="act" id="btnWorktree" title="Create git worktree + session">⑃ Worktree</button>
             <button class="act primary" id="btnNew">＋ Session</button>
             <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
@@ -97,6 +98,15 @@
       <input id="palInput" placeholder="Search sessions, run a command…   ⟩ @ /" autocomplete="off" />
       <div class="pal-list" id="palList"></div>
       <div class="pal-foot" id="palFoot"></div>
+    </div>
+
+    <div class="runpop" id="runPop" role="dialog" aria-modal="true">
+      <div class="run-h">▶ Run<span class="run-sub" id="runSub"></span></div>
+      <input id="runInput" placeholder="Search tasks…" autocomplete="off" spellcheck="false" />
+      <div class="run-list" id="runList"></div>
+      <div class="run-foot">
+        <span><kbd>⏎</kbd> run</span><span><kbd>⌘</kbd><kbd>⏎</kbd> pin</span><span><kbd>⌘</kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
+      </div>
     </div>
 
     <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true">
