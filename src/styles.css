@@ -535,65 +535,153 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .pal-foot .sp { flex: 1; }
 .pal-foot .pf-mode { color: var(--st-done); }
 
-/* worktree dialog */
-.wtdlg { position: fixed; top: 22vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(420px, 92vw); max-height: 82vh; overflow-y: auto; z-index: 42; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); padding: 18px; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+/* new-session dialog — one question ("where should this session run?"), one list.
+   Head + query + foot are pinned; .wt-body is the only scroll region, so a repo with
+   ninety refs can never push the keyboard legend or the title off-screen (the old
+   dialog scrolled itself AND its branch list, which nested two scrollbars). */
+.wtdlg { position: fixed; top: 12vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(880px, 94vw); max-height: 76vh; display: flex; flex-direction: column; overflow: hidden; z-index: 42; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .wtdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
-.wt-h { font-size: 14px; font-weight: 700; }
-.wt-sub { font-size: 11.5px; color: var(--muted); margin: 4px 0 14px; }
-.wt-lbl { font-size: 9px; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
-/* Sub-label on the same line: says the field takes existing branches too, without
-   shouting it in caps alongside the label itself. */
-.wt-hint { text-transform: none; letter-spacing: 0; font-weight: 500; opacity: .62; margin-left: 5px; }
-.wt-in { width: 100%; height: 32px; margin-top: 6px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); padding: 0 11px; font: 13px var(--font-mono); outline: none; }
-.wt-in:focus { border-color: var(--accent-line); }
-.wt-list { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 14px; }
-.wt-list .wt-lbl { margin-bottom: 4px; }
-.wt-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair); background: var(--surface); color: var(--text); text-align: left; }
-.wt-item:hover { border-color: var(--hair-strong); background: var(--surface-2); }
-.wt-br { font: 12px var(--font-mono); }
-.wt-open { margin-left: auto; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
-/* An existing-worktree row: the open button + its ✕ remove control, side by side. */
-.wt-row { display: flex; align-items: center; gap: 6px; }
-.wt-row .wt-item { flex: 1 1 auto; min-width: 0; }
-.wt-rm { flex: none; width: 28px; align-self: stretch; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted-2); cursor: pointer; font-size: 12px; line-height: 1; }
-.wt-rm:hover { border-color: #f2555a; color: #f2555a; background: var(--surface-2); }
-/* Cleanliness cue chips inside a worktree row (merged = safe to clean, dirty = has work). */
-.wt-tag { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--hair); }
-.wt-tag.merged { color: #34d399; border-color: color-mix(in srgb, #34d399 40%, transparent); }
-.wt-tag.dirty { color: #d99b12; border-color: color-mix(in srgb, #facc15 45%, transparent); }
 
-/* "Start here — no worktree" — the escape hatch, styled as a real primary-ish option
-   (accent wash, full width, leads the dialog) so a worktree doesn't read as the only
-   path. The branch name stays a plain inline .wt-mainbr span, NOT an ellipsised block:
-   an inline-block with overflow:hidden takes its bottom margin edge as its baseline,
-   so `vertical-align` had to fake alignment, and the fake broke because the mono face
-   (JetBrains) and UI face (SF Pro) have different ascent/descent. As a plain inline it
-   shares the button's baseline for free. (Long branch names just wrap — no ellipsis.) */
-.wt-here { width: 100%; margin: 0 0 2px; padding: 9px 12px; border-radius: 9px; cursor: pointer; text-align: left; font: 600 12.5px var(--font-ui); color: var(--text); border: 1px solid var(--accent-line); background: var(--accent-wash); }
-.wt-here:hover { filter: brightness(1.08); }
-.wt-mainbr { font-family: var(--font-mono); }
-/* "or in a worktree" rule between the escape hatch and the worktree options */
-.wt-or { display: flex; align-items: center; gap: 8px; margin: 10px 0; font: 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted-2); }
-.wt-or::before, .wt-or::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+.wt-head { flex: none; padding: 13px 14px 11px; border-bottom: 1px solid var(--hair); }
+.wt-title { display: flex; align-items: baseline; gap: 8px; }
+.wt-title b { font-size: 13.5px; font-weight: 700; letter-spacing: -.01em; }
+.wt-proj { font: 11px var(--font-mono); color: var(--accent-ink); }
+.wt-headrow { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.wt-path { font: 10.5px var(--font-mono); color: var(--muted-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-eng, .wt-chip { flex: none; display: inline-flex; align-items: center; gap: 5px; font: 10px var(--font-mono); color: var(--muted); border: 1px solid var(--hair); border-radius: 6px; padding: 3px 7px; background: var(--surface); }
+.wt-chip { cursor: pointer; }
+.wt-chip:hover { border-color: var(--hair-strong); color: var(--text); }
+.wt-chip.spin { color: var(--accent-ink); border-color: var(--accent-line); }
 
-/* branch picker — same rows as .wt-list, capped + scrollable so a busy repo can't
-   push the input and buttons off-screen */
-.wt-branches { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 14px; max-height: 184px; overflow-y: auto; }
-.wt-branches .wt-lbl { margin-bottom: 4px; }
-.wt-branch .wt-bmeta { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: none; }
-.wt-when { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
-.wt-ab { font: 10px var(--font-mono); padding: 0 5px; border-radius: 5px; border: 1px solid var(--hair); line-height: 16px; }
+.wt-q { flex: none; display: flex; align-items: center; gap: 9px; padding: 0 14px; height: 44px; border-bottom: 1px solid var(--hair); }
+.wt-caret { flex: none; color: var(--accent); font: 13px var(--font-mono); }
+.wt-q input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font: 13px var(--font-mono); padding: 0; }
+.wt-q input::placeholder { color: var(--muted-2); font-family: var(--font-ui); font-size: 12.5px; }
+.wt-count { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
+
+/* list left, consequences right */
+.wt-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 366px minmax(0, 1fr); }
+.wt-list { min-height: 0; overflow-y: auto; padding: 6px; border-right: 1px solid var(--hair); scrollbar-width: thin; }
+.wt-gh { display: flex; align-items: center; gap: 7px; padding: 10px 8px 4px; font: 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted-2); }
+.wt-gh:first-child { padding-top: 4px; }
+.wt-gh .gc { letter-spacing: 0; color: var(--muted); background: var(--surface-2); border-radius: 4px; padding: 0 5px; }
+.wt-gh .rule { flex: 1; height: 1px; background: var(--hair); }
+
+.wt-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 9px; border-radius: var(--radius-sm); background: transparent; border: 1px solid transparent; color: var(--text); text-align: left; cursor: pointer; font-family: inherit; }
+.wt-item:hover { background: var(--surface); }
+.wt-item.on, .wt-item.on:hover { background: var(--accent-wash); border-color: var(--accent-line); }
+/* the typed query, promoted to an action — pinned above every group */
+.wt-item.create { background: var(--accent-wash); border-color: var(--accent-line); }
+.wt-ic { flex: none; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-size: 10px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
+.wt-item.on .wt-ic, .wt-item.create .wt-ic { color: var(--accent-ink); border-color: var(--accent-line); }
+.wt-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+/* A long mono branch name must never widen the row — the old .wt-br had no
+   min-width/ellipsis, so `claude/implement-workflow-plugins-KKQKU` grew a horizontal
+   scrollbar. The head flexes and ellipsises; the last chars are pinned by .wt-tl,
+   because sibling branches often differ ONLY in their suffix. */
+.wt-br { display: flex; min-width: 0; font: 12px var(--font-mono); }
+.wt-br .hd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-br .tl { flex: none; white-space: pre; }
+.wt-sub2 { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-meta { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; }
+
+/* state chips: what makes this destination different from a plain clean checkout */
+.wt-tag { font: 9px/16px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; padding: 0 6px; border-radius: 5px; border: 1px solid var(--hair); color: var(--muted-2); white-space: nowrap; }
+.wt-tag.open { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 42%, transparent); }
+.wt-tag.merged { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 34%, transparent); }
+.wt-tag.dirty { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 42%, transparent); }
+.wt-tag.moved { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 42%, transparent); }
+.wt-tag.missing { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
+.wt-tag.det, .wt-tag.locked, .wt-tag.ext { color: var(--st-idle); }
+/* `gone` is INFORMATION, not a fault: the remote branch was deleted, which usually
+   follows a merged PR but just as often precedes picking the work back up. It must
+   not share .missing's error red — that reads as "broken, delete me" and argues
+   against the primary action on the row, which is still to start a worktree here. */
+.wt-tag.gone { color: var(--muted); border-color: var(--hair-strong); }
+.wt-ab { font: 10px/16px var(--font-mono); padding: 0 5px; border-radius: 5px; border: 1px solid var(--hair); }
 .wt-ahead { color: var(--st-done); }   /* has commits the current branch doesn't */
-.wt-behind { color: var(--muted); }    /* trails the current branch */
-/* stale = no commit in a while; dim it, but recover on hover so it stays selectable */
-.wt-branch.stale { opacity: .5; }
-.wt-branch.stale:hover { opacity: 1; }
+.wt-behind { color: var(--muted-2); }  /* trails the current branch */
+.wt-when { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+/* stale = no commit in a while; dim it, but recover on hover/highlight so a dim row
+   is never a less reachable one */
+.wt-item.stale .wt-br, .wt-item.stale .wt-when, .wt-item.stale .wt-ab { opacity: .48; }
+.wt-item.stale:hover .wt-br, .wt-item.stale.on .wt-br,
+.wt-item.stale:hover .wt-when, .wt-item.stale.on .wt-when,
+.wt-item.stale:hover .wt-ab, .wt-item.stale.on .wt-ab { opacity: 1; }
 
-.wt-btns { display: flex; gap: 8px; margin-top: 16px; }
-.wt-btns button { height: 32px; padding: 0 13px; border-radius: 8px; cursor: pointer; font: 600 12px var(--font-ui); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
-.wt-btns button:hover { filter: brightness(1.08); }
-.wt-cancel { margin-right: auto; }
-.wt-go { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); color: #16121f; border-color: transparent; }
+/* skeleton rows — both lists cost several git calls (a status probe per checkout, a
+   rev-list per ref), so the shape is drawn before the data lands */
+.wt-sk { display: flex; align-items: center; gap: 10px; padding: 7px 9px; }
+.wt-sk i { display: block; height: 9px; border-radius: 4px; background: var(--surface-2); animation: wtpulse 1.35s ease-in-out infinite; }
+.wt-sk i.a { width: 20px; height: 20px; border-radius: 6px; flex: none; }
+@keyframes wtpulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
+@media (prefers-reduced-motion: reduce) { .wt-sk i { animation: none; opacity: .6; } }
+.wt-empty { padding: 22px 12px; text-align: center; color: var(--muted-2); font-size: 12px; }
+.wt-empty b { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 3px; }
+
+/* the detail pane — what you're about to walk into */
+.wt-detail { min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 13px; scrollbar-width: thin; }
+.wt-dhead { display: flex; flex-direction: column; gap: 4px; }
+.wt-dkind { font: 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted-2); }
+.wt-dname { font: 13px var(--font-mono); color: var(--text); overflow-wrap: anywhere; line-height: 1.35; }
+.wt-dname .dim { color: var(--muted-2); }
+.wt-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 12px; align-items: baseline; margin: 0; }
+.wt-facts dt { font: 9px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); white-space: nowrap; }
+.wt-facts dd { margin: 0; font: 11.5px var(--font-mono); color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.wt-facts dd .em { color: var(--text); }
+.wt-facts dd .good { color: var(--st-done); }
+.wt-facts dd .warn { color: var(--st-working); }
+.wt-facts dd .subj { display: block; color: var(--text); margin-top: 2px; font-size: 11px; line-height: 1.4; }
+
+/* a consequence the row can't fit: divergence, detachment, a taken folder */
+.wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
+.wt-warn b { color: var(--text); font: 600 10.5px var(--font-mono); }
+.wt-warn .t { display: block; color: var(--st-working); font: 700 9px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 4px; }
+.wt-warn.err { border-left-color: var(--st-error); background: color-mix(in srgb, var(--st-error) 9%, transparent); }
+/* neutral variant: explains a consequence without implying anything is wrong */
+.wt-warn.note { border-left-color: var(--accent-line); background: var(--accent-wash); }
+.wt-warn.note .t { color: var(--accent-ink); }
+.wt-warn.err .t { color: var(--st-error); }
+
+.wt-sess { display: flex; flex-wrap: wrap; gap: 5px; }
+.wt-sessb { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font: 10.5px var(--font-mono); color: var(--muted); background: var(--surface); border: 1px solid var(--hair); border-radius: 6px; padding: 3px 7px; }
+.wt-sessb:hover { border-color: var(--accent-line); color: var(--text); }
+.wt-sessb i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+
+.wt-acts { margin-top: auto; padding-top: 6px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.wt-go { font: 600 12px var(--font-ui); padding: 7px 13px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); }
+.wt-go:hover { filter: brightness(1.08); }
+.wt-go[disabled] { opacity: .45; cursor: not-allowed; filter: none; }
+.wt-alt { font: 600 12px var(--font-ui); padding: 7px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.wt-alt:hover { border-color: var(--muted-2); }
+.wt-rm { margin-left: auto; font: 600 11.5px var(--font-ui); padding: 7px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; background: transparent; color: var(--muted-2); }
+.wt-rm:hover { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
+.wt-rm[disabled] { opacity: .4; cursor: not-allowed; }
+/* removal confirm, in the pane rather than a modal on a modal: the checkout and the
+   branch are separate losses, so they get separate sentences and separate buttons */
+.wt-danger { border: 1px solid color-mix(in srgb, var(--st-error) 40%, transparent); background: color-mix(in srgb, var(--st-error) 7%, transparent); border-radius: var(--radius-sm); padding: 10px 11px; display: flex; flex-direction: column; gap: 9px; }
+.wt-danger .q { font-size: 11.5px; color: var(--text); }
+.wt-danger .q b { font: 600 11px var(--font-mono); }
+.wt-danger .w { font: 10.5px/1.45 var(--font-ui); color: var(--muted); }
+.wt-danger .w .em { color: var(--st-working); }
+.wt-danger .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.wt-cbtn { font: 600 11px var(--font-ui); padding: 5px 9px; border-radius: 6px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.wt-cbtn:hover { border-color: var(--muted-2); }
+.wt-cbtn.danger { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); color: var(--st-error); }
+.wt-cbtn.danger:hover { background: color-mix(in srgb, var(--st-error) 14%, transparent); }
+.wt-cbtn.ghost { border-color: transparent; color: var(--muted); }
+
+.wt-foot { flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
+.wt-foot .k { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 2px 5px; min-width: 15px; display: inline-block; text-align: center; }
+.wt-foot .sp { flex: 1; }
+.wt-verb { color: var(--accent-ink); }
+
+/* narrow window: drop to one column, list on top — the pane is the first thing to go */
+@media (max-width: 900px) {
+  .wt-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .wt-list { border-right: 0; border-bottom: 1px solid var(--hair); }
+  .wt-detail { max-height: 42vh; }
+}
 
 /* settings dialog — sidebar-tab layout on the shared #scrim overlay */
 /* Fixed footprint on purpose: one size shared by every tab, so switching tabs never
@@ -795,6 +883,29 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .menupop .mp-s { font-size: 10px; font-weight: 500; color: var(--muted-2); }
 .menupop .mp-check { margin-left: auto; color: var(--accent-ink); font-size: 11px; opacity: 0; }
 .menupop .mp-item.on .mp-check { opacity: 1; }
+/* branch chooser: the .menupop idiom plus a filter, because a repo can hold
+   BRANCH_LIST_CAP refs and scrolling to one is not a choice — typing is. */
+.bpop { min-width: 268px; max-width: 340px; }
+.bpop .bp-q { display: flex; align-items: center; gap: 7px; padding: 4px 7px 7px; border-bottom: 1px solid var(--hair); margin-bottom: 4px; }
+.bpop .bp-q span { color: var(--accent); font: 12px var(--font-mono); flex: none; }
+.bpop .bp-q input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font: 12px var(--font-mono); padding: 0; }
+.bpop .bp-q input::placeholder { color: var(--muted-2); }
+.bpop .bp-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; scrollbar-width: thin; }
+.bpop .mp-l { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bpop .mp-main { flex: 1; }
+.bpop .bp-none { padding: 10px 9px; color: var(--muted-2); font-size: 11.5px; }
+/* listed but not choosable — git allows one checkout per branch. Dimmed rather than
+   hidden: a branch that silently vanishes reads as a bug, not as a rule. */
+.bpop .mp-item.dis { cursor: not-allowed; opacity: .5; }
+.bpop .mp-item.dis:hover { background: transparent; }
+.bpop .mp-item.dis .mp-s { color: var(--st-working); }
+/* the trigger reads as a field, not a button — it holds a value */
+.wt-pick { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; cursor: pointer;
+  font: 11.5px var(--font-mono); color: var(--text); background: var(--surface);
+  border: 1px solid var(--hair-strong); border-radius: 6px; padding: 4px 8px; }
+.wt-pick:hover, .wt-pick.open { border-color: var(--accent-line); }
+.wt-pick .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-pick .c { flex: none; color: var(--muted-2); font-size: 9px; }
 
 /* project context menu (right-click a project head / session row / rail button) */
 .ctxmenu { min-width: 244px; max-width: 300px; }

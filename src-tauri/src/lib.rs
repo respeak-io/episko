@@ -1080,8 +1080,8 @@ fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<String>) -> R
 /// Create a git worktree with a new (or existing) branch off `repo_dir`.
 /// Returns the absolute worktree path. Worktrees live in a sibling
 /// `.cc-worktrees/<repo>/<branch>` folder so the repo stays clean.
-#[tauri::command]
-fn create_worktree(repo_dir: String, branch: String) -> Result<String, String> {
+#[tauri::command(async)]
+fn create_worktree(repo_dir: String, branch: String, base: Option<String>) -> Result<String, String> {
     // Every git call forces LC_ALL=C: we must never depend on localized output.
     // A German git says "existiert bereits", not "already exists" — parsing error
     // text for control flow (as this used to) silently broke worktree creation on
@@ -1121,8 +1121,26 @@ fn create_worktree(repo_dir: String, branch: String) -> Result<String, String> {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
+    // `base` only means anything when we're CREATING the branch — attaching an existing
+    // one takes its own tip. Without it `worktree add -b` cuts from the repo's HEAD,
+    // which quietly makes whatever the root folder is parked on the parent of every new
+    // branch; passing a start-point is how the caller escapes that.
+    let base = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    if let Some(b) = base.as_deref() {
+        if !branch_exists {
+            let ok = git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !ok {
+                return Err(format!("can't branch from {b} — no such commit"));
+            }
+        }
+    }
+
     let add = if branch_exists {
         git(&["-C", &root, "worktree", "add", &wt_str, &safe])
+    } else if let Some(b) = base.as_deref() {
+        git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str, b])
     } else {
         git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str])
     }.map_err(|e| e.to_string())?;
@@ -1155,12 +1173,20 @@ struct Worktree {
     /// commits are an ancestor). Removing such a worktree — and safe-deleting its
     /// branch — loses nothing, so the UI can surface it as the obvious cleanup.
     merged: bool,
+    /// `git worktree lock` was used on this checkout. Git refuses to remove a locked
+    /// worktree even with `--force`, so without this flag the UI would hand the user
+    /// a `--force` command that also fails. Always false for the main worktree.
+    locked: bool,
+    /// The checkout directory is still on disk. A hand-deleted folder stays in
+    /// `.git/worktrees` until pruned, so it keeps appearing in this list — the UI must
+    /// not launch a PTY into it, and removal has to fall back to `prune`.
+    exists: bool,
 }
 
 /// List the git worktrees for a repo (parsed from `git worktree list --porcelain`).
 /// The first entry is the main working tree. Each linked worktree is enriched with
 /// `dirty` / `merged` cues so the picker can tell which are safe to clean up.
-#[tauri::command]
+#[tauri::command(async)]
 fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     let out = sys_command("git")
         .arg("-C").arg(&repo_dir).args(["worktree", "list", "--porcelain"])
@@ -1173,23 +1199,32 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     let mut res: Vec<Worktree> = Vec::new();
     let mut cur_path: Option<String> = None;
     let mut cur_branch = String::new();
-    let flush = |res: &mut Vec<Worktree>, path: Option<String>, branch: String| {
+    let mut cur_locked = false;
+    let flush = |res: &mut Vec<Worktree>, path: Option<String>, branch: String, locked: bool| {
         if let Some(path) = path {
             let is_main = res.is_empty();
-            res.push(Worktree { path, branch, is_main, dirty: false, merged: false });
+            let exists = std::path::Path::new(&path).is_dir();
+            res.push(Worktree {
+                path, branch, is_main, dirty: false, merged: false,
+                locked: locked && !is_main,
+                exists,
+            });
         }
     };
     for line in text.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            flush(&mut res, cur_path.take(), std::mem::take(&mut cur_branch));
+            flush(&mut res, cur_path.take(), std::mem::take(&mut cur_branch), std::mem::take(&mut cur_locked));
             cur_path = Some(p.to_string());
         } else if let Some(b) = line.strip_prefix("branch ") {
             cur_branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
         } else if line.starts_with("detached") {
             cur_branch = "(detached)".to_string();
+        } else if line == "locked" || line.starts_with("locked ") {
+            // `locked` appears bare, or as `locked <reason>`.
+            cur_locked = true;
         }
     }
-    flush(&mut res, cur_path.take(), cur_branch);
+    flush(&mut res, cur_path.take(), cur_branch, cur_locked);
 
     // Second pass: cleanliness cues for the linked worktrees. `merged` is measured
     // against the main worktree's branch. Every git call here is best-effort — any
@@ -1246,7 +1281,7 @@ fn same_path(a: &str, b: &str) -> bool {
 /// (close it first), and refuse the repo's main worktree. Beyond that, plain
 /// `git worktree remove` is the safety net — it declines a dirty/untracked tree on
 /// its own, so committed work is never at risk from a click.
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_worktree(
     state: State<AppState>,
     repo_dir: String,
@@ -1274,12 +1309,38 @@ fn remove_worktree_impl(
 ) -> Result<GitActionResult, String> {
     let label = if branch.is_empty() { "worktree".to_string() } else { branch.to_string() };
 
-    if list_worktrees(repo_dir.to_string()).iter().any(|w| w.is_main && same_path(&w.path, path)) {
+    let listed = list_worktrees(repo_dir.to_string());
+    if listed.iter().any(|w| w.is_main && same_path(&w.path, path)) {
         return Err("that's the repo's main worktree — it can't be removed".into());
+    }
+    // A locked worktree is refused by git even WITH --force, so suggesting the force
+    // command (as the generic failure path below does) would just fail again. Name
+    // the actual next step instead.
+    if listed.iter().any(|w| w.locked && same_path(&w.path, path)) {
+        return Ok(GitActionResult {
+            ok: false,
+            summary: format!("{label} is locked — unlock it first"),
+            output: String::new(),
+            suggest: Some(format!("git worktree unlock \"{path}\" && git worktree remove \"{path}\"")),
+        });
     }
 
     let out = git_run(git_cmd(repo_dir, &["worktree", "remove", path]), 30)?;
     if !out.status.success() {
+        // The folder was deleted by hand: nothing to remove, only an administrative
+        // record in .git/worktrees. `prune` is the operation git actually wants here,
+        // and it can't lose work — the tree is already gone.
+        if !std::path::Path::new(path).is_dir() {
+            let pruned = git_run(git_cmd(repo_dir, &["worktree", "prune"]), 15)?;
+            if pruned.status.success() {
+                return Ok(GitActionResult {
+                    ok: true,
+                    summary: format!("Pruned {label} — its folder was already gone"),
+                    output: String::new(),
+                    suggest: None,
+                });
+            }
+        }
         let combined = [
             String::from_utf8_lossy(&out.stdout).trim().to_string(),
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
@@ -1322,33 +1383,201 @@ fn remove_worktree_impl(
     Ok(GitActionResult { ok: true, summary: format!("Removed worktree {label}"), output: String::new(), suggest: None })
 }
 
+/// The tip commit of a checkout or a ref — what the new-session dialog's detail
+/// pane shows for whichever destination is highlighted.
+#[derive(serde::Serialize)]
+struct CommitInfo {
+    /// Abbreviated sha (`%h`).
+    short: String,
+    /// Subject line (`%s`).
+    subject: String,
+    /// Author name (`%an`).
+    author: String,
+    /// Committer date, relative (`%cr`) — "2 hours ago".
+    rel: String,
+}
+
+/// Tip commit of `rev` (a branch name, or HEAD when empty) as seen from `dir`.
+///
+/// Fetched for the *highlighted* row only, never for the whole list — a repo can
+/// have `BRANCH_LIST_CAP` branches plus every worktree, and one `git log` per row
+/// would cost far more than the pane is worth. NUL-separated so a subject
+/// containing any printable character still parses.
+#[tauri::command(async)]
+fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
+    let rev = if rev.trim().is_empty() { "HEAD".to_string() } else { rev };
+    let out = sys_command("git")
+        .env("LC_ALL", "C")
+        .arg("-C").arg(&dir)
+        .args(["--no-optional-locks", "log", "-1", "--format=%h%x00%s%x00%an%x00%cr", &rev])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.trim_end_matches('\n').split('\0');
+    let short = parts.next()?.to_string();
+    if short.is_empty() {
+        return None; // an unborn branch has no tip
+    }
+    Some(CommitInfo {
+        short,
+        subject: parts.next().unwrap_or("").to_string(),
+        author: parts.next().unwrap_or("").to_string(),
+        rel: parts.next().unwrap_or("").to_string(),
+    })
+}
+
+/// Move the repo's main working tree to another branch.
+///
+/// Muster's whole model is "don't switch, branch out" — worktrees exist so two pieces
+/// of work never fight over one checkout. But the root folder's branch is also the
+/// default parent of every new worktree, so a root parked somewhere stale is a real
+/// problem, and a terminal was the only way out. This is that lever, with the guards
+/// that make it safe to expose:
+///
+/// - Refused while Muster sessions run in the root: switching moves the ground under a
+///   live agent's cwd mid-edit.
+/// - Refused when the target is checked out in another worktree (git refuses too, but
+///   this says which one).
+/// - Refused on a dirty tree. `git switch` would silently CARRY uncommitted changes to
+///   the new branch — not destructive, but a state change the UI never explained, which
+///   is the same rule `git_action` and `remove_worktree` follow. Handed to a terminal.
+#[tauri::command(async)]
+fn switch_branch(state: State<AppState>, repo_dir: String, branch: String) -> Result<GitActionResult, String> {
+    if branch.trim().is_empty() {
+        return Err("no branch given".into());
+    }
+    if state.sessions.lock().unwrap().values().any(|s| same_path(&s.workdir, &repo_dir)) {
+        return Err("sessions are running in this folder — close them first".into());
+    }
+    if list_worktrees(repo_dir.clone()).iter()
+        .any(|w| !same_path(&w.path, &repo_dir) && w.branch == branch)
+    {
+        return Err(format!("{branch} is already checked out in another worktree"));
+    }
+
+    let status = git_run(git_cmd(&repo_dir, &["--no-optional-locks", "status", "--porcelain"]), 20)?;
+    if status.status.success() && !status.stdout.is_empty() {
+        return Ok(GitActionResult {
+            ok: false,
+            summary: "uncommitted changes — switching would carry them across".into(),
+            output: String::new(),
+            suggest: Some(format!("git switch \"{branch}\"")),
+        });
+    }
+
+    let out = git_run(git_cmd(&repo_dir, &["switch", &branch]), 30)?;
+    if out.status.success() {
+        return Ok(GitActionResult {
+            ok: true,
+            summary: format!("Switched to {branch}"),
+            output: String::new(),
+            suggest: None,
+        });
+    }
+    let combined = [
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        String::from_utf8_lossy(&out.stderr).trim().to_string(),
+    ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+    let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
+    Ok(GitActionResult {
+        ok: false,
+        summary: first,
+        output: combined,
+        suggest: Some(format!("git switch \"{branch}\"")),
+    })
+}
+
+/// Delete a local branch, the counterpart to the picker's worktree removal.
+///
+/// Same rule as `remove_worktree`: the destructive variant is NEVER run from a click.
+/// `git branch -d` refuses anything not fully merged, and on refusal we hand back the
+/// exact `-D` command for a terminal instead of running it.
+///
+/// Worth knowing about the common case this exists for — a branch whose upstream is
+/// `gone` (the PR merged, the remote branch was deleted). If that PR was **squash**-
+/// merged, the branch's commits never became ancestors of HEAD, so `-d` refuses even
+/// though the work is safely in main. That refusal is correct and the `-D` handoff is
+/// the honest answer; the UI warns about it before the click rather than after.
+#[tauri::command(async)]
+fn delete_branch(repo_dir: String, branch: String) -> Result<GitActionResult, String> {
+    if branch.trim().is_empty() {
+        return Err("no branch given".into());
+    }
+    // git refuses to delete a branch that some worktree holds; say so in our own words
+    // instead of surfacing its message, and name the fix.
+    if list_worktrees(repo_dir.clone()).iter().any(|w| w.branch == branch) {
+        return Err(format!("{branch} is checked out — remove its worktree first"));
+    }
+
+    let out = git_run(git_cmd(&repo_dir, &["branch", "-d", &branch]), 15)?;
+    if out.status.success() {
+        return Ok(GitActionResult {
+            ok: true,
+            summary: format!("Deleted branch {branch}"),
+            output: String::new(),
+            suggest: None,
+        });
+    }
+    let combined = [
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        String::from_utf8_lossy(&out.stderr).trim().to_string(),
+    ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+    let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
+    Ok(GitActionResult {
+        ok: false,
+        summary: first,
+        output: combined,
+        suggest: Some(format!("git branch -D \"{branch}\"")),
+    })
+}
+
 /// One local branch, with enough context for the worktree picker to tell whether
-/// it's worth starting on. `current` is the branch the repo's HEAD is on (offered
-/// as the "start here" button, not in the pick list). `checked_out` means some
-/// worktree already holds it — git refuses a second checkout, so it can't take a
-/// new worktree and instead appears in the existing-worktrees list. `ahead`/`behind`
-/// are versus the current HEAD; `rel`/`unix` describe the last commit (staleness).
+/// it's worth starting on. `current` is the branch the repo's HEAD is on (the repo
+/// row, not the pick list). `checked_out` means some worktree already holds it — git
+/// refuses a second checkout, so it can't take a new worktree and appears in the
+/// existing-worktrees list instead. `rel`/`unix` describe the last commit (staleness).
+///
+/// `ahead`/`behind` are versus this branch's OWN upstream, not versus HEAD. Measuring
+/// every branch against whatever happens to be checked out answers a question nobody
+/// asked ("how far behind my current work is this old branch" — always "very"), while
+/// the useful one is "is my work pushed, and has the remote moved on".
 #[derive(serde::Serialize, Debug)]
 struct BranchInfo {
     name: String,
     current: bool,
     checked_out: bool,
+    /// The remote-tracking ref this branch follows ("origin/foo"), empty when the
+    /// branch is purely local.
+    upstream: String,
+    /// Commits this branch has that its upstream doesn't — unpushed work. 0 when
+    /// there is no upstream.
     ahead: u32,
+    /// Commits the upstream has that this branch doesn't — unpulled work. 0 when
+    /// there is no upstream.
     behind: u32,
+    /// An upstream is configured but no longer exists on the remote (branch deleted
+    /// after a merge, typically). `upstream` still names it.
+    gone: bool,
     rel: String,
     unix: i64,
 }
 
 /// Local branches for the worktree picker, most-recently-committed first, each with
-/// staleness + ahead/behind context (see `BranchInfo`). Nothing is filtered here —
-/// the frontend hides `current` and `checked_out` from the pickable list; returning
-/// them with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP
-/// so a repo with hundreds of refs can't spawn an unbounded rev-list-per-ref; the cap
-/// keeps the newest branches, which is what the picker shows first anyway.
-#[tauri::command]
+/// staleness + upstream context (see `BranchInfo`). Nothing is filtered here — the
+/// frontend hides `current` and `checked_out` from the pickable list; returning them
+/// with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP so a
+/// repo with hundreds of refs can't blow the list up.
+///
+/// Everything comes out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
+/// ahead/behind arithmetic itself, so this no longer spawns a `rev-list` per branch.
+#[tauri::command(async)]
 fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     const BRANCH_LIST_CAP: usize = 80;
-    // LC_ALL=C for the same reason as create_worktree: never depend on localized output.
+    // LC_ALL=C for the same reason as create_worktree: never depend on localized
+    // output — and here it also pins `%(upstream:track)` to English "ahead"/"behind".
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
 
     let taken: std::collections::HashSet<String> =
@@ -1374,7 +1603,7 @@ fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
         "-C", &repo_dir,
         "for-each-ref",
         "--sort=-committerdate",
-        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(upstream)\t%(upstream:short)\t%(upstream:track,nobracket)",
         "refs/heads",
     ]) {
         Ok(o) if o.status.success() => o,
@@ -1384,43 +1613,43 @@ fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
 
     let mut res = Vec::new();
     for line in text.lines().take(BRANCH_LIST_CAP) {
-        let mut parts = line.splitn(3, '\t');
+        let mut parts = line.split('\t');
         let name = match parts.next() {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
         };
         let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
         let rel = parts.next().unwrap_or("").to_string();
-        let is_current = current.as_deref() == Some(name.as_str());
-
-        // ahead/behind vs current HEAD. `--left-right --count HEAD...<b>` prints
-        // "<left>\t<right>": left = commits in HEAD not in the branch (branch is that
-        // far *behind*), right = commits in the branch not in HEAD (branch *ahead*).
-        // The current branch is definitionally 0/0, so skip the extra process for it.
-        let (mut ahead, mut behind) = (0u32, 0u32);
-        if !is_current {
-            if let Ok(o) = git(&["-C", &repo_dir, "rev-list", "--left-right", "--count",
-                &format!("HEAD...refs/heads/{name}")]) {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout);
-                    let mut it = s.split_whitespace();
-                    behind = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-                    ahead = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-                }
-            }
-        }
+        // An upstream is only interesting if it is a REMOTE. `git branch`/`checkout -b`
+        // off a local branch can set that local branch as the upstream (depending on
+        // branch.autoSetupMerge), and "2 commits not pushed to dev" is nonsense — dev is
+        // right here. Gate on the full refname; only refs/remotes/* counts.
+        let is_remote = parts.next().unwrap_or("").trim().starts_with("refs/remotes/");
+        let upstream = if is_remote { parts.next().unwrap_or("").trim().to_string() } else { parts.next(); String::new() };
+        // `%(upstream:track,nobracket)` is "" when in sync (or absent), "gone" when the
+        // upstream was deleted, else "ahead 2", "behind 3" or "ahead 2, behind 3".
+        let track = if is_remote { parts.next().unwrap_or("").trim() } else { parts.next(); "" };
+        let gone = track == "gone";
+        let field = |key: &str| -> u32 {
+            track.split(',')
+                .filter_map(|p| p.trim().strip_prefix(key))
+                .filter_map(|n| n.trim().parse().ok())
+                .next()
+                .unwrap_or(0)
+        };
+        let (ahead, behind) = if gone { (0, 0) } else { (field("ahead "), field("behind ")) };
 
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
-            current: is_current,
-            name, ahead, behind, rel, unix,
+            current: current.as_deref() == Some(name.as_str()),
+            name, upstream, ahead, behind, gone, rel, unix,
         });
     }
     res
 }
 
 /// Current git branch for a working directory (None if not a repo / detached).
-#[tauri::command]
+#[tauri::command(async)]
 fn git_branch(workdir: String) -> Option<String> {
     let out = sys_command("git")
         .arg("-C")
@@ -1447,7 +1676,7 @@ struct HeadInfo {
 /// *actually* checked out rather than the one a worktree was created with (a
 /// worktree shows whatever branch is checked out, and that can change). Returns
 /// None if the dir isn't a git repo. LC_ALL=C keeps output locale-independent.
-#[tauri::command]
+#[tauri::command(async)]
 fn git_head(workdir: String) -> Option<HeadInfo> {
     let git = |args: &[&str]| {
         sys_command("git")
@@ -1615,7 +1844,7 @@ struct DiffStat {
 /// has no commits yet. LC_ALL=C + numeric numstat keep it locale-independent (the
 /// german-git-locale gotcha) and `--no-optional-locks` avoids fighting a running
 /// `git` in the same worktree.
-#[tauri::command]
+#[tauri::command(async)]
 fn git_diffstat(workdir: String) -> Option<DiffStat> {
     let git = |args: &[&str]| {
         sys_command("git")
@@ -1741,7 +1970,7 @@ struct GitActionResult {
 ///
 /// Every op is safe against a live Claude in the same worktree: fetch and push
 /// don't touch the working tree at all, and ff-only pull won't overwrite edits.
-#[tauri::command]
+#[tauri::command(async)]
 fn git_action(workdir: String, op: String) -> Result<GitActionResult, String> {
     if !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("not a directory: {workdir}"));
@@ -1868,7 +2097,7 @@ struct Resources {
 /// session id's stored pid. Measures the `claude` process itself (not its whole
 /// subtree) — enough for the inspector's "what's this costing my machine" readout.
 /// None for external/shell sessions (no owned pid) or a process that has exited.
-#[tauri::command]
+#[tauri::command(async)]
 fn session_resources(state: State<AppState>, session_id: String) -> Option<Resources> {
     let pid = state.sessions.lock().unwrap().get(&session_id)?.pid?;
     let line = ps_one(pid, "%cpu=,rss=")?;
@@ -2172,7 +2401,7 @@ fn parse_registry_entry(txt: &str) -> Option<ExternalSession> {
 /// set of session ids Muster already owns (belt-and-suspenders — ours don't
 /// register anyway). Dead/stale registry files are filtered by verifying the pid
 /// is still a live `claude` process.
-#[tauri::command]
+#[tauri::command(async)]
 fn list_external_sessions(state: State<AppState>, exclude: Vec<String>) -> Vec<ExternalSession> {
     let home = home_dir();
     if home.is_empty() {
@@ -2346,7 +2575,7 @@ struct PastSession {
 /// chain: `ai-title` → `last-prompt` → first user message → "" (caller labels it).
 /// Only the tail is scanned — `ai-title` recurs throughout the file, so a bounded
 /// read reliably catches the latest one without paying for a 4MB transcript.
-#[tauri::command]
+#[tauri::command(async)]
 fn list_past_sessions(workdir: String) -> Result<Vec<PastSession>, String> {
     let dir = match project_transcript_dir(&workdir) {
         Some(d) => d,
@@ -2637,7 +2866,7 @@ fn scan_usage(days: u64) -> Result<Vec<DayUsage>, String> {
 /// cwd with every non-alphanumeric char replaced by `-`. Only the tail (≤512KB)
 /// is read; only human/assistant prose is extracted (tool calls, tool results and
 /// thinking are dropped), and the last `limit` messages are returned.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_transcript(cwd: String, session_id: String, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let path = project_transcript_dir(&cwd)
@@ -3011,6 +3240,9 @@ pub fn run() {
             list_worktrees,
             remove_worktree,
             git_branch_list,
+            delete_branch,
+            switch_branch,
+            git_commit_info,
             spawn_ghostty,
             spawn_shell,
             available_terminals,
@@ -3118,6 +3350,18 @@ mod tests {
         dir
     }
 
+    /// Where `create_worktree` puts this repo's checkouts: `<parent>/.cc-worktrees/<repo>`.
+    ///
+    /// Tests MUST clean up via this and never via `<parent>/.cc-worktrees` — `scratch_dir`
+    /// hands every repo the same parent (the OS temp dir), so wiping the whole
+    /// `.cc-worktrees` tree deletes the checkouts of every test running in parallel,
+    /// which made these two flake against each other.
+    fn wt_root(repo: &Path) -> PathBuf {
+        repo.parent().unwrap()
+            .join(".cc-worktrees")
+            .join(repo.file_name().unwrap())
+    }
+
     /// Run a git command in `dir`, asserting success. Identity/signing are passed via
     /// `-c` so the test doesn't depend on (or touch) the developer's global gitconfig.
     fn git(dir: &Path, args: &[&str]) {
@@ -3165,26 +3409,39 @@ mod tests {
     /// The picker leans on these flags to decide what's pickable: it hides `current`
     /// (the "start here" button) and `checked_out` (git refuses a second checkout, so
     /// those sit in the existing-worktrees list instead). ahead/behind must be
-    /// oriented from the branch's point of view versus the current HEAD.
+    /// The picker's branch context: which branches are claimed, and how each stands
+    /// against ITS OWN upstream — not against whatever HEAD happens to be.
     #[test]
-    fn git_branch_list_flags_state_and_orients_ahead_behind() {
+    fn git_branch_list_flags_state_and_tracks_each_upstream() {
         let dir = scratch_dir();
+        let remote = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "dev"]);
         git(&dir, &["init", "-q", "-b", "dev"]);
         let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
         commit(&dir, "base");
-        git(&dir, &["branch", "test"]);
-        git(&dir, &["branch", "feature-x"]);
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "dev"]);
 
-        // feature-x gains 2 commits; dev then gains 1 → feature-x is 2 ahead, 1 behind.
-        git(&dir, &["checkout", "-q", "feature-x"]);
-        commit(&dir, "fx1");
-        commit(&dir, "fx2");
+        // pushed-then-moved: tracks origin/pushed, 2 commits unpushed.
+        git(&dir, &["checkout", "-q", "-b", "pushed"]);
+        git(&dir, &["push", "-q", "-u", "origin", "pushed"]);
+        commit(&dir, "p1");
+        commit(&dir, "p2");
+
+        // local-only: never pushed, so no upstream at all.
+        git(&dir, &["checkout", "-q", "-b", "local-only"]);
+        commit(&dir, "l1");
+
+        // orphaned: had an upstream, which was then deleted on the remote.
+        git(&dir, &["checkout", "-q", "-b", "orphaned"]);
+        git(&dir, &["push", "-q", "-u", "origin", "orphaned"]);
+        git(&dir, &["push", "-q", "origin", "--delete", "orphaned"]);
+        git(&dir, &["fetch", "-q", "--prune", "origin"]);
+
         git(&dir, &["checkout", "-q", "dev"]);
-        commit(&dir, "dev1");
-
-        // Claim `test` with a worktree; `dev` is claimed by the main working tree.
-        let wt = dir.join("wt-test");
-        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "test"]);
+        git(&dir, &["branch", "claimed"]);
+        let wt = dir.join("wt-claimed");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "claimed"]);
 
         let bs = git_branch_list(dir.to_str().unwrap().to_string());
         let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
@@ -3192,11 +3449,105 @@ mod tests {
         // dev is `current`; it's also `checked_out` because the main working tree holds
         // it — the frontend hides it via `current`, so that overlap is harmless.
         assert!(by("dev").current, "dev should be current: {bs:?}");
-        assert!(by("test").checked_out && !by("test").current, "test should be checked_out: {bs:?}");
-        let fx = by("feature-x");
-        assert!(!fx.current && !fx.checked_out, "feature-x should be free: {bs:?}");
-        assert_eq!((fx.ahead, fx.behind), (2, 1), "feature-x should be 2 ahead / 1 behind dev: {bs:?}");
+        assert!(by("claimed").checked_out && !by("claimed").current, "claimed should be checked_out: {bs:?}");
+        assert!(!by("pushed").current && !by("pushed").checked_out, "pushed should be free: {bs:?}");
 
+        // Ahead is measured against origin/pushed, NOT against dev — dev has moved on
+        // its own and that must not leak into this branch's numbers.
+        let p = by("pushed");
+        assert_eq!(p.upstream, "origin/pushed", "pushed should track its own remote: {bs:?}");
+        assert_eq!((p.ahead, p.behind), (2, 0), "pushed should be 2 unpushed / 0 unpulled: {bs:?}");
+        assert!(!p.gone);
+
+        let l = by("local-only");
+        assert!(l.upstream.is_empty() && !l.gone, "local-only has no upstream: {bs:?}");
+        assert_eq!((l.ahead, l.behind), (0, 0), "no upstream means no counts: {bs:?}");
+
+        let o = by("orphaned");
+        assert!(o.gone, "orphaned's upstream was deleted: {bs:?}");
+        assert_eq!(o.upstream, "origin/orphaned", "a gone upstream is still named: {bs:?}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+    /// Without a start-point, `worktree add -b` cuts from HEAD — which makes whatever
+    /// the root folder is parked on the silent parent of every new branch. Pin the
+    /// escape hatch down.
+    #[test]
+    fn create_worktree_branches_from_the_given_base() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let commit = |msg: &str| git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit("on main");
+        let repo = dir.to_str().unwrap().to_string();
+        let main_tip = String::from_utf8_lossy(
+            &Command::new("git").current_dir(&dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).trim().to_string();
+
+        // Park the root on a feature branch that has moved past main.
+        git(&dir, &["checkout", "-q", "-b", "parked"]);
+        commit("only on parked");
+
+        // No base → inherits HEAD, i.e. `parked`. This is the trap.
+        let inherit = create_worktree(repo.clone(), "from-head".into(), None).expect("default base");
+        let p = String::from_utf8_lossy(
+            &Command::new("git").current_dir(&inherit).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).trim().to_string();
+        assert_ne!(p, main_tip, "with no base the new branch cuts from the parked HEAD");
+
+        // Explicit base → main's tip, regardless of where the root is parked.
+        let based = create_worktree(repo.clone(), "from-main".into(), Some("main".into())).expect("explicit base");
+        let b = String::from_utf8_lossy(
+            &Command::new("git").current_dir(&based).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).trim().to_string();
+        assert_eq!(b, main_tip, "an explicit base wins over HEAD");
+
+        // A base that doesn't resolve is refused before git can emit anything cryptic.
+        let e = create_worktree(repo, "from-nowhere".into(), Some("no-such-ref".into())).expect_err("bad base refused");
+        assert!(e.contains("no such commit"), "the message should name the problem: {e}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Branch deletion mirrors worktree removal: safe-delete only, force handed off.
+    #[test]
+    fn delete_branch_safe_deletes_merged_and_refuses_the_rest() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        let repo = dir.to_str().unwrap().to_string();
+
+        // merged: branched and never advanced, so its commits are all in dev.
+        git(&dir, &["branch", "merged-b"]);
+        // unmerged: has a commit dev doesn't.
+        git(&dir, &["checkout", "-q", "-b", "unmerged-b"]);
+        commit(&dir, "only-here");
+        git(&dir, &["checkout", "-q", "dev"]);
+        // held: claimed by a worktree.
+        git(&dir, &["branch", "held-b"]);
+        let wt = dir.join("wt-held");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "held-b"]);
+
+        let r = delete_branch(repo.clone(), "merged-b".into()).expect("merged deletes");
+        assert!(r.ok && r.suggest.is_none(), "a merged branch should just go: {r:?}");
+        let b = Command::new("git").current_dir(&dir).args(["branch", "--list", "merged-b"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&b.stdout).trim().is_empty(), "merged-b should be gone");
+
+        // Unmerged: refused, branch survives, `-D` offered rather than run.
+        let r = delete_branch(repo.clone(), "unmerged-b".into()).expect("call returns");
+        assert!(!r.ok, "an unmerged branch must be refused: {r:?}");
+        assert!(r.suggest.as_deref().unwrap_or("").contains("branch -D"), "force should be handed off: {r:?}");
+        let b = Command::new("git").current_dir(&dir).args(["branch", "--list", "unmerged-b"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&b.stdout).trim().is_empty(), "unmerged-b must survive");
+
+        // Checked out somewhere: refused up front, in our words.
+        let e = delete_branch(repo, "held-b".into()).expect_err("a checked-out branch is refused");
+        assert!(e.contains("checked out"), "the message should name the reason: {e}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3209,7 +3560,7 @@ mod tests {
         git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
         git(&dir, &["branch", "test"]);
 
-        let path = create_worktree(dir.to_str().unwrap().to_string(), "test".into()).expect("attach failed");
+        let path = create_worktree(dir.to_str().unwrap().to_string(), "test".into(), None).expect("attach failed");
         let head = Command::new("git").current_dir(&path).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "test");
 
@@ -3219,7 +3570,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&orig.stdout).trim(), "dev");
 
         // Worktrees land in a *sibling* .cc-worktrees tree, never inside the repo.
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3237,10 +3588,10 @@ mod tests {
 
         // Three linked worktrees: one at dev's tip (merged, clean), one advanced past
         // dev (unmerged), and one with an untracked file (dirty).
-        let merged = create_worktree(repo.clone(), "merged-wt".into()).expect("merged worktree");
-        let ahead = create_worktree(repo.clone(), "ahead-wt".into()).expect("ahead worktree");
+        let merged = create_worktree(repo.clone(), "merged-wt".into(), None).expect("merged worktree");
+        let ahead = create_worktree(repo.clone(), "ahead-wt".into(), None).expect("ahead worktree");
         commit(Path::new(&ahead), "extra");
-        let dirty = create_worktree(repo.clone(), "dirty-wt".into()).expect("dirty worktree");
+        let dirty = create_worktree(repo.clone(), "dirty-wt".into(), None).expect("dirty worktree");
         std::fs::write(Path::new(&dirty).join("scratch.txt"), "wip\n").unwrap();
 
         let wts = list_worktrees(repo.clone());
@@ -3271,7 +3622,79 @@ mod tests {
         assert!(!r.ok && r.suggest.as_deref().unwrap_or("").contains("--force"), "dirty removal should be refused with a force handoff: {r:?}");
         assert!(Path::new(&dirty).exists(), "dirty worktree must not be clobbered");
 
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap().join(".cc-worktrees"));
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two states the new-session dialog needs but `git worktree remove` handles
+    /// badly on its own: a LOCKED worktree (git refuses it even with `--force`, so
+    /// suggesting force would just fail again) and a worktree whose folder was deleted
+    /// by hand (nothing to remove — `prune` is what git actually wants).
+    #[test]
+    fn worktree_locked_and_missing_are_reported_and_handled() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false",
+                    "commit", "-q", "--allow-empty", "-m", "base"]);
+        let repo = dir.to_str().unwrap().to_string();
+
+        let locked = create_worktree(repo.clone(), "locked-wt".into(), None).expect("locked worktree");
+        let gone = create_worktree(repo.clone(), "gone-wt".into(), None).expect("gone worktree");
+        git(&dir, &["worktree", "lock", &locked]);
+        std::fs::remove_dir_all(&gone).expect("hand-delete the checkout");
+
+        let wts = list_worktrees(repo.clone());
+        let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
+        assert!(by("locked-wt").locked, "locked-wt should report locked: {wts:?}");
+        assert!(by("locked-wt").exists, "locked-wt is still on disk: {wts:?}");
+        assert!(!by("gone-wt").exists, "gone-wt's folder was deleted: {wts:?}");
+        assert!(!wts.iter().any(|w| w.is_main && w.locked), "the main worktree is never locked");
+
+        // Locked: refused with an unlock handoff, NOT a --force one that would also fail.
+        let r = remove_worktree_impl(&repo, &locked, "locked-wt", false).expect("call returns");
+        let suggest = r.suggest.as_deref().unwrap_or("");
+        assert!(!r.ok, "a locked worktree must be refused: {r:?}");
+        assert!(suggest.contains("worktree unlock") && !suggest.contains("--force"),
+            "locked handoff should unlock, not force: {r:?}");
+        assert!(Path::new(&locked).exists(), "locked worktree must survive the refusal");
+
+        // Hand-deleted folder: pruned, and it leaves the listing.
+        let r = remove_worktree_impl(&repo, &gone, "gone-wt", false).expect("call returns");
+        assert!(r.ok, "a vanished worktree should prune cleanly: {r:?}");
+        assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "gone-wt"),
+            "gone-wt should be pruned out of the listing");
+
+        git(&dir, &["worktree", "unlock", &locked]);
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The detail pane's HEAD line. Parsing is NUL-separated so a subject containing
+    /// spaces (or anything else printable) survives the round trip.
+    #[test]
+    fn git_commit_info_reads_the_tip_of_a_dir_or_a_ref() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |msg: &str| git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=Ada L",
+                                             "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit("base subject with spaces");
+        let repo = dir.to_str().unwrap().to_string();
+
+        let head = git_commit_info(repo.clone(), String::new()).expect("HEAD resolves");
+        assert_eq!(head.subject, "base subject with spaces", "the whole subject survives");
+        assert_eq!(head.author, "Ada L");
+        assert!(!head.short.is_empty() && !head.rel.is_empty(), "sha and relative date are filled: {head:?}",
+            head = (&head.short, &head.rel));
+
+        // A named ref resolves independently of what HEAD points at.
+        git(&dir, &["branch", "side"]);
+        commit("moved dev on");
+        let side = git_commit_info(repo.clone(), "side".into()).expect("side resolves");
+        assert_eq!(side.subject, "base subject with spaces", "side still points at the first commit");
+        assert_ne!(git_commit_info(repo.clone(), String::new()).unwrap().short, side.short,
+            "HEAD has moved past side");
+
+        assert!(git_commit_info(repo, "no-such-ref".into()).is_none(), "an unknown ref yields None");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

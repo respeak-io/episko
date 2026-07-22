@@ -108,20 +108,38 @@
       <div class="pal-foot" id="palFoot"></div>
     </div>
 
-    <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true">
-      <div class="wt-h" id="wtH">New session</div>
-      <div class="wt-sub" id="wtSub"></div>
-      <!-- The no-worktree option leads, so a worktree reads as one choice, not the only one -->
-      <button class="wt-here" id="wtMain" hidden>Start here — no worktree</button>
-      <div class="wt-or" id="wtOr" hidden>or in a worktree</div>
-      <div class="wt-list" id="wtList" hidden></div>
-      <div class="wt-branches" id="wtBranchList" hidden></div>
-      <label class="wt-lbl" for="wtBranch">New branch <span class="wt-hint">or type any existing one</span></label>
-      <input class="wt-in" id="wtBranch" spellcheck="false" placeholder="feature-x" autocomplete="off" list="wtBranches" />
-      <datalist id="wtBranches"></datalist>
-      <div class="wt-btns">
-        <button class="wt-cancel" id="wtCancel">Cancel</button>
-        <button class="wt-go" id="wtGo">Create worktree ▸</button>
+    <!--
+      New session. Every answer to "where should this session run" is a directory, so
+      every answer is a row: the repo itself, its worktrees, its branches, and whatever
+      you type. One scroll region on the left, the consequences of the highlighted row
+      on the right. Head and foot are pinned — the list is the only thing that scrolls.
+    -->
+    <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true" aria-label="New session">
+      <div class="wt-head">
+        <div class="wt-title"><b>New session</b><span class="wt-proj" id="wtProj"></span></div>
+        <div class="wt-headrow">
+          <span class="wt-path" id="wtPath"></span>
+          <span class="wt-eng" id="wtEng"></span>
+          <button class="wt-chip" id="wtRefresh" type="button" title="Re-read worktrees and branches">
+            <span class="ic">⟳</span><span id="wtAge">now</span>
+          </button>
+        </div>
+      </div>
+      <div class="wt-q">
+        <span class="wt-caret">❯</span>
+        <input id="wtQ" spellcheck="false" autocomplete="off" aria-label="Filter destinations, or type a new branch name"
+               placeholder="Filter, or type a new branch name…" />
+        <span class="wt-count" id="wtCount"></span>
+      </div>
+      <div class="wt-body">
+        <div class="wt-list" id="wtList" role="listbox" aria-label="Session destinations"></div>
+        <div class="wt-detail" id="wtDetail" aria-live="polite"></div>
+      </div>
+      <div class="wt-foot">
+        <span><span class="k">↑</span><span class="k">↓</span> move</span>
+        <span><span class="k">⏎</span> <span class="wt-verb" id="wtVerb">start session</span></span>
+        <span class="sp"></span>
+        <span><span class="k">esc</span> close</span>
       </div>
     </div>
 
@@ -164,5 +182,9 @@
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop shortpop" id="shortPop"></div>
+    <!-- branch chooser for the new-session dialog (worktree base / root switch target).
+         Lives out here with its siblings, not inside #wtDlg: that dialog is
+         overflow:hidden, so an in-dialog popover would be clipped. -->
+    <div class="menupop bpop" id="bPop"></div>
   </body>
 </html>
