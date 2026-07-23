@@ -146,6 +146,29 @@ fn home_dir() -> String {
     }
 }
 
+/// Canonical spelling for an absolute path the frontend will compare as a string.
+/// The sidebar merges projects/worktrees by exact string equality (`byPath` in
+/// projectList), but on Windows the same folder arrives in several spellings:
+/// git prints forward slashes (`E:/repo`), the folder dialog native backslashes
+/// (`E:\repo`), and VS Code-hosted claude sessions register a lowercase drive
+/// letter (`e:\repo`) — so the same repo splits into duplicate sidebar groups.
+/// Every command that hands a path to the frontend funnels it through here;
+/// on other platforms it's the identity.
+fn norm_path(p: &str) -> String {
+    #[cfg(windows)]
+    {
+        let mut s = p.replace('/', "\\");
+        if s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_lowercase() {
+            s[..1].make_ascii_uppercase();
+        }
+        s
+    }
+    #[cfg(not(windows))]
+    {
+        p.to_string()
+    }
+}
+
 /// A `std::process::Command` that never flashes a console window on Windows. A GUI
 /// app spawning a console subprocess (git, where, curl, taskkill) pops a black
 /// window for each call without `CREATE_NO_WINDOW`; on other platforms this is a
@@ -1098,7 +1121,7 @@ fn create_worktree(repo_dir: String, branch: String, base: Option<String>) -> Re
     if !root_out.status.success() {
         return Err("not a git repository".into());
     }
-    let root = String::from_utf8_lossy(&root_out.stdout).trim().to_string();
+    let root = norm_path(String::from_utf8_lossy(&root_out.stdout).trim());
     let safe: String = branch.trim().chars()
         .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '/' | '.') { c } else { '-' })
         .collect();
@@ -1214,7 +1237,7 @@ fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     for line in text.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             flush(&mut res, cur_path.take(), std::mem::take(&mut cur_branch), std::mem::take(&mut cur_locked));
-            cur_path = Some(p.to_string());
+            cur_path = Some(norm_path(p));
         } else if let Some(b) = line.strip_prefix("branch ") {
             cur_branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
         } else if line.starts_with("detached") {
@@ -1715,7 +1738,7 @@ fn git_repo_info(cwd: &str) -> (Option<String>, Option<String>) {
     let common = lines.next().unwrap_or("").trim();
     let branch = lines.next().unwrap_or("").trim();
     let root = std::path::Path::new(common).parent()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| norm_path(&p.to_string_lossy()))
         .filter(|s| !s.is_empty());
     let branch = if branch.is_empty() || branch == "HEAD" { None } else { Some(branch.to_string()) };
     (root, branch)
@@ -2386,7 +2409,7 @@ fn parse_registry_entry(txt: &str) -> Option<ExternalSession> {
     Some(ExternalSession {
         pid,
         session_id,
-        cwd: v.get("cwd").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        cwd: norm_path(v.get("cwd").and_then(|x| x.as_str()).unwrap_or("")),
         name: v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         status: v.get("status").and_then(|x| x.as_str()).unwrap_or("idle").to_string(),
         status_updated_at: v.get("statusUpdatedAt").and_then(|x| x.as_i64()),
@@ -3317,6 +3340,26 @@ mod tests {
         assert_eq!(model_family("claude-sonnet-4-5"), "sonnet");
         assert_eq!(model_family("claude-haiku-4-5-20251001"), "haiku");
         assert_eq!(model_family("some-future-model"), "other");
+    }
+
+    /// All three real-world spellings of one Windows folder (git's forward
+    /// slashes, the dialog's native path, VS Code's lowercase drive) must
+    /// collapse to a single string, or the sidebar splits the project.
+    #[cfg(windows)]
+    #[test]
+    fn norm_path_unifies_windows_spellings() {
+        assert_eq!(norm_path("E:/Programming/Work/repo"), r"E:\Programming\Work\repo");
+        assert_eq!(norm_path(r"e:\Programming\Work\repo"), r"E:\Programming\Work\repo");
+        assert_eq!(norm_path(r"E:\already\native"), r"E:\already\native");
+        assert_eq!(norm_path(r"\\server\share\x"), r"\\server\share\x");
+        assert_eq!(norm_path(""), "");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn norm_path_is_identity_off_windows() {
+        assert_eq!(norm_path("/Users/tim/dev/muster"), "/Users/tim/dev/muster");
+        assert_eq!(norm_path("a\\b"), "a\\b"); // a backslash is a legal filename char here
     }
 
     /// The one piece of the Windows keep-awake path that isn't a Win32 call: the
