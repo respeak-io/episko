@@ -975,6 +975,7 @@ name = "episko"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "jsonc-parser",
  "log",
  "portable-pty",
  "rusqlite",
@@ -989,6 +990,8 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tiny_http",
+ "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.13+spec-1.1.0",
  "windows-sys 0.61.2",
 ]
 
@@ -2050,6 +2053,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "362fdb0bfedf94ebd31e4e82ff38ba705b6b82417b3b25f0c4bbb024dd11f552"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4489,6 +4501,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

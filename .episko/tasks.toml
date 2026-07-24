@@ -1,0 +1,35 @@
+# Episko's own task file — read by the ▶ Run picker.
+#
+# Everything here is IDE-agnostic and committed, so it works the same whether you
+# drive this repo from Episko, VS Code or a bare terminal. package.json scripts are
+# discovered automatically and don't need repeating; these are the ones that need a
+# working directory, a shell, or a name a human would recognise.
+
+[[task]]
+label = "Dev app"
+run = "pnpm tauri dev"
+background = true
+detail = "Tauri + Vite dev server on :1420"
+
+[[task]]
+label = "Typecheck"
+run = "pnpm exec tsc --noEmit"
+group = "check"
+
+[[task]]
+label = "Rust tests"
+run = "cargo test"
+cwd = "src-tauri"
+group = "test"
+
+[[task]]
+label = "Clippy"
+run = "cargo clippy --all-targets"
+cwd = "src-tauri"
+group = "check"
+
+[[task]]
+label = "Rust check"
+run = "cargo check"
+cwd = "src-tauri"
+group = "check"

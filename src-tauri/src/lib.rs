@@ -7,6 +7,8 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod tasks;
+
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Mutex;
@@ -574,6 +576,104 @@ fn spawn_shell(
     Ok(())
 }
 
+/// The login shell used to run a `Shell` task, as `(program, args)` — the args end
+/// with the flag that takes the command string, so the caller just pushes the line.
+/// A *login* shell (not `-c` alone) so tasks inherit the same PATH, nvm/mise shims
+/// and aliases the user gets in their own terminal; a task that works in iTerm and
+/// fails in Episko is the whole class of bug this avoids.
+#[cfg(not(windows))]
+fn task_shell() -> (String, Vec<String>) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    (shell, vec!["-l".to_string(), "-c".to_string()])
+}
+
+#[cfg(windows)]
+fn task_shell() -> (String, Vec<String>) {
+    let (prog, mut args) = interactive_shell();
+    if prog.to_ascii_lowercase().ends_with("cmd.exe") {
+        args.push("/C".to_string());
+    } else {
+        args.push("-Command".to_string());
+    }
+    (prog, args)
+}
+
+/// Run a Runnable in an embedded PTY — the third kind of pane, after a `claude`
+/// session and a plain shell. Deliberately *not* instrumented: a task gets no
+/// `--settings` file, no telemetry, no cost, and its pid never enters `owned_pids`
+/// (it isn't a `claude` process and can't masquerade as an external session).
+///
+/// The exit code is what the frontend turns into done / error, and it arrives over
+/// the existing `pty-exit` event — no new channel.
+#[tauri::command]
+fn spawn_task(
+    app: AppHandle,
+    state: State<AppState>,
+    session_id: String,
+    spec: tasks::TaskSpec,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let tasks::TaskSpec { exec, cwd: workdir, env } = spec;
+    if !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("no such directory: {workdir}"));
+    }
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = match exec {
+        tasks::Exec::Argv { program, args } => {
+            if program.trim().is_empty() {
+                return Err("task has no command".into());
+            }
+            let mut c = CommandBuilder::new(&program);
+            for a in args {
+                c.arg(a);
+            }
+            c
+        }
+        tasks::Exec::Shell { line } => {
+            if line.trim().is_empty() {
+                return Err("task has no command".into());
+            }
+            let (shell, shell_args) = task_shell();
+            let mut c = CommandBuilder::new(&shell);
+            for a in shell_args {
+                c.arg(a);
+            }
+            c.arg(&line);
+            c
+        }
+    };
+    cmd.cwd(&workdir);
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", augmented_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    // The task's own env last, so a task can deliberately override any of the above.
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    apply_utf8_locale(&mut cmd);
+
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
+    let child_pid = child.process_id();
+    state.sessions.lock().unwrap().insert(
+        session_id.clone(),
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+    );
+    stream_pty_session(app, session_id, reader, child, child_pid);
+    Ok(())
+}
+
 /// No Ghostty engine on Windows — the embedded xterm.js pane is the only engine.
 #[cfg(windows)]
 fn find_ghostty() -> Option<String> {
@@ -863,6 +963,73 @@ fn open_folder(dir: String) -> Result<(), String> {
     {
         std::process::Command::new("xdg-open")
             .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Reveal a file in the OS file manager, selected — the "↗ Reveal source" action on
+/// a task, which answers "where did this come from?". `dir` is the project root and
+/// `rel` the repo-relative source file (`.vscode/tasks.json`); revealing by relative
+/// path keeps a `..` from a malformed override from escaping the project. Falls back
+/// to opening the containing folder where the OS can't select a file.
+#[tauri::command]
+fn reveal_path(dir: String, rel: String) -> Result<(), String> {
+    let root = std::path::Path::new(&dir);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {dir}"));
+    }
+    // Reject anything that would climb out of the project — `rel` is nominally
+    // repo-relative, but it reaches us from discovery data, so don't trust it. A
+    // `..` climbs out; a rooted (`/x`) or drive-prefixed (`C:x`) component is what
+    // `join` replaces the whole base with — note `/x` is *not* `is_absolute()` on
+    // Windows (no prefix), so the component check, not `is_absolute`, is the guard.
+    let rel_path = std::path::Path::new(&rel);
+    if rel_path.is_absolute()
+        || rel_path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!("not a project-relative path: {rel}"));
+    }
+    let target = root.join(rel_path);
+    // A source that no longer exists (a task from a file since deleted): reveal the
+    // project folder rather than erroring on a path the user can't do anything about.
+    let exists = target.is_file();
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = std::process::Command::new("open");
+        if exists {
+            c.arg("-R").arg(&target);
+        } else {
+            c.arg(root);
+        }
+        c.spawn().map_err(|e| format!("open Finder: {e}"))?;
+    }
+    #[cfg(windows)]
+    {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let mut c = std::process::Command::new(format!(r"{sysroot}\explorer.exe"));
+        if exists {
+            // /select, takes one argument: the file to highlight in its folder.
+            c.arg(format!("/select,{}", target.display().to_string().replace('/', "\\")));
+        } else {
+            c.arg(dir.replace('/', "\\"));
+        }
+        c.spawn().map_err(|e| format!("open Explorer: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // No portable "select the file" across Linux file managers; open the folder.
+        let open_target = if exists { target.parent().unwrap_or(root) } else { root };
+        std::process::Command::new("xdg-open")
+            .arg(open_target)
             .spawn()
             .map_err(|e| format!("xdg-open: {e}"))?;
     }
@@ -3404,6 +3571,15 @@ pub fn run() {
             git_commit_info,
             spawn_ghostty,
             spawn_shell,
+            spawn_task,
+            tasks::discover_runnables,
+            tasks::rescan_runnables,
+            tasks::save_episko_task,
+            tasks::delete_episko_task,
+            tasks::save_task_override,
+            tasks::remove_task_override,
+            tasks::list_task_overrides,
+            tasks::episko_tasks_file,
             available_terminals,
             spawn_external_terminal,
             open_terminal_here,
@@ -3416,6 +3592,7 @@ pub fn run() {
             read_custom_icon,
             read_legacy_localstorage,
             open_folder,
+            reveal_path,
             write_debug_file,
             log_frontend,
             update_tray,
@@ -3615,6 +3792,36 @@ mod tests {
         assert!(st.contains("?? new.txt"), "new.txt should still be untracked, got:\n{st}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `spawn_task` hands `Exec::Shell` to a *login* shell so a task inherits the
+    /// PATH and version-manager shims the user's own terminal has. That argument
+    /// construction is the fragile part — `-l -c` vs `-lc` vs `/C` differs per
+    /// shell, and getting it wrong fails only at runtime, in a PTY, where nothing
+    /// else in this suite would notice. Exit codes matter as much as output: a
+    /// run's exit code *is* its phase in the UI.
+    #[test]
+    fn login_shell_runs_a_command_and_reports_its_exit_code() {
+        let (shell, args) = task_shell();
+        let run = |line: &str| {
+            std::process::Command::new(&shell)
+                .args(&args)
+                .arg(line)
+                .output()
+                .expect("login shell should be spawnable")
+        };
+
+        let ok = run("echo episko-task-ok");
+        assert!(ok.status.success());
+        assert_eq!(String::from_utf8_lossy(&ok.stdout).trim(), "episko-task-ok");
+
+        // Non-zero must survive to the caller — the frontend turns it into `error`.
+        let bad = run("exit 3");
+        assert_eq!(bad.status.code(), Some(3));
+
+        // Shell syntax has to actually reach a shell, not be treated as one argv.
+        let piped = run("printf 'a\\nb\\n' | wc -l | tr -d ' '");
+        assert_eq!(String::from_utf8_lossy(&piped.stdout).trim(), "2");
     }
 
     #[test]
