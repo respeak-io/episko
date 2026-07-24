@@ -21,11 +21,13 @@ import {
   hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
 } from "./format";
 import {
-  burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, mergeRl, pushRlSample, rl,
-  rlPct, rlSamples, type Forecast, type RlWin,
+  burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, rl, setRlLogger, type Forecast,
 } from "./rl";
 import {
-  addUsage, setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
+  abbr, applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
+} from "./phase";
+import {
+  setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
   uDkey, U_MONTHS, uModels, usage, usageRange, usageWindow, uSum,
   type DayUsage, type UDay,
 } from "./usage";
@@ -139,6 +141,12 @@ function setEngine(id: Engine) {
 // owns it). Favorites start empty and are added by the user — persisted to
 // localStorage.
 homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
+// The two leaf modules that need something only this layer can give them (PLAN's
+// seam rule 2): rl.ts narrates a window close to the debug console, and phase.ts
+// hands the end of a turn to the run-on-stop rule, which owns panes and discovery.
+// Both default to a no-op, so the modules stand alone in a test.
+setRlLogger(dlog);
+setOnTurnEnd((s) => { void maybeRunOnStop(s); });
 interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
 // Re-derive each display name from its path on load: it's always the basename, and
@@ -226,47 +234,6 @@ void (async () => {
   // font's metrics are in, so the PTY width matches what we actually render.
   refit();
 })();
-
-// ---- forecast-vs-actual log: the substrate that makes the model improvable ----
-// On every window rotation we record what the closing window actually reached vs.
-// what we'd projected at its halfway mark. Purely a measurement store for now
-// (localStorage, capped) — nothing consumes it yet; it's what a future threshold-
-// calibration / error-band pass reads. Expensive to backfill, cheap to keep.
-interface FcLogEntry { w: RlWin; closed: number; final: number; midProj: number | null; err: number | null }
-const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
-const midSnap: Record<RlWin, { proj: number } | null> = { h5: null, d7: null };
-function maybeMidSnap(win: RlWin, reset: number | null) {
-  if (midSnap[win] || reset == null) return;
-  const len = win === "h5" ? H5_LEN : D7_LEN;
-  if (reset - Date.now() / 1000 > len / 2) return; // not yet past the halfway mark
-  const f = win === "h5" ? forecast5h() : forecast7d();
-  if (f.hasRate && f.proj != null) midSnap[win] = { proj: f.proj };
-}
-function logWindowClose(win: RlWin, finalPct: number | null) {
-  if (typeof finalPct !== "number") return;
-  const snap = midSnap[win];
-  const e: FcLogEntry = {
-    w: win, closed: Math.floor(Date.now() / 1000), final: finalPct,
-    midProj: snap ? snap.proj : null, err: snap ? finalPct - snap.proj : null,
-  };
-  fcLog.push(e);
-  if (fcLog.length > 200) fcLog.splice(0, fcLog.length - 200);
-  localStorage.setItem("cc-forecast-log", JSON.stringify(fcLog));
-  dlog("info", `forecast · ${win} window closed at ${Math.round(finalPct)}%` +
-    (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : ""));
-}
-// Called after each merge with the pre/post reset so we can spot a window rotation
-// (a genuinely later resets_at). On rotation the old window closed: log how it went,
-// and clear the burn samples so the new window's slope starts clean.
-function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number | null, newReset: number | null) {
-  if (newReset != null && prevReset != null && newReset > prevReset + 120) {
-    logWindowClose(win, prevPct);
-    rlSamples[win] = [];
-    midSnap[win] = null;
-  }
-  pushRlSample(win, rlPct(win === "h5" ? rl.h5 : rl.d7, newReset));
-  maybeMidSnap(win, newReset);
-}
 
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
@@ -876,152 +843,8 @@ function renderExtInspector(e: ExtSession) {
 }
 
 // ---------- telemetry ----------
-// Set the phase and, when it actually changes, stamp phaseSince — the anchor for
-// the inspector's dwell timer ("0:42 in state") and the "your turn" wait clock.
-function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
-// The most meaningful field of a tool call, for the vital header + timeline. Paths
-// collapse to a basename; commands/prompts keep a short preview.
-function toolArg(tool: string, input: any): string {
-  if (!input || typeof input !== "object") return "";
-  const v = input.file_path ?? input.path ?? input.command ?? input.pattern ?? input.url ?? input.query ?? input.prompt ?? input.description;
-  if (typeof v !== "string" || !v.trim()) return "";
-  if ((tool === "Read" || tool === "Edit" || tool === "Write") && /[/\\]/.test(v)) return v.split(/[/\\]/).pop() || v;
-  return abbr(v, 64);
-}
-// Open a timeline entry on PreToolUse; closeActivity fills its latency on the
-// matching PostToolUse. Matching the most-recent open call of the same tool name
-// is approximate under parallel subagents, but right for the common serial case.
-function openActivity(s: Sess, tool: string, arg: string) {
-  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null });
-  if (s.activity.length > 12) s.activity.length = 12;
-}
-function closeActivity(s: Sess, tool: string) {
-  const a = s.activity.find((x) => x.tool === tool && x.durMs == null);
-  if (a) a.durMs = Date.now() - a.startMs;
-}
-// Claude keeps its own to-do list via the TodoWrite tool; the payload rides the
-// PreToolUse hook we already receive. Capture it as the session's live plan.
-function applyTodos(s: Sess, input: any) {
-  const arr = input?.todos;
-  if (!Array.isArray(arr)) return;
-  s.todos = arr
-    .map((t: any) => ({ content: String(t?.content ?? t?.activeForm ?? ""), status: String(t?.status ?? "pending") }))
-    .filter((t) => t.content);
-}
-// Plan mode surfaces its plan via ExitPlanMode, not TodoWrite — the payload is
-// freeform markdown (`tool_input.plan`), not structured items. Parse its list/steps
-// into the same plan module so plan-mode plans show up too. Every step is "pending":
-// it's a proposal, not yet in flight; a later TodoWrite takes over with live status.
-function applyPlan(s: Sess, input: any) {
-  const md: string = typeof input?.plan === "string" ? input.plan : "";
-  if (!md.trim()) return;
-  const lines = md.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  let steps = lines
-    .map((l) => l.match(/^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+)$/)?.[1])
-    .filter((x): x is string => !!x);
-  if (!steps.length) steps = lines.filter((l) => !/^#{1,6}\s/.test(l)); // prose fallback
-  const todos = steps
-    .slice(0, 12)
-    .map((c) => ({ content: c.replace(/\*\*/g, "").replace(/`/g, "").trim(), status: "pending" }))
-    .filter((t) => t.content);
-  if (todos.length) s.todos = todos;
-}
-function abbr(s: string, n = 160): string {
-  const one = s.replace(/\s+/g, " ").trim();
-  return one.length > n ? one.slice(0, n - 1) + "…" : one;
-}
-// The abbreviated "what is it asking?" preview shown under the attention header.
-// Pulls the most meaningful field from the tool input (command, file, url, the
-// question/prompt itself…), falling back to the notification message.
-function permCmd(data: any): string {
-  const inp = data.tool_input || {};
-  const detail = inp.command ?? inp.file_path ?? inp.path ?? inp.url ?? inp.pattern ??
-    inp.prompt ?? inp.question ?? inp.query ?? inp.description;
-  if (typeof detail === "string" && detail.trim()) return abbr(detail);
-  if (typeof data.message === "string" && data.message.trim()) return abbr(data.message);
-  return "";
-}
-// Fully clear a session's pending-permission/attention state — used both when the
-// user answers via Episko's buttons and when they answer directly in the CLI (in
-// which case a later lifecycle event, not a button, is our signal to reset). If a
-// blocking request is still held server-side, release it so it doesn't leak.
-function clearPending(s: Sess) {
-  if (s.pendingPermId) invoke("resolve_permission", { id: s.pendingPermId, behavior: "terminal" }).catch(() => {});
-  s.attention = null; s.pendingPermId = null; s.pendingCmd = "";
-}
-
-function applyHook(s: Sess, data: any) {
-  const ev: string = data.hook_event_name ?? "?";
-  s.lastEvent = ev;
-  s.lastActivity = Date.now(); // a lifecycle hook = the session did something (drives "sort by activity")
-  const bg = () => s.subagents > 0 || s.phase === "done";
-  switch (ev) {
-    // Lifecycle events past the permission point → the ask was answered (button
-    // OR directly in the CLI), so reset the pending/attention state either way.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); break;
-    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
-    case "PreToolUse": {
-      const tool = data.tool_name || "tool";
-      const arg = toolArg(tool, data.tool_input);
-      if (tool === "TodoWrite") applyTodos(s, data.tool_input);
-      else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
-      else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
-      if (!bg()) { setPhase(s, "working"); clearPending(s); s.curTool = tool; s.curArg = arg; }
-      break;
-    }
-    case "PostToolUse": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "working"); break;
-    case "PostToolUseFailure": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "error"); break;
-    // The turn is over — which is exactly when a project's run-on-stop rule, if it
-    // has one, gets to check the agent's work.
-    case "Stop": setPhase(s, "done"); clearPending(s); s.curTool = ""; s.curArg = ""; void maybeRunOnStop(s); break;
-    case "StopFailure": setPhase(s, "error"); clearPending(s); break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
-    case "Notification": {
-      const nt: string = data.notification_type ?? "";
-      const msg: string = typeof data.message === "string" ? data.message : "";
-      if (nt.includes("permission") || /permission/i.test(msg)) { s.attention = "permission needed"; if (msg) s.pendingCmd = abbr(msg); }
-      else if (nt === "idle_prompt") { setPhase(s, "done"); clearPending(s); }
-      else { s.attention = nt || msg || "notification"; if (msg) s.pendingCmd = abbr(msg); }
-      break;
-    }
-    case "PermissionRequest": s.attention = `permission: ${data.tool_name ?? ""}`; s.pendingCmd = permCmd(data); s.pendRisk = riskLevel(data.tool_name, data.tool_input); break;
-    case "SubagentStart": s.subagents++; break;
-    case "SubagentStop": s.subagents = Math.max(0, s.subagents - 1); break;
-  }
-}
-function pushHist(arr: number[], v: number, cap = 24) { arr.push(v); if (arr.length > cap) arr.splice(0, arr.length - cap); }
-function applyStatusline(s: Sess, data: any) {
-  // A statusLine only fires from a live, interactive session. If this one was
-  // marked "ended" (e.g. a SessionEnd fired on /clear or /compact while the REPL
-  // kept running), the continuing statusLine proves it's alive — clear the stale
-  // ended state. A genuine exit stops statusLines and pty-exit re-ends it.
-  if (s.phase === "ended") setPhase(s, "idle");
-  if (data.model?.display_name) s.model = data.model.display_name;
-  const ctx = data.context_window?.used_percentage;
-  if (typeof ctx === "number") { s.ctxPct = ctx; pushHist(s.ctxHist, ctx); }
-  const tok = data.context_window?.used_tokens ?? data.context_window?.tokens;
-  if (typeof tok === "number") s.ctxTokens = tok;
-  const cost = data.cost?.total_cost_usd;
-  if (typeof cost === "number") { addUsage(cost - (s.cost ?? 0), s); s.cost = cost; pushHist(s.costHist, cost); }
-  const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
-  const r5 = data.rate_limits?.five_hour;
-  if (r5) {
-    const p = rl.h5, pr = rl.h5Reset;
-    [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
-    onRlUpdate("h5", p, pr, rl.h5Reset);
-  }
-  const r7 = data.rate_limits?.seven_day;
-  if (r7) {
-    const p = rl.d7, pr = rl.d7Reset;
-    [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
-    onRlUpdate("d7", p, pr, rl.d7Reset);
-  }
-  // Keep the worktree flag if the statusline reports one, but the branch label
-  // itself comes from the live git HEAD poll (refreshBranches), not this field —
-  // otherwise the two fight and the label flickers.
-  const wt = data.workspace?.git_worktree; if (wt) s.worktree = wt;
-}
+// applyHook / applyStatusline and their helpers now live in ./phase; main.ts
+// only wires them to the listen() handlers at the bottom of this file.
 
 // ---------- rendering ----------
 // `dormants` are restorable-from-last-run rows. They hang off the project group
@@ -1960,17 +1783,6 @@ function toolClass(tool: string): string {
   if (tool.startsWith("Task")) return "t-task";
   if (tool === "WebFetch" || tool === "WebSearch") return "t-web";
   return "t-mcp";
-}
-// Heuristic risk for a pending permission — informs the badge, not the decision.
-function riskLevel(tool: string, input: any): Risk {
-  const cmd = typeof input?.command === "string" ? input.command : "";
-  if (tool === "Bash") {
-    if (/(^|\s)(sudo|rm\s+-[rf]|rmdir|mkfs|dd|shutdown|reboot|kill(all)?)\b|git\s+clean|--force\b|--hard\b|-fdx\b|>\s*\/dev\/|:\(\)\s*\{|chmod\s+-R|curl[^|]*\|\s*(sh|bash)|npm\s+publish|git\s+push/i.test(cmd)) return "high";
-    return "med";
-  }
-  if (tool === "Write" || tool === "Edit" || tool === "NotebookEdit") return "med";
-  if (tool === "Read" || tool === "Grep" || tool === "Glob" || tool === "WebFetch" || tool === "WebSearch") return "low";
-  return "med";
 }
 const RISK_LABEL: Record<Risk, string> = { low: "low risk", med: "review", high: "high risk" };
 function verbFor(s: Sess): string {

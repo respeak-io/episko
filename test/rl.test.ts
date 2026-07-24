@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { store } from "./localstorage"; // must precede the subject import
 import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
-  rlSamples, forecastWin,
+  rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
 } from "../src/rl";
 
 // A fixed epoch so "one hour before the reset" is a number. 2027-01-15T08:00:00Z.
@@ -17,6 +18,10 @@ beforeEach(() => {
   rlSamples.h5 = [];
   rlSamples.d7 = [];
   rl.h5 = rl.h5Reset = rl.d7 = rl.d7Reset = null;
+  fcLog.length = 0;
+  midSnap.h5 = midSnap.d7 = null;
+  setRlLogger(() => {});
+  store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -210,6 +215,148 @@ describe("forecastWin — will this window run out before it resets?", () => {
     it("is already out at 100%, whatever the burn", () => {
       expect(forecastWin(100, NOW_S + HOUR, 0)).toMatchObject({ status: "bad", runsOut: true });
     });
+  });
+});
+
+describe("maybeMidSnap — the halfway projection the log is later scored against", () => {
+  // Give the window a trustworthy slope, then a reset `secLeft` from *now* (after
+  // the clock has moved). 20 → 30 over 20 minutes = 30 %/hr, which clears both
+  // windows' minimum span.
+  const withRate = (win: "h5" | "d7", secLeft: number) => {
+    pushRlSample(win, 20); tick(20); pushRlSample(win, 30);
+    const reset = Math.floor(Date.now() / 1000) + secLeft;
+    if (win === "h5") { rl.h5 = 30; rl.h5Reset = reset; } else { rl.d7 = 30; rl.d7Reset = reset; }
+  };
+
+  it("holds off until the window is past its halfway mark", () => {
+    // A 5h window with 3h left hasn't reached the middle; projecting there would
+    // measure the model against a much longer extrapolation than intended.
+    withRate("h5", 3 * HOUR);
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5).toBeNull();
+  });
+  it("takes the projection once past it", () => {
+    withRate("h5", 2 * HOUR);
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5!.proj).toBeCloseTo(30 + 30 * 2, 6);
+  });
+  it("keeps the first snapshot — the midpoint is a moment, not a running value", () => {
+    withRate("h5", 2 * HOUR);
+    maybeMidSnap("h5", rl.h5Reset);
+    const first = midSnap.h5!.proj;
+    rl.h5 = 80;
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5!.proj).toBe(first);
+  });
+  it("records nothing without a trustworthy burn rate", () => {
+    // One reading is a level, not a slope; a projection from it would be invented.
+    rl.h5 = 30; rl.h5Reset = Math.floor(Date.now() / 1000) + 2 * HOUR;
+    pushRlSample("h5", 30);
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5).toBeNull();
+  });
+  it("does nothing when there is no active window", () => {
+    withRate("h5", 2 * HOUR);
+    maybeMidSnap("h5", null);
+    expect(midSnap.h5).toBeNull();
+  });
+  it("measures each window's halfway mark against its own length", () => {
+    // 3 days out is well past the middle of a 7-day window, and nowhere near the
+    // middle of a 5-hour one — the two must not share a threshold.
+    withRate("d7", 3 * 86400);
+    maybeMidSnap("d7", rl.d7Reset);
+    expect(midSnap.d7).not.toBeNull();
+    expect(midSnap.h5).toBeNull();
+  });
+});
+
+describe("onRlUpdate — spotting a window rotation", () => {
+  // Called after every merge with the reset time before and after. A genuinely later
+  // reset (>2min, the same skew tolerance mergeRl uses) means the old window closed.
+  it("samples the new reading without rotating when the window is unchanged", () => {
+    rl.h5 = 40;
+    onRlUpdate("h5", 30, NOW_S + HOUR, NOW_S + HOUR);
+    expect(rlSamples.h5.map((s) => s.pct)).toEqual([40]);
+    expect(fcLog).toHaveLength(0);
+  });
+  it("treats a reset that moved less than 2min as the same window", () => {
+    rl.h5 = 40;
+    onRlUpdate("h5", 30, NOW_S + HOUR, NOW_S + HOUR + 60);
+    expect(fcLog).toHaveLength(0);
+    expect(rlSamples.h5).toHaveLength(1);
+  });
+  it("clears the burn samples on rotation, so the new window's slope starts clean", () => {
+    pushRlSample("h5", 10); tick(10);
+    pushRlSample("h5", 90);
+    expect(burnRate("h5")).not.toBeNull();
+    rl.h5 = 3;
+    onRlUpdate("h5", 90, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    // The old samples are gone; only the post-rotation reading remains, which alone
+    // isn't a slope — carrying the old window's burn across would be nonsense.
+    expect(rlSamples.h5.map((s) => s.pct)).toEqual([3]);
+    expect(burnRate("h5")).toBeNull();
+  });
+  it("records what the closing window actually reached", () => {
+    onRlUpdate("h5", 93, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(fcLog).toHaveLength(1);
+    expect(fcLog[0]).toMatchObject({ w: "h5", final: 93, midProj: null, err: null });
+    expect(fcLog[0].closed).toBe(Math.floor(NOW_MS / 1000));
+    expect(JSON.parse(store.get("cc-forecast-log")!)).toHaveLength(1);
+  });
+  it("scores the halfway projection against the outcome when it took one", () => {
+    // Past the halfway mark of a 5h window with a real slope → midSnap is taken…
+    pushRlSample("h5", 20); tick(10);
+    pushRlSample("h5", 30);
+    const reset = Math.floor(Date.now() / 1000) + HOUR;   // 1h left of a 5h window
+    rl.h5 = 30; rl.h5Reset = reset;
+    onRlUpdate("h5", 30, reset, reset);
+    expect(midSnap.h5).not.toBeNull();
+    const proj = midSnap.h5!.proj;
+    // …and the rotation compares it to what really happened.
+    onRlUpdate("h5", 88, reset, reset + 5 * HOUR);
+    expect(fcLog[0].midProj).toBeCloseTo(proj, 6);
+    expect(fcLog[0].err).toBeCloseTo(88 - proj, 6);
+    expect(midSnap.h5).toBeNull(); // the new window starts without a snapshot
+  });
+  it("logs nothing for a window that never reported a percentage", () => {
+    onRlUpdate("h5", null, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(fcLog).toHaveLength(0);
+  });
+  it("caps the log at 200 entries, dropping the oldest", () => {
+    for (let i = 0; i < 205; i++) {
+      onRlUpdate("h5", i, NOW_S + i * 1000, NOW_S + (i + 1) * 1000 + 200);
+      midSnap.h5 = null;
+    }
+    expect(fcLog).toHaveLength(200);
+    expect(fcLog[0].final).toBe(5); // 0–4 rolled off
+  });
+  it("keeps the two windows' rotations independent", () => {
+    onRlUpdate("h5", 50, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(fcLog.map((e) => e.w)).toEqual(["h5"]);
+    expect(rlSamples.d7).toHaveLength(0);
+  });
+});
+
+describe("setRlLogger — narrating a window close without reaching into main.ts", () => {
+  it("is silent by default, so importing the module logs nothing", () => {
+    onRlUpdate("h5", 93, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(fcLog).toHaveLength(1); // the close still happened…
+  });
+  it("hands the close to whatever main.ts wired up", () => {
+    const lines: [string, string][] = [];
+    setRlLogger((lvl, msg) => lines.push([lvl, msg]));
+    onRlUpdate("h5", 93, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(lines).toHaveLength(1);
+    expect(lines[0][0]).toBe("info");
+    expect(lines[0][1]).toContain("h5 window closed at 93%");
+    expect(lines[0][1]).not.toContain("predicted"); // no midpoint snapshot was taken
+  });
+  it("includes the prediction and its error when there was one", () => {
+    const lines: string[] = [];
+    setRlLogger((_l, msg) => lines.push(msg));
+    midSnap.h5 = { proj: 80 };
+    onRlUpdate("h5", 93, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
+    expect(lines[0]).toContain("predicted ~80%, err +13");
   });
 });
 

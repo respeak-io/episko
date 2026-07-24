@@ -1,0 +1,535 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import type { Sess } from "../src/types";
+import { store } from "./localstorage"; // must precede the subject imports
+import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
+import { usage, usageDetail } from "../src/usage";
+import {
+  abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, permCmd,
+  pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
+} from "../src/phase";
+
+// clearPending releases a still-held blocking permission request through the
+// backend. `invoke` is `window.__TAURI_INTERNALS__.invoke`, so a recording stub is
+// all it takes to assert the release actually happens (and, more importantly, that
+// it doesn't happen when there is nothing held).
+const ipc: { cmd: string; args: any }[] = [];
+(globalThis as any).window = {
+  __TAURI_INTERNALS__: { invoke: (cmd: string, args: any) => { ipc.push({ cmd, args }); return Promise.resolve(null); } },
+};
+
+const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
+const NOW_S = NOW_MS / 1000;
+const HOUR = 3600;
+
+// A Sess as newSession() builds one, minus the DOM/xterm handles nothing here reads.
+function sess(o: Partial<Sess> = {}): Sess {
+  return {
+    id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
+    resumeId: "sid", branch: "main", worktree: null, title: "",
+    phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
+    git: null, res: null, lastEvent: "", activity: [],
+    kind: "claude", external: false, ...o,
+  } as Sess;
+}
+const hook = (s: Sess, hook_event_name: string, extra: Record<string, unknown> = {}) =>
+  applyHook(s, { hook_event_name, ...extra });
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW_MS);
+  ipc.length = 0;
+  rl.h5 = rl.h5Reset = rl.d7 = rl.d7Reset = null;
+  rlSamples.h5 = []; rlSamples.d7 = [];
+  fcLog.length = 0; midSnap.h5 = midSnap.d7 = null;
+  for (const k of Object.keys(usage)) delete usage[k];
+  for (const k of Object.keys(usageDetail)) delete usageDetail[k];
+  setOnTurnEnd(() => {});
+  store.clear();
+});
+afterEach(() => { vi.useRealTimers(); });
+
+describe("setPhase — the anchor for every dwell clock", () => {
+  it("stamps phaseSince only when the phase actually changes", () => {
+    const s = sess({ phase: "idle", phaseSince: 1 });
+    setPhase(s, "idle");
+    expect(s.phaseSince).toBe(1); // a repeated event must not restart the timer
+    setPhase(s, "working");
+    expect(s).toMatchObject({ phase: "working", phaseSince: NOW_MS });
+  });
+});
+
+describe("applyHook — the lifecycle state machine", () => {
+  it("records the event name and bumps lastActivity on every hook", () => {
+    // lastActivity is what "sort by activity" orders the sidebar on.
+    const s = sess({ lastActivity: 0 });
+    hook(s, "PostToolUse", { tool_name: "Read" });
+    expect(s).toMatchObject({ lastEvent: "PostToolUse", lastActivity: NOW_MS });
+  });
+  it("names an event-less payload rather than crashing on it", () => {
+    const s = sess();
+    applyHook(s, {});
+    expect(s.lastEvent).toBe("?");
+  });
+
+  it("walks a plain turn idle → thinking → working → done", () => {
+    const s = sess();
+    hook(s, "SessionStart");
+    expect(s.phase).toBe("idle");
+    hook(s, "UserPromptSubmit");
+    expect(s.phase).toBe("thinking");
+    hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "/a/b/c.ts" } });
+    expect(s).toMatchObject({ phase: "working", curTool: "Read", curArg: "c.ts" });
+    hook(s, "Stop");
+    expect(s).toMatchObject({ phase: "done", curTool: "", curArg: "" });
+  });
+  it("ends on SessionEnd and errors on a failed tool or turn", () => {
+    const s = sess();
+    hook(s, "PostToolUseFailure", { tool_name: "Bash" });
+    expect(s.phase).toBe("error");
+    hook(s, "StopFailure");
+    expect(s.phase).toBe("error");
+    hook(s, "SessionEnd");
+    expect(s).toMatchObject({ phase: "ended", curTool: "", curArg: "" });
+  });
+
+  describe("attention", () => {
+    it("raises it on a PermissionRequest, with the command and its risk", () => {
+      const s = sess();
+      hook(s, "PermissionRequest", { tool_name: "Bash", tool_input: { command: "git push --force" } });
+      expect(s).toMatchObject({
+        attention: "permission: Bash", pendingCmd: "git push --force", pendRisk: "high",
+      });
+    });
+    it("raises it on a permission Notification, by type or by message", () => {
+      const byType = sess();
+      hook(byType, "Notification", { notification_type: "tool_permission" });
+      expect(byType.attention).toBe("permission needed");
+      const byMsg = sess();
+      hook(byMsg, "Notification", { notification_type: "other", message: "Claude needs your permission to use Bash" });
+      expect(byMsg).toMatchObject({ attention: "permission needed", pendingCmd: "Claude needs your permission to use Bash" });
+    });
+    it("treats an idle prompt as the turn being over, not as an ask", () => {
+      const s = sess({ phase: "working" });
+      hook(s, "Notification", { notification_type: "idle_prompt" });
+      expect(s).toMatchObject({ phase: "done", attention: null });
+    });
+    it("passes any other notification through as its own attention text", () => {
+      const s = sess();
+      hook(s, "Notification", { notification_type: "", message: "" });
+      expect(s.attention).toBe("notification"); // never a blank badge
+      hook(s, "Notification", { message: "build finished" });
+      expect(s.attention).toBe("build finished");
+    });
+
+    it("clears on any lifecycle event past the permission point", () => {
+      // The user may have answered in the CLI instead of in Episko; the next
+      // lifecycle event is then our only signal that the ask is done.
+      for (const ev of ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"]) {
+        const s = sess({ attention: "permission: Bash", pendingCmd: "rm -rf /", pendingPermId: null });
+        hook(s, ev);
+        expect(s, ev).toMatchObject({ attention: null, pendingCmd: "" });
+      }
+    });
+    it("releases a still-held blocking request when it clears", () => {
+      const s = sess({ pendingPermId: "perm-7", attention: "permission: Bash" });
+      hook(s, "Stop");
+      // Left held, the tiny_http server never answers and Claude hangs forever.
+      expect(ipc).toEqual([{ cmd: "resolve_permission", args: { id: "perm-7", behavior: "terminal" } }]);
+      expect(s.pendingPermId).toBeNull();
+    });
+    it("calls the backend only when something is actually held", () => {
+      clearPending(sess({ pendingPermId: null }));
+      expect(ipc).toHaveLength(0);
+    });
+  });
+
+  describe("the activity timeline", () => {
+    it("opens an entry on PreToolUse and closes it with its latency", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_input: { command: "ls" } });
+      expect(s.activity[0]).toMatchObject({ tool: "Bash", arg: "ls", durMs: null });
+      vi.setSystemTime(NOW_MS + 250);
+      hook(s, "PostToolUse", { tool_name: "Bash" });
+      expect(s.activity[0].durMs).toBe(250);
+    });
+    it("closes the most recent still-open call of that tool", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "a.ts" } });
+      vi.setSystemTime(NOW_MS + 100);
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "b.ts" } });
+      vi.setSystemTime(NOW_MS + 300);
+      hook(s, "PostToolUse", { tool_name: "Read" });
+      // unshift means [0] is the newest; it is the one that gets the latency.
+      expect(s.activity.map((a) => [a.arg, a.durMs])).toEqual([["b.ts", 200], ["a.ts", null]]);
+    });
+    it("skips an already-closed entry and reaches the one still open behind it", () => {
+      // Two parallel Reads: the second Post must land on the *older* open call, not
+      // overwrite the latency the first Post already recorded on the newer one.
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "a.ts" } });
+      vi.setSystemTime(NOW_MS + 100);
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "b.ts" } });
+      vi.setSystemTime(NOW_MS + 300);
+      hook(s, "PostToolUse", { tool_name: "Read" }); // closes b.ts at 200ms
+      vi.setSystemTime(NOW_MS + 900);
+      hook(s, "PostToolUse", { tool_name: "Read" }); // closes a.ts at 900ms
+      expect(s.activity.map((a) => [a.arg, a.durMs])).toEqual([["b.ts", 200], ["a.ts", 900]]);
+    });
+    it("caps the timeline at 12 entries, newest first", () => {
+      const s = sess();
+      for (let i = 0; i < 15; i++) hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: `f${i}.ts` } });
+      expect(s.activity).toHaveLength(12);
+      expect(s.activity[0].arg).toBe("f14.ts");
+    });
+    it("keeps the plan tools off the timeline — the plan is its own module", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "TodoWrite", tool_input: { todos: [{ content: "a", status: "pending" }] } });
+      hook(s, "PreToolUse", { tool_name: "ExitPlanMode", tool_input: { plan: "- step one" } });
+      expect(s.activity).toHaveLength(0);
+      expect(s.todos.map((t) => t.content)).toEqual(["step one"]);
+    });
+    it("ignores a PostToolUse with no matching open call", () => {
+      const s = sess();
+      hook(s, "PostToolUse", { tool_name: "Grep" });
+      expect(s.activity).toHaveLength(0);
+    });
+  });
+
+  describe("subagent depth suppresses the phase flips", () => {
+    // A Task subagent's own tool calls arrive on the parent session's hooks. Letting
+    // them drive the phase would flap the glyph between the parent's real state and
+    // whatever the subagent happens to be doing.
+    it("counts SubagentStart/Stop, never below zero", () => {
+      const s = sess();
+      hook(s, "SubagentStart"); hook(s, "SubagentStart");
+      expect(s.subagents).toBe(2);
+      hook(s, "SubagentStop"); hook(s, "SubagentStop"); hook(s, "SubagentStop");
+      expect(s.subagents).toBe(0); // a Stop we never saw the Start for must not go negative
+    });
+    it("leaves the phase and the vital header alone while a subagent is running", () => {
+      const s = sess({ phase: "thinking", curTool: "", curArg: "" });
+      hook(s, "SubagentStart");
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s).toMatchObject({ phase: "thinking", curTool: "", curArg: "" });
+      hook(s, "PostToolUse", { tool_name: "Read" });
+      expect(s.phase).toBe("thinking");
+      hook(s, "PostToolUseFailure", { tool_name: "Read" });
+      expect(s.phase).toBe("thinking"); // a subagent's failed tool is not the session's error
+    });
+    it("still records the subagent's calls on the timeline", () => {
+      // Suppression is about the phase, not about hiding what happened.
+      const s = sess({ phase: "thinking" });
+      hook(s, "SubagentStart");
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s.activity[0]).toMatchObject({ tool: "Read", arg: "x.ts" });
+    });
+    it("resumes driving the phase once the last subagent stops", () => {
+      const s = sess({ phase: "thinking" });
+      hook(s, "SubagentStart"); hook(s, "SubagentStop");
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s).toMatchObject({ phase: "working", curArg: "x.ts" });
+    });
+    it("applies the same guard to a finished turn", () => {
+      // Once "done" — your turn — a late tool call must not silently take the pane
+      // back to "working" and lose the you-are-needed signal.
+      const s = sess({ phase: "done" });
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s.phase).toBe("done");
+    });
+  });
+
+  describe("the end of a turn", () => {
+    it("hands the session to whatever main.ts wired as the run-on-stop hook", () => {
+      const seen: string[] = [];
+      setOnTurnEnd((s) => seen.push(s.id));
+      hook(sess({ id: "abc" }), "Stop");
+      expect(seen).toEqual(["abc"]);
+    });
+    it("fires only on Stop, not on a failed turn or a session end", () => {
+      let n = 0;
+      setOnTurnEnd(() => { n++; });
+      const s = sess();
+      hook(s, "StopFailure"); hook(s, "SessionEnd"); hook(s, "PostToolUse", { tool_name: "Read" });
+      expect(n).toBe(0);
+      hook(s, "Stop");
+      expect(n).toBe(1);
+    });
+    it("is a no-op by default, so the module stands alone", () => {
+      expect(() => hook(sess(), "Stop")).not.toThrow();
+    });
+  });
+});
+
+describe("applyStatusline — the meters, and the proof a session is alive", () => {
+  it("un-ends a session that keeps sending statusLines", () => {
+    // The documented backstop for id rotation: /clear and /compact fire a SessionEnd
+    // while the REPL runs on. A statusLine only comes from a live REPL, so it wins —
+    // otherwise the pane sits on the "ended" glyph while Claude is still working.
+    const s = sess({ phase: "ended", phaseSince: 1 });
+    applyStatusline(s, {});
+    expect(s).toMatchObject({ phase: "idle", phaseSince: NOW_MS });
+  });
+  it("leaves any other phase alone", () => {
+    for (const p of ["idle", "thinking", "working", "done", "error"] as const) {
+      const s = sess({ phase: p });
+      applyStatusline(s, {});
+      expect(s.phase, p).toBe(p);
+    }
+  });
+
+  it("fills model, context and duration when they are present", () => {
+    const s = sess();
+    applyStatusline(s, {
+      model: { display_name: "Opus 4.8" },
+      context_window: { used_percentage: 41, used_tokens: 82_000 },
+      cost: { total_duration_ms: 90_000 },
+    });
+    expect(s).toMatchObject({ model: "Opus 4.8", ctxPct: 41, ctxTokens: 82_000, durMs: 90_000 });
+    expect(s.ctxHist).toEqual([41]);
+  });
+  it("accepts the older `tokens` spelling of the context field", () => {
+    const s = sess();
+    applyStatusline(s, { context_window: { tokens: 5 } });
+    expect(s.ctxTokens).toBe(5);
+  });
+  it("leaves every field it wasn't told about untouched", () => {
+    // Fields come and go across Claude Code releases; a payload missing one must
+    // not blank a meter that was already showing a real number.
+    const s = sess({ model: "Opus 4.8", ctxPct: 41, cost: 1.5, durMs: 90_000 });
+    applyStatusline(s, { model: {}, context_window: {}, cost: {} });
+    expect(s).toMatchObject({ model: "Opus 4.8", ctxPct: 41, cost: 1.5, durMs: 90_000 });
+  });
+  it("keeps a reported worktree but never clears one", () => {
+    const s = sess({ worktree: "wt-a" });
+    applyStatusline(s, { workspace: {} });
+    expect(s.worktree).toBe("wt-a"); // the live git poll owns this label, not us
+    applyStatusline(s, { workspace: { git_worktree: "wt-b" } });
+    expect(s.worktree).toBe("wt-b");
+  });
+
+  describe("cost", () => {
+    it("rolls up only the increment, since the statusLine reports a running total", () => {
+      const s = sess({ model: "Opus 4.8" });
+      applyStatusline(s, { cost: { total_cost_usd: 1.25 } });
+      applyStatusline(s, { cost: { total_cost_usd: 3.0 } });
+      expect(s.cost).toBe(3.0);
+      expect(Object.values(usage)[0]).toBeCloseTo(3.0, 10); // 1.25 + 1.75, not 4.25
+      expect(Object.values(usageDetail)[0].models).toEqual({ Opus: 3.0 });
+    });
+    it("adds nothing when a repeated statusLine reports the same total", () => {
+      const s = sess();
+      applyStatusline(s, { cost: { total_cost_usd: 2 } });
+      applyStatusline(s, { cost: { total_cost_usd: 2 } });
+      expect(Object.values(usage)[0]).toBe(2);
+    });
+    it("keeps a history for the sparkline, capped", () => {
+      const s = sess();
+      for (let i = 1; i <= 30; i++) applyStatusline(s, { cost: { total_cost_usd: i } });
+      expect(s.costHist).toHaveLength(24);
+      expect(s.costHist[23]).toBe(30);
+    });
+  });
+
+  describe("rate limits", () => {
+    it("merges both windows into the one account-wide copy", () => {
+      applyStatusline(sess(), {
+        rate_limits: {
+          five_hour: { used_percentage: 22, resets_at: NOW_S + HOUR },
+          seven_day: { used_percentage: 61, resets_at: NOW_S + 3 * 86400 },
+        },
+      });
+      expect(rl).toMatchObject({ h5: 22, h5Reset: NOW_S + HOUR, d7: 61, d7Reset: NOW_S + 3 * 86400 });
+    });
+    it("keeps the peak when a lagging session reports a staler number", () => {
+      // The 13 ↔ 19 ↔ 21 flip: each session's statusLine carries the account numbers
+      // only as fresh as *that* session last refreshed them.
+      const limits = (pct: number) => ({ rate_limits: { five_hour: { used_percentage: pct, resets_at: NOW_S + HOUR } } });
+      applyStatusline(sess({ id: "busy" }), limits(21));
+      applyStatusline(sess({ id: "idle" }), limits(13));
+      expect(rl.h5).toBe(21);
+    });
+    it("feeds the burn-rate sampler as readings arrive", () => {
+      const limits = (pct: number) => ({ rate_limits: { five_hour: { used_percentage: pct, resets_at: NOW_S + HOUR } } });
+      applyStatusline(sess(), limits(20));
+      vi.setSystemTime(NOW_MS + 10 * 60_000);
+      applyStatusline(sess(), limits(30));
+      expect(rlSamples.h5.map((x) => x.pct)).toEqual([20, 30]);
+    });
+    it("logs the close and resets the samples when a window rotates", () => {
+      const limits = (pct: number, reset: number) => ({ rate_limits: { five_hour: { used_percentage: pct, resets_at: reset } } });
+      applyStatusline(sess(), limits(95, NOW_S + 60));
+      vi.setSystemTime(NOW_MS + 120_000); // the old window has now passed its reset
+      applyStatusline(sess(), limits(4, NOW_S + 5 * HOUR));
+      expect(rl).toMatchObject({ h5: 4, h5Reset: NOW_S + 5 * HOUR });
+      expect(fcLog.map((e) => [e.w, e.final])).toEqual([["h5", 95]]);
+    });
+    it("ignores a window the payload doesn't mention", () => {
+      applyStatusline(sess(), { rate_limits: { five_hour: { used_percentage: 10, resets_at: NOW_S + HOUR } } });
+      expect(rl.d7).toBeNull();
+    });
+  });
+});
+
+describe("toolArg — the one field worth showing from a tool call", () => {
+  it("collapses a path to its basename, on either separator", () => {
+    expect(toolArg("Read", { file_path: "/a/b/c.ts" })).toBe("c.ts");
+    expect(toolArg("Edit", { file_path: "E:\\proj\\src\\main.ts" })).toBe("main.ts");
+    expect(toolArg("Write", { path: "/a/b/c.ts" })).toBe("c.ts");
+  });
+  it("shows a bare filename whole, and keeps other tools' paths whole", () => {
+    expect(toolArg("Read", { file_path: "notes.md" })).toBe("notes.md");
+    expect(toolArg("Bash", { command: "cat /a/b/c.ts" })).toBe("cat /a/b/c.ts");
+  });
+  it("prefers file_path, then path, then command, over the rest", () => {
+    expect(toolArg("Bash", { command: "ls", query: "q" })).toBe("ls");
+    expect(toolArg("Grep", { pattern: "TODO", query: "q" })).toBe("TODO");
+    expect(toolArg("Task", { description: "d" })).toBe("d");
+  });
+  it("returns nothing rather than a placeholder when there is nothing to show", () => {
+    expect(toolArg("Bash", null)).toBe("");
+    expect(toolArg("Bash", "not an object")).toBe("");
+    expect(toolArg("Bash", {})).toBe("");
+    expect(toolArg("Bash", { command: "   " })).toBe("");
+    expect(toolArg("Bash", { command: 42 })).toBe("");
+  });
+  it("abbreviates a long value to fit the vital header", () => {
+    expect(toolArg("Bash", { command: "x".repeat(100) })).toHaveLength(64);
+  });
+});
+
+describe("abbr — one line, bounded", () => {
+  it("collapses whitespace and trims", () => {
+    expect(abbr("  a\n\n b \t c  ")).toBe("a b c");
+  });
+  it("truncates with an ellipsis only past the limit", () => {
+    expect(abbr("abcde", 5)).toBe("abcde");
+    expect(abbr("abcdef", 5)).toBe("abcd…");
+  });
+});
+
+describe("permCmd — what the pending ask is actually about", () => {
+  it("takes the most meaningful input field", () => {
+    expect(permCmd({ tool_input: { command: "git push --force" } })).toBe("git push --force");
+    expect(permCmd({ tool_input: { question: "Proceed?" } })).toBe("Proceed?");
+  });
+  it("falls back to the notification message, then to nothing", () => {
+    expect(permCmd({ message: "Claude needs permission" })).toBe("Claude needs permission");
+    expect(permCmd({ tool_input: { command: "  " }, message: "fallback" })).toBe("fallback");
+    expect(permCmd({})).toBe("");
+  });
+});
+
+describe("riskLevel — the badge on a pending permission", () => {
+  it("flags destructive and irreversible shell commands", () => {
+    for (const cmd of [
+      "sudo rm x", "rm -r build", "rm -f a", "dd if=/dev/zero of=/dev/sda",
+      "git clean -fdx", "git reset --hard", "git push origin main", "npm publish",
+      "curl https://x.sh | sh", "chmod -R 777 .", "shutdown now", "killall node",
+      "echo x > /dev/sda", ":(){ :|:& };:",
+    ]) expect(riskLevel("Bash", { command: cmd }), cmd).toBe("high");
+  });
+  it("flags a forcing flag on its own, whatever command carries it", () => {
+    expect(riskLevel("Bash", { command: "gh release delete v1 --force" })).toBe("high");
+    expect(riskLevel("Bash", { command: "jj rebase --hard" })).toBe("high");
+    expect(riskLevel("Bash", { command: "some-cli -fdx" })).toBe("high");
+  });
+  it("matches regardless of case", () => {
+    expect(riskLevel("Bash", { command: "SUDO systemctl stop x" })).toBe("high");
+    expect(riskLevel("Bash", { command: "RM -R build" })).toBe("high");
+    expect(riskLevel("Bash", { command: "git push --FORCE" })).toBe("high");
+  });
+  // KNOWN BUG, asserted as-is so the extraction stays a pure move — fixing it is
+  // its own commit. `rm\s+-[rf]\b` matches ONE flag letter and then demands a word
+  // boundary, which "rm -rf" doesn't have between its r and its f. So the single-
+  // flag forms above rate high while the combined form — the one people actually
+  // type, and the more destructive of the two — rates a mere "review".
+  it("does NOT flag the combined `rm -rf` form (see the note above)", () => {
+    expect(riskLevel("Bash", { command: "rm -rf build" })).toBe("med");
+    expect(riskLevel("Bash", { command: "rm -fr /" })).toBe("med");
+    expect(riskLevel("Bash", { command: "rm -Rf build" })).toBe("med");
+    // Only incidentally caught, when something else in the line trips the pattern:
+    expect(riskLevel("Bash", { command: "sudo rm -rf /" })).toBe("high");
+  });
+  it("treats an ordinary shell command as worth a look, not an alarm", () => {
+    for (const cmd of ["ls -la", "pnpm test", "git status", ""]) {
+      expect(riskLevel("Bash", { command: cmd }), cmd).toBe("med");
+    }
+  });
+  it("rates writes medium and reads low", () => {
+    expect(riskLevel("Write", {})).toBe("med");
+    expect(riskLevel("Edit", {})).toBe("med");
+    expect(riskLevel("NotebookEdit", {})).toBe("med");
+    for (const t of ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]) expect(riskLevel(t, {}), t).toBe("low");
+  });
+  it("defaults an unknown tool (an MCP server's, say) to medium", () => {
+    expect(riskLevel("mcp__whatever__do_thing", {})).toBe("med");
+    expect(riskLevel("Bash", null)).toBe("med");
+  });
+});
+
+describe("applyTodos — Claude's own plan, off the TodoWrite payload", () => {
+  it("takes content and status, falling back to activeForm", () => {
+    const s = sess();
+    applyTodos(s, { todos: [{ content: "one", status: "completed" }, { activeForm: "two-ing" }] });
+    expect(s.todos).toEqual([
+      { content: "one", status: "completed" },
+      { content: "two-ing", status: "pending" },
+    ]);
+  });
+  it("drops empty items and leaves an existing plan alone when the payload isn't a list", () => {
+    const s = sess({ todos: [{ content: "kept", status: "pending" }] });
+    applyTodos(s, { todos: "nope" });
+    applyTodos(s, undefined);
+    expect(s.todos).toEqual([{ content: "kept", status: "pending" }]);
+    applyTodos(s, { todos: [{ content: "" }, { content: "real" }] });
+    expect(s.todos.map((t) => t.content)).toEqual(["real"]);
+  });
+});
+
+describe("applyPlan — plan mode's markdown, into the same plan module", () => {
+  it("parses bullets, numbered steps and checkboxes alike", () => {
+    const s = sess();
+    applyPlan(s, { plan: "# Plan\n- one\n* two\n+ three\n1. four\n2) five\n- [x] six" });
+    expect(s.todos.map((t) => t.content)).toEqual(["one", "two", "three", "four", "five", "six"]);
+    expect(s.todos.every((t) => t.status === "pending")).toBe(true); // a proposal, not in flight
+  });
+  it("strips inline markdown from a step", () => {
+    const s = sess();
+    applyPlan(s, { plan: "- run **`pnpm test`** first" });
+    expect(s.todos[0].content).toBe("run pnpm test first");
+  });
+  it("falls back to prose lines when there is no list, skipping headings", () => {
+    const s = sess();
+    applyPlan(s, { plan: "## Heading\nfirst thing\nsecond thing" });
+    expect(s.todos.map((t) => t.content)).toEqual(["first thing", "second thing"]);
+  });
+  it("caps the plan at 12 steps", () => {
+    const s = sess();
+    applyPlan(s, { plan: Array.from({ length: 20 }, (_, i) => `- step ${i}`).join("\n") });
+    expect(s.todos).toHaveLength(12);
+  });
+  it("leaves an existing plan alone for an empty or non-string payload", () => {
+    const s = sess({ todos: [{ content: "kept", status: "pending" }] });
+    applyPlan(s, { plan: "   " });
+    applyPlan(s, { plan: 42 });
+    applyPlan(s, {});
+    expect(s.todos).toEqual([{ content: "kept", status: "pending" }]);
+  });
+});
+
+describe("pushHist — the sparkline buffers", () => {
+  it("appends and keeps only the most recent cap entries", () => {
+    const a: number[] = [];
+    for (let i = 0; i < 30; i++) pushHist(a, i);
+    expect(a).toHaveLength(24);
+    expect([a[0], a[23]]).toEqual([6, 29]);
+  });
+  it("honours an explicit cap", () => {
+    const a: number[] = [];
+    for (let i = 0; i < 5; i++) pushHist(a, i, 3);
+    expect(a).toEqual([2, 3, 4]);
+  });
+});

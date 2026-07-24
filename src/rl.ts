@@ -3,8 +3,10 @@
 // numbers and the clock — no DOM, no Tauri — so it can be unit-tested in
 // isolation, like ./diff. See test/rl.test.ts.
 //
-// The window-rotation bookkeeping (the forecast-vs-actual log) stays in main.ts:
-// it writes localStorage and logs to the debug console, which is wiring, not math.
+// The window-rotation bookkeeping (the forecast-vs-actual log) lives here too. It
+// writes localStorage, which is fine, and narrates to the debug console, which is
+// not — so the one line that repaints reaches this module through `setRlLogger`
+// rather than this module reaching up into main.ts.
 
 // Account-wide rate limits. Every session's statusLine reports the same account
 // numbers, but only as fresh as *that* session last refreshed them — an idle
@@ -96,3 +98,49 @@ export function forecastWin(pct: number | null, reset: number | null, burnPerHr:
 }
 export const forecast5h = (): Forecast => forecastWin(rl.h5, rl.h5Reset, burnRate("h5"));
 export const forecast7d = (): Forecast => forecastWin(rl.d7, rl.d7Reset, burnRate("d7"));
+
+// ---- forecast-vs-actual log: the substrate that makes the model improvable ----
+// On every window rotation we record what the closing window actually reached vs.
+// what we'd projected at its halfway mark. Purely a measurement store for now
+// (localStorage, capped) — nothing consumes it yet; it's what a future threshold-
+// calibration / error-band pass reads. Expensive to backfill, cheap to keep.
+// Narrating a window close repaints the debug panel, which is wiring; main.ts hands
+// `dlog` over at startup and until then the log is silent.
+let rlLog: (lvl: "info" | "warn" | "error", msg: string) => void = () => {};
+export function setRlLogger(fn: (lvl: "info" | "warn" | "error", msg: string) => void) { rlLog = fn; }
+
+export interface FcLogEntry { w: RlWin; closed: number; final: number; midProj: number | null; err: number | null }
+export const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
+export const midSnap: Record<RlWin, { proj: number } | null> = { h5: null, d7: null };
+export function maybeMidSnap(win: RlWin, reset: number | null) {
+  if (midSnap[win] || reset == null) return;
+  const len = win === "h5" ? H5_LEN : D7_LEN;
+  if (reset - Date.now() / 1000 > len / 2) return; // not yet past the halfway mark
+  const f = win === "h5" ? forecast5h() : forecast7d();
+  if (f.hasRate && f.proj != null) midSnap[win] = { proj: f.proj };
+}
+export function logWindowClose(win: RlWin, finalPct: number | null) {
+  if (typeof finalPct !== "number") return;
+  const snap = midSnap[win];
+  const e: FcLogEntry = {
+    w: win, closed: Math.floor(Date.now() / 1000), final: finalPct,
+    midProj: snap ? snap.proj : null, err: snap ? finalPct - snap.proj : null,
+  };
+  fcLog.push(e);
+  if (fcLog.length > 200) fcLog.splice(0, fcLog.length - 200);
+  localStorage.setItem("cc-forecast-log", JSON.stringify(fcLog));
+  rlLog("info", `forecast · ${win} window closed at ${Math.round(finalPct)}%` +
+    (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : ""));
+}
+// Called after each merge with the pre/post reset so we can spot a window rotation
+// (a genuinely later resets_at). On rotation the old window closed: log how it went,
+// and clear the burn samples so the new window's slope starts clean.
+export function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number | null, newReset: number | null) {
+  if (newReset != null && prevReset != null && newReset > prevReset + 120) {
+    logWindowClose(win, prevPct);
+    rlSamples[win] = [];
+    midSnap[win] = null;
+  }
+  pushRlSample(win, rlPct(win === "h5" ? rl.h5 : rl.d7, newReset));
+  maybeMidSnap(win, newReset);
+}

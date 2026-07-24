@@ -1,19 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
-
-// src/usage.ts reads localStorage at module scope, so the stub has to exist before
-// the import is evaluated — which is exactly what vi.hoisted() is for.
-const store = vi.hoisted(() => {
-  const m = new Map<string, string>();
-  (globalThis as any).localStorage = {
-    getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
-    setItem: (k: string, v: string) => { m.set(k, String(v)); },
-    removeItem: (k: string) => { m.delete(k); },
-    clear: () => m.clear(),
-  };
-  return m;
-});
-
+import { store } from "./localstorage"; // must precede the subject import
 import {
   addUsage, modelFamily, setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt,
   uBuckets, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type DayUsage, type UDay,

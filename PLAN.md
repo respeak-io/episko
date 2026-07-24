@@ -106,7 +106,7 @@ there, resolve it in this order:
 - [x] `usage.ts` — `todayKey`, `addUsage`, `usageWindow`, `uBuckets`, `uSum`.
       Moved ahead of `phase.ts`: `applyStatusline` calls `addUsage`, and doing
       this first is what stops that becoming a seam (rule 1 above).
-- [ ] `phase.ts` — `applyHook`/`applyStatusline`/`setPhase` plus `toolArg`,
+- [x] `phase.ts` — `applyHook`/`applyStatusline`/`setPhase` plus `toolArg`,
       `permCmd`, `riskLevel`, `abbr`, `applyTodos`/`applyPlan`. The heart of the
       display. `applyHook` moves clean; `applyStatusline`'s two upward calls are
       `addUsage` (gone by then, per above) and `onRlUpdate` — which reaches
