@@ -53,7 +53,7 @@ grouping/sort, palette, permission risk rating).
       `X-CC-Session` header in every generated command; absolute curl paths
       (stripped-PATH constraint); port + session id embedded; `shell:"powershell"`
       on Windows.
-- [ ] Tests for the remaining restructure-independent helpers:
+- [x] Tests for the remaining restructure-independent helpers:
       `sh_quote`, `git_action` (temp repo + bare remote, like the branch-list
       test), `git_diffstat`, `upstream_state`, `sniff_mime`,
       `valid_caffeinate_flag`, `query_param`.

@@ -3758,6 +3758,23 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// How the *blocking* permission hook identifies itself: it's `type:"http"`, so
+    /// there's no shell to add the `X-CC-Session` header and the id rides in `?sid=`
+    /// instead. Getting nothing back here means the request can't be routed.
+    #[test]
+    fn query_param_reads_the_permission_sid() {
+        assert_eq!(query_param("/permission?sid=abc-123", "sid").as_deref(), Some("abc-123"));
+        assert_eq!(query_param("/permission?x=1&sid=abc&y=2", "sid").as_deref(), Some("abc"));
+        // A key that merely ends with ours is a different key.
+        assert_eq!(query_param("/permission?xsid=abc", "sid"), None);
+        // The other endpoints carry no query string at all.
+        assert_eq!(query_param("/hook", "sid"), None);
+        assert_eq!(query_param("/statusline?", "sid"), None);
+        // Degenerate spellings yield an empty id rather than panicking.
+        assert_eq!(query_param("/permission?sid=", "sid").as_deref(), Some(""));
+        assert_eq!(query_param("/permission?sid", "sid").as_deref(), Some(""));
+    }
+
     /// All three real-world spellings of one Windows folder (git's forward
     /// slashes, the dialog's native path, VS Code's lowercase drive) must
     /// collapse to a single string, or the sidebar splits the project.
@@ -3797,6 +3814,54 @@ mod tests {
         // than lighting the cup over a machine that will happily sleep.
         assert_eq!(f(&["-m"]), 0);
         assert_eq!(f(&[]), 0);
+    }
+
+    /// The macOS half of the same setting. `set_caffeinate` spawns without a shell,
+    /// but the flags still arrive from the frontend, so anything that isn't a
+    /// sleep-assertion cluster (or `-t`'s bare seconds) is refused rather than passed
+    /// to `/usr/bin/caffeinate`.
+    #[cfg(not(windows))]
+    #[test]
+    fn caffeinate_flags_are_whitelisted() {
+        for ok in ["-d", "-i", "-dimsu", "-t", "3600", "0"] {
+            assert!(valid_caffeinate_flag(ok), "{ok} is one of the UI's own presets");
+        }
+        for bad in ["", "-", "--", "-x", "-d;", "-d -i", "36 00", "/usr/bin/evil"] {
+            assert!(!valid_caffeinate_flag(bad), "{bad} must be refused");
+        }
+    }
+
+    /// The external-terminal engines hand `open -a` a generated `.command` *script*,
+    /// so a workdir or title containing a quote must not be able to close the quoting
+    /// and run as its own command.
+    #[cfg(not(windows))]
+    #[test]
+    fn sh_quote_neutralises_embedded_quotes() {
+        assert_eq!(sh_quote("/Users/tim/dev/episko"), "'/Users/tim/dev/episko'");
+        assert_eq!(sh_quote(""), "''");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+        assert_eq!(sh_quote("a'; rm -rf /; echo '"), r"'a'\''; rm -rf /; echo '\'''");
+    }
+
+    /// Repos routinely ship a PNG named `favicon.ico`. Trusting the extension would
+    /// emit `data:image/x-icon` wrapping PNG bytes, which the webview may refuse —
+    /// the icon reads as "found" but renders broken. So content wins over extension,
+    /// and the extension is only the fallback.
+    #[test]
+    fn sniff_mime_trusts_content_over_extension() {
+        assert_eq!(sniff_mime(b"\x89PNG\r\n\x1a\nIHDR", "ico"), Some("image/png"));
+        assert_eq!(sniff_mime(&[0x00, 0x00, 0x01, 0x00, 0x01, 0x00], "png"), Some("image/x-icon"));
+        assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0], "png"), Some("image/jpeg"));
+        assert_eq!(sniff_mime(b"GIF89a\x10\x00", "png"), Some("image/gif"));
+        assert_eq!(sniff_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ", "png"), Some("image/webp"));
+        assert_eq!(sniff_mime(b"<svg xmlns=\"http://www.w3.org/2000/svg\">", "png"), Some("image/svg+xml"));
+        // SVG is text, so it's found by tag — past an XML prolog, and case-insensitively.
+        assert_eq!(sniff_mime(b"<?xml version=\"1.0\"?>\n<SVG width=\"16\">", "bin"), Some("image/svg+xml"));
+        // Unsniffable (e.g. an SVG behind a long prolog) falls back to the extension.
+        assert_eq!(sniff_mime(b"", "svg"), Some("image/svg+xml"));
+        assert_eq!(sniff_mime(b"nothing recognisable", "webp"), Some("image/webp"));
+        // Neither content nor extension says image → no icon, rather than a guess.
+        assert_eq!(sniff_mime(b"nothing recognisable", "txt"), None);
     }
 
     /// A fresh, empty scratch directory under the OS temp dir. No randomness (pid +
@@ -3893,6 +3958,152 @@ mod tests {
         let dir = scratch_dir();
         assert!(git_diff(dir.to_str().unwrap().to_string()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Commit in `dir`, identity and signing passed via `-c` for the same reason
+    /// `git()` takes none from the environment: the developer's global gitconfig must
+    /// neither be needed nor touched.
+    fn commit(dir: &Path, msg: &str) {
+        git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+    }
+
+    /// The inspector's working-set strip ("+2 −1 · 1 file · 1 new") and the ahead/
+    /// behind pair beside it. Two things it must not do: count an untracked file's
+    /// lines as insertions (they're a separate, differently-worded number), and
+    /// measure the gap against anything other than the tracking ref.
+    #[test]
+    fn git_diffstat_counts_the_working_set_and_the_upstream_gap() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+
+        // An unborn HEAD has nothing to diff against — None, not a row of zeros that
+        // would read as "clean".
+        assert!(git_diffstat(path.clone()).is_none(), "no commits yet");
+
+        std::fs::write(dir.join("a.txt"), "1\n2\n3\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit(&dir, "init");
+
+        let d = git_diffstat(path.clone()).expect("a repo with a commit has a diffstat");
+        assert_eq!((d.added, d.removed, d.files, d.untracked, d.dirty), (0, 0, 0, 0, 0));
+        assert_eq!(d.upstream, None, "a branch with no remote must not be given one");
+        assert_eq!(upstream_state(&path), (None, 0, 0));
+
+        std::fs::write(dir.join("a.txt"), "1\nCHANGED\n3\n4\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "brand new\n").unwrap();
+        let d = git_diffstat(path.clone()).unwrap();
+        assert_eq!((d.added, d.removed, d.files), (2, 1, 1), "numstat covers tracked files only");
+        assert_eq!((d.untracked, d.dirty), (1, 2), "the new file is counted, not diffed");
+
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+        commit(&dir, "ahead by one");
+        let d = git_diffstat(path.clone()).unwrap();
+        assert_eq!(d.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((d.ahead, d.behind), (1, 0), "measured against origin/main");
+        // The working set is orthogonal to the upstream gap and must survive it.
+        assert_eq!((d.added, d.removed, d.untracked), (2, 1, 1));
+
+        // Detached HEAD tracks nothing — it must not inherit the branch it left.
+        git(&dir, &["checkout", "-q", "--detach"]);
+        assert_eq!(upstream_state(&path), (None, 0, 0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The git buttons predict, *before* running git, everything git would reject
+    /// anyway — and hand over the command that does work instead of surfacing a raw
+    /// error. That prediction is the whole value of the feature.
+    #[test]
+    fn git_action_refuses_what_git_would_reject() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "base");
+
+        // No upstream: pull says how to set one; push hands over the publishing
+        // decision rather than inventing a remote branch from a button.
+        let r = git_action(path.clone(), "pull".into()).unwrap();
+        assert!(!r.ok && r.summary.contains("tracks no upstream"), "{}", r.summary);
+        assert_eq!(r.suggest.as_deref(), Some("git branch --set-upstream-to=origin/main main"));
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(!r.ok && r.summary.contains("tracks no upstream"), "{}", r.summary);
+        assert_eq!(r.suggest.as_deref(), Some("git push -u origin main"));
+
+        // Detached HEAD: no branch to pull into or push from.
+        git(&dir, &["checkout", "-q", "--detach"]);
+        for op in ["pull", "push"] {
+            let r = git_action(path.clone(), op.into()).unwrap();
+            assert!(!r.ok && r.summary.starts_with("detached HEAD"), "{op}: {}", r.summary);
+            assert_eq!(r.suggest.as_deref(), Some("git switch -"));
+        }
+
+        // A refusal is a result the UI can show. An Err is reserved for a call that
+        // makes no sense at all — those two must not be confused.
+        assert!(git_action(path.clone(), "commit".into()).is_err(), "committing isn't a toolbar op");
+        assert!(git_action(format!("{path}/gone"), "fetch".into()).is_err(), "missing workdir");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same three ops against a real bare remote: fetch is always safe and
+    /// re-reads the gap it just closed, pull only fast-forwards, push only runs when
+    /// it can't be rejected — and a diverged branch is refused with a rebase handoff.
+    #[test]
+    fn git_action_fetches_pulls_and_pushes_against_a_real_remote() {
+        let dir = scratch_dir();
+        let other = scratch_dir();
+        let remote = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+
+        // In sync: every op is a no-op, and says so instead of running git.
+        let r = git_action(path.clone(), "fetch".into()).unwrap();
+        assert!(r.ok && r.summary == "fetched — up to date", "{}", r.summary);
+        let r = git_action(path.clone(), "pull".into()).unwrap();
+        assert!(r.ok && r.summary == "already up to date", "{}", r.summary);
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(r.ok && r.summary == "nothing to push", "{}", r.summary);
+
+        commit(&dir, "mine");
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(r.ok && r.summary == "pushed 1 commit", "{}", r.summary);
+        assert_eq!(upstream_state(&path), (Some("origin/main".to_string()), 0, 0));
+
+        // Someone else pushes. Fetch re-reads afterwards — reporting the gap it just
+        // learned about is the entire point of the button — and pull fast-forwards it.
+        git(&other, &["clone", "-q", remote.to_str().unwrap(), "."]);
+        commit(&other, "theirs");
+        git(&other, &["push", "-q", "origin", "main"]);
+        let r = git_action(path.clone(), "fetch".into()).unwrap();
+        assert!(r.ok && r.summary == "fetched — 1 behind", "{}", r.summary);
+        let r = git_action(path.clone(), "pull".into()).unwrap();
+        assert!(r.ok && r.summary == "pulled 1 commit", "{}", r.summary);
+
+        // Diverged: ff-only would fail and the push would be rejected, so neither is
+        // attempted — the user gets the command that actually resolves it.
+        commit(&dir, "local");
+        commit(&other, "theirs 2");
+        git(&other, &["push", "-q", "origin", "main"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        let r = git_action(path.clone(), "pull".into()).unwrap();
+        assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
+        assert_eq!(r.suggest.as_deref(), Some("git pull --rebase"));
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(!r.ok && r.summary.contains("push would be rejected"), "{}", r.summary);
+        assert_eq!(r.suggest.as_deref(), Some("git pull --ff-only && git push"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     /// The picker leans on these flags to decide what's pickable: it hides `current`
