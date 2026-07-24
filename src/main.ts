@@ -12,6 +12,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { parsePatch, type DiffFile, type DiffHunk } from "./diff";
+import type {
+  DiffStat, ExtSession, GitActionResult, Phase, Restorable, Risk, Runnable, Sess,
+} from "./types";
 
 // One-time recovery of localStorage stranded when the app was renamed
 // Muster -> Episko: the bundle id changed (io.respeak.cclauncher ->
@@ -183,78 +186,10 @@ let reorderGuardUntil = 0;
 const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
 // ---------- model ----------
-type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
-type Risk = "low" | "med" | "high";
-// One tool call on the activity timeline. `durMs` is filled in on PostToolUse
-// (latency = the Pre→Post gap); null means still running.
-interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
-// A single item from a TodoWrite payload (the plan Claude keeps for itself).
-interface Todo { content: string; status: string }
-// Uncommitted "working set" summary from the git_diffstat backend command, plus
-// where the branch sits against its upstream (ahead/behind are as of the last
-// fetch, not live — see upstream_state in lib.rs).
-interface DiffStat {
-  added: number; removed: number; files: number; untracked: number; dirty: number;
-  upstream: string | null; ahead: number; behind: number;
-}
-// Result of a fetch/pull/push. `suggest` is set when the action was refused (or
-// git failed) and there's a command worth handing to a real terminal.
-interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
-// What a pane actually contains. All three run in an identical PTY; the kind is
-// what decides whether telemetry, cost and git actions apply to it.
-//   claude — an instrumented `claude` session (the only kind with telemetry)
-//   shell  — a plain login shell (❯ Terminal)
-//   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
-// Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
-// rather than an embedded pane", and only ever applies to a claude session.
-type SessKind = "claude" | "shell" | "task";
+// The shapes themselves live in ./types (see the import at the top of this file);
+// this is the behaviour that hangs off them.
 const isAgent = (s: Sess) => s.kind === "claude";
 
-// The resolved half of a Runnable — what the backend needs to actually start it.
-interface Exec { mode: "argv"; program: string; args: string[] }
-interface ExecShell { mode: "shell"; line: string }
-// One value a task needs before it can run — a VS Code `${input:…}` declaration,
-// or a just recipe parameter with no default.
-interface InputSpec {
-  id: string; kind: "promptString" | "pickString"; description: string;
-  default: string | null; options: string[]; password: boolean;
-}
-interface Runnable {
-  id: string; label: string; detail: string | null;
-  source: string; sourceFile: string; group: string | null;
-  exec: Exec | ExecShell; cwd: string; env: Record<string, string>;
-  background: boolean; inputs: InputSpec[];
-  // Labels, not ids — VS Code names dependencies by label.
-  dependsOn: string[]; dependsOrder: "parallel" | "sequence";
-  blocked: string | null;
-}
-
-interface Sess {
-  id: string; project: string; accent: string; workdir: string; colorKey: string;
-  // resumeId = the id `claude --resume` must target. It starts equal to `id` (we
-  // launch with --session-id id) but tracks Claude's *runtime* id, which rotates
-  // on /clear, /compact and /resume — each rotation opening a NEW transcript file.
-  // Restoring `id` after a compaction would resurrect the pre-compaction thread.
-  resumeId: string;
-  branch: string; worktree: string | null; title: string;
-  phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null; subagents: number;
-  model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
-  curTool: string; curArg: string; todos: Todo[];
-  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: { cpu: number; memMb: number } | null;
-  lastEvent: string; activity: Act[];
-  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
-  // task panes only
-  run?: {
-    id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
-    startedAt: number; exitCode: number | null; tail: string[];
-    /// The directory discovery ran in — where `sourceFile` is rooted, so *reveal
-    /// source* can find the file even for a task whose run cwd is a subfolder.
-    root: string;
-    /// Set when a run-on-stop rule started this — the session whose turn it was
-    /// verifying, and therefore the one a failure should be offered back to.
-    forSession?: string;
-  };
-}
 const sessions = new Map<string, Sess>();
 let activeId: string | null = null;
 let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
@@ -415,28 +350,9 @@ function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number | null
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
-interface ExtSession {
-  pid: number; session_id: string; cwd: string; name: string;
-  status: string; status_updated_at?: number | null; started_at?: number | null; version: string;
-  // repo_root = the main worktree of this session's repo (backend-resolved), so all
-  // worktrees of one repo group under it; branch = the branch checked out in cwd.
-  repo_root?: string | null; branch?: string | null;
-}
 let externals: ExtSession[] = [];
 
 // ---------- restorable sessions ----------
-// Episko's launch uuid IS Claude's --session-id, so every session we launch already
-// has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
-// therefore not about capturing conversation state — Claude already has it — but
-// about remembering which sessions were on screen at quit, and with what identity.
-interface Restorable {
-  id: string;          // the original launch uuid (roster key, stable across restarts)
-  resumeId: string;    // what to hand `claude --resume`
-  project: string; workdir: string; colorKey: string;
-  worktree: string | null; branch: string;
-  title: string;       // last known label; refreshed from the transcript on load
-  lastActivity: number;
-}
 let dormants: Restorable[] = [];
 
 // The roster is "what was open when Episko last closed". Closing a session removes
