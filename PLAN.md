@@ -80,20 +80,43 @@ grouping/sort, palette, permission risk rating).
 Each unchecked item = one slice: extract the module, write its tests, commit.
 Order matters — pure leaves first, DOM last.
 
+**How a leaf module calls back into the app.** Decided 2026-07-24, so it needn't
+be re-argued per slice. A logic module must not import render code or `main.ts`
+(ground rule 3), so when an extracted function needs something that lives up
+there, resolve it in this order:
+
+1. **Move the callee down too**, if it is itself leaf-shaped. `addUsage` only
+   touches `localStorage` and pure helpers, so `usage.ts` moves *before*
+   `phase.ts` (reordered below) and the problem disappears with no machinery.
+2. **A settable hook, defaulting to a no-op**, when the callee genuinely belongs
+   to the render/wiring layer — as `dlog` does, since it repaints the debug
+   panel. The module owns the variable and exports a setter; `main.ts` wires it
+   at startup. `format.ts`'s `setHome` is the shipped example; `rl.ts` gets
+   `setRlLogger` when the forecast-vs-actual log (`fcLog`, `midSnap`,
+   `maybeMidSnap`, `logWindowClose`, `onRlUpdate`) follows the rest of the
+   rate-limit code down.
+3. **An extra parameter** only as a last resort — it changes a signature the
+   move is supposed to leave alone, and every test then has to pass a stub.
+
 - [x] `types.ts` — `Sess`, `Phase`, shared interfaces (no logic; unblocks the rest)
 - [x] `format.ts` — `fmtDur`/`fmtUntil`/`fmtSpan`/`relTime`/`fmtDwell`, `esc`,
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
 - [x] `rl.ts` — `mergeRl`, `rlPct`/`rlReset`, `pushRlSample`, `burnRate`,
       `forecastWin` (the usage-limit forecast math)
+- [ ] `usage.ts` — `todayKey`, `addUsage`, `usageWindow`, `uBuckets`, `uSum`.
+      Moved ahead of `phase.ts`: `applyStatusline` calls `addUsage`, and doing
+      this first is what stops that becoming a seam (rule 1 above).
 - [ ] `phase.ts` — `applyHook`/`applyStatusline`/`setPhase` plus `toolArg`,
       `permCmd`, `riskLevel`, `abbr`, `applyTodos`/`applyPlan`. The heart of the
-      display. Needs a small seam for `addUsage`/`dlog` (inject or import from
-      `state.ts`). Test the documented invariants: permission → attention,
-      subagent depth suppresses phase flips, statusLine un-ends an "ended" session.
+      display. `applyHook` moves clean; `applyStatusline`'s two upward calls are
+      `addUsage` (gone by then, per above) and `onRlUpdate` — which reaches
+      `dlog`, so the forecast-log block moves into `rl.ts` behind `setRlLogger`
+      (rule 2 above) rather than `phase.ts` reaching up for it. Test the
+      documented invariants: permission → attention, subagent depth suppresses
+      phase flips, statusLine un-ends an "ended" session.
 - [ ] `palette.ts` — `fuzzy`, `scoreItem`, `parsePal`, `frecScore`
 - [ ] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
       `projectList` ordering, `nextAfterClose`
-- [ ] `usage.ts` — `todayKey`, `addUsage`, `usageWindow`, `uBuckets`, `uSum`
 - [ ] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
       `launchWithDeps`/`waitForExit` chain rules (label resolution, sequence vs
       parallel, failed-dep stops chain), `${input:…}` substitution glue
