@@ -1,7 +1,7 @@
-# Muster's own task file — read by the ▶ Run picker.
+# Episko's own task file — read by the ▶ Run picker.
 #
 # Everything here is IDE-agnostic and committed, so it works the same whether you
-# drive this repo from Muster, VS Code or a bare terminal. package.json scripts are
+# drive this repo from Episko, VS Code or a bare terminal. package.json scripts are
 # discovered automatically and don't need repeating; these are the ones that need a
 # working directory, a shell, or a name a human would recognise.
 

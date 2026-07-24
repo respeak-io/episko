@@ -580,7 +580,7 @@ fn spawn_shell(
 /// with the flag that takes the command string, so the caller just pushes the line.
 /// A *login* shell (not `-c` alone) so tasks inherit the same PATH, nvm/mise shims
 /// and aliases the user gets in their own terminal; a task that works in iTerm and
-/// fails in Muster is the whole class of bug this avoids.
+/// fails in Episko is the whole class of bug this avoids.
 #[cfg(not(windows))]
 fn task_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -3438,12 +3438,12 @@ pub fn run() {
             spawn_task,
             tasks::discover_runnables,
             tasks::rescan_runnables,
-            tasks::save_muster_task,
-            tasks::delete_muster_task,
+            tasks::save_episko_task,
+            tasks::delete_episko_task,
             tasks::save_task_override,
             tasks::remove_task_override,
             tasks::list_task_overrides,
-            tasks::muster_tasks_file,
+            tasks::episko_tasks_file,
             available_terminals,
             spawn_external_terminal,
             open_terminal_here,
@@ -3636,9 +3636,9 @@ mod tests {
                 .expect("login shell should be spawnable")
         };
 
-        let ok = run("echo muster-task-ok");
+        let ok = run("echo episko-task-ok");
         assert!(ok.status.success());
-        assert_eq!(String::from_utf8_lossy(&ok.stdout).trim(), "muster-task-ok");
+        assert_eq!(String::from_utf8_lossy(&ok.stdout).trim(), "episko-task-ok");
 
         // Non-zero must survive to the caller — the frontend turns it into `error`.
         let bad = run("exit 3");

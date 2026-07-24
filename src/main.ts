@@ -1636,15 +1636,15 @@ function renderShellInspector(s: Sess) {
 // ---------- task settings & trust ----------
 // Everything here is *personal* preference and lives in localStorage beside
 // cc-favorites. Project-shaped facts (what a task runs, its cwd, its env) belong
-// in .muster/tasks.toml, which is committable — the split is what keeps a shared
-// repo working for a colleague who never opens Muster.
+// in .episko/tasks.toml, which is committable — the split is what keeps a shared
+// repo working for a colleague who never opens Episko.
 
 // Must list every `source` the backend can emit (see tasks.rs `discover`): anything
 // missing here is discovered and then silently filtered out of the picker.
-const ALL_PROVIDERS = ["muster", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
+const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
 type Provider = (typeof ALL_PROVIDERS)[number];
 const PROVIDER_LABEL: Record<Provider, string> = {
-  muster: ".muster", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
+  episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
   just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
 };
 
@@ -1669,7 +1669,7 @@ for (const p of ALL_PROVIDERS) {
 taskPrefs.known = [...ALL_PROVIDERS];
 function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.stringify(taskPrefs)); renderAll(); }
 
-// Folders the user has explicitly allowed Muster to introspect. Adding a folder as
+// Folders the user has explicitly allowed Episko to introspect. Adding a folder as
 // a project counts as saying yes — you chose it deliberately; a directory that
 // merely happens to hold a session does not.
 const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
@@ -1753,7 +1753,7 @@ function revealSource(root: string, sourceFile: string) {
 }
 
 // ---------- run on stop ----------
-// The part a plain terminal can't do. Muster already receives Claude's `Stop`
+// The part a plain terminal can't do. Episko already receives Claude's `Stop`
 // hook, so a project can say "when an agent finishes a turn here, run the tests" —
 // and every turn becomes a verified turn. A green run auto-dismisses like any
 // other; a red one persists, raises the same badge a blocked session does, and
@@ -1917,7 +1917,7 @@ function renderTaskInspector(s: Sess) {
 
 // Type the failure into a Claude session's stdin — deliberately *without* a
 // trailing newline, so you read what's about to be sent and press Enter yourself.
-// Same contract as handToTerminal: Muster prefills, the human commits.
+// Same contract as handToTerminal: Episko prefills, the human commits.
 function sendOutputToSession(task: Sess, targetId: string) {
   const t = sessions.get(targetId);
   if (!t?.term) { toast("That session is gone"); return; }
@@ -2101,7 +2101,7 @@ async function discoverTasks(workdir: string, colorKey = workdir, includeHidden 
 }
 
 // Drop the backend's cached parse for this project so the next discover re-reads
-// from disk. The stamp already catches edits to files Muster reads; this is the
+// from disk. The stamp already catches edits to files Episko reads; this is the
 // escape hatch for what it can't see — a file an introspector imports itself.
 async function rescanTasks(workdir: string) {
   await invoke("rescan_runnables", { workdir }).catch((e) => dlog("warn", `rescan: ${e}`));
@@ -2892,7 +2892,7 @@ function closeShortPop() { $("shortPop").classList.remove("show"); }
 // The fleet's "needs you" set — sessions with a blocking permission, an error, or
 // finished and awaiting your reply — most urgent first (waiting wins), longest in
 // that state first. Independent of the sidebar sort so the reactor is stable.
-// A failed run counts: the whole point of running tasks in Muster is that a red
+// A failed run counts: the whole point of running tasks in Episko is that a red
 // build reaches you the same way a blocked session does. A *successful* run does
 // not — it settles quietly and auto-dismisses.
 function needsYou(s: Sess): boolean {
@@ -3277,7 +3277,7 @@ function closePalette() { $("scrim").classList.remove("show"); $("palette").clas
 
 // ---------- settings ----------
 // The window main.ts has wanted for a while: it finally gives the worktree-grouping
-// mode a control (it was reachable only as musterWtGroup() in the console), and it
+// mode a control (it was reachable only as episkoWtGroup() in the console), and it
 // owns the task settings that would otherwise be hardcoded bets.
 
 // ---------- panels / theme ----------
@@ -4213,7 +4213,7 @@ const SET_TABS: SetTab[] = [
     id: "tasks", label: "Tasks", glyph: "▶",
     controls: () => [
       { kind: "multi", set: "prov", label: "Scan for task files",
-        hint: "Which formats Muster looks for when you open the Run picker.",
+        hint: "Which formats Episko looks for when you open the Run picker.",
         on: () => taskPrefs.providers,
         segs: () => ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })) },
       { kind: "toggle", set: "introspect", label: "Let trusted projects introspect themselves",
@@ -5005,8 +5005,8 @@ function openPlainTerminal() {
 // ---------- the project tasks panel ----------
 // Manage what the picker shows. Two kinds of change live here and they persist to
 // different places on purpose: hiding a task is *yours* (localStorage), while a
-// task's command is the *project's* (.muster/tasks.toml, committable). Only
-// Muster's own file is ever written — a discovered VS Code task or justfile
+// task's command is the *project's* (.episko/tasks.toml, committable). Only
+// Episko's own file is ever written — a discovered VS Code task or justfile
 // belongs to another tool and stays read-only.
 
 const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
@@ -5065,10 +5065,10 @@ function renderMgr() {
 
   const pins = pinnedIds(colorKey), hid = hiddenIds(colorKey);
   const rule = stopRules[colorKey];
-  // A committable command edit lands in .muster/tasks.toml either way: our own
+  // A committable command edit lands in .episko/tasks.toml either way: our own
   // task in place, a discovered one as an [override.*] that never touches its file.
   const rowsHtml = mgrList.map((r) => {
-        const own = r.source === "muster";
+        const own = r.source === "episko";
         const overridden = mgrOverrides.includes(r.id);
         const dangling = r.id.startsWith("override:");   // an override whose target vanished
         const editable = !r.blocked;
@@ -5078,9 +5078,9 @@ function renderMgr() {
         const noStop = stopRuleBlocked(r);
         const tags = `${r.background ? " · bg" : ""}${overridden ? " · overridden" : ""}${r.blocked ? " · " + esc(r.blocked) : ""}${onStop ? " · runs after each turn" : ""}`;
         const editBtn = own
-          ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .muster/tasks.toml">✎</button>
-             <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .muster/tasks.toml">✕</button>`
-          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit — writes an override into .muster/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
+          ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .episko/tasks.toml">✎</button>
+             <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .episko/tasks.toml">✕</button>`
+          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit — writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
         const revertBtn = (overridden || dangling)
           ? `<button class="mgr-b" data-revert="${esc(dangling ? r.id.slice("override:".length) : r.id)}" title="Revert to what ${esc(r.sourceFile)} declares">↺</button>`
           : "";
@@ -5134,7 +5134,7 @@ function startMgrEdit(id: string | null) {
   const r = id ? mgrList.find((x) => x.id === id) : null;
   // Editing a discovered task doesn't rewrite its file — it captures the effective
   // command as an override. Our own tasks edit in place.
-  const kind: "own" | "override" = r && r.source !== "muster" ? "override" : "own";
+  const kind: "own" | "override" = r && r.source !== "episko" ? "override" : "own";
   mgrEdit = r
     ? { id: r.id, kind, label: r.label, run: r.exec.mode === "shell" ? r.exec.line : execCmd(r), group: r.group ?? "", background: r.background, cwd: "" }
     : { id: null, kind: "own", label: "", run: "", group: "", background: false, cwd: "" };
@@ -5153,9 +5153,9 @@ async function revertMgrOverride(id: string) {
 function renderMgrForm() {
   const e = mgrEdit!;
   // Editing a task another tool owns is an override, not a rewrite — say so, because
-  // it's the surprising-but-deliberate half of "Muster never touches a file it didn't create".
+  // it's the surprising-but-deliberate half of "Episko never touches a file it didn't create".
   const note = e.kind === "override"
-    ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.muster/tasks.toml</code>. The original stays as its tool declared it; ↺ Revert removes the override.</div>`
+    ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.episko/tasks.toml</code>. The original stays as its tool declared it; ↺ Revert removes the override.</div>`
     : "";
   $("mgrBody").innerHTML = note + `
     <div class="in-field"><label class="in-lbl">Label</label>
@@ -5191,13 +5191,13 @@ async function saveMgrTask() {
   const e = mgrEdit;
   if (!e.label.trim() || !e.run.trim()) { toast("A task needs a label and a command"); return; }
 
-  // Creating .muster/tasks.toml puts a new committable file in someone's repo —
+  // Creating .episko/tasks.toml puts a new committable file in someone's repo —
   // that's a side effect worth asking about once, not something to do silently.
-  const [path, exists] = await invoke<[string, boolean]>("muster_tasks_file", { workdir: mgrCtx.workdir });
+  const [path, exists] = await invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir });
   if (!exists) {
     const ok = await ask(
-      `Muster will create ${tilde(path)}.\n\nIt's a normal file in your repo — commit it and your team gets these tasks too, in any editor.`,
-      { title: "Create .muster/tasks.toml?", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+      `Episko will create ${tilde(path)}.\n\nIt's a normal file in your repo — commit it and your team gets these tasks too, in any editor.`,
+      { title: "Create .episko/tasks.toml?", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
     if (!ok) return;
   }
   const task = { label: e.label.trim(), run: e.run.trim(), group: e.group || null, background: e.background, cwd: e.cwd.trim() || null };
@@ -5207,8 +5207,8 @@ async function saveMgrTask() {
       await invoke("save_task_override", { workdir: mgrCtx.workdir, id: e.id, task });
       toast(`Overrode ${e.label}`);
     } else {
-      // Discovery ids are namespaced ("muster:dev"); the file addresses the bare slug.
-      await invoke("save_muster_task", { workdir: mgrCtx.workdir, id: e.id ? e.id.replace(/^muster:/, "") : null, task });
+      // Discovery ids are namespaced ("episko:dev"); the file addresses the bare slug.
+      await invoke("save_episko_task", { workdir: mgrCtx.workdir, id: e.id ? e.id.replace(/^episko:/, "") : null, task });
       toast(e.id ? `Updated ${e.label}` : `Added ${e.label}`);
     }
     mgrEdit = null;
@@ -5222,19 +5222,19 @@ async function saveMgrTask() {
 async function deleteMgrTask(id: string) {
   if (!mgrCtx) return;
   const r = mgrList.find((x) => x.id === id);
-  const ok = await ask(`Delete “${r?.label ?? id}” from .muster/tasks.toml?`, {
+  const ok = await ask(`Delete “${r?.label ?? id}” from .episko/tasks.toml?`, {
     title: "Delete task?", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel",
   });
   if (!ok) return;
   try {
-    await invoke("delete_muster_task", { workdir: mgrCtx.workdir, id: id.replace(/^muster:/, "") });
+    await invoke("delete_episko_task", { workdir: mgrCtx.workdir, id: id.replace(/^episko:/, "") });
     await refreshMgr();
   } catch (err) { toast("delete failed: " + err); }
 }
 
 // ---------- the ▶ Run picker ----------
 // A popover over the stage, grouped by source so it's obvious where each task came
-// from. Blocked runnables stay visible but greyed: hiding them reads as "Muster
+// from. Blocked runnables stay visible but greyed: hiding them reads as "Episko
 // didn't find my task", which is the more expensive confusion.
 let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string; workdir: string } | null = null;
 let runList: Runnable[] = [];
@@ -5382,7 +5382,7 @@ function renderRunPicker(term: string) {
   if (!flat.length) {
     body.innerHTML = runList.length
       ? `<div class="run-empty">Nothing matches${term ? ` “${esc(term)}”` : ""}${runSource ? ` in ${esc(PROVIDER_LABEL[runSource as Provider] || runSource)}` : ""}.</div>`
-      : `<div class="run-empty">No tasks found in this project.<br><span class="dim">Muster reads <code>package.json</code> scripts and <code>.muster/tasks.toml</code>.</span></div>`;
+      : `<div class="run-empty">No tasks found in this project.<br><span class="dim">Episko reads <code>package.json</code> scripts and <code>.episko/tasks.toml</code>.</span></div>`;
     return;
   }
   let i = 0;
@@ -5422,11 +5422,11 @@ function pickRun(pin: boolean) {
   void launchWithDeps(r, ctx.project, o);
 }
 
-// Trusting a folder means Muster may execute code from it to enumerate tasks, so
+// Trusting a folder means Episko may execute code from it to enumerate tasks, so
 // it is asked for plainly and once, never inferred from mere use.
 async function askTrust(path: string, project: string) {
   const ok = await ask(
-    `Muster will run \`just --dump\` inside ${project} to list its recipes.\n\n`
+    `Episko will run \`just --dump\` inside ${project} to list its recipes.\n\n`
     + `That evaluates the justfile, which can execute code from this folder. Only do this for projects you trust.`,
     { title: `Trust ${project}?`, kind: "warning", okLabel: "Trust and rescan", cancelLabel: "Cancel" });
   if (!ok) return;
@@ -5555,7 +5555,7 @@ $("mgrNew").addEventListener("click", () => startMgrEdit(null));
 $("mgrSave").addEventListener("click", () => { void saveMgrTask(); });
 $("mgrBack").addEventListener("click", () => { mgrEdit = null; renderMgr(); });
 $("mgrOpen").addEventListener("click", () => {
-  if (mgrCtx) void invoke<[string, boolean]>("muster_tasks_file", { workdir: mgrCtx.workdir })
+  if (mgrCtx) void invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir })
     .then(([path]) => openUrl("file://" + path))
     .catch((e) => toast("open failed: " + e));
 });

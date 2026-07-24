@@ -28,7 +28,7 @@ base64 = "0.22.1"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-# Runnable discovery: .muster/tasks.toml, and format-preserving writes back to it.
+# Runnable discovery: .episko/tasks.toml, and format-preserving writes back to it.
 toml = "0.9"
 toml_edit = "0.25.13"
 # .vscode/tasks.json and launch.json are JSONC — VS Code's own template ships

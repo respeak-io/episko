@@ -41,8 +41,8 @@ Two hard constraints shape this code:
 
 ## Runnables — tasks & scripts (`src-tauri/src/tasks.rs`, `▶ Run`)
 
-Muster runs the task definitions a project already ships. A **`Runnable`** is one
-such definition. Providers: `.muster/tasks.toml` (Muster's own committable
+Episko runs the task definitions a project already ships. A **`Runnable`** is one
+such definition. Providers: `.episko/tasks.toml` (Episko's own committable
 format), `.vscode/tasks.json`, `.vscode/launch.json`, `package.json` scripts,
 `justfile`, `Taskfile.yml`, `mise.toml`, `Makefile`, `Cargo.toml`.
 Discovery is in `tasks.rs`; execution reuses the existing PTY path, because **a
@@ -67,7 +67,7 @@ Three rules constrain `tasks.rs`:
   Pins (`cc-task-pins`) and palette frecency key off them, so they must survive a
   rescan; `dedupe_ids` guarantees uniqueness.
 - **What can't run says so.** `blocked: Some(reason)` renders greyed in the
-  picker instead of being dropped — a missing row reads as "Muster didn't find my
+  picker instead of being dropped — a missing row reads as "Episko didn't find my
   task". VS Code tasks are blocked when they need an editor (`${file}`,
   `${lineNumber}`) or have an unsupported `type`. Supported variables:
   `workspaceFolder`, `workspaceFolderBasename`, `cwd`, `userHome`,
@@ -85,7 +85,7 @@ resolves from the `pty-exit` listener *before* its early return, and
 that went away.
 
 `launch.json` configs are offered as **run without debugging** (VS Code's ⌃F5).
-Muster has no debug adapter, so `request: "attach"` and compound configs are
+Episko has no debug adapter, so `request: "attach"` and compound configs are
 blocked rather than silently started as plain processes.
 
 `spawn_task` is the third PTY entry point after `spawn_claude` / `spawn_shell`.
@@ -93,7 +93,7 @@ It takes a `TaskSpec { exec, cwd, env }` — a resolved subset of a `Runnable` �
 is deliberately **un-instrumented**: no `--settings` file, no telemetry, no cost,
 and its pid never enters `owned_pids`. `Exec::Shell` runs through a *login* shell
 so tasks inherit the same PATH and version-manager shims the user's own terminal
-has (a task that works in iTerm and fails in Muster is the bug class this avoids).
+has (a task that works in iTerm and fails in Episko is the bug class this avoids).
 The `Exec` wire format is pinned by a round-trip test — the frontend hands a
 discovered `exec` straight back to `spawn_task`, so a rename there breaks every
 launch silently.
@@ -115,7 +115,7 @@ Known gap: files an introspector pulls in itself (`just` `import`, Taskfile
 
 ## Run on stop — the agent/task loop
 
-The part a plain terminal can't do, and the reason tasks live inside Muster: the
+The part a plain terminal can't do, and the reason tasks live inside Episko: the
 `Stop` hook already arrives here, so a project can say *"when an agent finishes a
 turn in this folder, run this"* and every turn becomes a verified turn. One rule
 per project (`cc-task-onstop`, keyed by project root like pins), set with `⟲` in
@@ -142,7 +142,7 @@ the project tasks panel, reviewed and revoked in Settings › Tasks.
   terminal (no PTY to type into), the handoff is withheld rather than misdirected to
   whichever agent in this project sorts first. A hand-run task (no `forSession`)
   still offers the first live agent. The handoff types without a trailing newline —
-  Muster prefills, the human presses Enter.
+  Episko prefills, the human presses Enter.
 
 ## Task settings (Settings ⌘, → **Tasks** tab)
 
@@ -156,13 +156,13 @@ them.
 Task preferences live in `cc-task-prefs`, pins in `cc-task-pins`, hidden tasks in
 `cc-task-hidden`, run-on-stop rules in `cc-task-onstop`, trust in `cc-trusted`. The split is deliberate and worth
 preserving: **personal preference → `localStorage`; project fact →
-`.muster/tasks.toml`**, which is committable and works for a colleague who never
-opens Muster.
+`.episko/tasks.toml`**, which is committable and works for a colleague who never
+opens Episko.
 
 ## Project tasks panel (`openTaskManager`)
 
 Pin / hide / create / edit / delete / **override**, reached from ⌘K.
-**`.muster/tasks.toml` is the only file Muster writes** — a discovered VS Code task
+**`.episko/tasks.toml` is the only file Episko writes** — a discovered VS Code task
 or justfile belongs to another tool, so editing one writes an `[override."<id>"]`
 into `tasks.toml` keyed by its discovered id, **never** a mutation of
 `.vscode/tasks.json`. Writes go through `toml_edit`, not a serialize-the-whole-struct
@@ -172,7 +172,7 @@ committable file in someone's repo is a real side effect.
 
 ## Overrides, and the rest of P4
 
-Overrides (`[override.*]`) close the "Muster never rewrites a file it didn't create"
+Overrides (`[override.*]`) close the "Episko never rewrites a file it didn't create"
 loop: `apply_overrides` patches discovered rows *after* dedupe (so it keys off final
 ids), and an override whose target vanished becomes a **blocked row** (`override:<id>`)
 rather than a silent no-op — a typo'd id reads as broken, not missing, exactly like

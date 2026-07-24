@@ -566,7 +566,7 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .run-row .txt b { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .txt small { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .end { font: 9px var(--font-mono); color: var(--muted-2); flex: none; }
-/* Blocked runnables stay listed — a missing row reads as "Muster didn't find it". */
+/* Blocked runnables stay listed — a missing row reads as "Episko didn't find it". */
 .run-row.blocked { opacity: .5; cursor: not-allowed; }
 .run-row.blocked .end { color: var(--st-working); }
 .run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }

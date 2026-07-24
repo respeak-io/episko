@@ -1,7 +1,7 @@
 // Runnables — the task/script layer.
 //
 // A `Runnable` is anything a project declares it can do: an npm script, a task in
-// Muster's own `.muster/tasks.toml`, and (later) a VS Code task, a just recipe, a
+// Episko's own `.episko/tasks.toml`, and (later) a VS Code task, a just recipe, a
 // Make target. Providers *discover* them here; one executor (`spawn_task` in
 // lib.rs) runs them, reusing the same PTY path as a session or a shell.
 //
@@ -11,7 +11,7 @@
 //   The introspecting providers (`just --dump`, `task --list`, `make -qp`) evaluate
 //   the file they read — backtick variables and imports run shell at parse time —
 //   so they are deliberately absent until there's a trust gate to put them behind.
-// - **Ids are stable and namespaced** (`npm:test`, `muster:dev`). The frontend
+// - **Ids are stable and namespaced** (`npm:test`, `episko:dev`). The frontend
 //   persists pins and frecency against them, so they must survive a rescan.
 
 use std::collections::{BTreeMap, HashMap};
@@ -44,12 +44,12 @@ pub struct TaskSpec {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Runnable {
-    /// Stable + namespaced: "npm:test", "muster:dev".
+    /// Stable + namespaced: "npm:test", "episko:dev".
     pub id: String,
     pub label: String,
     /// The script body / doc comment — shown under the label in the picker.
     pub detail: Option<String>,
-    /// Provider name, used to group the picker: "npm", "muster".
+    /// Provider name, used to group the picker: "npm", "episko".
     pub source: String,
     /// Repo-relative file the task came from, for "reveal source".
     pub source_file: String,
@@ -74,7 +74,7 @@ pub struct Runnable {
     pub depends_order: String,
     /// `Some(reason)` → the picker shows it greyed and refuses to run it. Being
     /// honest about what we can't run beats silently omitting it, which reads as
-    /// "Muster didn't find your task".
+    /// "Episko didn't find your task".
     pub blocked: Option<String>,
 }
 
@@ -93,7 +93,7 @@ pub struct InputSpec {
     pub password: bool,
 }
 
-/// Discover everything runnable in `root`, in a stable order: Muster's own tasks
+/// Discover everything runnable in `root`, in a stable order: Episko's own tasks
 /// first (a human wrote those for this app), then VS Code's, then npm scripts,
 /// then the file-per-recipe runners.
 ///
@@ -102,7 +102,7 @@ pub struct InputSpec {
 /// as a blocked row, so the tasks look withheld rather than missing.
 pub fn discover(root: &Path, trusted: bool) -> Vec<Runnable> {
     let mut out = Vec::new();
-    out.extend(muster_tasks(root));
+    out.extend(episko_tasks(root));
     out.extend(vscode_tasks(root));
     out.extend(launch_configs(root));
     out.extend(npm_scripts(root));
@@ -116,13 +116,13 @@ pub fn discover(root: &Path, trusted: bool) -> Vec<Runnable> {
     out
 }
 
-/// Read the `[override.*]` table from `.muster/tasks.toml`. A malformed file already
-/// surfaces as a blocked row via `muster_tasks`, so a parse error here is silent —
+/// Read the `[override.*]` table from `.episko/tasks.toml`. A malformed file already
+/// surfaces as a blocked row via `episko_tasks`, so a parse error here is silent —
 /// reporting it twice would just add noise.
-fn task_overrides(root: &Path) -> BTreeMap<String, MusterOverride> {
-    std::fs::read_to_string(root.join(MUSTER_TASKS))
+fn task_overrides(root: &Path) -> BTreeMap<String, EpiskoOverride> {
+    std::fs::read_to_string(root.join(EPISKO_TASKS))
         .ok()
-        .and_then(|t| toml::from_str::<MusterFile>(&t).ok())
+        .and_then(|t| toml::from_str::<EpiskoFile>(&t).ok())
         .map(|f| f.overrides)
         .unwrap_or_default()
 }
@@ -145,8 +145,8 @@ fn apply_overrides(list: &mut Vec<Runnable>, root: &Path) {
             None => dangling.push(blocked_row(
                 &format!("override:{id}"),
                 &format!("override “{id}”"),
-                ".muster/tasks.toml",
-                "muster",
+                ".episko/tasks.toml",
+                "episko",
                 root,
                 &format!("overrides “{id}”, which nothing here declares"),
             )),
@@ -159,7 +159,7 @@ fn apply_overrides(list: &mut Vec<Runnable>, root: &Path) {
 /// `run` becomes a shell command and its `${input:…}` prompts are re-derived — kept
 /// from the original task where the id survives, synthesized as a bare prompt where
 /// the override introduced one.
-fn apply_override(r: &mut Runnable, ov: &MusterOverride, root: &Path) {
+fn apply_override(r: &mut Runnable, ov: &EpiskoOverride, root: &Path) {
     if let Some(label) = &ov.label {
         r.label = label.clone();
     }
@@ -219,7 +219,7 @@ fn redetect_inputs(run: &str, original: &[InputSpec]) -> Vec<InputSpec> {
 // importing file changes. Toggling trust re-keys the entry, which is the escape
 // hatch that exists today.
 
-const MUSTER_TASKS: &str = ".muster/tasks.toml";
+const EPISKO_TASKS: &str = ".episko/tasks.toml";
 const VSCODE_TASKS: &str = ".vscode/tasks.json";
 const VSCODE_LAUNCH: &str = ".vscode/launch.json";
 const PACKAGE_JSON: &str = "package.json";
@@ -237,9 +237,9 @@ const LOCK_FILES: &[&str] =
 
 /// Every path discovery reads, relative to the project root. **A new provider file
 /// belongs in this list too** — one that's missing goes stale behind the cache,
-/// which reads as "Muster didn't pick up my edit".
+/// which reads as "Episko didn't pick up my edit".
 fn source_files() -> Vec<&'static str> {
-    let mut v = vec![MUSTER_TASKS, VSCODE_TASKS, VSCODE_LAUNCH, PACKAGE_JSON, CARGO_TOML, CARGO_MAIN];
+    let mut v = vec![EPISKO_TASKS, VSCODE_TASKS, VSCODE_LAUNCH, PACKAGE_JSON, CARGO_TOML, CARGO_MAIN];
     v.extend(JUST_FILES);
     v.extend(LOCK_FILES);
     v.extend(TASKFILE.markers);
@@ -304,27 +304,27 @@ fn dedupe_ids(list: &mut [Runnable]) {
     }
 }
 
-// ── .muster/tasks.toml ──────────────────────────────────────────────────────
-// Muster's own, IDE-agnostic format. The file a team commits *because* of Muster,
+// ── .episko/tasks.toml ──────────────────────────────────────────────────────
+// Episko's own, IDE-agnostic format. The file a team commits *because* of Episko,
 // and the escape hatch for anything the other providers can't express.
 
 #[derive(Deserialize)]
-struct MusterFile {
+struct EpiskoFile {
     #[serde(default)]
-    task: Vec<MusterTask>,
+    task: Vec<EpiskoTask>,
     /// `[override."vscode:test"]` — a committable patch over a task some *other*
     /// tool declares, so editing a discovered task never rewrites `.vscode/tasks.json`
     /// or a justfile. Keyed by the discovered id; applied in `discover` after every
     /// provider has run. See `apply_overrides`.
     #[serde(default, rename = "override")]
-    overrides: BTreeMap<String, MusterOverride>,
+    overrides: BTreeMap<String, EpiskoOverride>,
 }
 
 /// The patch half of a `[[task]]`. Every field optional: an override that only
 /// renames a task carries just `label`. `run`, when present, replaces the command
 /// (and re-derives `${input:…}` prompts from the new line).
 #[derive(Deserialize, Default)]
-struct MusterOverride {
+struct EpiskoOverride {
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -338,7 +338,7 @@ struct MusterOverride {
 }
 
 #[derive(Deserialize)]
-struct MusterTask {
+struct EpiskoTask {
     label: String,
     run: String,
     #[serde(default)]
@@ -356,21 +356,21 @@ struct MusterTask {
     env: BTreeMap<String, String>,
 }
 
-fn muster_tasks(root: &Path) -> Vec<Runnable> {
-    let path = root.join(MUSTER_TASKS);
+fn episko_tasks(root: &Path) -> Vec<Runnable> {
+    let path = root.join(EPISKO_TASKS);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    let parsed: MusterFile = match toml::from_str(&text) {
+    let parsed: EpiskoFile = match toml::from_str(&text) {
         Ok(p) => p,
         // A malformed tasks.toml surfaces as one un-runnable row rather than
-        // vanishing — otherwise a typo looks like "Muster ignored my file".
+        // vanishing — otherwise a typo looks like "Episko ignored my file".
         Err(e) => {
             return vec![blocked_row(
-                "muster:__error",
-                ".muster/tasks.toml has an error",
-                ".muster/tasks.toml",
-                "muster",
+                "episko:__error",
+                ".episko/tasks.toml has an error",
+                ".episko/tasks.toml",
+                "episko",
                 root,
                 &first_line(&e.to_string()),
             )]
@@ -387,12 +387,12 @@ fn muster_tasks(root: &Path) -> Vec<Runnable> {
                 None => root.display().to_string(),
             };
             Runnable {
-                id: format!("muster:{slug}"),
+                id: format!("episko:{slug}"),
                 group: t.group.or_else(|| infer_group(&t.label, &t.run)),
                 detail: t.detail.or_else(|| Some(t.run.clone())),
                 label: t.label,
-                source: "muster".into(),
-                source_file: ".muster/tasks.toml".into(),
+                source: "episko".into(),
+                source_file: ".episko/tasks.toml".into(),
                 exec: Exec::Shell { line: t.run },
                 cwd,
                 env: t.env,
@@ -470,7 +470,7 @@ fn npm_scripts(root: &Path) -> Vec<Runnable> {
 // the difference: a task built around ${file} has no meaning in an app with no
 // open file, so it's marked blocked rather than run with an empty string spliced in.
 
-/// Expand VS Code's `${…}` variables against what Muster actually knows.
+/// Expand VS Code's `${…}` variables against what Episko actually knows.
 ///
 /// `${input:…}` is left *intact* — the frontend prompts for it at launch. Anything
 /// that needs an open editor (or a VS Code command / setting we can't evaluate)
@@ -502,7 +502,7 @@ fn substitute(s: &str, root: &Path, cwd: &str) -> Result<String, String> {
             v if v.starts_with("env:") => std::env::var(&v[4..]).unwrap_or_default(),
             // Left for the frontend to fill in — re-emitted verbatim.
             v if v.starts_with("input:") => format!("${{{v}}}"),
-            // Everything below needs an editor Muster doesn't have.
+            // Everything below needs an editor Episko doesn't have.
             "file" | "relativeFile" | "relativeFileDirname" | "fileBasename"
             | "fileBasenameNoExtension" | "fileDirname" | "fileExtname" | "fileWorkspaceFolder" => {
                 return Err("needs an open editor file".into())
@@ -758,7 +758,7 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
 }
 
 // ── .vscode/launch.json ─────────────────────────────────────────────────────
-// "Run without debugging" — VS Code's ⌃F5, not F5. Muster has no debug adapter,
+// "Run without debugging" — VS Code's ⌃F5, not F5. Episko has no debug adapter,
 // so it starts the same program with the same args, env and cwd, and says so.
 // A config that only makes sense *with* a debugger (an attach request) is blocked
 // rather than silently started as a plain process.
@@ -1072,7 +1072,7 @@ const MISE: Introspector = Introspector {
 ///
 /// This is the one provider that *runs* the project: `just` evaluates backtick
 /// variable assignments and processes `import`/`mod` while dumping. That's why it
-/// is gated — opening a folder in Muster must never execute code from it. An
+/// is gated — opening a folder in Episko must never execute code from it. An
 /// untrusted project with a justfile gets a single blocked row instead, so the
 /// recipes read as withheld rather than absent.
 fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
@@ -1301,7 +1301,7 @@ fn infer_group(name: &str, body: &str) -> Option<String> {
 
 /// Long-running by convention. Deliberately conservative — a false positive means
 /// a finished task never settles into "done", which is more confusing than a dev
-/// server that briefly claims it finished. `.muster/tasks.toml` can always say so
+/// server that briefly claims it finished. `.episko/tasks.toml` can always say so
 /// explicitly with `background = true`.
 fn is_background(name: &str, body: &str) -> bool {
     let n = name.to_ascii_lowercase();
@@ -1341,10 +1341,10 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
 }
 
-// ── writing .muster/tasks.toml ──────────────────────────────────────────────
-// The one file Muster owns, and the only one it ever writes. Discovered VS Code
+// ── writing .episko/tasks.toml ──────────────────────────────────────────────
+// The one file Episko owns, and the only one it ever writes. Discovered VS Code
 // tasks, justfiles and Makefiles are read-only: editing them would mean rewriting
-// a file another tool owns, which Muster shouldn't do behind your back.
+// a file another tool owns, which Episko shouldn't do behind your back.
 //
 // Edits go through `toml_edit` rather than a serialize-the-whole-struct round trip
 // so a hand-written file keeps its comments, ordering and spacing. Someone wrote
@@ -1353,7 +1353,7 @@ fn first_line(s: &str) -> String {
 /// One task as the editor panel sends it.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct MusterTaskInput {
+pub struct EpiskoTaskInput {
     pub label: String,
     pub run: String,
     #[serde(default)]
@@ -1365,7 +1365,7 @@ pub struct MusterTaskInput {
 }
 
 fn tasks_toml_path(workdir: &str) -> std::path::PathBuf {
-    Path::new(workdir).join(".muster").join("tasks.toml")
+    Path::new(workdir).join(".episko").join("tasks.toml")
 }
 
 fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, String> {
@@ -1377,21 +1377,21 @@ fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, String> {
 
 fn write_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create .muster: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("create .episko: {e}"))?;
     }
     std::fs::write(path, doc.to_string()).map_err(|e| format!("write tasks.toml: {e}"))
 }
 
 /// Write tasks.toml and immediately drop the project's cache — every write goes
 /// through here so a saved edit can never be masked by a stale, stamp-matching entry.
-/// `workdir` is the project root; `path` is `<workdir>/.muster/tasks.toml`.
+/// `workdir` is the project root; `path` is `<workdir>/.episko/tasks.toml`.
 fn write_doc_for(workdir: &str, path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), String> {
     write_doc(path, doc)?;
     invalidate(workdir);
     Ok(())
 }
 
-fn fill_table(t: &mut toml_edit::Table, task: &MusterTaskInput, id: &str) {
+fn fill_table(t: &mut toml_edit::Table, task: &EpiskoTaskInput, id: &str) {
     t["id"] = toml_edit::value(id);
     t["label"] = toml_edit::value(task.label.as_str());
     t["run"] = toml_edit::value(task.run.as_str());
@@ -1410,7 +1410,7 @@ fn fill_table(t: &mut toml_edit::Table, task: &MusterTaskInput, id: &str) {
     }
 }
 
-/// Find the `[[task]]` entry Muster addresses as `id`. Tasks Muster wrote carry an
+/// Find the `[[task]]` entry Episko addresses as `id`. Tasks Episko wrote carry an
 /// explicit `id`; hand-written ones are matched on their label's slug, which is
 /// exactly how discovery derived their id in the first place.
 fn find_task_index(arr: &toml_edit::ArrayOfTables, id: &str) -> Option<usize> {
@@ -1423,10 +1423,10 @@ fn find_task_index(arr: &toml_edit::ArrayOfTables, id: &str) -> Option<usize> {
 
 /// Create or update a task. `id` is `None` for a new one. Returns its id.
 #[tauri::command]
-pub fn save_muster_task(
+pub fn save_episko_task(
     workdir: String,
     id: Option<String>,
-    task: MusterTaskInput,
+    task: EpiskoTaskInput,
 ) -> Result<String, String> {
     if task.label.trim().is_empty() {
         return Err("a task needs a label".into());
@@ -1454,7 +1454,7 @@ pub fn save_muster_task(
         }
     }
     write_doc_for(&workdir, &path, &doc)?;
-    Ok(format!("muster:{new_id}"))
+    Ok(format!("episko:{new_id}"))
 }
 
 /// Write `[override."<id>"]` for a task some other provider declared. The key is the
@@ -1465,7 +1465,7 @@ pub fn save_muster_task(
 pub fn save_task_override(
     workdir: String,
     id: String,
-    task: MusterTaskInput,
+    task: EpiskoTaskInput,
 ) -> Result<(), String> {
     if task.label.trim().is_empty() {
         return Err("a task needs a label".into());
@@ -1534,7 +1534,7 @@ pub fn list_task_overrides(workdir: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn delete_muster_task(workdir: String, id: String) -> Result<(), String> {
+pub fn delete_episko_task(workdir: String, id: String) -> Result<(), String> {
     let path = tasks_toml_path(&workdir);
     let mut doc = load_doc(&path)?;
     let Some(arr) = doc.get_mut("task").and_then(|t| t.as_array_of_tables_mut()) else {
@@ -1550,13 +1550,13 @@ pub fn delete_muster_task(workdir: String, id: String) -> Result<(), String> {
 /// Whether the project already has a tasks.toml — the panel asks before creating
 /// one, because a new committable file in someone's repo is a real side effect.
 #[tauri::command]
-pub fn muster_tasks_file(workdir: String) -> Result<(String, bool), String> {
+pub fn episko_tasks_file(workdir: String) -> Result<(String, bool), String> {
     let p = tasks_toml_path(&workdir);
     Ok((p.display().to_string(), p.exists()))
 }
 
 /// Drop every cache entry for a project. Called by `rescan_runnables` and by every
-/// command that writes `.muster/tasks.toml` — a write must never be masked by a stale
+/// command that writes `.episko/tasks.toml` — a write must never be masked by a stale
 /// entry the `(mtime, len)` stamp happened to match (two edits inside one filesystem
 /// mtime tick that leave the length unchanged would otherwise not invalidate).
 fn invalidate(workdir: &str) {
@@ -1566,7 +1566,7 @@ fn invalidate(workdir: &str) {
 
 /// Force the next `discover_runnables(workdir, …)` to re-parse from disk, dropping
 /// both the trusted and untrusted cache entries for this project. The stamp already
-/// catches edits to files Muster *reads*; this is the escape hatch for the one thing
+/// catches edits to files Episko *reads*; this is the escape hatch for the one thing
 /// it can't see — a file an introspector pulls in itself (`just` `import`, a Taskfile
 /// `includes:`) — and the honest answer to a "Rescan" button.
 #[tauri::command]
@@ -1595,7 +1595,7 @@ mod tests {
     impl Tmp {
         fn new(tag: &str) -> Self {
             let p = std::env::temp_dir().join(format!(
-                "muster-tasks-{tag}-{}",
+                "episko-tasks-{tag}-{}",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -1652,10 +1652,10 @@ mod tests {
     }
 
     #[test]
-    fn reads_muster_tasks_toml() {
+    fn reads_episko_tasks_toml() {
         let t = Tmp::new("toml");
         t.write(
-            ".muster/tasks.toml",
+            ".episko/tasks.toml",
             r#"
 [[task]]
 label = "Dev server"
@@ -1673,11 +1673,11 @@ env = { RUST_LOG = "debug" }
         let found = discover(&t.0, true);
         assert_eq!(found.len(), 2);
 
-        assert_eq!(found[0].id, "muster:dev-server");
+        assert_eq!(found[0].id, "episko:dev-server");
         assert_eq!(found[0].exec, Exec::Shell { line: "pnpm tauri dev".into() });
         assert!(found[0].background);
 
-        assert_eq!(found[1].id, "muster:migrate");
+        assert_eq!(found[1].id, "episko:migrate");
         assert_eq!(found[1].cwd, t.0.join("src-tauri").display().to_string());
         assert_eq!(found[1].env.get("RUST_LOG").map(String::as_str), Some("debug"));
     }
@@ -1685,7 +1685,7 @@ env = { RUST_LOG = "debug" }
     #[test]
     fn a_broken_tasks_toml_reports_itself_instead_of_vanishing() {
         let t = Tmp::new("broken");
-        t.write(".muster/tasks.toml", "[[task]]\nlabel = \"oops\"\n"); // no `run`
+        t.write(".episko/tasks.toml", "[[task]]\nlabel = \"oops\"\n"); // no `run`
         let found = discover(&t.0, true);
         assert_eq!(found.len(), 1);
         assert!(found[0].blocked.is_some());
@@ -1693,12 +1693,12 @@ env = { RUST_LOG = "debug" }
     }
 
     #[test]
-    fn muster_tasks_come_before_npm_scripts() {
+    fn episko_tasks_come_before_npm_scripts() {
         let t = Tmp::new("order");
         t.write("package.json", r#"{"scripts":{"test":"vitest"}}"#);
-        t.write(".muster/tasks.toml", "[[task]]\nlabel = \"Deploy\"\nrun = \"./deploy.sh\"\n");
+        t.write(".episko/tasks.toml", "[[task]]\nlabel = \"Deploy\"\nrun = \"./deploy.sh\"\n");
         let found = discover(&t.0, true);
-        assert_eq!(found[0].source, "muster");
+        assert_eq!(found[0].source, "episko");
         assert_eq!(found[1].source, "npm");
     }
 
@@ -1706,12 +1706,12 @@ env = { RUST_LOG = "debug" }
     fn duplicate_labels_get_distinct_ids() {
         let t = Tmp::new("dupe");
         t.write(
-            ".muster/tasks.toml",
+            ".episko/tasks.toml",
             "[[task]]\nlabel = \"Test\"\nrun = \"a\"\n\n[[task]]\nlabel = \"Test\"\nrun = \"b\"\n",
         );
         let found = discover(&t.0, true);
-        assert_eq!(found[0].id, "muster:test");
-        assert_eq!(found[1].id, "muster:test~2");
+        assert_eq!(found[0].id, "episko:test");
+        assert_eq!(found[1].id, "episko:test~2");
     }
 
     #[test]
@@ -1974,15 +1974,15 @@ env = { RUST_LOG = "debug" }
     }
 
     #[test]
-    fn substitution_covers_what_muster_knows_and_refuses_what_it_does_not() {
+    fn substitution_covers_what_episko_knows_and_refuses_what_it_does_not() {
         let root = Path::new("/tmp/proj");
         assert_eq!(substitute("${workspaceFolder}/x", root, "/tmp/proj").unwrap(), "/tmp/proj/x");
         assert_eq!(substitute("${workspaceFolderBasename}", root, "/tmp/proj").unwrap(), "proj");
         assert_eq!(substitute("${cwd}", root, "/elsewhere").unwrap(), "/elsewhere");
-        std::env::set_var("MUSTER_TEST_VAR", "yes");
-        assert_eq!(substitute("${env:MUSTER_TEST_VAR}", root, "").unwrap(), "yes");
+        std::env::set_var("EPISKO_TEST_VAR", "yes");
+        assert_eq!(substitute("${env:EPISKO_TEST_VAR}", root, "").unwrap(), "yes");
         // An undefined env var is empty, matching VS Code.
-        assert_eq!(substitute("[${env:MUSTER_UNSET_VAR}]", root, "").unwrap(), "[]");
+        assert_eq!(substitute("[${env:EPISKO_UNSET_VAR}]", root, "").unwrap(), "[]");
         // Inputs survive for the frontend.
         assert_eq!(substitute("a ${input:tag} b", root, "").unwrap(), "a ${input:tag} b");
         // A bare "${" is literal text, not a broken variable.
@@ -2060,10 +2060,10 @@ env = { RUST_LOG = "debug" }
     fn saving_a_task_creates_the_file_then_appends_to_it() {
         let t = Tmp::new("write");
         let wd = t.0.display().to_string();
-        let id = save_muster_task(
+        let id = save_episko_task(
             wd.clone(),
             None,
-            MusterTaskInput {
+            EpiskoTaskInput {
                 label: "Dev server".into(),
                 run: "pnpm dev".into(),
                 group: None,
@@ -2072,12 +2072,12 @@ env = { RUST_LOG = "debug" }
             },
         )
         .unwrap();
-        assert_eq!(id, "muster:dev-server");
+        assert_eq!(id, "episko:dev-server");
 
-        save_muster_task(
+        save_episko_task(
             wd.clone(),
             None,
-            MusterTaskInput {
+            EpiskoTaskInput {
                 label: "Test".into(),
                 run: "pnpm test".into(),
                 group: Some("test".into()),
@@ -2101,13 +2101,13 @@ env = { RUST_LOG = "debug" }
         let t = Tmp::new("preserve");
         let wd = t.0.display().to_string();
         t.write(
-            ".muster/tasks.toml",
+            ".episko/tasks.toml",
             "# Our team's tasks — please keep sorted.\n\n[[task]]\nlabel = \"Test\"\nrun = \"pnpm test\"\n\n[[task]]\nlabel = \"Lint\"\nrun = \"eslint .\"\n",
         );
-        save_muster_task(
+        save_episko_task(
             wd,
             Some("test".into()),   // hand-written entries are addressed by label slug
-            MusterTaskInput {
+            EpiskoTaskInput {
                 label: "Test".into(),
                 run: "pnpm test --run".into(),
                 group: None,
@@ -2117,7 +2117,7 @@ env = { RUST_LOG = "debug" }
         )
         .unwrap();
 
-        let text = std::fs::read_to_string(t.0.join(".muster/tasks.toml")).unwrap();
+        let text = std::fs::read_to_string(t.0.join(".episko/tasks.toml")).unwrap();
         assert!(text.contains("# Our team's tasks"), "the comment survives an edit");
         assert!(text.contains("pnpm test --run"));
         assert!(text.contains("eslint ."), "the other task is untouched");
@@ -2132,14 +2132,14 @@ env = { RUST_LOG = "debug" }
         let t = Tmp::new("delete");
         let wd = t.0.display().to_string();
         t.write(
-            ".muster/tasks.toml",
+            ".episko/tasks.toml",
             "[[task]]\nid = \"a\"\nlabel = \"A\"\nrun = \"a\"\n\n[[task]]\nid = \"b\"\nlabel = \"B\"\nrun = \"b\"\n",
         );
-        delete_muster_task(wd.clone(), "a".into()).unwrap();
+        delete_episko_task(wd.clone(), "a".into()).unwrap();
         let found = discover(&t.0, true);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].label, "B");
-        assert!(delete_muster_task(wd, "gone".into()).is_err());
+        assert!(delete_episko_task(wd, "gone".into()).is_err());
     }
 
     #[test]
@@ -2153,7 +2153,7 @@ env = { RUST_LOG = "debug" }
         save_task_override(
             wd.clone(),
             "vscode:test".into(),
-            MusterTaskInput {
+            EpiskoTaskInput {
                 label: "Test (changed only)".into(),
                 run: "vitest run --changed".into(),
                 group: Some("test".into()),
@@ -2180,7 +2180,7 @@ env = { RUST_LOG = "debug" }
         assert_eq!(d.label, "Test");
         assert_eq!(d.exec, Exec::Shell { line: "vitest".into() });
         // The now-empty [override] table is gone, not left as dead structure.
-        assert!(!std::fs::read_to_string(t.0.join(".muster/tasks.toml")).unwrap().contains("override"));
+        assert!(!std::fs::read_to_string(t.0.join(".episko/tasks.toml")).unwrap().contains("override"));
     }
 
     #[test]
@@ -2191,7 +2191,7 @@ env = { RUST_LOG = "debug" }
         save_task_override(
             wd,
             "npm:deploy".into(),
-            MusterTaskInput {
+            EpiskoTaskInput {
                 label: "deploy".into(),
                 run: "./deploy.sh --env ${input:environment}".into(),
                 group: None,
@@ -2216,7 +2216,7 @@ env = { RUST_LOG = "debug" }
         save_task_override(
             wd,
             "vscode:tset".into(), // a typo — no such task
-            MusterTaskInput { label: "x".into(), run: "x".into(), group: None, background: false, cwd: None },
+            EpiskoTaskInput { label: "x".into(), run: "x".into(), group: None, background: false, cwd: None },
         )
         .unwrap();
         let found = discover(&t.0, true);
@@ -2237,7 +2237,7 @@ env = { RUST_LOG = "debug" }
         save_task_override(
             wd,
             "npm:test".into(),
-            MusterTaskInput { label: "renamed".into(), run: "vitest run".into(), group: None, background: false, cwd: None },
+            EpiskoTaskInput { label: "renamed".into(), run: "vitest run".into(), group: None, background: false, cwd: None },
         )
         .unwrap();
         assert_eq!(discover_cached(&t.0, true).iter().find(|r| r.id == "npm:test").unwrap().label, "renamed");
@@ -2261,10 +2261,10 @@ env = { RUST_LOG = "debug" }
         let t = Tmp::new("validate");
         let wd = t.0.display().to_string();
         let bad = |label: &str, run: &str| {
-            save_muster_task(
+            save_episko_task(
                 wd.clone(),
                 None,
-                MusterTaskInput {
+                EpiskoTaskInput {
                     label: label.into(),
                     run: run.into(),
                     group: None,
@@ -2279,25 +2279,25 @@ env = { RUST_LOG = "debug" }
     }
 
     #[test]
-    fn muster_tasks_file_reports_whether_it_exists_yet() {
+    fn episko_tasks_file_reports_whether_it_exists_yet() {
         let t = Tmp::new("exists");
         let wd = t.0.display().to_string();
-        let (path, exists) = muster_tasks_file(wd.clone()).unwrap();
+        let (path, exists) = episko_tasks_file(wd.clone()).unwrap();
         assert!(path.ends_with("tasks.toml"));
         assert!(!exists);
-        t.write(".muster/tasks.toml", "");
-        assert!(muster_tasks_file(wd).unwrap().1);
+        t.write(".episko/tasks.toml", "");
+        assert!(episko_tasks_file(wd).unwrap().1);
     }
 
     /// Dogfood: discovery has to work on this repo, which has both a package.json
-    /// (with a pnpm lockfile) and a committed .muster/tasks.toml. Asserts the shape
+    /// (with a pnpm lockfile) and a committed .episko/tasks.toml. Asserts the shape
     /// rather than specific task names, so renaming a script doesn't break the suite.
     #[test]
     fn discovers_this_repo() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let found = discover(root, true);
-        assert!(!found.is_empty(), "muster's own repo should have runnables");
-        assert!(found.iter().any(|r| r.source == "muster"), "reads .muster/tasks.toml");
+        assert!(!found.is_empty(), "episko's own repo should have runnables");
+        assert!(found.iter().any(|r| r.source == "episko"), "reads .episko/tasks.toml");
         assert!(found.iter().any(|r| r.source == "npm"), "reads package.json scripts");
         assert!(
             found.iter().all(|r| r.blocked.is_none()),
