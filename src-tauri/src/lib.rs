@@ -20,7 +20,7 @@ use tauri::menu::MenuBuilder;
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
@@ -80,7 +80,10 @@ fn query_param(url: &str, key: &str) -> Option<String> {
 /// id (`X-CC-Session` header, or `?sid=` for the permission hook); we force it onto
 /// the payload as `session_id` so the frontend routes by it — immune to Claude
 /// rotating its own runtime session_id on /clear, /compact or /resume.
-fn run_telemetry_server(server: tiny_http::Server, app: AppHandle) {
+///
+/// Generic over the runtime so the tests can drive the real server against
+/// `tauri::test::mock_app()`; production passes the concrete `AppHandle<Wry>`.
+fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: AppHandle<R>) {
     for mut request in server.incoming_requests() {
         let url = request.url().to_string();
         let stable_sid = header_value(&request, "X-CC-Session").or_else(|| query_param(&url, "sid"));
@@ -4543,5 +4546,166 @@ mod tests {
         assert!(parse_registry_entry(r#"{"pid":1,"sessionId":"x","kind":"print"}"#).is_none());
         assert!(parse_registry_entry(r#"{"sessionId":"x","kind":"interactive"}"#).is_none());
         assert!(parse_registry_entry("not json").is_none());
+    }
+
+    // ---------- telemetry server ----------
+    //
+    // The app's core mechanism, driven for real: a `tiny_http` server on an ephemeral
+    // port, a windowless `mock_app()` to emit through, and raw sockets standing in for
+    // the curl commands `write_instrument_settings` generates. No Claude, no PTY.
+
+    /// Bring the real server up against a mock app. The returned `App` must be kept
+    /// alive by the caller — it owns the listeners the assertions read.
+    fn mock_telemetry_app() -> (tauri::App<tauri::test::MockRuntime>, u16) {
+        let app = tauri::test::mock_app();
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server");
+        let port = server.server_addr().to_ip().expect("ip address").port();
+        app.manage(AppState {
+            port,
+            sessions: Mutex::new(HashMap::new()),
+            owned_pids: Mutex::new(HashSet::new()),
+            pending: Mutex::new(HashMap::new()),
+            next_perm: std::sync::atomic::AtomicU64::new(1),
+            caffeinate: Mutex::new(None),
+        });
+        let handle = app.handle().clone();
+        std::thread::spawn(move || run_telemetry_server(server, handle));
+        (app, port)
+    }
+
+    /// Send one POST and leave the connection open, the way a hook's curl does.
+    fn open_post(port: u16, path: &str, headers: &[(&str, &str)], body: &str) -> std::net::TcpStream {
+        let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to telemetry server");
+        write!(
+            s,
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}",
+            body.len()
+        )
+        .expect("send request");
+        s.flush().expect("flush request");
+        s
+    }
+
+    /// Read one response, stopping at the end of its body rather than waiting for the
+    /// connection to close (so a keep-alive server can't stall the test), and
+    /// returning whatever arrived if `wait` elapses first.
+    fn read_response(mut s: std::net::TcpStream, wait: std::time::Duration) -> String {
+        s.set_read_timeout(Some(wait)).expect("set read timeout");
+        let mut out = Vec::new();
+        let mut buf = [0u8; 512];
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+            }
+            let text = String::from_utf8_lossy(&out);
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len = head
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1).and_then(|v| v.trim().parse::<usize>().ok()))
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// The routing-drift bug class, end to end. Claude mints a NEW session_id on
+    /// /clear, /compact and /resume, so the id in the payload drifts away from the one
+    /// we launched with. Every POST therefore carries our stable id in `X-CC-Session`
+    /// and the server forces it onto the payload — get this wrong and telemetry routes
+    /// to nothing: the inspector freezes while the process runs on.
+    #[test]
+    fn telemetry_forces_our_session_id_and_preserves_claudes() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("telemetry", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+        let next = || -> serde_json::Value {
+            let raw = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("server emitted no telemetry event");
+            serde_json::from_str(&raw).expect("event payload should be json")
+        };
+        let wait = std::time::Duration::from_secs(5);
+
+        // A hook fired after a rotation: the body carries Claude's *new* runtime id,
+        // the header carries ours.
+        read_response(
+            open_post(port, "/hook", &[("X-CC-Session", "ours-abc")], r#"{"session_id":"claude-rotated","hook_event_name":"Stop"}"#),
+            wait,
+        );
+        let ev = next();
+        assert_eq!(ev["kind"], "hook");
+        assert_eq!(ev["data"]["session_id"], "ours-abc", "routing must use OUR launch id");
+        assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "the resume target must survive");
+        assert_eq!(ev["data"]["hook_event_name"], "Stop", "the rest of the payload is untouched");
+
+        // Same id on both sides (the pre-rotation common case): there's nothing to
+        // preserve, so no resume target is invented.
+        read_response(
+            open_post(port, "/statusline", &[("X-CC-Session", "ours-abc")], r#"{"session_id":"ours-abc","model":{"display_name":"Opus"}}"#),
+            wait,
+        );
+        let ev = next();
+        assert_eq!(ev["kind"], "statusline", "the endpoint decides the kind");
+        assert_eq!(ev["data"]["session_id"], "ours-abc");
+        assert!(ev["data"].get("claude_session_id").is_none(), "no rotation, no second id");
+        assert_eq!(ev["data"]["model"]["display_name"], "Opus");
+
+        // An unparseable body (the PowerShell-BOM class of bug) must still route, so
+        // the pane degrades to "no detail" rather than the event vanishing.
+        read_response(open_post(port, "/hook", &[("X-CC-Session", "ours-abc")], "\u{feff}{not json}"), wait);
+        let ev = next();
+        assert_eq!(ev["data"]["session_id"], "ours-abc");
+    }
+
+    /// The one *blocking* hook. Claude sits on the open request until the user
+    /// answers, so the server must hold it rather than respond, route it by the
+    /// `?sid=` in the URL (it's `type:"http"` — no shell to add a header), and hand
+    /// back the decision only when `resolve_permission` supplies one.
+    #[test]
+    fn permission_request_is_held_open_until_the_ui_answers() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("permission", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+
+        let mut conn = open_post(port, "/permission?sid=ours-xyz", &[], r#"{"session_id":"claude-rotated","tool_name":"Bash"}"#);
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("server emitted no permission event");
+        let ev: serde_json::Value = serde_json::from_str(&raw).expect("event payload should be json");
+        let id = ev["id"].as_str().expect("the UI needs an id to answer with").to_string();
+        assert_eq!(ev["data"]["session_id"], "ours-xyz", "routed by ?sid=, with no header to read");
+        assert_eq!(ev["data"]["claude_session_id"], "claude-rotated");
+        assert_eq!(ev["data"]["tool_name"], "Bash");
+
+        // Nothing on the wire yet: answering early would lose the user's decision.
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(400))).unwrap();
+        let mut byte = [0u8; 1];
+        match conn.read(&mut byte) {
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Ok(0) => panic!("server closed the request before the user answered"),
+            Ok(n) => panic!("server answered before the user did ({n} bytes)"),
+            Err(e) => panic!("unexpected socket error: {e}"),
+        }
+
+        resolve_permission(app.state(), id.clone(), "deny".to_string());
+        let resp = read_response(conn, std::time::Duration::from_secs(10));
+        assert!(resp.starts_with("HTTP/1.1 200"), "expected a 200 with the decision, got:\n{resp}");
+        assert!(resp.contains(r#""behavior":"deny""#), "the decision must reach Claude:\n{resp}");
+
+        // The held request is consumed by answering: a second decision (a double
+        // click, a stale dialog) is a no-op rather than a panic on a gone request.
+        resolve_permission(app.state(), id, "allow".to_string());
     }
 }

@@ -57,7 +57,7 @@ grouping/sort, palette, permission risk rating).
       `sh_quote`, `git_action` (temp repo + bare remote, like the branch-list
       test), `git_diffstat`, `upstream_state`, `sniff_mime`,
       `valid_caffeinate_flag`, `query_param`.
-- [ ] **Telemetry-server integration test** — the app's core mechanism, today
+- [x] **Telemetry-server integration test** — the app's core mechanism, today
       protected by prose only. Drive the real `tiny_http` server on an ephemeral
       port against a mock app and assert both documented hard constraints:
       - a `/hook` POST carrying `X-CC-Session: <ours>` and a *different*
@@ -70,6 +70,10 @@ grouping/sort, palette, permission risk rating).
       `run_telemetry_server` made generic over `R: Runtime` (it takes a concrete
       `AppHandle` today) so `tauri::test::mock_app()` fits — the standard Tauri
       pattern, mechanical. No Claude, no PTY, deterministic, CI-safe.
+      Also needed, unforeseen: a `/MANIFESTDEPENDENCY` link arg in `build.rs` on
+      Windows. Building a `tauri::App` imports v6-only comctl32 symbols, and a
+      cargo test harness gets no manifest — so the exe died at load with
+      `STATUS_ENTRYPOINT_NOT_FOUND` before any test ran. Rationale in `build.rs`.
 
 ## Phase 1 — split `main.ts`, test-driven, leaves first
 
