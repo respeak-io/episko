@@ -57,6 +57,19 @@ grouping/sort, palette, permission risk rating).
       `sh_quote`, `git_action` (temp repo + bare remote, like the branch-list
       test), `git_diffstat`, `upstream_state`, `sniff_mime`,
       `valid_caffeinate_flag`, `query_param`.
+- [ ] **Telemetry-server integration test** — the app's core mechanism, today
+      protected by prose only. Drive the real `tiny_http` server on an ephemeral
+      port against a mock app and assert both documented hard constraints:
+      - a `/hook` POST carrying `X-CC-Session: <ours>` and a *different*
+        `session_id` in the body emits a `telemetry` event with `session_id`
+        forced to ours and Claude's runtime id preserved as `claude_session_id`
+        (the routing-drift bug class the debug console counts as "unrouted");
+      - a `/permission` POST (id via `?sid=`, no header) does **not** get a
+        response until `resolve_permission` is called, then gets the decision.
+      Needs: `tauri = { features = ["test"] }` as a dev-dependency and
+      `run_telemetry_server` made generic over `R: Runtime` (it takes a concrete
+      `AppHandle` today) so `tauri::test::mock_app()` fits — the standard Tauri
+      pattern, mechanical. No Claude, no PTY, deterministic, CI-safe.
 
 ## Phase 1 — split `main.ts`, test-driven, leaves first
 
@@ -91,10 +104,10 @@ Existing tests move with their subjects. The compiler and the Phase-0 net carry
 this phase.
 
 - [ ] `git.rs` — worktrees, branches, diffs, commit info (largest tested block)
-- [ ] `telemetry.rs` — server + `write_instrument_settings`; extract the
-      sid-forcing (header/`?sid=` → force `session_id`, preserve
-      `claude_session_id`) as a pure function and test it — this is the
-      routing-drift bug class the debug console flags
+- [ ] `telemetry.rs` — server + `write_instrument_settings`. The Phase-0 server
+      test already covers the sid-forcing end-to-end; optionally lift it into a
+      pure function here for cheap edge-case tests (no sid header at all,
+      unparseable body, non-object payload)
 - [ ] `pty.rs` — `stream_pty_session` + the spawners
 - [ ] `external.rs` — registry parsing, `ProcTable`, focus
 - [ ] `usage.rs` — `scan_usage` + `parse_usage_line`; inject a base dir
@@ -113,6 +126,38 @@ this phase.
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
 - [ ] Manual release smoke checklist (launch → telemetry arrives → answer a
       permission → resume → external session visible → task run + on-stop rule)
+- [ ] **CLI contract test against real `claude -p`**, marked `#[ignore]` and run
+      via `cargo test -- --ignored` as part of the release checklist — never a PR
+      gate (needs `claude` on PATH, auth, tokens, and it is slow). Rationale: the
+      app rides several interfaces of an external tool that ships weekly and that
+      CLAUDE.md itself calls unstable — the hook schema, the statusLine JSON,
+      `~/.claude/sessions/<pid>.json`, and the transcript record types. If a
+      release renames a field, everything still compiles, no test goes red, and
+      telemetry simply goes quiet. The test writes a real instrument settings
+      file, runs `claude -p` against a **throwaway** session in a temp dir (never
+      a real one — resuming appends to it) and asserts our hooks actually hit our
+      server.
+
+## On integration tests
+
+Decided 2026-07-24, so it needn't be re-argued mid-restructure.
+
+- **No `src-tauri/tests/` directory.** Those tests only see the crate's public
+  API, which here is `run()` and nothing else. Using them would mean widening
+  visibility purely for test access — the wrong trade. Rust's own convention
+  puts unit tests in-file (`#[cfg(test)] mod tests`) precisely so they can reach
+  private items, which is what every existing test depends on.
+- **The valuable integration tests already exist**, just in the unit-test
+  position: the git ones drive real `git` against real temp repos (bare remotes,
+  locked worktrees, hand-deleted checkouts). That is real integration, and it is
+  the model for anything new.
+- **Two seams were still uncovered**, and both are now scheduled: the telemetry
+  loop (Phase 0) and the Claude Code CLI contract (Phase 3).
+- **Frontend:** `mockIPC` from `@tauri-apps/api/mocks` lets vitest exercise code
+  that calls `invoke()` with no backend — so Phase-1 modules that talk to Rust
+  are testable and needn't be left out. Full jsdom render tests are *not*
+  planned: snapshotting template literals mostly re-asserts itself. At most a few
+  smoke tests that representative states don't throw.
 
 ## Out of scope (deliberately)
 
