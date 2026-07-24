@@ -103,7 +103,7 @@ there, resolve it in this order:
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
 - [x] `rl.ts` — `mergeRl`, `rlPct`/`rlReset`, `pushRlSample`, `burnRate`,
       `forecastWin` (the usage-limit forecast math)
-- [ ] `usage.ts` — `todayKey`, `addUsage`, `usageWindow`, `uBuckets`, `uSum`.
+- [x] `usage.ts` — `todayKey`, `addUsage`, `usageWindow`, `uBuckets`, `uSum`.
       Moved ahead of `phase.ts`: `applyStatusline` calls `addUsage`, and doing
       this first is what stops that becoming a seam (rule 1 above).
 - [ ] `phase.ts` — `applyHook`/`applyStatusline`/`setPhase` plus `toolArg`,

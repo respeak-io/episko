@@ -1,6 +1,7 @@
-// The shared data model: the shapes that cross module boundaries. Types only —
-// no logic, no imports beyond the xterm handles a live pane holds — so every
-// other module can depend on this one without dragging DOM or Tauri along.
+// The shared data model: the shapes that cross module boundaries. Types, plus
+// the one-line discriminants that read them — no other logic, and no imports
+// beyond the xterm handles a live pane holds — so every other module can depend
+// on this one without dragging DOM or Tauri along.
 
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -31,6 +32,9 @@ export interface GitActionResult { ok: boolean; summary: string; output: string;
 // Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
 // rather than an embedded pane", and only ever applies to a claude session.
 export type SessKind = "claude" | "shell" | "task";
+// Always ask through this rather than re-testing the string: whether telemetry,
+// cost and git actions apply to a pane is one decision, made in one place.
+export const isAgent = (s: Sess) => s.kind === "claude";
 
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }

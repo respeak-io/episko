@@ -15,6 +15,7 @@ import { parsePatch, type DiffFile, type DiffHunk } from "./diff";
 import type {
   DiffStat, ExtSession, GitActionResult, Phase, Restorable, Risk, Runnable, Sess,
 } from "./types";
+import { isAgent } from "./types";
 import {
   basename, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtShort, fmtSpan, fmtUntil,
   hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
@@ -23,6 +24,11 @@ import {
   burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, mergeRl, pushRlSample, rl,
   rlPct, rlSamples, type Forecast, type RlWin,
 } from "./rl";
+import {
+  addUsage, setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
+  uDkey, U_MONTHS, uModels, usage, usageRange, usageWindow, uSum,
+  type DayUsage, type UDay,
+} from "./usage";
 
 // One-time recovery of localStorage stranded when the app was renamed
 // Muster -> Episko: the bundle id changed (io.respeak.cclauncher ->
@@ -196,8 +202,6 @@ const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mon
 // ---------- model ----------
 // The shapes themselves live in ./types (see the import at the top of this file);
 // this is the behaviour that hangs off them.
-const isAgent = (s: Sess) => s.kind === "claude";
-
 const sessions = new Map<string, Sess>();
 let activeId: string | null = null;
 let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
@@ -327,43 +331,6 @@ const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping", "done"
 const dirtyByFolder = new Map<string, DiffStat | null>();
 const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untracked > 0);
 const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));
-
-// The three Claude models collapse to a family so cost splits by tier, not by the
-// exact display name ("Opus 4.8", "Sonnet 4.5", …) which changes across releases.
-function modelFamily(m: string): string {
-  const s = (m || "").toLowerCase();
-  if (s.includes("opus")) return "Opus";
-  if (s.includes("sonnet")) return "Sonnet";
-  if (s.includes("haiku")) return "Haiku";
-  return m ? "Other" : "Unknown";
-}
-
-// Persisted daily usage rollup (survives app + system restarts). `cc-usage` is the
-// authoritative per-day *total* cost — untouched here so the footer keeps working —
-// and `cc-usage-detail` layers on the per-model / per-project split + session ids,
-// which the Usage analytics tab reads. The split is telemetry-only, so it records
-// from the day this ships forward; the totals (and the transcript-scanned tokens)
-// still carry full history. See the Usage panel section below.
-interface DayDetail { models: Record<string, number>; projects: Record<string, number>; sessions: string[] }
-const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
-const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
-function todayKey() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
-function addUsage(delta: number, s?: Sess) {
-  if (!(delta > 0)) return;
-  const k = todayKey();
-  usage[k] = (usage[k] || 0) + delta;
-  localStorage.setItem("cc-usage", JSON.stringify(usage));
-  if (!s || !isAgent(s)) return;
-  // Attribute the cost delta to whichever model is active right now and to the
-  // session's project — the closest honest split the statusLine data allows.
-  const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {}, sessions: [] });
-  const fam = modelFamily(s.model);
-  d.models[fam] = (d.models[fam] || 0) + delta;
-  const proj = s.project || basename(s.workdir) || "unknown";
-  d.projects[proj] = (d.projects[proj] || 0) + delta;
-  if (s.id && !d.sessions.includes(s.id)) d.sessions.push(s.id);
-  localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
-}
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -2320,33 +2287,12 @@ function openUsagePop() {
 function closeUsagePop() { $("usagePop").classList.remove("show"); }
 
 // ---------- Usage analytics (the Usage settings tab) ----------
-// Money comes from the rollup above: full history for the daily *totals*, plus the
-// per-model / per-project split from cc-usage-detail (recorded going forward). Tokens
-// are the one figure telemetry can't give us, so they come from an async, cached scan
-// of Claude's transcripts (`token_usage_by_day`) and fill in the moment it returns —
-// the panel never blocks on the scan.
-// One day's transcript-scanned usage: token totals (by type and by model family),
-// distinct sessions active, and per-project token totals. Full history — unlike the
-// telemetry-only $ split, which records forward from install.
-interface DayUsage {
-  day: string; input: number; output: number; cache_read: number; cache_write: number;
-  opus: number; sonnet: number; haiku: number; other: number;
-  sessions: number; projects: Record<string, number>;
-}
-type UDay = { key: string; cost: number; tok: number; u?: DayUsage };
-let tokenDays: DayUsage[] = JSON.parse(localStorage.getItem("cc-usage-tokens") || "[]");
-let tokenScanAt = +(localStorage.getItem("cc-usage-tokens-at") || 0);
+// The data layer — the rollup, the day/token join and the bucketing — lives in
+// ./usage; what follows is the panel that paints it.
 let tokenScanning = false;
-let usageRange = 30;
 const USAGE_RANGES: [number, string][] = [[7, "7D"], [30, "30D"], [90, "90D"], [365, "12M"]];
 const MODEL_ORDER = ["Opus", "Sonnet", "Haiku", "Other"];
 const MODEL_VAR: Record<string, string> = { Opus: "--m-opus", Sonnet: "--m-sonnet", Haiku: "--m-haiku", Other: "--m-other" };
-// Sum a day's per-model tokens into a fixed-key record (backfill fields are lowercase).
-const uModels = (a: UDay[]): Record<string, number> => {
-  const m: Record<string, number> = { Opus: 0, Sonnet: 0, Haiku: 0, Other: 0 };
-  for (const d of a) if (d.u) { m.Opus += d.u.opus; m.Sonnet += d.u.sonnet; m.Haiku += d.u.haiku; m.Other += d.u.other; }
-  return m;
-};
 
 // Scan the transcripts for token totals, at most once per 10 min (a full read of
 // the recent corpus). Async + cached, so the tab paints instantly from localStorage
@@ -2357,31 +2303,12 @@ async function refreshTokens(force = false) {
   tokenScanning = true;
   if (settingsOpen() && setTab === "usage") renderSettings(); // surface the "scanning…" hint
   try {
-    tokenDays = await invoke<DayUsage[]>("token_usage_by_day", { days: 400 });
-    tokenScanAt = Date.now();
-    localStorage.setItem("cc-usage-tokens", JSON.stringify(tokenDays));
-    localStorage.setItem("cc-usage-tokens-at", String(tokenScanAt));
+    setTokenDays(await invoke<DayUsage[]>("token_usage_by_day", { days: 400 }));
   } catch (e) { dlog("warn", "token scan failed: " + e); }
   finally { tokenScanning = false; if (settingsOpen() && setTab === "usage") renderSettings(); }
 }
 
-const uDkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const U_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const U_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-// The last n calendar days ending today, oldest→newest, each joined to its cost,
-// per-model/project detail and scanned token total.
-function usageWindow(n: number): UDay[] {
-  const tk = new Map(tokenDays.map((t) => [t.day, t]));
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const out: UDay[] = [];
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(today); d.setDate(d.getDate() - i);
-    const key = uDkey(d); const t = tk.get(key);
-    out.push({ key, cost: usage[key] || 0, tok: t ? t.input + t.output + t.cache_read + t.cache_write : 0, u: t });
-  }
-  return out;
-}
 
 // A smooth (Catmull-Rom) sparkline; long series are averaged down to ~22 points so
 // a 90D/12M spark reads as a trend, not a jagged comb.
@@ -2403,8 +2330,6 @@ function uSpark(raw: number[], w = 64, h = 26): string {
   const lastX = pts[pts.length - 1][0].toFixed(2), firstX = pts[0][0].toFixed(2);
   return `<svg class="u-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${line} L${lastX},${h} L${firstX},${h} Z" fill="var(--accent)" opacity=".1"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/><circle cx="${lastX}" cy="${pts[pts.length - 1][1].toFixed(2)}" r="2" fill="var(--accent)"/></svg>`;
 }
-
-function uSum(a: UDay[], f: (d: UDay) => number): number { return a.reduce((s, d) => s + f(d), 0); }
 
 function uTiles(): string {
   const all = usageWindow(usageRange * 2);
@@ -2464,24 +2389,6 @@ function uHeatmap(): string {
       <div><div class="u-months">${months}</div><div class="u-grid">${cells}</div></div></div>
     <div class="u-calfoot"><span>Busiest day <b>${busiest}</b></span><span><b>${active}</b> active days recorded</span></div>
   </section>`;
-}
-
-type UBucket = { label: string; tip: string; total: number; models: Record<string, number> };
-function uBuckets(): UBucket[] {
-  const cur = usageWindow(usageRange);
-  const mk = (label: string, tip: string, days: UDay[]): UBucket => {
-    const models = uModels(days);
-    return { label, tip, total: models.Opus + models.Sonnet + models.Haiku + models.Other, models };
-  };
-  if (usageRange <= 31) return cur.map((d) => { const dt = new Date(d.key + "T00:00:00"); return mk(String(dt.getDate()), `${U_MONTHS[dt.getMonth()]} ${dt.getDate()}`, [d]); });
-  if (usageRange === 90) {
-    const out: UBucket[] = [];
-    for (let i = 0; i < cur.length; i += 7) { const wk = cur.slice(i, i + 7); if (!wk.length) continue; const s = new Date(wk[0].key + "T00:00:00"); out.push(mk(`${s.getMonth() + 1}/${s.getDate()}`, `Week of ${U_MONTHS[s.getMonth()]} ${s.getDate()}`, wk)); }
-    return out;
-  }
-  const by = new Map<string, UDay[]>();
-  for (const d of cur) { const dt = new Date(d.key + "T00:00:00"); const k = dt.getFullYear() + "-" + dt.getMonth(); let arr = by.get(k); if (!arr) { arr = []; by.set(k, arr); } arr.push(d); }
-  return [...by.values()].map((days) => { const dt = new Date(days[0].key + "T00:00:00"); return mk(U_MONTHS[dt.getMonth()], `${U_MONTHS[dt.getMonth()]} ${dt.getFullYear()}`, days); });
 }
 
 function uBars(): string {
@@ -4726,7 +4633,7 @@ $("setBody").addEventListener("click", (e) => {
   const f = (e.target as HTMLElement).closest<HTMLElement>("[data-setfont]");
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
   const r = (e.target as HTMLElement).closest<HTMLElement>("[data-urange]");
-  if (r) { usageRange = +r.dataset.urange!; renderSettings(); return; }
+  if (r) { setUsageRange(+r.dataset.urange!); renderSettings(); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");
   if (o) applySetting(o.dataset.set!, o.dataset.val!);
 });
