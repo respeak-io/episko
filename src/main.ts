@@ -15,6 +15,10 @@ import { parsePatch, type DiffFile, type DiffHunk } from "./diff";
 import type {
   DiffStat, ExtSession, GitActionResult, Phase, Restorable, Risk, Runnable, Sess,
 } from "./types";
+import {
+  basename, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtShort, fmtSpan, fmtUntil,
+  hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
+} from "./format";
 
 // One-time recovery of localStorage stranded when the app was renamed
 // Muster -> Episko: the bundle id changed (io.respeak.cclauncher ->
@@ -121,15 +125,15 @@ function setEngine(id: Engine) {
 }
 
 // ---------- config ----------
-// Home dir resolves at runtime (for `~` path abbreviation). Favorites start
-// empty and are added by the user — persisted to localStorage.
-let HOME = "";
-homeDir().then((h) => { HOME = h.replace(/[/\\]+$/, ""); }).catch(() => {});
+// Home dir resolves at runtime (for `~` path abbreviation — see format.ts, which
+// owns it). Favorites start empty and are added by the user — persisted to
+// localStorage.
+homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
 // Re-derive each display name from its path on load: it's always the basename, and
 // this self-heals favorites persisted before the Windows-path fix (whose stored name
-// was the full backslash path). `basename` is hoisted, so it's usable here.
+// was the full backslash path).
 let FAVORITES: Favorite[] = (JSON.parse(localStorage.getItem("cc-favorites") || "null") || DEFAULT_FAVORITES)
   .map((f: Favorite) => ({ ...f, name: basename(f.path) }));
 function saveFavorites() { localStorage.setItem("cc-favorites", JSON.stringify(FAVORITES)); }
@@ -449,8 +453,6 @@ function addUsage(delta: number, s?: Sess) {
 }
 
 const $ = (id: string) => document.getElementById(id)!;
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const tilde = (p: string) => (HOME ? p.replace(HOME, "~") : p);
 
 const colorOverrides: Record<string, string> = JSON.parse(localStorage.getItem("cc-colors") || "{}");
 
@@ -527,21 +529,12 @@ function projGlyph(key: string, accent: string): string {
     ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} — right-click for project actions" />`
     : `<span class="pdot" title="Click to recolor · right-click for project actions" style="background:${accent};color:${accent}"></span>`;
 }
-function hslToHex(h: number, s: number, l: number): string {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
-  const to = (x: number) => Math.round(255 * x).toString(16).padStart(2, "0");
-  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
-}
 function accentFor(key: string): string {
   if (colorOverrides[key]) return colorOverrides[key];
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return hslToHex(h % 360, 0.68, 0.63);
 }
-// Split on both separators so Windows paths (E:\proj\sub) collapse to the leaf,
-// not the whole string — otherwise the sidebar shows the full path as the name.
-function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }
 // Claude prepends an animated spinner to its OSC title: it cycles through braille
 // dots (U+2800-U+28FF) and an eight-spoked asterisk (U+2733), e.g. a braille dot or
 // a star before "Fixing the bug". Strip any leading run of those so the sidebar
@@ -1356,16 +1349,6 @@ function dormantBusy(d: Restorable): boolean {
   for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
   return externals.some((e) => e.session_id === d.resumeId);
 }
-function relTime(ms: number): string {
-  const d = Date.now() - ms;
-  if (!(ms > 0) || d < 0) return "—";
-  const m = Math.round(d / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
   const chipHtml = chip
@@ -1541,30 +1524,6 @@ function renderHeader(s: Sess | null) {
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   $("hPath").textContent = tilde(s.workdir);
-}
-function fmtDur(ms: number) {
-  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m ${String(ss).padStart(2, "0")}s`;
-}
-// Absolute wall-clock time of a reset (epoch seconds) — "15:45" / "3:45 PM".
-function fmtClock(ts: number): string { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
-// Time remaining until a reset (epoch seconds) — "2h 10m" / "3d 4h". The weekly
-// window can be days out, where fmtClock's time-of-day alone would be misleading.
-function fmtUntil(ts: number): string {
-  const s = Math.max(0, Math.floor(ts - Date.now() / 1000));
-  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-// A raw duration (seconds) — "2h 10m" / "3d 4h" / "45m". Like fmtUntil but for a
-// span we already hold, not a wall-clock target (used for forecast etas/headroom).
-function fmtSpan(sec: number): string {
-  sec = Math.max(0, Math.round(sec));
-  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
 }
 const mc = (v: number) => (v >= 80 ? "hot" : v >= 55 ? "warn" : "");
 function renderShellInspector(s: Sess) {
@@ -1806,11 +1765,6 @@ function listPhrase(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? "";
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
-function fmtShort(ms: number): string {
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-
 function renderTaskInspector(s: Sess) {
   const r = s.run!;
   const failed = r.exitCode != null && r.exitCode !== 0;
@@ -2139,12 +2093,6 @@ function riskLevel(tool: string, input: any): Risk {
   return "med";
 }
 const RISK_LABEL: Record<Risk, string> = { low: "low risk", med: "review", high: "high risk" };
-// Compact seconds → "M:SS" (under an hour) / "Hh Mm" — the dwell + wait clocks.
-function fmtDwell(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}:${String(ss).padStart(2, "0")}`;
-}
-function fmtLatency(ms: number): string { return ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : Math.round(ms) + "ms"; }
 function verbFor(s: Sess): string {
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
@@ -2167,23 +2115,6 @@ function dwellText(s: Sess): string {
 function isLongestWaiting(s: Sess): boolean {
   const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention);
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
-}
-// A mini area+line sparkline as an inline SVG. Fixed intrinsic size so the endpoint
-// dot stays round; scales down within its card. `lo`/`hi` pin the domain (context
-// uses 0–100; cost uses 0–max) so the curve reflects absolute fill, not just shape.
-function sparkline(vals: number[], opts: { lo?: number; hi?: number } = {}): string {
-  const w = 108, h = 24, pad = 3;
-  if (vals.length < 2) return "";
-  const lo = opts.lo ?? Math.min(...vals);
-  let hi = opts.hi ?? Math.max(...vals);
-  if (hi <= lo) hi = lo + 1;
-  const n = vals.length;
-  const px = (i: number) => (i / (n - 1)) * (w - pad);
-  const py = (v: number) => h - pad - ((Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo)) * (h - pad * 2);
-  const pts = vals.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`);
-  const line = "M" + pts.join(" L");
-  const area = `${line} L${px(n - 1).toFixed(1)},${h} L0,${h} Z`;
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}"><path class="spk-a" d="${area}"></path><path class="spk-l" d="${line}"></path><circle class="spk-d" cx="${px(n - 1).toFixed(1)}" cy="${py(vals[n - 1]).toFixed(1)}" r="2.1"></circle></svg>`;
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
   if (pct == null) return null;
@@ -2521,9 +2452,6 @@ async function refreshTokens(force = false) {
   finally { tokenScanning = false; if (settingsOpen() && setTab === "usage") renderSettings(); }
 }
 
-const uUsd = (n: number) => n >= 10000 ? "$" + (n / 1000).toFixed(1) + "k" : "$" + Math.round(n).toLocaleString();
-const uUsd2 = (n: number) => "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const uTok = (n: number) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(0) + "K" : String(Math.round(n));
 const uDkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const U_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const U_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -2564,11 +2492,6 @@ function uSpark(raw: number[], w = 64, h = 26): string {
 }
 
 function uSum(a: UDay[], f: (d: UDay) => number): number { return a.reduce((s, d) => s + f(d), 0); }
-function uDelta(cur: number, prev: number): string {
-  if (prev <= 0) return `<span class="u-delta u-muted">new</span>`;
-  const pct = Math.round((cur - prev) / prev * 100);
-  return `<span class="u-delta"><span class="u-arw">${pct >= 0 ? "▲" : "▼"}</span><b>${Math.abs(pct)}%</b>&nbsp;vs&nbsp;prev</span>`;
-}
 
 function uTiles(): string {
   const all = usageWindow(usageRange * 2);
