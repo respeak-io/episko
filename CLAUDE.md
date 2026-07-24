@@ -39,21 +39,196 @@ Two hard constraints shape this code:
 - **Claude runs hooks/statusLine with a stripped PATH.** Generated commands use absolute `/usr/bin/curl` and `/bin/cat`, never bare `curl`. Likewise `resolve_claude()` probes known install locations (and falls back to the login shell) and `augmented_path()` rebuilds a usable PATH, because a GUI app launched from Finder also gets a stripped PATH.
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
+## Runnables — tasks & scripts (`src-tauri/src/tasks.rs`, `▶ Run`)
+
+Episko runs the task definitions a project already ships. A **`Runnable`** is one
+such definition. Providers: `.episko/tasks.toml` (Episko's own committable
+format), `.vscode/tasks.json`, `.vscode/launch.json`, `package.json` scripts,
+`justfile`, `Taskfile.yml`, `mise.toml`, `Makefile`, `Cargo.toml`.
+Discovery is in `tasks.rs`; execution reuses the existing PTY path, because **a
+task run is just another `Sess`** — see the `kind` discriminant below. That's what
+buys tasks the phase state machine, sidebar glyphs, attention badge, tray and
+⌘1–9 for free: a run's **exit code is its phase** (0 → `done`, non-zero →
+`error`), delivered over the same `pty-exit` event as everything else.
+
+Three rules constrain `tasks.rs`:
+
+- **Discovery never executes the project.** Most providers only parse. The
+  introspecting ones *evaluate* what they read — `just --dump` runs backtick
+  variables and imports at parse time — so they sit behind a **trust gate**:
+  `discover(root, trusted)`, where the frontend grants `trusted` only if the
+  global introspect toggle is on, the `just` provider is enabled, *and* the
+  folder is one the user chose (a `cc-favorites` project, or a one-time confirm
+  stored in `cc-trusted`). `just`, `task` and `mise` all go through the shared
+  `Introspector` shape; untrusted, each yields a single blocked row, so its tasks
+  read as withheld rather than missing. Makefiles and Cargo are parsed/inferred
+  statically for exactly this reason — `make -qp` would expand `$(shell …)`.
+- **Ids are stable and namespaced** (`npm:test`, `vscode:build`, `just:deploy`).
+  Pins (`cc-task-pins`) and palette frecency key off them, so they must survive a
+  rescan; `dedupe_ids` guarantees uniqueness.
+- **What can't run says so.** `blocked: Some(reason)` renders greyed in the
+  picker instead of being dropped — a missing row reads as "Episko didn't find my
+  task". VS Code tasks are blocked when they need an editor (`${file}`,
+  `${lineNumber}`) or have an unsupported `type`. Supported variables:
+  `workspaceFolder`, `workspaceFolderBasename`, `cwd`, `userHome`,
+  `pathSeparator`, `env:X`. `${input:X}` is deliberately **left intact** by
+  discovery — only the frontend knows the answer, so it prompts (`openInputPrompt`)
+  and substitutes via `applyInputs` just before launch. just recipe parameters
+  without defaults become the same kind of prompt.
+
+`dependsOn` is resolved **in the frontend** (`launchWithDeps`), because only the
+side that owns the panes can wait on an exit code. Dependencies are named by
+*label*, run in parallel unless `dependsOrder: "sequence"` (VS Code's default,
+surprising as it is), and a failed dependency stops the chain. `waitForExit`
+resolves from the `pty-exit` listener *before* its early return, and
+`closeSession` resolves it with `-1`, so a chain can never deadlock on a pane
+that went away.
+
+`launch.json` configs are offered as **run without debugging** (VS Code's ⌃F5).
+Episko has no debug adapter, so `request: "attach"` and compound configs are
+blocked rather than silently started as plain processes.
+
+`spawn_task` is the third PTY entry point after `spawn_claude` / `spawn_shell`.
+It takes a `TaskSpec { exec, cwd, env }` — a resolved subset of a `Runnable` — and
+is deliberately **un-instrumented**: no `--settings` file, no telemetry, no cost,
+and its pid never enters `owned_pids`. `Exec::Shell` runs through a *login* shell
+so tasks inherit the same PATH and version-manager shims the user's own terminal
+has (a task that works in iTerm and fails in Episko is the bug class this avoids).
+The `Exec` wire format is pinned by a round-trip test — the frontend hands a
+discovered `exec` straight back to `spawn_task`, so a rename there breaks every
+launch silently.
+
+Surfaces: the `▶ Run` header button (picker: pinned, then a frecency-ranked
+**recent** group in the unfiltered view, then grouped by source), a **Tasks** group
+in ⌘K, and a task inspector offering re-run / pin / stop / *send output to a
+session*. Successful non-background runs auto-dismiss after 20s unless focused;
+failures persist and raise attention.
+
+Discovery is **memoised in Rust** (`discover_cached`), keyed by `(root, trusted)`
+and invalidated by a *stamp* — the `(mtime, len)` of every file a provider reads,
+where a missing file is itself part of the stamp so creating or deleting one
+invalidates too. Not a file watcher: no thread, no crate and no per-project
+lifecycle to answer what ~20 `metadata()` calls answer instantly. **A new provider
+file must be added to `source_files()`**, or its tasks go stale behind the cache.
+Known gap: files an introspector pulls in itself (`just` `import`, Taskfile
+`includes:`) aren't stamped.
+
+## Run on stop — the agent/task loop
+
+The part a plain terminal can't do, and the reason tasks live inside Episko: the
+`Stop` hook already arrives here, so a project can say *"when an agent finishes a
+turn in this folder, run this"* and every turn becomes a verified turn. One rule
+per project (`cc-task-onstop`, keyed by project root like pins), set with `⟲` in
+the project tasks panel, reviewed and revoked in Settings › Tasks.
+
+- **Unattended means unattended.** `stopRuleBlocked` refuses a background task (it
+  never finishes a turn, so it could only pile up one dev server per turn), one
+  with `${input:…}` (it would block on a dialog nobody opened), and a blocked one.
+- **The run must not take the stage.** `launchTask` takes `focus: false` for this
+  path only — the pane appears in the sidebar but the session you were reading
+  stays on screen. Consequence: an unfocused pane can't be measured, so it starts
+  at xterm's default 24×80 and gets a real size when you first activate it.
+- **Never two at once, never twice per turn.** A run of the rule still in flight
+  wins, and `STOP_RUN_FLOOR` swallows a double-fired `Stop`. The floor timestamp
+  *and* a per-project in-flight marker are both claimed *before* the first `await`
+  (discovery is async); the marker is what covers a rule with `dependsOn`, whose
+  pane doesn't exist until its whole dependency chain has run — so the pane scan
+  alone can't see the chain starting.
+- **Discovery runs in the session's `workdir`**, so with several worktrees of one
+  repo open the run verifies the checkout that agent just edited.
+- **A failure goes back to the session that caused it.** `run.forSession` records
+  which session's turn was being checked, and the inspector's *↩ Send output to…*
+  offers it back to that session alone — if it has ended or lives in an external
+  terminal (no PTY to type into), the handoff is withheld rather than misdirected to
+  whichever agent in this project sorts first. A hand-run task (no `forSession`)
+  still offers the first live agent. The handoff types without a trailing newline —
+  Episko prefills, the human presses Enter.
+
+## Task settings (Settings ⌘, → **Tasks** tab)
+
+The settings window is `SET_TABS` + `renderSetControl` — declarative controls, not
+hand-written markup per page. Tasks added two control kinds the existing `seg`
+couldn't express: **`toggle`** (a single switch) and **`multi`** (independently
+toggled values, for "which providers to scan" and the revocable trust list). New
+task settings belong in that tab as control descriptors; `applySetting` dispatches
+them.
+
+Task preferences live in `cc-task-prefs`, pins in `cc-task-pins`, hidden tasks in
+`cc-task-hidden`, run-on-stop rules in `cc-task-onstop`, trust in `cc-trusted`. The split is deliberate and worth
+preserving: **personal preference → `localStorage`; project fact →
+`.episko/tasks.toml`**, which is committable and works for a colleague who never
+opens Episko.
+
+## Project tasks panel (`openTaskManager`)
+
+Pin / hide / create / edit / delete / **override**, reached from ⌘K.
+**`.episko/tasks.toml` is the only file Episko writes** — a discovered VS Code task
+or justfile belongs to another tool, so editing one writes an `[override."<id>"]`
+into `tasks.toml` keyed by its discovered id, **never** a mutation of
+`.vscode/tasks.json`. Writes go through `toml_edit`, not a serialize-the-whole-struct
+round trip, so a hand-written file keeps its comments, ordering and spacing — there's
+a test for exactly that. Creating the file for the first time asks, because a new
+committable file in someone's repo is a real side effect.
+
+## Overrides, and the rest of P4
+
+Overrides (`[override.*]`) close the "Episko never rewrites a file it didn't create"
+loop: `apply_overrides` patches discovered rows *after* dedupe (so it keys off final
+ids), and an override whose target vanished becomes a **blocked row** (`override:<id>`)
+rather than a silent no-op — a typo'd id reads as broken, not missing, exactly like
+the rest of the module. `save_task_override` writes `background` unconditionally
+(unlike a `[[task]]`, whose absent key means `false`) because an override's job
+includes turning a discovered background flag *off*. Overriding `run` re-derives its
+`${input:…}` prompts (`redetect_inputs`). Reverting removes the key and, if it was the
+last, the whole `[override]` table. The panel learns which ids are overridden from
+`list_task_overrides` (reads the file, not the cache, so a just-saved override shows).
+
+Four smaller P4 affordances, all in the frontend:
+
+- **Package-runner override** (`cc-task-runner`, per project). Detection stays in
+  Rust; the override is applied *after* discovery by swapping an npm task's
+  `exec.program` (`applyRunner`), so the discovery cache never has to know about it.
+  Surfaced as a strip atop the panel, shown only when the project has npm scripts.
+- **Remembered `${input:…}` values** (`cc-task-inputs`, keyed project + task + input).
+  Pre-fills the prompt with what you typed last; **never a password** (`i.password`).
+- **↗ Reveal source** — `reveal_path` selects the source file in the OS file manager,
+  guarding against a `..` escape and falling back to the folder if the file is gone.
+  `run.root` (the discovery dir) is stored on the pane so it resolves the relative
+  `sourceFile` even for a task whose run cwd is a subfolder.
+- **⟳ Rescan** — `rescan_runnables` drops the project's cache entries; the panel
+  button and the picker's ⌘⇧R both route through it. The escape hatch for the one
+  thing the stamp can't see: a file an introspector imports itself.
+
 ## Backend (`src-tauri/src/lib.rs`)
 
-A single file. `main.rs` only calls `episko_lib::run()`. `AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), the held-open `pending` permission requests, and `caffeinate`.
+`main.rs` only calls `episko_lib::run()`; `tasks.rs` holds runnable discovery. `AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), the held-open `pending` permission requests, and `caffeinate`.
 
-- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `shell:true` on the frontend `Sess` and skip telemetry/cost.
+- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
 ## Frontend (`src/main.ts`, `index.html`, `src/styles.css`)
 
-One ~2650-line `main.ts`, no framework. State lives in a `sessions: Map<session_id, Sess>` plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+One large `main.ts`, no framework. State lives in a `sessions: Map<session_id, Sess>` plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
+
+- **`Sess.kind`** (`"claude" | "shell" | "task"`) decides whether telemetry, cost
+  and git actions apply to a pane — use the `isAgent(s)` helper rather than
+  re-testing the string. It is orthogonal to `Sess.external`, which means "the
+  terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
+  applies to a claude session.
+- **A claude pane's keystrokes are not raw pass-through.** Shell and task panes
+  wire `term.onData` straight to `write_pty`; a claude pane goes through
+  `claudeInput`, which forwards the first `^C` (interrupt) but swallows a repeat
+  inside `INTR_GUARD_MS` — Claude's REPL exits on a fast double `^C`, and a
+  session lost that way leaves a dead pane behind. Ending a session is meant to
+  be explicit (✕, ⌘K → Close, `/exit`). Windows Ctrl+V is handled separately in
+  `winClaudePaste`, via `attachCustomKeyEventHandler` — note xterm keeps only
+  **one** such handler, so a new key rule belongs in that function or in
+  `claudeInput`, never in a second `attachCustomKeyEventHandler` call.
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of the file. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
-- **Persistence is all `localStorage`**, ~15 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 
