@@ -46,7 +46,7 @@ grouping/sort, palette, permission risk rating).
 
 ## Phase 0 — safety net (small)
 
-- [ ] CI: add `pnpm test` (after the frontend build) and `cargo test --locked`
+- [x] CI: add `pnpm test` (after the frontend build) and `cargo test --locked`
       (after cargo check) to `ci.yml`, both OSes.
 - [ ] Test `write_instrument_settings`: all lifecycle hooks `"async": true`;
       `PermissionRequest` is a *blocking* `type:"http"` hook with `?sid=`;
