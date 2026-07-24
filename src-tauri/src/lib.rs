@@ -3694,6 +3694,70 @@ mod tests {
         assert_eq!(model_family("some-future-model"), "other");
     }
 
+    /// The core mechanism: every launch writes a throwaway `--settings` file whose
+    /// hooks and statusLine POST to our telemetry server. Four properties of it are
+    /// load-bearing and invisible to the compiler — our stable launch id must ride on
+    /// every request (routing), curl must be called by absolute path (Claude runs
+    /// hooks with a stripped PATH), the lifecycle hooks must stay fire-and-forget, and
+    /// PermissionRequest must stay a *blocking* `type:"http"` hook carrying its id in
+    /// `?sid=` (it has no shell to add a header). Break any one and telemetry goes
+    /// quiet or Claude hangs, both at runtime only.
+    #[test]
+    fn instrument_settings_wire_every_hook_to_our_server() {
+        let sid = format!("test-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+        let path = write_instrument_settings(45678, &sid).expect("settings file should be written");
+        assert!(path.ends_with(&format!("instrument-{sid}.json")), "unexpected path {path}");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        #[cfg(windows)]
+        let curl = r"C:\Windows\System32\curl.exe";
+        #[cfg(not(windows))]
+        let curl = "/usr/bin/curl";
+
+        let statusline = &v["statusLine"];
+        assert_eq!(statusline["type"], "command");
+        let sl = statusline["command"].as_str().expect("statusLine command");
+        assert!(sl.contains(curl), "statusLine must call curl by absolute path: {sl}");
+        assert!(sl.contains(&format!("X-CC-Session: {sid}")), "statusLine must tag our stable id");
+        assert!(sl.contains("http://127.0.0.1:45678/statusline"), "statusLine must POST to our port");
+
+        let hooks = v["hooks"].as_object().expect("hooks object");
+        for ev in ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop"] {
+            assert!(hooks.contains_key(ev), "lifecycle hook {ev} not instrumented");
+        }
+        for (ev, matchers) in hooks.iter().filter(|(ev, _)| ev.as_str() != "PermissionRequest") {
+            let leaf = &matchers[0]["hooks"][0];
+            assert_eq!(leaf["type"], "command", "{ev}");
+            assert_eq!(leaf["async"], true, "{ev} must stay fire-and-forget");
+            let cmd = leaf["command"].as_str().unwrap_or_else(|| panic!("{ev} has no command"));
+            assert!(cmd.contains(curl), "{ev} must call curl by absolute path: {cmd}");
+            assert!(cmd.contains(&format!("X-CC-Session: {sid}")), "{ev} must tag the POST with our stable id");
+            assert!(cmd.contains("http://127.0.0.1:45678/hook"), "{ev} must POST to our port");
+        }
+
+        let perm = &hooks["PermissionRequest"][0]["hooks"][0];
+        assert_eq!(perm["type"], "http", "PermissionRequest is shell-independent");
+        assert_eq!(perm["url"], format!("http://127.0.0.1:45678/permission?sid={sid}"));
+        assert!(perm.get("async").is_none(), "PermissionRequest must block until the user answers");
+        assert!(perm["timeout"].as_u64().unwrap_or(0) >= 60, "a human needs longer than a hook default to decide");
+
+        // Claude Code's default hook shell on Windows is Git Bash, so the PowerShell
+        // commands must say so; off Windows the field must be absent, not empty.
+        #[cfg(windows)]
+        {
+            assert_eq!(statusline["shell"], "powershell");
+            assert_eq!(hooks["Stop"][0]["hooks"][0]["shell"], "powershell");
+            assert!(perm.get("shell").is_none(), "an http hook has no shell to set");
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(statusline.get("shell").is_none(), "no shell override off Windows");
+            assert!(hooks["Stop"][0]["hooks"][0].get("shell").is_none());
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// All three real-world spellings of one Windows folder (git's forward
     /// slashes, the dialog's native path, VS Code's lowercase drive) must
     /// collapse to a single string, or the sidebar splits the project.

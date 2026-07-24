@@ -48,7 +48,7 @@ grouping/sort, palette, permission risk rating).
 
 - [x] CI: add `pnpm test` (after the frontend build) and `cargo test --locked`
       (after cargo check) to `ci.yml`, both OSes.
-- [ ] Test `write_instrument_settings`: all lifecycle hooks `"async": true`;
+- [x] Test `write_instrument_settings`: all lifecycle hooks `"async": true`;
       `PermissionRequest` is a *blocking* `type:"http"` hook with `?sid=`;
       `X-CC-Session` header in every generated command; absolute curl paths
       (stripped-PATH constraint); port + session id embedded; `shell:"powershell"`
