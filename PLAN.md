@@ -83,7 +83,7 @@ Order matters — pure leaves first, DOM last.
 - [x] `types.ts` — `Sess`, `Phase`, shared interfaces (no logic; unblocks the rest)
 - [x] `format.ts` — `fmtDur`/`fmtUntil`/`fmtSpan`/`relTime`/`fmtDwell`, `esc`,
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
-- [ ] `rl.ts` — `mergeRl`, `rlPct`/`rlReset`, `pushRlSample`, `burnRate`,
+- [x] `rl.ts` — `mergeRl`, `rlPct`/`rlReset`, `pushRlSample`, `burnRate`,
       `forecastWin` (the usage-limit forecast math)
 - [ ] `phase.ts` — `applyHook`/`applyStatusline`/`setPhase` plus `toolArg`,
       `permCmd`, `riskLevel`, `abbr`, `applyTodos`/`applyPlan`. The heart of the
