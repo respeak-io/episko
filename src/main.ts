@@ -53,6 +53,7 @@ function loadWebgl(term: Terminal) {
 // Platform-aware shortcut hints. Display only: the key handlers already accept
 // both modifiers (`e.metaKey || e.ctrlKey`), so only the glyphs differ per OS.
 const IS_MAC = navigator.userAgent.includes("Mac");
+const IS_WIN = navigator.userAgent.includes("Windows");
 const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
@@ -85,6 +86,28 @@ function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
     }
     return true;
   };
+}
+// Windows image paste for Claude panes. Claude Code's only default binding for
+// chat:imagePaste on native Windows is alt+v (ctrl+v joins it only under WSL) —
+// and xterm makes Ctrl+V a dead key on top: it swallows the browser paste and
+// sends ^V, which Claude ignores there. Net effect: Ctrl+V did *nothing* in an
+// embedded pane on Windows. Route by clipboard content instead: tell xterm to
+// leave Ctrl+V to the browser, then on the resulting paste event send ESC v
+// (Claude's own alt+v chord) when an image is aboard — Claude reads the bitmap
+// through its native clipboard path and shows its own feedback — while plain
+// text falls through to xterm's normal bracketed paste.
+function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
+  if (!IS_WIN) return;
+  term.attachCustomKeyEventHandler((e) =>
+    !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
+  // Capture phase: runs before xterm's textarea paste handler, so an image paste
+  // never double-fires as a (empty) text paste.
+  pane.addEventListener("paste", (e) => {
+    if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke("write_pty", { sessionId: id, data: "\x1bv" });
+  }, true);
 }
 type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 interface EngineDef { id: Engine; label: string; sub: string }
@@ -672,6 +695,7 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
     loadWebgl(term);
     term.open(pane);
     term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+    winClaudePaste(id, term, pane);
   }
 
   const s: Sess = {
