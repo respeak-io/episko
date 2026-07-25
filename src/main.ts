@@ -15,7 +15,12 @@ import { parsePatch, type DiffFile } from "./diff";
 import type {
   DiffStat, ExtSession, GitActionResult, Phase, Restorable, Runnable, Sess,
 } from "./types";
-import { isAgent, statusKey } from "./types";
+import { isAgent, statusKey, type Engine } from "./types";
+import { $ } from "./dom";
+import {
+  dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel,
+  setAppVersion, telem, toggleDbg,
+} from "./debug";
 import {
   basename, esc, fmtShort, fmtUntil, relTime, setHome, tilde,
 } from "./format";
@@ -32,11 +37,12 @@ import {
 } from "./phase";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import {
-  accentFor, activeId, colorOverrides, dormants, externals, extMirrorId,
-  extMirrorPid, FAVORITES, mirror, pastMirrorId, saveFavorites, saveProjOrder,
-  sessions, setActiveId, setDormants, setExternals, setFavorites, setMirror,
-  setProjOrder, setSortMode, setWtGroup as setWtGroupState, sortMode, SORT_MODES,
-  wtGroup, type SortMode, type WtGroup,
+  accentFor, activeId, colorOverrides, dirtyByFolder, dormants, externals,
+  extMirrorId, extMirrorPid, FAVORITES, folderDirty, isDirty, mirror, pastMirrorId,
+  saveFavorites, saveProjOrder, sessions, setActiveId, setDormants, setExternals,
+  setFavorites, setMirror, setProjOrder, setSortMode, setTermEngine,
+  setWtGroup as setWtGroupState, sortMode, SORT_MODES, termEngine, wtGroup,
+  type SortMode, type WtGroup,
 } from "./state";
 import {
   allProjects, nextAfterClose, orderedSessions, projectList, urgencyRank,
@@ -127,7 +133,6 @@ function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
     return true;
   };
 }
-type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 interface EngineDef { id: Engine; label: string; sub: string }
 const ALL_ENGINES: EngineDef[] = [
   { id: "embedded", label: "Embedded", sub: "In-app terminal" },
@@ -139,11 +144,12 @@ function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) => e.id 
 // Embedded is always available; installed external terminals are filled in from
 // the backend on startup (see `available_terminals`).
 let availEngines: Engine[] = ["embedded"];
-let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
-if (!ALL_ENGINES.some((e) => e.id === termEngine)) termEngine = "embedded";
+// termEngine itself lives in ./state (a persisted preference like the sort mode);
+// this is only the validation against what this build actually offers.
+if (!ALL_ENGINES.some((e) => e.id === termEngine)) setTermEngine("embedded");
 function setEngine(id: Engine) {
   if (id === termEngine) return;
-  termEngine = id;
+  setTermEngine(id);
   localStorage.setItem("cc-term-engine", termEngine);
   const d = engineDef(id);
   toast(id === "embedded" ? "New sessions open in the embedded terminal" : `New sessions open in ${d.label} (external)`);
@@ -267,11 +273,7 @@ let extTranscriptTimer: number | undefined;
 // polled by refreshDirtyStates. It's the single source of truth for the sidebar's
 // "has changes" dot and the external inspector's diff card: s.git only stays fresh
 // for the *active* session, so nothing else can rely on it across every project.
-const dirtyByFolder = new Map<string, DiffStat | null>();
-const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untracked > 0);
-const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));
 
-const $ = (id: string) => document.getElementById(id)!;
 
 // Per-project icon (a favicon/logo scoured from the repo), keyed by project path.
 // Value: data-URI = found, "" = probed & none (or user cleared). Presence of the
@@ -1683,74 +1685,8 @@ function renderAll() {
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
 }
 
-// ---------- debug console ----------
-// A lightweight in-app event log + live state snapshot, surfaced via the 🐞 button
-// (in the footer) and mirrored to a fixed file (episko-debug.json) so an external
-// tool — or an LLM agent debugging the running app — can read what it's doing.
-// The most useful signal here is "unrouted telemetry": telemetry arriving for a
-// session id the UI doesn't know (the class of bug that made panes look ended).
-type DbgLvl = "info" | "warn" | "error";
-let appVersion = "";
-const dbgLog: { t: number; lvl: DbgLvl; msg: string }[] = [];
-let dbgOpen = false;
-const telem = { rx: 0, routed: 0, dropped: 0 };
-function dlog(lvl: DbgLvl, msg: string) {
-  dbgLog.push({ t: Date.now(), lvl, msg });
-  if (dbgLog.length > 400) dbgLog.splice(0, dbgLog.length - 400);
-  renderDbgBadge();
-  if (dbgOpen) renderDbgPanel();
-  // Tee into the backend rolling log so the UI event stream survives a crash and
-  // lands in one durable timeline with the backend's own lines (see log_frontend).
-  // Fire-and-forget: the in-memory ring above is the source of truth for the panel.
-  invoke("log_frontend", { level: lvl, msg }).catch(() => {});
-}
-function dbgIssues() { return dbgLog.reduce((n, e) => n + (e.lvl === "info" ? 0 : 1), 0); }
-function renderDbgBadge() {
-  const n = dbgIssues();
-  const b = $("dbgBadge");
-  b.textContent = String(n);
-  (b as HTMLElement).hidden = n === 0;
-  $("dbgBtn").classList.toggle("has-issues", n > 0);
-}
-function dbgSnapshot() {
-  return {
-    generatedAt: new Date().toISOString(),
-    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl, telemetry: telem,
-    sessions: [...sessions.values()].map((s) => ({
-      id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
-      ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
-      lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
-    })),
-    externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
-    dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),
-    log: dbgLog.slice(-250),
-  };
-}
-function dbgTime(t: number) { const d = new Date(t); return d.toLocaleTimeString([], { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0"); }
-function renderDbgPanel() {
-  const snap = dbgSnapshot();
-  const srows = snap.sessions.length
-    ? snap.sessions.map((s) => `<tr><td>${esc(s.project)}</td><td class="mono">${s.id.slice(0, 8)}</td><td class="ph-${s.phase}">${s.phase}${s.attention ? " ⚠" : ""}</td><td>${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : "–"}</td><td>${s.cost != null ? "$" + s.cost.toFixed(2) : "–"}</td><td class="mono">${esc(s.lastEvent || "–")}</td></tr>`).join("")
-    : `<tr><td colspan="6" class="dbg-dim">no Episko sessions</td></tr>`;
-  const logRows = dbgLog.slice().reverse().slice(0, 250)
-    .map((e) => `<div class="dl ${e.lvl}"><span class="dl-t">${dbgTime(e.t)}</span><span class="dl-l">${e.lvl}</span><span class="dl-m">${esc(e.msg)}</span></div>`).join("")
-    || `<div class="dbg-dim" style="padding:8px">no events yet</div>`;
-  $("dbgBody").innerHTML =
-    `<div class="dbg-stats">telemetry: rx ${telem.rx} · routed ${telem.routed} · <span class="${telem.dropped ? "warn" : ""}">dropped ${telem.dropped}</span> · 5h ${rl.h5 != null ? Math.round(rl.h5) + "%" : "–"}</div>
-     <table class="dbg-tbl"><thead><tr><th>project</th><th>id</th><th>phase</th><th>ctx</th><th>cost</th><th>last event</th></tr></thead><tbody>${srows}</tbody></table>
-     <div class="dbg-log">${logRows}</div>`;
-}
-function toggleDbg(open?: boolean) {
-  dbgOpen = open ?? !dbgOpen;
-  ($("dbgPanel") as HTMLElement).hidden = !dbgOpen;
-  if (dbgOpen) { renderDbgPanel(); flushDebug(); }
-}
-async function flushDebug() {
-  try {
-    const path = await invoke<string>("write_debug_file", { contents: JSON.stringify(dbgSnapshot(), null, 2) });
-    $("dbgPath").textContent = path;
-  } catch { /* backend not ready */ }
-}
+// The debug console moved to ./debug — it owns its panel, its ring buffer and
+// the telemetry counters. The button listeners and the flush interval stay here.
 
 // ---------- palette (⌘K) ----------
 // A fused switcher + command runner. Prefixes scope the search (⟩ commands,
@@ -4331,7 +4267,7 @@ new ResizeObserver(() => {
 
 // show the running app's version (from tauri.conf.json) in the footer, so it's
 // clear which build is installed after an update.
-getVersion().then((v) => { appVersion = v; $("fVer").textContent = "v" + v; }).catch(() => {});
+getVersion().then((v) => { setAppVersion(v); $("fVer").textContent = "v" + v; }).catch(() => {});
 
 // ---------- app self-update (Tauri updater plugin) ----------
 // Checks the latest GitHub release (respeak-io/episko) for a newer Episko.
@@ -4459,7 +4395,7 @@ FAVORITES.forEach((f) => probeIcon(f.path));
 // offers ones that actually work (embedded is always available).
 invoke<string[]>("available_terminals").then((ids) => {
   availEngines = ALL_ENGINES.map((e) => e.id).filter((id) => id === "embedded" || ids.includes(id));
-  if (!availEngines.includes(termEngine)) { termEngine = "embedded"; localStorage.setItem("cc-term-engine", termEngine); }
+  if (!availEngines.includes(termEngine)) { setTermEngine("embedded"); localStorage.setItem("cc-term-engine", termEngine); }
   renderFoot();
 }).catch(() => {});
 

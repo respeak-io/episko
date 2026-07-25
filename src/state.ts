@@ -21,7 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
-import type { ExtSession, Restorable, Sess } from "./types";
+import type { DiffStat, Engine, ExtSession, Restorable, Sess } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -107,3 +107,14 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
+// Which terminal a new launch opens in. A persisted preference like the sort and
+// grouping above; the table of what's installed and how to label it stays in the UI.
+export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
+export function setTermEngine(e: Engine) { termEngine = e; }
+// Uncommitted-changes cache, keyed by folder rather than session, because it feeds
+// the sidebar's per-project dot and the external inspector's diff card as well as
+// the active session: `Sess.git` only stays fresh for the session on stage, so
+// nothing else can rely on it across every project.
+export const dirtyByFolder = new Map<string, DiffStat | null>();
+export const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untracked > 0);
+export const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));

@@ -32,6 +32,10 @@ export interface GitActionResult { ok: boolean; summary: string; output: string;
 // Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
 // rather than an embedded pane", and only ever applies to a claude session.
 export type SessKind = "claude" | "shell" | "task";
+// Where a launched terminal lives. The instrumentation is identical for all four;
+// this only decides which window the PTY is attached to. The label/availability
+// table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
+export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";
