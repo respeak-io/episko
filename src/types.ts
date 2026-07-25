@@ -35,6 +35,10 @@ export type SessKind = "claude" | "shell" | "task";
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";
+// Which glyph/CSS bucket a pane falls into: a blocking permission outranks the
+// phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
+// inspector pill, so it lives here rather than in any one of them.
+export const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
 
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }
