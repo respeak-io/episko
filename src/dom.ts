@@ -8,3 +8,17 @@
 // extracting any of them would mean importing main.ts, which the dependency
 // direction forbids.
 export const $ = (id: string) => document.getElementById(id)!;
+
+// The one-line transient notice, bottom of the stage. A single element reused by
+// everything, so a second toast replaces the first rather than stacking — which is
+// why a caller that wants both a label and a consequence must say them in one string.
+let toastT: number | undefined;
+export function toast(m: string) { const el = $("toast"); el.textContent = m; el.classList.add("show"); clearTimeout(toastT); toastT = window.setTimeout(() => el.classList.remove("show"), 1900); }
+
+// Which overlays share the single #scrim backdrop. Dropping it is conditional
+// because several can be open at once (the palette over the settings window, say) —
+// the last one to close is the one that clears it.
+export const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "setDlg"];
+export function dropScrim() {
+  if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
+}

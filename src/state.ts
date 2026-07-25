@@ -109,6 +109,18 @@ export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
+export interface EngineDef { id: Engine; label: string; sub: string }
+export const ALL_ENGINES: EngineDef[] = [
+  { id: "embedded", label: "Embedded", sub: "In-app terminal" },
+  { id: "ghostty",  label: "Ghostty",  sub: "External window · tinted" },
+  { id: "terminal", label: "Terminal", sub: "macOS Terminal.app" },
+  { id: "iterm",    label: "iTerm",    sub: "iTerm2" },
+];
+export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) => e.id === id) || ALL_ENGINES[0]; }
+// Embedded is always available; installed external terminals are filled in from
+// the backend on startup (see `available_terminals`).
+export let availEngines: Engine[] = ["embedded"];
+export function setAvailEngines(l: Engine[]) { availEngines = l; }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
 // Uncommitted-changes cache, keyed by folder rather than session, because it feeds
