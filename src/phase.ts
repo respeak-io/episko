@@ -93,7 +93,10 @@ export function permCmd(data: any): string {
 export function riskLevel(tool: string, input: any): Risk {
   const cmd = typeof input?.command === "string" ? input.command : "";
   if (tool === "Bash") {
-    if (/(^|\s)(sudo|rm\s+-[rf]|rmdir|mkfs|dd|shutdown|reboot|kill(all)?)\b|git\s+clean|--force\b|--hard\b|-fdx\b|>\s*\/dev\/|:\(\)\s*\{|chmod\s+-R|curl[^|]*\|\s*(sh|bash)|npm\s+publish|git\s+push/i.test(cmd)) return "high";
+    // `-[rf]+`, not `-[rf]`: with a single letter the following \b falls between the
+    // r and the f of `rm -rf`, so the combined form — the one people actually type —
+    // never matched, while the rarer `rm -r` did.
+    if (/(^|\s)(sudo|rm\s+-[rf]+|rmdir|mkfs|dd|shutdown|reboot|kill(all)?)\b|git\s+clean|--force\b|--hard\b|-fdx\b|>\s*\/dev\/|:\(\)\s*\{|chmod\s+-R|curl[^|]*\|\s*(sh|bash)|npm\s+publish|git\s+push/i.test(cmd)) return "high";
     return "med";
   }
   if (tool === "Write" || tool === "Edit" || tool === "NotebookEdit") return "med";

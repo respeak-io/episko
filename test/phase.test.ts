@@ -441,17 +441,17 @@ describe("riskLevel — the badge on a pending permission", () => {
     expect(riskLevel("Bash", { command: "RM -R build" })).toBe("high");
     expect(riskLevel("Bash", { command: "git push --FORCE" })).toBe("high");
   });
-  // KNOWN BUG, asserted as-is so the extraction stays a pure move — fixing it is
-  // its own commit. `rm\s+-[rf]\b` matches ONE flag letter and then demands a word
-  // boundary, which "rm -rf" doesn't have between its r and its f. So the single-
-  // flag forms above rate high while the combined form — the one people actually
-  // type, and the more destructive of the two — rates a mere "review".
-  it("does NOT flag the combined `rm -rf` form (see the note above)", () => {
-    expect(riskLevel("Bash", { command: "rm -rf build" })).toBe("med");
-    expect(riskLevel("Bash", { command: "rm -fr /" })).toBe("med");
-    expect(riskLevel("Bash", { command: "rm -Rf build" })).toBe("med");
-    // Only incidentally caught, when something else in the line trips the pattern:
-    expect(riskLevel("Bash", { command: "sudo rm -rf /" })).toBe("high");
+  // Regression guard. `rm\s+-[rf]` (one letter, then \b) could not match the
+  // combined form, because "rm -rf" has no word boundary between its r and its f —
+  // so the form people actually type rated a mere "review" while the rarer `rm -r`
+  // rated high. The + is what fixed it.
+  it("flags the combined rm flags, in any order or case", () => {
+    for (const cmd of ["rm -rf build", "rm -fr /", "rm -Rf build", "rm -rf --no-preserve-root /"]) {
+      expect(riskLevel("Bash", { command: cmd }), cmd).toBe("high");
+    }
+  });
+  it("still needs an actual r or f — an unrelated flag is not destructive", () => {
+    expect(riskLevel("Bash", { command: "rm -i notes.txt" })).toBe("med");
   });
   it("treats an ordinary shell command as worth a look, not an alarm", () => {
     for (const cmd of ["ls -la", "pnpm test", "git status", ""]) {

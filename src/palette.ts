@@ -38,7 +38,10 @@ export function fuzzy(text: string, q: string): { score: number; html: string } 
     let found = -1;
     for (let k = ti; k < tl.length; k++) if (tl[k] === c) { found = k; break; }
     if (found === -1) return null;
-    const boundary = found === 0 || /[\s/·._-]/.test(text[found - 1]);
+    // The backslash belongs here as much as the slash: a palette subtitle carries a
+    // native path (tilde(p.path)), so without it no path segment is a word start on
+    // Windows and an exactly-named folder loses to an incidental substring match.
+    const boundary = found === 0 || /[\s/\\·._-]/.test(text[found - 1]);
     run = found === ti ? run + 1 : 1;
     score += 1 + run + (boundary ? 4 : 0) - found * 0.02;
     hit.push(found); ti = found + 1;

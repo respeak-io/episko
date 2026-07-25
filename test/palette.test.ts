@@ -94,32 +94,26 @@ describe("fuzzy — what makes one match better than another", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// KNOWN BUG, asserted as-is so this extraction stays a pure move — fixing it is
-// its own commit. fuzzy's word-start class is /[\s/·._-]/, which does NOT include
-// the backslash. Every path in the palette's `sub` line is native (`tilde(p.path)`
-// on a launch row), so on Windows no path segment is ever treated as a word start,
-// and the +4 bonus that ought to lift an exactly-named folder simply never fires.
-// The comparison below is not theoretical: the ordering inverts between the two
-// platforms for the same two folders and the same query.
-// ---------------------------------------------------------------------------
-describe("fuzzy — path separators, and what Windows loses", () => {
-  it("gives a segment start its word-start bonus after a forward slash", () => {
+// Both path separators, because a palette subtitle carries a *native* path
+// (`tilde(p.path)` on a launch row). Treating only `/` as a word start meant no
+// path segment was ever a word start on Windows, which did not merely lower the
+// score — it inverted the ranking. Regression-guarded on both platforms below.
+describe("fuzzy — path separators", () => {
+  it("gives a segment start its word-start bonus after either separator", () => {
     expect(score("a/b", "b")).toBeGreaterThan(score("ayb", "b"));
+    expect(score("a\\b", "b")).toBeGreaterThan(score("ayb", "b"));
   });
-  it("does NOT do so after a backslash (see the note above)", () => {
-    expect(score("a\\b", "b")).toBe(score("ayb", "b"));
+  it("scores a native path the same either way, bar the drive prefix's length", () => {
+    // What is left between them is only the position penalty for starting one index
+    // later: 4 matched characters × 0.02. A missing word-start bonus would cost 4.0,
+    // fifty times more — which is what made the ranking invert.
+    const gap = score("~/code/Respeak", "resp") - score("E:\\code\\Respeak", "resp");
+    expect(gap).toBeCloseTo(0.08, 10);
   });
-  it("scores the identical repo lower on Windows than on macOS", () => {
-    expect(score("E:\\code\\Respeak", "resp")).toBeLessThan(score("~/code/Respeak", "resp"));
-  });
-  it("inverts the ranking of two real candidates on Windows", () => {
+  it("ranks the exactly-named folder first on both platforms", () => {
     const exact = "Respeak", incidental = "x-response-log";
-    // macOS: the folder actually called Respeak comes first, as it should.
     expect(score(`~/code/${exact}`, "resp")).toBeGreaterThan(score(`~/code/${incidental}`, "resp"));
-    // Windows: it comes second, beaten by an incidental substring that happens to
-    // sit after a hyphen — the one separator the class does recognise.
-    expect(score(`E:\\code\\${exact}`, "resp")).toBeLessThan(score(`E:\\code\\${incidental}`, "resp"));
+    expect(score(`E:\\code\\${exact}`, "resp")).toBeGreaterThan(score(`E:\\code\\${incidental}`, "resp"));
   });
 });
 
