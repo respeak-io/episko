@@ -12,11 +12,12 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 six slices in — `types`, `format`,
-`rl`, `usage`, `phase`, `palette` extracted and tested. Green: **237 vitest + 69
-cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,348 lines. Next slice is
-`state.ts` (see Phase 1), then `grouping.ts`. Two bugs found and fixed along the
-way, two open findings — all four under *Findings from the Phase-1 slices* below.
+**Status 2026-07-25:** Phase 0 done. Phase 1 seven slices in — `types`, `format`,
+`rl`, `usage`, `phase`, `palette` extracted and tested, plus `state` relocated
+(no tests of its own, by design). Green: **237 vitest + 69 cargo**, `tsc --noEmit`
+clean. `main.ts` 5,705 → 5,317 lines. Next slice is `grouping.ts`, which now has
+its state to import. Two bugs found and fixed along the way, two open findings —
+all four under *Findings from the Phase-1 slices* below.
 
 ## Baseline (2026-07-24)
 
@@ -145,7 +146,7 @@ needn't be rediscovered:
       documented invariants: permission → attention, subagent depth suppresses
       phase flips, statusLine un-ends an "ended" session.
 - [x] `palette.ts` — `fuzzy`, `scoreItem`, `parsePal`, `frecScore`
-- [ ] **`state.ts`** — the mutable app state: `sessions`, `activeId`, `FAVORITES`,
+- [x] **`state.ts`** — the mutable app state: `sessions`, `activeId`, `FAVORITES`,
       `sortMode`, `wtGroup`, `projOrder`. *Inserted 2026-07-25*, because
       `grouping.ts` cannot be done without it: of its five functions only
       `clusterByWorktree` and `urgencyRank` are leaves, `splitByWorktree` reads
@@ -153,11 +154,16 @@ needn't be rediscovered:
       variables — which `nextAfterClose` then inherits by calling it. Ground rule 3
       already anticipates this module. A pure relocation: no new tests of its own,
       it exists so the next slice has something to import.
-      **Open question for whoever takes it:** one mutable exported object that
-      `main.ts` writes directly (the `rl` precedent), or a `setX` per variable (the
-      `setUsageRange`/`setTokenDays` precedent)? The object scales better at a dozen
-      variables; the setters make writes greppable. Pick one, record it here, and
-      apply it consistently — do not mix.
+      **Decided: `setX` per variable** (the `setUsageRange`/`setTokenDays` half),
+      settled by counting the call sites — 183 reads against 7 writes. Reads are the
+      **live ESM binding**, so they stay bare identifiers (`activeId`, never
+      `state.activeId`) and the slice touches only the writes; the object would have
+      rewritten all 183, which ground rule 2 is there to prevent. A setter **assigns
+      and nothing else** — persistence and `renderAll()` stay at the call site that
+      already did them. `sessions` is a `const` Map, so it needs no setter at all,
+      and that alone is 98 of the reads. `main.ts` keeps its own `setWtGroup`
+      (validate → persist → repaint) and imports the state one aliased, rather than
+      renaming either. Do not mix in an object later.
 - [ ] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
       `projectList` ordering, `nextAfterClose`. Depends on `state.ts` above.
       `projectList` and `nextAfterClose` are the fiddliest untested logic left —

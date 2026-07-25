@@ -28,6 +28,11 @@ import {
 } from "./phase";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import {
+  activeId, FAVORITES, projOrder, saveFavorites, saveProjOrder, sessions, setActiveId,
+  setFavorites, setProjOrder, setSortMode, setWtGroup as setWtGroupState, sortMode,
+  SORT_MODES, wtGroup, type SortMode, type WtGroup,
+} from "./state";
+import {
   setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
   uDkey, U_MONTHS, uModels, usage, usageRange, usageWindow, uSum,
   type DayUsage, type UDay,
@@ -148,49 +153,15 @@ homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // Both default to a no-op, so the modules stand alone in a test.
 setRlLogger(dlog);
 setOnTurnEnd((s) => { void maybeRunOnStop(s); });
-interface Favorite { name: string; path: string }
-const DEFAULT_FAVORITES: Favorite[] = [];
-// Re-derive each display name from its path on load: it's always the basename, and
-// this self-heals favorites persisted before the Windows-path fix (whose stored name
-// was the full backslash path).
-let FAVORITES: Favorite[] = (JSON.parse(localStorage.getItem("cc-favorites") || "null") || DEFAULT_FAVORITES)
-  .map((f: Favorite) => ({ ...f, name: basename(f.path) }));
-function saveFavorites() { localStorage.setItem("cc-favorites", JSON.stringify(FAVORITES)); }
-// User-defined sidebar order (project path keys), set by drag-drop. Projects not
-// listed here keep their natural order after the listed ones.
-let projOrder: string[] = JSON.parse(localStorage.getItem("cc-proj-order") || "null") || [];
-function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.stringify(projOrder)); }
-// Sidebar sort: "manual" honours the drag order above; "active" floats the most
-// recently-active sessions/projects to the top; "attention" floats the ones that
-// need you first (permission > error > your-turn), longest-waiting within a tier.
-type SortMode = "manual" | "active" | "attention";
-const SORT_MODES: SortMode[] = ["manual", "active", "attention"];
 const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
   manual:    { glyph: "≡", label: "Manual order — drag to arrange" },
   active:    { glyph: "◷", label: "Latest activity first" },
   attention: { glyph: "◆", label: "Needs you first" },
 };
-let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";
-if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
-// --- sidebar worktree grouping -------------------------------------------------
-// Sessions of a repo already collapse into one project group (colorKey = repo root);
-// this decides how the worktrees WITHIN that group are shown. The distinguishing key
-// per worktree is s.workdir (the actual checkout dir); s.worktree holds its branch.
-//   off       — flat rows, branch only as a fallback label (legacy behaviour)
-//   subheader — a ⑃-branch header per worktree cluster, sessions nested under it
-//   toplevel  — each worktree becomes its own top-level group ("repo · branch")
-//   chip      — flat rows, each worktree row carries a colour-coded ⑃ chip
-// off/subheader/chip differ purely in the render layer; toplevel also splits
-// projectList() so close-navigation and the mini-rail stay coherent. A project with a
-// single checkout always renders flat, whatever the mode. Persisted under
-// cc-worktree-group; no in-app control yet — the settings window (separate branch)
-// will own the picker, until then flip it via setWtGroup() / localStorage.
-type WtGroup = "off" | "subheader" | "toplevel" | "chip";
-const WT_GROUPS: WtGroup[] = ["off", "subheader", "toplevel", "chip"];
-let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGroup) || "subheader";
-if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
+// The app-level action: set the state, persist it, repaint. state.ts owns the
+// assignment (and its validation) under the same name, hence the import alias.
 function setWtGroup(m: WtGroup) {
-  wtGroup = WT_GROUPS.includes(m) ? m : "subheader";
+  setWtGroupState(m);
   localStorage.setItem("cc-worktree-group", wtGroup);
   renderAll();
 }
@@ -209,10 +180,8 @@ let reorderGuardUntil = 0;
 const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
 // ---------- model ----------
-// The shapes themselves live in ./types (see the import at the top of this file);
-// this is the behaviour that hangs off them.
-const sessions = new Map<string, Sess>();
-let activeId: string | null = null;
+// The shapes live in ./types and the state itself in ./state (see the imports at
+// the top of this file); this is the behaviour that hangs off them.
 let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
 
 // The WebGL/canvas renderer bakes a glyph texture atlas on first paint. If the
@@ -508,7 +477,7 @@ function addProjectPath(dir: string) {
   toast(`Added ${basename(dir)}`);
 }
 function removeFavorite(path: string) {
-  FAVORITES = FAVORITES.filter((f) => f.path !== path);
+  setFavorites(FAVORITES.filter((f) => f.path !== path));
   saveFavorites();
   renderAll();
 }
@@ -527,7 +496,7 @@ function closeSession(id: string) {
   sessions.delete(id);
   flushRoster(); // an explicit close means done — it should not come back on restart
   if (wasActive) {
-    activeId = null;
+    setActiveId(null);
     if (next) { setActive(next.id); return; }
     document.documentElement.style.setProperty("--accent", "#a78bfa");
     ($("empty") as HTMLElement).style.display = "grid";
@@ -544,7 +513,7 @@ function setActive(id: string) {
   const s = sessions.get(id);
   if (!s) return;
   closeExternalView();
-  activeId = id;
+  setActiveId(id);
   ($("empty") as HTMLElement).style.display = "none";
   for (const x of sessions.values()) x.pane.classList.toggle("active", x.id === id);
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
@@ -654,7 +623,7 @@ function openExternal(sid: string) {
   const e = externals.find((x) => x.session_id === sid);
   if (!e) return;
   mirror = { kind: "ext", id: sid, pid: e.pid };
-  activeId = null;
+  setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
   ($("empty") as HTMLElement).style.display = "none";
   ($("extPane") as HTMLElement).hidden = false;
@@ -683,7 +652,7 @@ function openDormant(id: string) {
   const d = dormants.find((x) => x.id === id);
   if (!d) return;
   mirror = { kind: "past", id };
-  activeId = null;
+  setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
   ($("empty") as HTMLElement).style.display = "none";
   ($("extPane") as HTMLElement).hidden = false;
@@ -1156,7 +1125,7 @@ function initProjectDnD() {
     if (!dragEl) { candidate = null; return; } // never crossed the slop: it was a click
     if (marker.parentNode) container.insertBefore(dragEl, marker);
     cleanup();
-    projOrder = [...container.querySelectorAll<HTMLElement>(".pgroup")].map((el) => el.dataset.path!).filter(Boolean);
+    setProjOrder([...container.querySelectorAll<HTMLElement>(".pgroup")].map((el) => el.dataset.path!).filter(Boolean));
     saveProjOrder();
     // A manual drag captures the current visual order and reasserts manual mode
     // (in a sorted mode the drag would otherwise be immediately overridden).
@@ -2736,7 +2705,7 @@ function closePalette() { $("scrim").classList.remove("show"); $("palette").clas
 
 // ---------- panels / theme ----------
 function setSort(m: SortMode, announce = true) {
-  sortMode = m;
+  setSortMode(m);
   localStorage.setItem("cc-sort", m);
   const b = $("railSort");
   b.textContent = SORT_META[m].glyph;
