@@ -12,13 +12,15 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 eight slices in — `types`, `format`,
-`rl`, `usage`, `phase`, `palette`, `grouping` extracted and tested, plus `state`
-relocated (no tests of its own, by design — but it has since absorbed `externals`,
-`dormants` and `accentFor`, which the `grouping` slice needed). Green: **298 vitest
-+ 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,185 lines. Next slice is the
-Runnables frontend logic. Two bugs found and fixed along the way, two open findings —
-all four under *Findings from the Phase-1 slices* below.
+**Status 2026-07-25:** Phase 0 done. Phase 1 nine slices in — `types`, `format`,
+`rl`, `usage`, `phase`, `palette`, `grouping`, `tasks` extracted and tested, plus
+`state` relocated (no tests of its own, by design — but it has since absorbed
+`externals`, `dormants` and `accentFor`, which the `grouping` slice needed). Green:
+**352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,068 lines.
+What remains in Phase 1 is the render split and the bootstrap trim — no unit tests,
+size and readability only, so it is a different kind of work from the eight slices
+so far. Three bugs found and fixed along the way, two open findings — all five under
+*Findings from the Phase-1 slices* below.
 
 ## Baseline (2026-07-24)
 
@@ -175,9 +177,15 @@ needn't be rediscovered:
       convention (4 writes), and `accentFor` followed its `colorOverrides` map there
       — it cannot live in `format.ts`, which `state.ts` already imports. `branchHue`
       stayed in `main.ts`: it colours a chip, so it is render.
-- [ ] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
+- [x] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
       `launchWithDeps`/`waitForExit` chain rules (label resolution, sequence vs
-      parallel, failed-dep stops chain), `${input:…}` substitution glue
+      parallel, failed-dep stops chain), `${input:…}` substitution glue.
+      Landed as `tasks.ts`, plus `execCmd`, `applyRunner` and the remembered-input
+      store. First slice to need **three** seam-rule-2 hooks at once —
+      `setTaskLauncher` (a pane + PTY), `setTaskLogger`, `setTaskToast` — because
+      the chain narrates and reports as it goes. Assert *when* each dependency
+      starts, not just the result: parallel vs sequence is otherwise the same
+      final state. Surfaced the dependency-resolution bug below.
 - [ ] Render modules — *no unit tests, size/readability only*: `sidebar.ts`,
       `inspector.ts`, footer + usage popup, debug panel, DnD
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
@@ -256,9 +264,20 @@ this phase.
 
 ## Findings from the Phase-1 slices
 
-Extracting-then-testing found four things. Two were fixed (in their own commit,
-after the moves landed — never in the same commit as a move); two are open and
-neither is caused by this effort.
+Extracting-then-testing found five things. Three were fixed (each in its own
+commit, after the moves landed — never in the same commit as a move); two are
+open and neither is caused by this effort.
+
+**Fixed** (`d2f035e`) — an unresolvable dependency ran the task anyway. `resolveDeps`
+returned `[]` for three different questions — the task has no dependencies, a label
+matched nothing, and this is a cycle — and `launchWithDeps` read all three as
+"nothing to wait for". So renaming a `build` task silently made every task that
+`dependsOn` it run *without* it, behind a toast that named the missing label but not
+the consequence; a cycle ran its members without their own dependencies. The exact
+outcome the chain exists to prevent, and the opposite of what its own comment
+promised. `null` now means "could not resolve" and `[]` keeps meaning "has none".
+Found by writing the chain tests, not by reading the code — the test that deadlocked
+was the tell.
 
 **Fixed** (`6949087`), each with the failing test written first:
 
