@@ -12,20 +12,26 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 twelve slices in. **Tested logic
-modules** (eight): `types`, `format`, `rl`, `usage`, `phase`, `palette`, `grouping`,
-`tasks`. **Untested view modules** (three, by design): `usageview`, `inspectorview`,
-`sidebarview`. Plus `state`, relocated — it has since absorbed `externals`,
-`dormants`, `accentFor` and the `mirror` stage pointer as later slices needed them.
-Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 4,525
-lines (−21%). Three bugs found and fixed along the way, two open findings — all five
+**Status 2026-07-25:** Phase 0 done. Phase 1 sixteen slices in.
+
+- **Tested logic modules** (eight): `types`, `format`, `rl`, `usage`, `phase`,
+  `palette`, `grouping`, `tasks`.
+- **Markup-only view modules** (three, untested by design): `usageview`,
+  `inspectorview`, `sidebarview`.
+- **DOM-owning modules** (three, untested by design): `debug`, `worktree`, `settings`.
+- **Shared**: `state` (which has absorbed `externals`, `dormants`, `accentFor`, the
+  `mirror` stage pointer, `termEngine`/`termFontSize` and the dirty-folder cache as
+  later slices needed them) and `dom` (`$`, `toast`, the shared scrim).
+
+Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 3,189
+lines (−44%). Three bugs found and fixed along the way, two open findings — all five
 under *Findings from the Phase-1 slices* below.
 
-What is left of Phase 1 is the harder half of the render split: the footer and its
-popovers, the debug panel, the DnD, and four DOM-heavy dialogs (worktree, settings,
-task manager, run picker) that together are most of the remaining `main.ts`. Read
-*The `*view.ts` boundary* below before starting one — it is where the last three
-slices' decisions are recorded.
+Left in Phase 1: the Run picker, the project tasks panel, the ⌘K palette UI,
+caffeinate, the footer and its popovers, the context menu, the DnD — then the
+bootstrap trim. Read *Extracting a DOM-owning module* below first; all of them are
+that kind, and the recipe (guarded line-range slice → wire → `tsc`/`pnpm test` →
+byte-identical diff against HEAD → smoke through the app's own buttons) is settled.
 
 ## Baseline (2026-07-24)
 
@@ -162,6 +168,33 @@ read by. Two consequences worth knowing before starting one:
   under a `?t=` URL, so a dynamic `import()` gets a second instance with its own
   empty state, and the seeded data never reaches it.
 
+**Extracting a DOM-owning module** (a dialog, a panel — `debug`, `worktree`,
+`settings` so far). Different rules from a `*view.ts`, learned across those three:
+
+- **It moves whole**, state and event handlers included. These dialogs' markup reads
+  their own state (which row is armed, what is prefetched, which tab is open), so
+  there is no view/controller seam to split them on — trying is what makes a mess.
+  Handlers that address rows by index into the module's own array were never part of
+  the global `[data-*]` dispatcher and should go with it.
+- **`$`, `toast`, `dropScrim` come from `./dom`**, which exists precisely so these
+  modules needn't import `main.ts`. `dlog` comes from `./debug`. Anything else it
+  cannot own is a hook.
+- **A control panel may take one host object instead of N setters.** `settings.ts`
+  changes seven things it does not own; seven setters would be noise. State the
+  deviation where it happens. Prefer per-callee setters below ~4.
+- **Prefer moving shared state to the module that *owns* it**, not to `state.ts` by
+  reflex — `gitBusy` went to `inspectorview` (it greys those buttons and nothing
+  else), while `mirror`, `termEngine`, `termFontSize` and the dirty-folder cache are
+  genuinely app-wide and went to `state.ts`. If two modules render the same thing
+  (`SORT_META` — the rail glyph and the settings segment), move it, never copy it;
+  a duplicate is a drift bug waiting to happen.
+- **Smoke it through the app's own buttons, never a dynamic `import()`.** For a
+  module that registers event listeners, a second instance means a second set of
+  listeners: Escape appeared to close the worktree dialog *and* clear its filter in
+  one press. Restart vite first so nothing is served under `?t=`, then click the real
+  control. Reading module state back through a dynamic import is unreliable for the
+  same reason — assert against the DOM.
+
 - [x] `types.ts` — `Sess`, `Phase`, shared interfaces (no logic; unblocks the rest)
 - [x] `format.ts` — `fmtDur`/`fmtUntil`/`fmtSpan`/`relTime`/`fmtDwell`, `esc`,
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
@@ -218,14 +251,16 @@ read by. Two consequences worth knowing before starting one:
       final state. Surfaced the dependency-resolution bug below.
 - [ ] Render modules — *no unit tests, size/readability only*: `sidebar.ts`,
       `inspector.ts`, footer + usage popup, debug panel, DnD.
-      **Three done** — `usageview.ts`, `inspectorview.ts`, `sidebarview.ts` — on the
-      `*view.ts` boundary recorded below. Still to go: the footer proper
-      (`renderFoot` + the popovers `closeFootMenus` coordinates), the debug panel,
-      the DnD, and the four dialogs that are most of what is left of `main.ts` —
-      the new-session/worktree dialog (~830 lines, the biggest single cluster),
-      settings, the task manager and the ▶ Run picker. Those are DOM-and-state
-      heavy rather than markup, so expect them to move as whole units with their
-      own module state, not as `*view.ts` pairs.
+      **Six done.** Markup-only (`*view.ts`, see the boundary below): `usageview`,
+      `inspectorview`, `sidebarview`. DOM-owning, moved whole with their state and
+      handlers: `debug`, `worktree` (the new-session dialog, 932 lines — the biggest
+      single cluster), `settings`. Plus `dom.ts` (`$`, `toast`, the shared scrim) and
+      the task preference state relocated into `tasks.ts`.
+      **Still to go:** the ▶ Run picker (~190), the project tasks panel (~230), the
+      ⌘K palette UI (~155), caffeinate (~150), the footer proper (`renderFoot` + the
+      popovers `closeFootMenus` coordinates), the project context menu, and the DnD.
+      Then the bootstrap trim below. Every one of these is DOM-owning, so follow the
+      `worktree`/`settings` pattern rather than the `*view.ts` one.
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
