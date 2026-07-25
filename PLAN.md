@@ -259,11 +259,27 @@ read by. Two consequences worth knowing before starting one:
       the task preference state relocated into `tasks.ts`.
       Since: `taskui` (the ▶ Run picker + the project tasks panel), `caffeinate`,
       `diffview`, and task discovery + the preference state folded into `tasks`.
-      **Still to go:** the ⌘K palette UI (~155), the project context menu (~117),
-      the terminal-engine popover, the footer proper (`renderFoot` + the popovers
-      `closeFootMenus` coordinates), the sidebar's `renderSidebar`/`renderMini`/DnD,
-      the tray mirror, and the inputs prompt. Then the bootstrap trim below. All
-      DOM-owning, so follow the `worktree`/`settings` pattern.
+
+      **What remains is not equal, so it is ordered by evidence rather than by
+      file order** (decided 2026-07-25 after asking what the split is actually
+      *for*). These modules get no tests either way, so the only payoffs are the
+      bootstrap trim and the Phase-3 profiling pass — and that pass names its
+      suspects: the nine `setInterval`s, and `renderAll()` firing `renderSidebar` +
+      `renderMini` + `renderFoot` + `renderAttn` + `updateTray` unconditionally on
+      **every telemetry event**.
+
+      1. **`renderSidebar` / `renderMini` / the DnD, the tray mirror, the footer
+         (`renderFoot` + `closeFootMenus` and its popovers).** Worth doing: these
+         are exactly the surfaces on `renderAll`'s hot path, and the profiling pass
+         needs each one isolated before it can ask "did this need to repaint?".
+      2. **The ⌘K palette UI, the project context menu, the terminal-engine
+         popover, the inputs prompt.** Cosmetic only — they render on demand, never
+         from `renderAll`, so isolating them tells the profiling pass nothing. Do
+         them last, or leave them for the bootstrap trim to sweep up.
+
+      Note the palette's *decisions* are already extracted and tested (`palette.ts`,
+      39 tests): fuzzy match, scoring, prefix parsing, frecency. Only the painting
+      is left, which is why moving it buys no coverage.
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
@@ -469,33 +485,54 @@ Decided 2026-07-24, so it needn't be re-argued mid-restructure.
 
 ## Kickoff prompt
 
-Paste into a fresh session on this branch to continue the effort:
+Paste into a fresh session on this branch. It is written to be worked
+**autonomously** — the effort has stalled before on an agent stopping at a tidy
+checkpoint that was not a blocker.
 
-> Read PLAN.md and CLAUDE.md first. PLAN.md is the tracker for this effort and its
-> ground rules bind you — in particular the Phase-1 preamble ("How a leaf module
-> calls back into the app" and "Test conventions for these slices"), which were
-> decided in earlier sessions and are not to be re-argued.
+> Read PLAN.md and CLAUDE.md first. PLAN.md is the tracker and its ground rules bind
+> you. The decisions already recorded there — the seam rules, the test conventions,
+> the `*view.ts` boundary, the DOM-owning-module recipe, and the ordering of what is
+> left — were settled in earlier sessions and are **not to be re-argued**.
 >
-> Continue the "presentable" effort: take the first unchecked item of the earliest
-> unfinished phase and complete it as its own commit — extract → test → commit, per
-> the ground rules (mechanical moves only, no architecture changes; relocate code,
-> do not rewrite, rename or improve a signature). Tick that item's checkbox in
-> PLAN.md in the same commit.
+> **Work the plan without checking in.** Take the first unchecked item of the
+> earliest unfinished phase, land it as its own commit, then take the next one, and
+> keep going. Do not stop between slices to summarise, do not ask whether to
+> continue, and do not treat "this is a natural place to pause" as a reason to stop
+> — it isn't. Stop only when the phase is complete or you hit a real blocker.
 >
-> Gates, all green before each commit: `pnpm exec tsc --noEmit`, `pnpm test`, and —
-> only if you touched Rust — `cargo test` in `src-tauri/`. Use **pnpm**, not npm.
-> Note `tsconfig`'s `include` is `["src"]`, so tsc does *not* check `test/` — a
-> broken test file only shows up under vitest. Run both, every time.
-> `noUnusedLocals` is on, so an import left behind by an extraction is a hard
-> error; let it guide you.
+> **Real blockers** — the only reasons to stop and ask:
+> - Something needs the app *run interactively* (the Windows statusLine finding is
+>   the live example: CLAUDE.md says that half cannot be checked headlessly).
+> - A behaviour change that is not a bug fix — a default, a wording, anything where
+>   "correct" is a product call rather than a contradiction in the code.
+> - A seam or decision PLAN.md's rules genuinely do not cover. Record what you
+>   decide; don't invent an answer silently.
+> - Anything outward-facing: pushing, releasing, touching a remote.
 >
-> Prove each new test bites by mutating the subject and watching it fail, and say
-> so in the commit message (see the test conventions). If you find a real bug,
-> finish the move first and flag it — a behaviour change is its own commit, landed
-> after. Verify each move was mechanical by diffing the relocated block against
-> `git show HEAD:src/main.ts`; the only differences should be the seams you
-> intended.
+> Running low on context is not a blocker — it is a handoff. Update PLAN.md so the
+> next session can continue without the user, then say so.
 >
-> Then continue with the next item. Stop when the phase is complete, or sooner if a
-> decision recorded in PLAN.md turns out not to cover your case — in which case
-> raise it rather than inventing an answer, and record what is decided.
+> **Per slice:** extract → (test, if the plan says so) → commit, ticking that item's
+> checkbox **in the same commit**. Mechanical moves only: relocate code, do not
+> rewrite, rename or improve it. Verify by diffing the relocated block against
+> `git show HEAD:src/main.ts` — the only differences should be the seams you
+> intended. For a logic module, prove each new test bites by mutating the subject,
+> and say in the commit how many mutations you ran, how many were killed, and why any
+> survivor is equivalent rather than a coverage gap.
+>
+> **Gates, all green before every commit:** `pnpm exec tsc --noEmit`, `pnpm test`,
+> and — only if you touched Rust — `cargo test` in `src-tauri/`. Use **pnpm**, not
+> npm. `tsconfig`'s `include` is `["src"]`, so tsc does *not* check `test/`; a broken
+> test file only shows up under vitest. Run both, every time. `noUnusedLocals` is on,
+> so an import left behind by an extraction is a hard error — let it guide you.
+>
+> **If you find a real bug:** finish the move first, flag it, then fix it in its own
+> commit with the failing test written first. Never in the same commit as a move.
+>
+> **Report honestly.** If a verification step examined nothing, say so rather than
+> reporting that it passed — that has already happened once on this effort. If tests
+> fail, show the output. If you skipped part of a slice, name it.
+>
+> Two open findings are worth more than another frontend module, and one of them
+> needs the user: see *Findings from the Phase-1 slices*.
+
