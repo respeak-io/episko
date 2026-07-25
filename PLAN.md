@@ -114,7 +114,7 @@ there, resolve it in this order:
       (rule 2 above) rather than `phase.ts` reaching up for it. Test the
       documented invariants: permission → attention, subagent depth suppresses
       phase flips, statusLine un-ends an "ended" session.
-- [ ] `palette.ts` — `fuzzy`, `scoreItem`, `parsePal`, `frecScore`
+- [x] `palette.ts` — `fuzzy`, `scoreItem`, `parsePal`, `frecScore`
 - [ ] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
       `projectList` ordering, `nextAfterClose`
 - [ ] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
