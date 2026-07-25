@@ -12,26 +12,27 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 sixteen slices in.
+**Status 2026-07-25:** Phase 0 done. Phase 1 twenty-one slices in.
 
 - **Tested logic modules** (eight): `types`, `format`, `rl`, `usage`, `phase`,
   `palette`, `grouping`, `tasks`.
 - **Markup-only view modules** (three, untested by design): `usageview`,
   `inspectorview`, `sidebarview`.
-- **DOM-owning modules** (three, untested by design): `debug`, `worktree`, `settings`.
-- **Shared**: `state` (which has absorbed `externals`, `dormants`, `accentFor`, the
-  `mirror` stage pointer, `termEngine`/`termFontSize` and the dirty-folder cache as
-  later slices needed them) and `dom` (`$`, `toast`, the shared scrim).
+- **DOM-owning modules** (six, untested by design): `debug`, `worktree`, `settings`,
+  `taskui`, `caffeinate`, `diffview`.
+- **Shared**: `state` (the session map, the stage pointer, and every persisted
+  preference later slices needed) and `dom` (`$`, `toast`, the shared scrim).
 
-Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 3,189
-lines (−44%). Three bugs found and fixed along the way, two open findings — all five
+Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 2,499
+lines (−56%). Three bugs found and fixed along the way, two open findings — all five
 under *Findings from the Phase-1 slices* below.
 
-Left in Phase 1: the Run picker, the project tasks panel, the ⌘K palette UI,
-caffeinate, the footer and its popovers, the context menu, the DnD — then the
-bootstrap trim. Read *Extracting a DOM-owning module* below first; all of them are
-that kind, and the recipe (guarded line-range slice → wire → `tsc`/`pnpm test` →
-byte-identical diff against HEAD → smoke through the app's own buttons) is settled.
+Read *Extracting a DOM-owning module* below before the next one; the recipe (guarded
+line-range slice → wire → `tsc`/`pnpm test` → byte-identical diff against HEAD →
+smoke through the app's own buttons) is settled, and so are the three traps that
+have already cost time: section comments that lie about a block's extent, regex
+call-rewrites that also rename declarations, and verification diffs that silently
+compare two empty files.
 
 ## Baseline (2026-07-24)
 
@@ -256,11 +257,13 @@ read by. Two consequences worth knowing before starting one:
       handlers: `debug`, `worktree` (the new-session dialog, 932 lines — the biggest
       single cluster), `settings`. Plus `dom.ts` (`$`, `toast`, the shared scrim) and
       the task preference state relocated into `tasks.ts`.
-      **Still to go:** the ▶ Run picker (~190), the project tasks panel (~230), the
-      ⌘K palette UI (~155), caffeinate (~150), the footer proper (`renderFoot` + the
-      popovers `closeFootMenus` coordinates), the project context menu, and the DnD.
-      Then the bootstrap trim below. Every one of these is DOM-owning, so follow the
-      `worktree`/`settings` pattern rather than the `*view.ts` one.
+      Since: `taskui` (the ▶ Run picker + the project tasks panel), `caffeinate`,
+      `diffview`, and task discovery + the preference state folded into `tasks`.
+      **Still to go:** the ⌘K palette UI (~155), the project context menu (~117),
+      the terminal-engine popover, the footer proper (`renderFoot` + the popovers
+      `closeFootMenus` coordinates), the sidebar's `renderSidebar`/`renderMini`/DnD,
+      the tray mirror, and the inputs prompt. Then the bootstrap trim below. All
+      DOM-owning, so follow the `worktree`/`settings` pattern.
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
