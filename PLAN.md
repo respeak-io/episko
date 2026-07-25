@@ -12,11 +12,12 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 seven slices in — `types`, `format`,
-`rl`, `usage`, `phase`, `palette` extracted and tested, plus `state` relocated
-(no tests of its own, by design). Green: **237 vitest + 69 cargo**, `tsc --noEmit`
-clean. `main.ts` 5,705 → 5,317 lines. Next slice is `grouping.ts`, which now has
-its state to import. Two bugs found and fixed along the way, two open findings —
+**Status 2026-07-25:** Phase 0 done. Phase 1 eight slices in — `types`, `format`,
+`rl`, `usage`, `phase`, `palette`, `grouping` extracted and tested, plus `state`
+relocated (no tests of its own, by design — but it has since absorbed `externals`,
+`dormants` and `accentFor`, which the `grouping` slice needed). Green: **298 vitest
++ 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,185 lines. Next slice is the
+Runnables frontend logic. Two bugs found and fixed along the way, two open findings —
 all four under *Findings from the Phase-1 slices* below.
 
 ## Baseline (2026-07-24)
@@ -164,10 +165,16 @@ needn't be rediscovered:
       and that alone is 98 of the reads. `main.ts` keeps its own `setWtGroup`
       (validate → persist → repaint) and imports the state one aliased, rather than
       renaming either. Do not mix in an object later.
-- [ ] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
+- [x] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
       `projectList` ordering, `nextAfterClose`. Depends on `state.ts` above.
       `projectList` and `nextAfterClose` are the fiddliest untested logic left —
       sidebar ordering and which pane takes over on close.
+      `allProjects` came too (`projectList` is a sort *of* it), and with it three
+      more callees, all resolved by seam rule 1 rather than a hook: `externals` and
+      `dormants` are plain state and moved into `state.ts` under its setter
+      convention (4 writes), and `accentFor` followed its `colorOverrides` map there
+      — it cannot live in `format.ts`, which `state.ts` already imports. `branchHue`
+      stayed in `main.ts`: it colours a chip, so it is render.
 - [ ] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
       `launchWithDeps`/`waitForExit` chain rules (label resolution, sequence vs
       parallel, failed-dep stops chain), `${input:…}` substitution glue

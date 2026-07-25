@@ -20,8 +20,8 @@
 // Note for tests: the preferences below are read from localStorage at *module
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
-import { basename } from "./format";
-import type { Sess } from "./types";
+import { basename, hslToHex } from "./format";
+import type { ExtSession, Restorable, Sess } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -64,8 +64,30 @@ export let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGr
 if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
 export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "subheader"; }
 
+// A hand-picked accent per project path, overriding the hash below. A `const` map
+// mutated in place (like `sessions`), so it needs no setter; the colour picker in
+// main.ts still owns writing it back to localStorage.
+export const colorOverrides: Record<string, string> = JSON.parse(localStorage.getItem("cc-colors") || "{}");
+// The project accent. Here rather than in format.ts because it reads the override
+// map above, and format.ts must not depend on state (this module already imports
+// it). Same hash seeds branch colours, so the sidebar's colour language is one.
+export function accentFor(key: string): string {
+  if (colorOverrides[key]) return colorOverrides[key];
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return hslToHex(h % 360, 0.68, 0.63);
+}
+
 // ---------- model ----------
 // The shapes themselves live in ./types; this is the state that hangs off them.
 export const sessions = new Map<string, Sess>();
 export let activeId: string | null = null;
 export function setActiveId(id: string | null) { activeId = id; }
+// Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
+// discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
+// in the sidebar as read-only, and can jump to their terminal window.
+export let externals: ExtSession[] = [];
+export function setExternals(l: ExtSession[]) { externals = l; }
+// Restorable-from-last-run rows: what the roster says was open at the last quit.
+export let dormants: Restorable[] = [];
+export function setDormants(l: Restorable[]) { dormants = l; }

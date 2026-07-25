@@ -18,7 +18,7 @@ import type {
 import { isAgent } from "./types";
 import {
   basename, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtShort, fmtSpan, fmtUntil,
-  hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
+  relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
 } from "./format";
 import {
   burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, rl, setRlLogger, type Forecast,
@@ -28,10 +28,15 @@ import {
 } from "./phase";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import {
-  activeId, FAVORITES, projOrder, saveFavorites, saveProjOrder, sessions, setActiveId,
+  accentFor, activeId, colorOverrides, dormants, externals, FAVORITES,
+  saveFavorites, saveProjOrder, sessions, setActiveId, setDormants, setExternals,
   setFavorites, setProjOrder, setSortMode, setWtGroup as setWtGroupState, sortMode,
   SORT_MODES, wtGroup, type SortMode, type WtGroup,
 } from "./state";
+import {
+  allProjects, clusterByWorktree, nextAfterClose, orderedSessions, projectList,
+  urgencyRank, type ProjGroup, type WtCluster,
+} from "./grouping";
 import {
   setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
   uDkey, U_MONTHS, uModels, usage, usageRange, usageWindow, uSum,
@@ -205,13 +210,9 @@ void (async () => {
   refit();
 })();
 
-// Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
-// discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
-// in the sidebar as read-only, and can jump to their terminal window.
-let externals: ExtSession[] = [];
-
 // ---------- restorable sessions ----------
-let dormants: Restorable[] = [];
+// `externals` and `dormants` are state, so they live in ./state alongside the
+// session map; the roster logic below still owns filling them.
 
 // The roster is "what was open when Episko last closed". Closing a session removes
 // it — an explicit close means done, so only survivors come back. Shell panes are
@@ -270,8 +271,6 @@ const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untra
 const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));
 
 const $ = (id: string) => document.getElementById(id)!;
-
-const colorOverrides: Record<string, string> = JSON.parse(localStorage.getItem("cc-colors") || "{}");
 
 // Per-project icon (a favicon/logo scoured from the repo), keyed by project path.
 // Value: data-URI = found, "" = probed & none (or user cleared). Presence of the
@@ -346,12 +345,6 @@ function projGlyph(key: string, accent: string): string {
     ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} — right-click for project actions" />`
     : `<span class="pdot" title="Click to recolor · right-click for project actions" style="background:${accent};color:${accent}"></span>`;
 }
-function accentFor(key: string): string {
-  if (colorOverrides[key]) return colorOverrides[key];
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return hslToHex(h % 360, 0.68, 0.63);
-}
 // Claude prepends an animated spinner to its OSC title: it cycles through braille
 // dots (U+2800-U+28FF) and an eight-spoked asterisk (U+2733), e.g. a braille dot or
 // a star before "Fixing the bug". Strip any leading run of those so the sidebar
@@ -416,7 +409,7 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
   setActive(id);
   // A restored session takes over its roster entry: drop the dormant row so the
   // sidebar doesn't show the same conversation twice, live and dormant.
-  if (opts.resume) dormants = dormants.filter((d) => d.resumeId !== opts.resume);
+  if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
@@ -572,7 +565,7 @@ async function refreshBranches() {
 async function refreshExternals() {
   try {
     const list = await invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] });
-    externals = list;
+    setExternals(list);
     // Scour each external repo for its logo, keyed by the same repo_root the sidebar
     // groups by — otherwise ext-only projects would forever show the accent dot.
     // probeIcon dedupes by key, so this hits the backend at most once per repo.
@@ -698,7 +691,7 @@ function resumeDormant(id: string) {
   launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId });
 }
 function forgetDormant(id: string) {
-  dormants = dormants.filter((x) => x.id !== id);
+  setDormants(dormants.filter((x) => x.id !== id));
   if (pastMirrorId() === id) {
     closeExternalView();
     const next = orderedSessions()[0];
@@ -737,7 +730,7 @@ async function loadDormants() {
     }
   }));
   found.sort((a, b) => b.lastActivity - a.lastActivity);
-  dormants = found;
+  setDormants(found);
   if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
   flushRoster();
   renderAll();
@@ -817,137 +810,12 @@ function renderExtInspector(e: ExtSession) {
 // only wires them to the listen() handlers at the bottom of this file.
 
 // ---------- rendering ----------
-// `dormants` are restorable-from-last-run rows. They hang off the project group
-// rather than the worktree clusters: a dormant session has no live checkout state
-// to cluster by, and pinning them below the live rows keeps the distinction between
-// "running now" and "was running before" visually obvious.
-interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string }
-// A worktree cluster = the sessions of one project that share a checkout dir. Order
-// follows first appearance in the (already-sorted) session list, so the active/
-// attention sort still decides which worktree floats up. The repo-root checkout
-// (worktree === null) is the "main" cluster; its label is the live branch.
-interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
-function clusterByWorktree(p: ProjGroup): WtCluster[] {
-  const by = new Map<string, WtCluster>();
-  const order: WtCluster[] = [];
-  const bucket = (key: string, branch: string): WtCluster => {
-    let c = by.get(key);
-    if (!c) { c = { key, branch, isMain: key === p.path, sessions: [], externals: [] }; by.set(key, c); order.push(c); }
-    else if (!c.branch && branch) c.branch = branch;
-    return c;
-  };
-  for (const s of p.sessions) bucket(s.workdir || p.path, s.branch || s.worktree || "").sessions.push(s);
-  for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
-  // Label clusters that never carried a branch: the repo-root checkout is "main",
-  // any other bare dir falls back to its folder name.
-  for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
-  return order;
-}
+// The project/worktree grouping and the sidebar ordering now live in ./grouping;
+// what follows is only the painting of what it returns.
+
 // A stable colour per branch, from the same hash as project accents so the sidebar's
 // colour language stays consistent (a branch and a project just seed different hues).
 const branchHue = (c: WtCluster) => accentFor(c.branch || c.key);
-// toplevel mode: explode any project whose sessions span >1 worktree into one group
-// per worktree. The root checkout keeps the project's identity (path/favourite/
-// externals); each worktree gets its own group keyed by its checkout dir, carrying
-// the branch in wtBranch. Single-checkout projects pass through untouched.
-function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
-  const out: ProjGroup[] = [];
-  for (const p of list) {
-    const cl = clusterByWorktree(p);
-    const wts = cl.filter((c) => !c.isMain);
-    if (!wts.length) { out.push(p); continue; }
-    const root = cl.find((c) => c.isMain);
-    // Keep the root group only when it carries something — root-checkout rows or a
-    // favourite (a launch target). Drops the phantom empty root of a worktree-only repo.
-    if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
-    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch });
-  }
-  return out;
-}
-// Every project Episko knows about: the favourites, plus any repo discovered from a
-// live session, an external (non-Episko) session, or a dormant one. Unsorted and never
-// worktree-split — callers that need order or splitting layer it on.
-//
-// The sidebar and the launch palette MUST agree on this set. Building the palette from
-// FAVORITES alone silently hid every externally-detected project, so pressing
-// "+ Session" with nothing selected offered an arbitrary-looking subset of what the
-// sidebar was showing.
-function allProjects(): ProjGroup[] {
-  const list: ProjGroup[] = FAVORITES.map((f) => ({ name: f.name, path: f.path, accent: accentFor(f.path), sessions: [], externals: [], dormants: [] }));
-  const byName = new Map(list.map((p) => [p.name, p]));
-  const byPath = new Map(list.map((p) => [p.path, p]));
-  for (const s of sessions.values()) {
-    let p = byName.get(s.project) || byPath.get(s.colorKey);
-    if (!p) { p = { name: s.project, path: s.colorKey, accent: accentFor(s.colorKey), sessions: [], externals: [], dormants: [] }; list.push(p); byName.set(s.project, p); byPath.set(s.colorKey, p); }
-    p.sessions.push(s);
-  }
-  for (const e of externals) {
-    // Group by the repo's main worktree, not the raw cwd, so every worktree of one
-    // repo lands under it (and merges into that repo's favourite when paths match).
-    const key = e.repo_root || e.cwd;
-    let p = byPath.get(key);
-    if (!p) { p = { name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [], dormants: [] }; list.push(p); byPath.set(key, p); byName.set(p.name, p); }
-    p.externals.push(e);
-  }
-  for (const d of dormants) {
-    let p = byName.get(d.project) || byPath.get(d.colorKey);
-    if (!p) { p = { name: d.project, path: d.colorKey, accent: accentFor(d.colorKey), sessions: [], externals: [], dormants: [] }; list.push(p); byName.set(d.project, p); byPath.set(d.colorKey, p); }
-    p.dormants.push(d);
-  }
-  return list;
-}
-function projectList(): ProjGroup[] {
-  const list = allProjects();
-  // Sort sessions within each project first, then (in toplevel mode) split by
-  // worktree so each split group inherits the sorted order, then order the groups.
-  const sessCmp = sortMode === "active" ? (a: Sess, b: Sess) => b.lastActivity - a.lastActivity
-    : sortMode === "attention" ? (a: Sess, b: Sess) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince
-    : null;
-  if (sessCmp) for (const p of list) p.sessions.sort(sessCmp);
-  const groups = wtGroup === "toplevel" ? splitByWorktree(list) : list;
-  if (sortMode === "active") {
-    groups.sort((a, b) => projActivity(b) - projActivity(a));
-  } else if (sortMode === "attention") {
-    groups.sort((a, b) => projUrgency(a) - projUrgency(b) || projWaitSince(a) - projWaitSince(b));
-  } else {
-    // manual: the user's drag-drop order; unlisted projects keep their natural
-    // order after listed ones (stable sort preserves ties).
-    const rank = (path: string) => { const i = projOrder.indexOf(path); return i === -1 ? Number.MAX_SAFE_INTEGER : i; };
-    groups.sort((a, b) => rank(a.path) - rank(b.path));
-  }
-  return groups;
-}
-// How much a session wants the user's attention (lower = more urgent). Shared by
-// the sidebar's "attention" sort and the header reactor.
-function urgencyRank(s: Sess): number {
-  if (s.kind === "shell") return 6;
-  if (s.kind === "task") return s.phase === "error" ? 1 : 6;
-  if (s.attention) return 0;         // blocking permission — Claude is waiting on you
-  if (s.phase === "error") return 1;
-  if (s.phase === "done") return 2;  // your turn
-  if (s.phase === "working" || s.phase === "thinking") return 3;
-  if (s.phase === "idle") return 4;
-  return 5;                          // ended
-}
-function projActivity(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.max(m, s.lastActivity), 0); }
-function projUrgency(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.min(m, urgencyRank(s)), 99); }
-function projWaitSince(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.min(m, s.phaseSince), Number.MAX_SAFE_INTEGER); }
-function orderedSessions(): Sess[] { return projectList().flatMap((p) => p.sessions); }
-// When the active session is closed, decide which one takes over. Prefer staying in
-// the same project — the sibling directly above (as shown in the sidebar), else the
-// one below — and only leave the project (nearest session in sidebar order) once it
-// has no sessions left. Must be called BEFORE the session is removed from the map.
-function nextAfterClose(s: Sess): Sess | null {
-  const g = projectList().find((p) => p.sessions.includes(s));
-  if (g) {
-    const gi = g.sessions.indexOf(s);
-    const sib = g.sessions[gi - 1] || g.sessions[gi + 1];
-    if (sib) return sib;
-  }
-  const flat = orderedSessions();
-  const fi = flat.indexOf(s);
-  return flat[fi + 1] || flat[fi - 1] || null;
-}
 
 // `chip` (chip mode only) tags the row with its worktree's colour-coded branch,
 // which expands from a bare ⑃ to the branch name on row hover.
