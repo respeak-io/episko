@@ -57,6 +57,11 @@ export const RUNNERS = ["auto", "npm", "pnpm", "yarn", "bun"] as const;
 export type Runner = (typeof RUNNERS)[number];
 export const taskRunner: Record<string, Runner> = JSON.parse(localStorage.getItem("cc-task-runner") || "{}");
 export function runnerFor(key: string): Runner { return taskRunner[key] || "auto"; }
+export function setRunner(key: string, r: Runner) {
+  if (r === "auto") delete taskRunner[key]; else taskRunner[key] = r;
+  localStorage.setItem("cc-task-runner", JSON.stringify(taskRunner));
+  taskRepaint();
+}
 export function applyRunner(list: Runnable[], key: string): Runnable[] {
   const r = runnerFor(key);
   if (r === "auto") return list;
