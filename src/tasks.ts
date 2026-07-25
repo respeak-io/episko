@@ -14,6 +14,8 @@
 // so `import { store } from "./localstorage"` must sit on the line above this
 // module's import (see test/localstorage.ts).
 
+import { invoke } from "@tauri-apps/api/core";
+import { dlog } from "./debug";
 import type { Runnable } from "./types";
 import { FAVORITES } from "./state";
 
@@ -277,4 +279,34 @@ export function toggleHidden(key: string, id: string) {
   taskHidden[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
   if (!taskHidden[key].length) delete taskHidden[key];
   saveHidden();
+}
+
+// ---------- discovery ----------
+// `trusted` is what lets the backend shell out to `just --dump` — which evaluates
+// the justfile. It takes all three of: the global toggle, the provider being on,
+// and this specific folder being one the user chose.
+export async function discoverTasks(workdir: string, colorKey = workdir, includeHidden = false): Promise<Runnable[]> {
+  const trusted = taskPrefs.introspect && taskPrefs.providers.includes("just") && (isTrusted(workdir) || isTrusted(colorKey));
+  try {
+    const raw = (await invoke<Runnable[]>("discover_runnables", { workdir, trusted }))
+      .filter((r) => taskPrefs.providers.includes(r.source as Provider));
+    // Swap in the project's runner override before anything caches the result, so a
+    // re-run months later uses the same runner the picker showed.
+    const all = applyRunner(raw, colorKey);
+    // Resolve dependsOn against everything discovered, hidden or not — hiding a
+    // task from the picker shouldn't quietly break another task that needs it.
+    for (const r of all) lastRunnableById.set(r.id, r);
+    const hid = hiddenIds(colorKey);
+    return includeHidden ? all : all.filter((r) => !hid.includes(r.id));
+  } catch (e) {
+    dlog("warn", `discover failed (${workdir}): ${e}`);
+    return [];
+  }
+}
+
+// Drop the backend's cached parse for this project so the next discover re-reads
+// from disk. The stamp already catches edits to files Episko reads; this is the
+// escape hatch for what it can't see — a file an introspector imports itself.
+export async function rescanTasks(workdir: string) {
+  await invoke("rescan_runnables", { workdir }).catch((e) => dlog("warn", `rescan: ${e}`));
 }
