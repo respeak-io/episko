@@ -15,6 +15,7 @@
 // module's import (see test/localstorage.ts).
 
 import type { Runnable } from "./types";
+import { FAVORITES } from "./state";
 
 // `discoveredIn` is the directory discovery ran in, which is how we tell a task
 // that declared its own cwd from one that merely inherited the default.
@@ -37,6 +38,11 @@ let taskLog: (lvl: "info" | "warn" | "error", msg: string) => void = () => {};
 export function setTaskLogger(fn: (lvl: "info" | "warn" | "error", msg: string) => void) { taskLog = fn; }
 let taskToast: (msg: string) => void = () => {};
 export function setTaskToast(fn: (msg: string) => void) { taskToast = fn; }
+// Changing a preference below changes what the sidebar, picker and settings window
+// show, and every one of them is repainted from scratch — so the toggles keep the
+// renderAll() they always had, reached the same way as the three hooks above.
+let taskRepaint: () => void = () => {};
+export function setTaskRepaint(fn: () => void) { taskRepaint = fn; }
 
 // ---------- package-runner override ----------
 // The lockfile decides the runner in Rust (`package_runner`), and it's right for
@@ -165,4 +171,110 @@ export async function launchWithDeps(r: Runnable, project: string, opts: TaskLau
     return null;
   }
   return taskLaunch(r, project, opts);
+}
+
+// ---------- preferences: personal, per-project, all localStorage ----------
+// Project-shaped facts (what a task runs, its cwd, its env) belong in
+// .episko/tasks.toml instead, which is committable — that split is what keeps a
+// shared repo working for a colleague who never opens Episko.
+// Everything here is *personal* preference and lives in localStorage beside
+// cc-favorites. Project-shaped facts (what a task runs, its cwd, its env) belong
+// in .episko/tasks.toml, which is committable — the split is what keeps a shared
+// repo working for a colleague who never opens Episko.
+
+// Must list every `source` the backend can emit (see tasks.rs `discover`): anything
+// missing here is discovered and then silently filtered out of the picker.
+export const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
+export type Provider = (typeof ALL_PROVIDERS)[number];
+export const PROVIDER_LABEL: Record<Provider, string> = {
+  episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
+  just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
+};
+
+export interface TaskPrefs {
+  providers: Provider[];
+  /// Providers that existed when this was last saved. One added later isn't in the
+  /// stored `providers` array either, and without this we couldn't tell "the user
+  /// switched it off" from "it didn't exist yet".
+  known: Provider[];
+  introspect: boolean;        // may a trusted project be *run* to enumerate itself?
+  cwd: "session" | "root";    // which directory a run inherits
+  dismissMs: number;          // 0 = never auto-dismiss a green run
+  attention: boolean;         // does a failed run raise the badge?
+}
+const DEFAULT_TASK_PREFS: TaskPrefs = {
+  providers: [...ALL_PROVIDERS], known: [...ALL_PROVIDERS], introspect: true, cwd: "session", dismissMs: 20000, attention: true,
+};
+export const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...JSON.parse(localStorage.getItem("cc-task-prefs") || "{}") };
+for (const p of ALL_PROVIDERS) {
+  if (!taskPrefs.known.includes(p)) taskPrefs.providers = [...taskPrefs.providers, p];
+}
+taskPrefs.known = [...ALL_PROVIDERS];
+export function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.stringify(taskPrefs)); taskRepaint(); }
+
+// Folders the user has explicitly allowed Episko to introspect. Adding a folder as
+// a project counts as saying yes — you chose it deliberately; a directory that
+// merely happens to hold a session does not.
+export const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
+export function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
+export function isTrusted(path: string): boolean {
+  return FAVORITES.some((f) => f.path === path) || trustedPaths.includes(path);
+}
+export function trustProject(path: string) {
+  if (!trustedPaths.includes(path)) { trustedPaths.push(path); saveTrusted(); }
+}
+export function untrustProject(path: string) {
+  const i = trustedPaths.indexOf(path);
+  if (i >= 0) { trustedPaths.splice(i, 1); saveTrusted(); }
+  taskRepaint();
+}
+// Only projects the user opted in by hand can be revoked here — a favourite is
+// trusted *because* it's a favourite, and removing it is how you undo that.
+export function explicitlyTrusted(): string[] { return [...trustedPaths]; }
+
+// Pins are personal, not project state, so they sit in localStorage beside
+// cc-favorites rather than in the repo. Keyed by project root → Runnable ids,
+// which discovery guarantees are stable across a rescan.
+export const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
+export function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
+export function pinnedIds(key: string): string[] { return taskPins[key] || []; }
+export function togglePin(key: string, id: string) {
+  const cur = pinnedIds(key);
+  taskPins[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!taskPins[key].length) delete taskPins[key];
+  saveTaskPins();
+  taskRepaint();
+}
+
+// The part a plain terminal can't do. Episko already receives Claude's `Stop`
+// hook, so a project can say "when an agent finishes a turn here, run the tests" —
+// and every turn becomes a verified turn. A green run auto-dismisses like any
+// other; a red one persists, raises the same badge a blocked session does, and
+// offers its output back to the very session that caused it.
+//
+// One rule per project, keyed like pins (project root → task). The label is stored
+// beside the id only so Settings can list the rules without running discovery for
+// every project first.
+export type StopRule = { id: string; label: string };
+export const stopRules: Record<string, StopRule> = JSON.parse(localStorage.getItem("cc-task-onstop") || "{}");
+export function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
+export function toggleStopRule(key: string, r: Runnable) {
+  if (stopRules[key]?.id === r.id) delete stopRules[key];
+  else stopRules[key] = { id: r.id, label: r.label };
+  saveStopRules();
+  taskRepaint();
+}
+export function clearStopRule(key: string) { delete stopRules[key]; saveStopRules(); taskRepaint(); }
+
+// Episko's own file is ever written — a discovered VS Code task or justfile
+// belongs to another tool and stays read-only.
+
+export const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
+export function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
+export function hiddenIds(key: string): string[] { return taskHidden[key] || []; }
+export function toggleHidden(key: string, id: string) {
+  const cur = hiddenIds(key);
+  taskHidden[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!taskHidden[key].length) delete taskHidden[key];
+  saveHidden();
 }

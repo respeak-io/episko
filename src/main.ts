@@ -56,9 +56,12 @@ import {
   dormantBusy, dormantRows, extWorking, GCLASS, GLYPH, groupBody, taskStateText,
 } from "./sidebarview";
 import {
-  applyInputs, applyRunner, execCmd, exitWaiters, lastRunnableById, rememberedInput,
-  rememberInput, launchWithDeps, RUNNERS, runnerFor, setTaskLauncher, setTaskLogger,
-  setTaskToast, stopRuleBlocked, taskRunner, type Runner, type TaskLaunchOpts,
+  ALL_PROVIDERS, applyInputs, applyRunner, clearStopRule, execCmd, exitWaiters,
+  explicitlyTrusted, hiddenIds, isTrusted, lastRunnableById, launchWithDeps,
+  pinnedIds, PROVIDER_LABEL, rememberedInput, rememberInput, RUNNERS, runnerFor,
+  saveTaskPrefs, setTaskLauncher, setTaskLogger, setTaskRepaint,
+  setTaskToast, stopRuleBlocked, stopRules, taskPrefs, taskRunner, toggleHidden, togglePin, toggleStopRule, trustProject, untrustProject,
+  type Provider, type Runner, type TaskLaunchOpts, type TaskPrefs,
 } from "./tasks";
 import {
   setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, usage,
@@ -173,6 +176,7 @@ setOnTurnEnd((s) => { void maybeRunOnStop(s); });
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
+setTaskRepaint(renderAll);
 // The new-session dialog decides *where* a session starts but cannot start one:
 // panes, the stage and the repaint all belong to this file.
 setWtLaunch(launch);
@@ -993,80 +997,14 @@ function renderShellInspector(s: Sess) {
       <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
     </div>`;
 }
-// ---------- task settings & trust ----------
-// Everything here is *personal* preference and lives in localStorage beside
-// cc-favorites. Project-shaped facts (what a task runs, its cwd, its env) belong
-// in .episko/tasks.toml, which is committable — the split is what keeps a shared
-// repo working for a colleague who never opens Episko.
-
-// Must list every `source` the backend can emit (see tasks.rs `discover`): anything
-// missing here is discovered and then silently filtered out of the picker.
-const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
-type Provider = (typeof ALL_PROVIDERS)[number];
-const PROVIDER_LABEL: Record<Provider, string> = {
-  episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
-  just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
-};
-
-interface TaskPrefs {
-  providers: Provider[];
-  /// Providers that existed when this was last saved. One added later isn't in the
-  /// stored `providers` array either, and without this we couldn't tell "the user
-  /// switched it off" from "it didn't exist yet".
-  known: Provider[];
-  introspect: boolean;        // may a trusted project be *run* to enumerate itself?
-  cwd: "session" | "root";    // which directory a run inherits
-  dismissMs: number;          // 0 = never auto-dismiss a green run
-  attention: boolean;         // does a failed run raise the badge?
-}
-const DEFAULT_TASK_PREFS: TaskPrefs = {
-  providers: [...ALL_PROVIDERS], known: [...ALL_PROVIDERS], introspect: true, cwd: "session", dismissMs: 20000, attention: true,
-};
-const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...JSON.parse(localStorage.getItem("cc-task-prefs") || "{}") };
-for (const p of ALL_PROVIDERS) {
-  if (!taskPrefs.known.includes(p)) taskPrefs.providers = [...taskPrefs.providers, p];
-}
-taskPrefs.known = [...ALL_PROVIDERS];
-function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.stringify(taskPrefs)); renderAll(); }
-
-// Folders the user has explicitly allowed Episko to introspect. Adding a folder as
-// a project counts as saying yes — you chose it deliberately; a directory that
-// merely happens to hold a session does not.
-const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
-function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
-function isTrusted(path: string): boolean {
-  return FAVORITES.some((f) => f.path === path) || trustedPaths.includes(path);
-}
-function trustProject(path: string) {
-  if (!trustedPaths.includes(path)) { trustedPaths.push(path); saveTrusted(); }
-}
-function untrustProject(path: string) {
-  const i = trustedPaths.indexOf(path);
-  if (i >= 0) { trustedPaths.splice(i, 1); saveTrusted(); }
-  renderAll();
-}
-// Only projects the user opted in by hand can be revoked here — a favourite is
-// trusted *because* it's a favourite, and removing it is how you undo that.
-function explicitlyTrusted(): string[] { return [...trustedPaths]; }
+// The task preference state — prefs, trust, pins, hidden ids, run-on-stop rules —
+// moved to ./tasks, beside the runner override and remembered inputs it already had.
 
 // ---------- runnables (tasks & scripts) ----------
 // Discovery lives in Rust (src-tauri/src/tasks.rs) and only ever *parses* files —
 // it never executes the project to find out what it can do. This half is choosing
 // and observing.
 
-// Pins are personal, not project state, so they sit in localStorage beside
-// cc-favorites rather than in the repo. Keyed by project root → Runnable ids,
-// which discovery guarantees are stable across a rescan.
-const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
-function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
-function pinnedIds(key: string): string[] { return taskPins[key] || []; }
-function togglePin(key: string, id: string) {
-  const cur = pinnedIds(key);
-  taskPins[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-  if (!taskPins[key].length) delete taskPins[key];
-  saveTaskPins();
-  renderAll();
-}
 
 // The package-runner override and the remembered ${input:…} values now live in
 // ./tasks, beside the substitution that consumes them.
@@ -1083,26 +1021,6 @@ function revealSource(root: string, sourceFile: string) {
   invoke("reveal_path", { dir: root, rel: sourceFile }).catch((e) => toast("reveal failed: " + e));
 }
 
-// ---------- run on stop ----------
-// The part a plain terminal can't do. Episko already receives Claude's `Stop`
-// hook, so a project can say "when an agent finishes a turn here, run the tests" —
-// and every turn becomes a verified turn. A green run auto-dismisses like any
-// other; a red one persists, raises the same badge a blocked session does, and
-// offers its output back to the very session that caused it.
-//
-// One rule per project, keyed like pins (project root → task). The label is stored
-// beside the id only so Settings can list the rules without running discovery for
-// every project first.
-type StopRule = { id: string; label: string };
-const stopRules: Record<string, StopRule> = JSON.parse(localStorage.getItem("cc-task-onstop") || "{}");
-function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
-function toggleStopRule(key: string, r: Runnable) {
-  if (stopRules[key]?.id === r.id) delete stopRules[key];
-  else stopRules[key] = { id: r.id, label: r.label };
-  saveStopRules();
-  renderAll();
-}
-function clearStopRule(key: string) { delete stopRules[key]; saveStopRules(); renderAll(); }
 
 // A Stop fires at the end of *every* turn — that's the point — but two can land in
 // quick succession, and a slow suite must never race a second copy of itself in
@@ -2745,18 +2663,6 @@ function openPlainTerminal() {
 // Manage what the picker shows. Two kinds of change live here and they persist to
 // different places on purpose: hiding a task is *yours* (localStorage), while a
 // task's command is the *project's* (.episko/tasks.toml, committable). Only
-// Episko's own file is ever written — a discovered VS Code task or justfile
-// belongs to another tool and stays read-only.
-
-const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
-function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
-function hiddenIds(key: string): string[] { return taskHidden[key] || []; }
-function toggleHidden(key: string, id: string) {
-  const cur = hiddenIds(key);
-  taskHidden[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-  if (!taskHidden[key].length) delete taskHidden[key];
-  saveHidden();
-}
 
 let mgrCtx: { project: string; colorKey: string; workdir: string } | null = null;
 let mgrList: Runnable[] = [];
