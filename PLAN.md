@@ -12,6 +12,12 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
+**Status 2026-07-25:** Phase 0 done. Phase 1 six slices in — `types`, `format`,
+`rl`, `usage`, `phase`, `palette` extracted and tested. Green: **237 vitest + 69
+cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,348 lines. Next slice is
+`state.ts` (see Phase 1), then `grouping.ts`. Two bugs found and fixed along the
+way, two open findings — all four under *Findings from the Phase-1 slices* below.
+
 ## Baseline (2026-07-24)
 
 | Area | Size | Tests |
@@ -98,6 +104,30 @@ there, resolve it in this order:
 3. **An extra parameter** only as a last resort — it changes a signature the
    move is supposed to leave alone, and every test then has to pass a stub.
 
+**Test conventions for these slices.** Decided across the first six, so they
+needn't be rediscovered:
+
+- **`localStorage` is stubbed by import order, not by a mock.** Leaf modules read
+  their slice of it at *module scope* (`const usage = JSON.parse(localStorage…)`),
+  and vitest's node environment has no such global — so `import { store } from
+  "./localstorage"` must sit on the line **above** the subject's import, and ESM's
+  evaluation order does the rest. `test/localstorage.ts` also exposes the backing
+  map, so a test can seed it before import and assert on writes after.
+- **Module state is reset in place, not re-imported.** The exported binding is the
+  live object (`rl`, `usage`, `frecency`, `fcLog`), so `beforeEach` clears its keys
+  the same way the app itself does on a rotation.
+- **Fake timers by default.** `applyHook`/`applyStatusline`/`frecScore`/`todayKey`
+  read `Date.now()` heavily; `vi.useFakeTimers()` + `vi.setSystemTime()` is what
+  makes them deterministic. Build calendar fixtures from local components
+  (`new Date(2027, 2, 14, 12)`), never from an epoch, or the day keys shift by zone.
+- **Every new test must be shown to bite.** Apply mutations to the subject one at a
+  time and confirm each turns the suite red. ~250 have been run so far across the
+  six modules; the two survivors that remain were each shown to be *equivalent*
+  mutants, and said so in the commit. A small script over a backup copy of the file
+  works well — write it to the scratchpad, not the repo.
+- **Say so in the commit message**: how many mutations, how many killed, and why
+  any survivor is equivalent rather than a coverage gap.
+
 - [x] `types.ts` — `Sess`, `Phase`, shared interfaces (no logic; unblocks the rest)
 - [x] `format.ts` — `fmtDur`/`fmtUntil`/`fmtSpan`/`relTime`/`fmtDwell`, `esc`,
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
@@ -115,8 +145,23 @@ there, resolve it in this order:
       documented invariants: permission → attention, subagent depth suppresses
       phase flips, statusLine un-ends an "ended" session.
 - [x] `palette.ts` — `fuzzy`, `scoreItem`, `parsePal`, `frecScore`
+- [ ] **`state.ts`** — the mutable app state: `sessions`, `activeId`, `FAVORITES`,
+      `sortMode`, `wtGroup`, `projOrder`. *Inserted 2026-07-25*, because
+      `grouping.ts` cannot be done without it: of its five functions only
+      `clusterByWorktree` and `urgencyRank` are leaves, `splitByWorktree` reads
+      `FAVORITES`, and `projectList` needs `allProjects()` + the three sort/group
+      variables — which `nextAfterClose` then inherits by calling it. Ground rule 3
+      already anticipates this module. A pure relocation: no new tests of its own,
+      it exists so the next slice has something to import.
+      **Open question for whoever takes it:** one mutable exported object that
+      `main.ts` writes directly (the `rl` precedent), or a `setX` per variable (the
+      `setUsageRange`/`setTokenDays` precedent)? The object scales better at a dozen
+      variables; the setters make writes greppable. Pick one, record it here, and
+      apply it consistently — do not mix.
 - [ ] `grouping.ts` — `clusterByWorktree`, `splitByWorktree`, `urgencyRank`,
-      `projectList` ordering, `nextAfterClose`
+      `projectList` ordering, `nextAfterClose`. Depends on `state.ts` above.
+      `projectList` and `nextAfterClose` are the fiddliest untested logic left —
+      sidebar ordering and which pane takes over on close.
 - [ ] Runnables frontend logic — the pure parts: `stopRuleBlocked`, the
       `launchWithDeps`/`waitForExit` chain rules (label resolution, sequence vs
       parallel, failed-dep stops chain), `${input:…}` substitution glue
@@ -165,6 +210,83 @@ this phase.
       a real one — resuming appends to it) and asserts our hooks actually hit our
       server.
 
+## Findings from the Phase-1 slices
+
+Extracting-then-testing found four things. Two were fixed (in their own commit,
+after the moves landed — never in the same commit as a move); two are open and
+neither is caused by this effort.
+
+**Fixed** (`6949087`), each with the failing test written first:
+
+- `riskLevel` under-rated `rm -rf`. `rm\s+-[rf]` matched one flag letter and the
+  following `\b` then fell between the r and the f, so the combined form never
+  matched: `rm -r x` rated high while `rm -rf x` rated "review". Now `-[rf]+`.
+- `fuzzy`'s word-start class omitted the backslash, so on Windows no path segment
+  in a palette subtitle was a word start. Not cosmetic — the ranking *inverted*,
+  because a missing bonus costs 4.0 against a position penalty of 0.02/index. For
+  query `resp`, `E:\code\Respeak` scored 13.24 and lost to `x-response-log` at
+  17.08; it now scores 17.24 and wins, matching macOS. Same oversight class as the
+  Windows-path bug already fixed in `basename()`.
+
+**Open — statusLine telemetry does not arrive on Windows.** Observed 2026-07-25 on
+an installed v0.10.1: across six live sessions and ~3,900 routed events, `model`,
+`ctxPct`, `cost`, `durMs` and all four `rateLimits` fields were null. Those come
+*only* from `applyStatusline`. Isolated as far as the transport: a hand-rolled POST
+to `/statusline` with a bogus `X-CC-Session` returned HTTP 200, incremented `rx`,
+and logged `statusline telemetry for unrouted session … — dropped`, so the
+`tiny_http` server, the route, the header-forcing, the `curl.exe` path and the
+unrouted detection all work. The generated instrument file has the statusLine
+configured correctly (`shell: "powershell"`, absolute `curl.exe`). So the failure is
+upstream: Claude Code is not invoking the command, or it fails before reaching curl.
+**Not yet reproduced on 0.11.0 — confirm that first.** This matters to the plan:
+`usage.ts`, `rl.ts` and roughly half of `phase.ts` are the statusLine path, so about
+a hundred of the new tests currently guard code that never runs on this platform.
+The tests are not wasted — they are what will tell you the logic is right once the
+input returns — but do not read them as evidence the feature works. This is exactly
+the drift the Phase-3 CLI contract test exists to catch, which argues for pulling
+that item forward.
+
+**Open — the debug console is expensive while open.** `dlog()` runs on every hook
+event and, when the panel is open, calls `renderDbgPanel()`, which rebuilds a
+250-row log plus a session table through `innerHTML`, and fires an `invoke` per
+line. Under a normal multi-session hook rate this makes the whole UI visibly
+sluggish (hover animations trailing the cursor). Underneath it is the deliberate
+render-everything-per-event design, which CLAUDE.md documents and which is out of
+scope here. Recorded so it is not rediscovered as a mystery; the debug panel is
+already on the Phase-1 render-module list, which is where any fix belongs.
+
+## Verifying a slice by hand
+
+Ground rule 4's click-through, made concrete — the automated net stops at the OS
+edge and this is the only thing that covers it.
+
+- **Never run `pnpm tauri dev` from inside an Episko pane.** Check with a process
+  ancestry walk first. A dev build launched from a pane becomes a descendant of the
+  installed app, so `ProcTable::is_descendant_of` filters its sessions out of the
+  external list, and — worse for verification — the two share one `localStorage`
+  and one `episko-debug.json`, so the snapshot cannot be attributed to either.
+  Quit the installed app and use a real terminal.
+- **Telemetry arriving** = the 🐞 console's `telemetry: rx N · routed N · dropped N`.
+  `rx` climbing is arrival; `dropped` (shown in warn colour) is routing drift. A
+  fresh instance reads `rx 0` until a session is launched *inside it*. Note hooks
+  log a line each but **statusLine deliberately does not** — the way to see that
+  half is the inspector's model / context % / cost / duration and the footer meters.
+- **Permission answerable** = ask a session to run something needing approval; the
+  pane must raise `permission: <tool>` with the command preview and a risk chip,
+  and clicking allow / deny / hand-to-terminal must unblock Claude. It is a
+  *blocking* hook: if the UI does not answer, Claude hangs. Also answer once
+  directly in the CLI and confirm the badge clears on the next lifecycle event.
+- **Paths (Windows):** snapshot `%TEMP%\cc-launcher\episko-debug.json` (state-of-now,
+  overwritten each flush, lost on a crash); durable log
+  `%LOCALAPPDATA%\io.respeak.episko\logs\episko.log`. macOS equivalents in CLAUDE.md.
+- **Frontend-only smoke, when the full app can't be run:** `pnpm dev` and load
+  `localhost:1420` in a browser. It gets its own origin and its own `localStorage`,
+  so it is isolated from any installed app. Tauri `invoke`/`listen` calls throw
+  (no backend) but module evaluation, the startup wiring and `renderAll()` all run,
+  and modules can be imported and exercised directly from the console. This is what
+  caught nothing and confirmed everything after the first four slices — it verifies
+  the wiring executes, which no unit test does.
+
 ## On integration tests
 
 Decided 2026-07-24, so it needn't be re-argued mid-restructure.
@@ -196,11 +318,31 @@ Decided 2026-07-24, so it needn't be re-argued mid-restructure.
 
 Paste into a fresh session on this branch to continue the effort:
 
-> Read PLAN.md and CLAUDE.md. Continue the "presentable" effort: take the first
-> unchecked item of the earliest unfinished phase and complete it as its own
-> commit — extract → test → commit, per the plan's ground rules (mechanical moves
-> only, no architecture changes). Afterwards `pnpm exec tsc --noEmit`, `pnpm
-> test`, and — for Rust changes — `cargo test` in src-tauri must be green. Tick
-> the item's checkbox in PLAN.md in the same commit. Then continue with the next
-> item; stop when the phase is complete and summarize what moved, what is now
-> tested, and what the next slice would be.
+> Read PLAN.md and CLAUDE.md first. PLAN.md is the tracker for this effort and its
+> ground rules bind you — in particular the Phase-1 preamble ("How a leaf module
+> calls back into the app" and "Test conventions for these slices"), which were
+> decided in earlier sessions and are not to be re-argued.
+>
+> Continue the "presentable" effort: take the first unchecked item of the earliest
+> unfinished phase and complete it as its own commit — extract → test → commit, per
+> the ground rules (mechanical moves only, no architecture changes; relocate code,
+> do not rewrite, rename or improve a signature). Tick that item's checkbox in
+> PLAN.md in the same commit.
+>
+> Gates, all green before each commit: `pnpm exec tsc --noEmit`, `pnpm test`, and —
+> only if you touched Rust — `cargo test` in `src-tauri/`. Use **pnpm**, not npm.
+> Note `tsconfig`'s `include` is `["src"]`, so tsc does *not* check `test/` — a
+> broken test file only shows up under vitest. Run both, every time.
+> `noUnusedLocals` is on, so an import left behind by an extraction is a hard
+> error; let it guide you.
+>
+> Prove each new test bites by mutating the subject and watching it fail, and say
+> so in the commit message (see the test conventions). If you find a real bug,
+> finish the move first and flag it — a behaviour change is its own commit, landed
+> after. Verify each move was mechanical by diffing the relocated block against
+> `git show HEAD:src/main.ts`; the only differences should be the seams you
+> intended.
+>
+> Then continue with the next item. Stop when the phase is complete, or sooner if a
+> decision recorded in PLAN.md turns out not to cover your case — in which case
+> raise it rather than inventing an answer, and record what is decided.
