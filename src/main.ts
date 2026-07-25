@@ -38,6 +38,11 @@ import {
   urgencyRank, type ProjGroup, type WtCluster,
 } from "./grouping";
 import {
+  applyInputs, applyRunner, execCmd, exitWaiters, lastRunnableById, rememberedInput,
+  rememberInput, launchWithDeps, RUNNERS, runnerFor, setTaskLauncher, setTaskLogger,
+  setTaskToast, stopRuleBlocked, taskRunner, type Runner, type TaskLaunchOpts,
+} from "./tasks";
+import {
   setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt, uBuckets,
   uDkey, U_MONTHS, uModels, usage, usageRange, usageWindow, uSum,
   type DayUsage, type UDay,
@@ -152,12 +157,16 @@ function setEngine(id: Engine) {
 // owns it). Favorites start empty and are added by the user — persisted to
 // localStorage.
 homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
-// The two leaf modules that need something only this layer can give them (PLAN's
-// seam rule 2): rl.ts narrates a window close to the debug console, and phase.ts
-// hands the end of a turn to the run-on-stop rule, which owns panes and discovery.
-// Both default to a no-op, so the modules stand alone in a test.
+// The leaf modules that need something only this layer can give them (PLAN's seam
+// rule 2): rl.ts narrates a window close to the debug console, phase.ts hands the
+// end of a turn to the run-on-stop rule, which owns panes and discovery, and
+// tasks.ts needs all three of a pane to launch into, that console and the toast.
+// All default to a no-op, so the modules stand alone in a test.
 setRlLogger(dlog);
 setOnTurnEnd((s) => { void maybeRunOnStop(s); });
+setTaskLauncher(launchTask);
+setTaskLogger(dlog);
+setTaskToast(toast);
 const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
   manual:    { glyph: "≡", label: "Manual order — drag to arrange" },
   active:    { glyph: "◷", label: "Latest activity first" },
@@ -1154,41 +1163,12 @@ function togglePin(key: string, id: string) {
   renderAll();
 }
 
-// ---------- package-runner override ----------
-// The lockfile decides the runner in Rust (`package_runner`), and it's right for
-// essentially every repo. This is the escape hatch for one that lies — a stray
-// pnpm-lock in an npm project. It's a *personal* per-project fact, so localStorage,
-// and it's applied here rather than in Rust: an npm task's exec is already
-// `{program:<runner>, args:["run", name]}`, so swapping the program after discovery
-// is the whole change — the discovery cache never has to learn about it.
-const RUNNERS = ["auto", "npm", "pnpm", "yarn", "bun"] as const;
-type Runner = (typeof RUNNERS)[number];
-const taskRunner: Record<string, Runner> = JSON.parse(localStorage.getItem("cc-task-runner") || "{}");
-function runnerFor(key: string): Runner { return taskRunner[key] || "auto"; }
+// The package-runner override and the remembered ${input:…} values now live in
+// ./tasks, beside the substitution that consumes them.
 function setRunner(key: string, r: Runner) {
   if (r === "auto") delete taskRunner[key]; else taskRunner[key] = r;
   localStorage.setItem("cc-task-runner", JSON.stringify(taskRunner));
   renderAll();
-}
-function applyRunner(list: Runnable[], key: string): Runnable[] {
-  const r = runnerFor(key);
-  if (r === "auto") return list;
-  return list.map((t) => t.source === "npm" && t.exec.mode === "argv"
-    ? { ...t, exec: { ...t.exec, program: r } } : t);
-}
-
-// ---------- remembered ${input:…} values ----------
-// A task with an input prompt shouldn't ask cold every time. Values are remembered
-// per project + task + input, so next run pre-fills what you typed last. Passwords
-// are never stored — the whole point of `password:true` is that it doesn't linger.
-const taskInputs: Record<string, string> = JSON.parse(localStorage.getItem("cc-task-inputs") || "{}");
-const inputKey = (project: string, taskId: string, inputId: string) => `${project}␟${taskId}␟${inputId}`;
-function rememberInput(project: string, taskId: string, inputId: string, val: string) {
-  taskInputs[inputKey(project, taskId, inputId)] = val;
-  localStorage.setItem("cc-task-inputs", JSON.stringify(taskInputs));
-}
-function rememberedInput(project: string, taskId: string, inputId: string): string | undefined {
-  return taskInputs[inputKey(project, taskId, inputId)];
 }
 
 // ↗ Reveal source — where a task came from, selected in the OS file manager. `root`
@@ -1218,17 +1198,6 @@ function toggleStopRule(key: string, r: Runnable) {
   renderAll();
 }
 function clearStopRule(key: string) { delete stopRules[key]; saveStopRules(); renderAll(); }
-
-/// Why this task can't be a rule, or "" if it can. Unattended means unattended: an
-/// `${input:…}` prompt would block on a dialog nobody opened, a background task
-/// never exits so it could only pile up one dev server per turn, and a blocked one
-/// can't run at all.
-function stopRuleBlocked(r: Runnable): string {
-  if (r.blocked) return r.blocked;
-  if (r.background) return "a long-running task never finishes a turn";
-  if (r.inputs.length) return "it asks for input, which needs someone there";
-  return "";
-}
 
 // A Stop fires at the end of *every* turn — that's the point — but two can land in
 // quick succession, and a slow suite must never race a second copy of itself in
@@ -1284,12 +1253,6 @@ async function maybeRunOnStop(s: Sess) {
   } finally {
     stopInFlight.delete(s.colorKey);
   }
-}
-
-/// The command as a human reads it — the picker's subtitle and the inspector's
-/// "command" row both show exactly what will run.
-function execCmd(r: Runnable): string {
-  return r.exec.mode === "shell" ? r.exec.line : [r.exec.program, ...r.exec.args].join(" ");
 }
 
 // The trailing column in the sidebar, and the palette subtitle. A background run
@@ -1371,17 +1334,6 @@ function sendOutputToSession(task: Sess, targetId: string) {
     .catch((e) => toast("send failed: " + e));
 }
 
-// `discoveredIn` is the directory discovery ran in, which is how we tell a task
-// that declared its own cwd from one that merely inherited the default.
-interface TaskLaunchOpts {
-  colorKey?: string; worktree?: string | null; branch?: string; discoveredIn?: string;
-  /// `false` for a run nobody clicked — a run-on-stop pane must not yank the stage
-  /// away from the session you were reading. It still appears in the sidebar.
-  focus?: boolean;
-  /// The session whose turn this run is verifying (see run-on-stop).
-  forSession?: string;
-}
-
 // Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
 // same xterm setup — because a task genuinely is just another pane.
 async function launchTask(r: Runnable, project: string, opts: TaskLaunchOpts = {}): Promise<string | null> {
@@ -1445,63 +1397,8 @@ async function launchTask(r: Runnable, project: string, opts: TaskLaunchOpts = {
   return id;
 }
 
-// ---------- dependsOn ----------
-// The frontend owns the panes, so it's the only side that can wait on an exit code
-// and decide whether the next thing should start at all.
-
-const exitWaiters = new Map<string, (code: number) => void>();
-function waitForExit(sessionId: string): Promise<number> {
-  return new Promise((resolve) => exitWaiters.set(sessionId, resolve));
-}
-
-/// Resolve `dependsOn` labels against the last discovery. VS Code names dependencies
-/// by label, not id, so this matches on label within the same project.
-function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] {
-  const out: Runnable[] = [];
-  for (const label of r.dependsOn) {
-    const dep = [...lastRunnableById.values()].find((x) => x.label === label && x.source === r.source)
-      ?? [...lastRunnableById.values()].find((x) => x.label === label);
-    if (!dep) { toast(`${r.label}: no task named “${label}”`); return []; }
-    // A cycle would otherwise recurse until the stack gives out.
-    if (seen.has(dep.id)) { toast(`${r.label}: dependency cycle at “${label}”`); return []; }
-    out.push(dep);
-  }
-  return out;
-}
-
-// Run a task's dependencies, then the task. A failed dependency stops the chain —
-// "build then test" must not test a build that didn't happen.
-async function launchWithDeps(r: Runnable, project: string, opts: TaskLaunchOpts, seen = new Set<string>()): Promise<string | null> {
-  const deps = resolveDeps(r, seen);
-  if (!deps.length) return launchTask(r, project, opts);
-  seen.add(r.id);
-
-  const sequence = r.dependsOrder === "sequence";
-  dlog("info", `task ${r.id} · ${deps.length} dep${deps.length === 1 ? "" : "s"} (${sequence ? "sequence" : "parallel"})`);
-
-  // A dependency inherits the stage behaviour (`focus`) but not the identity of the
-  // run that pulled it in: `forSession` belongs to the rule pane, not its build step,
-  // and `discoveredIn` is the parent's cwd, wrong for the dep's own *reveal source*.
-  // Let the dep resolve its own root (falls back to the project root).
-  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, discoveredIn: undefined };
-  const runDep = async (d: Runnable): Promise<boolean> => {
-    const id = await launchWithDeps(d, project, depOpts, new Set(seen));
-    if (!id) return false;
-    return (await waitForExit(id)) === 0;
-  };
-
-  const ok = sequence
-    // Sequential: stop at the first failure rather than running the rest.
-    ? await deps.reduce<Promise<boolean>>(async (prev, d) => (await prev) && runDep(d), Promise.resolve(true))
-    : (await Promise.all(deps.map(runDep))).every(Boolean);
-
-  if (!ok) {
-    toast(`${r.label}: a dependency failed — not running it`);
-    dlog("warn", `task ${r.id} skipped: dependency failed`);
-    return null;
-  }
-  return launchTask(r, project, opts);
-}
+// The dependsOn chain — resolveDeps / launchWithDeps / waitForExit — now lives in
+// ./tasks, which reaches launchTask below through setTaskLauncher.
 
 // Re-running reuses nothing — it opens a fresh pane and closes the old one, so the
 // sidebar doesn't accumulate a row per attempt while the scrollback stays honest
@@ -1515,9 +1412,6 @@ async function rerunTask(s: Sess) {
   closeSession(s.id);
   await launchTask(spec, project, { colorKey, worktree, branch });
 }
-
-// The most recent discovery result, so a re-run doesn't need the picker open.
-const lastRunnableById = new Map<string, Runnable>();
 
 // `trusted` is what lets the backend shell out to `just --dump` — which evaluates
 // the justfile. It takes all three of: the global toggle, the provider being on,
@@ -1591,17 +1485,6 @@ function submitInputPrompt() {
   });
   closeInputPrompt();
   void launchWithDeps(applyInputs(r, vals), project, opts);
-}
-
-/// Substitute collected values into every string that reaches the command line.
-function applyInputs(r: Runnable, vals: Record<string, string>): Runnable {
-  const fill = (s: string) => s.replace(/\$\{input:([^}]+)\}/g, (m, id) => (id in vals ? vals[id] : m));
-  const exec = r.exec.mode === "shell"
-    ? { mode: "shell" as const, line: fill(r.exec.line) }
-    : { mode: "argv" as const, program: fill(r.exec.program), args: r.exec.args.map(fill) };
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(r.env)) env[k] = fill(v);
-  return { ...r, exec, cwd: fill(r.cwd), env, inputs: [] };
 }
 
 // ---- inspector: shared helpers for the redesigned modules ----
