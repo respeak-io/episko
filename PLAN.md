@@ -12,15 +12,20 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 nine slices in — `types`, `format`,
-`rl`, `usage`, `phase`, `palette`, `grouping`, `tasks` extracted and tested, plus
-`state` relocated (no tests of its own, by design — but it has since absorbed
-`externals`, `dormants` and `accentFor`, which the `grouping` slice needed). Green:
-**352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 5,068 lines.
-What remains in Phase 1 is the render split and the bootstrap trim — no unit tests,
-size and readability only, so it is a different kind of work from the eight slices
-so far. Three bugs found and fixed along the way, two open findings — all five under
-*Findings from the Phase-1 slices* below.
+**Status 2026-07-25:** Phase 0 done. Phase 1 twelve slices in. **Tested logic
+modules** (eight): `types`, `format`, `rl`, `usage`, `phase`, `palette`, `grouping`,
+`tasks`. **Untested view modules** (three, by design): `usageview`, `inspectorview`,
+`sidebarview`. Plus `state`, relocated — it has since absorbed `externals`,
+`dormants`, `accentFor` and the `mirror` stage pointer as later slices needed them.
+Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 4,525
+lines (−21%). Three bugs found and fixed along the way, two open findings — all five
+under *Findings from the Phase-1 slices* below.
+
+What is left of Phase 1 is the harder half of the render split: the footer and its
+popovers, the debug panel, the DnD, and four DOM-heavy dialogs (worktree, settings,
+task manager, run picker) that together are most of the remaining `main.ts`. Read
+*The `*view.ts` boundary* below before starting one — it is where the last three
+slices' decisions are recorded.
 
 ## Baseline (2026-07-24)
 
@@ -132,6 +137,31 @@ needn't be rediscovered:
 - **Say so in the commit message**: how many mutations, how many killed, and why
   any survivor is equivalent rather than a coverage gap.
 
+**The `*view.ts` boundary, for the render half.** Decided across `usageview`,
+`inspectorview` and `sidebarview`, so it needn't be re-argued. A `*view.ts` module
+takes data and returns a **string**: no `$()`, no `innerHTML`, no renderer call. The
+`render*` function that paints the result stays in `main.ts`, because what it owns is
+the element, the timers and the delegated handlers the markup's `data-` attributes are
+read by. Two consequences worth knowing before starting one:
+
+- **A view module needs no seam.** None of the three took a hook, unlike every logic
+  slice — a function that only reads data and returns a string has nothing to call
+  upward. If a candidate seems to need `setSomething`, it is a `render*` and should
+  stay behind.
+- **Its dependencies must already be below it**, since it may not import `main.ts`.
+  That is what pulled `statusKey` into `types.ts`, `mirror` into `state.ts`, and
+  `gitBusy` into `inspectorview` itself. Prefer the module that *owns* the thing
+  (`gitBusy` greys only the git buttons) over `state.ts` as a dumping ground.
+- **Slice by line range with a guard, not by hand.** A ~20-line script that asserts
+  each boundary line still says what you expect, then cuts, makes the move provably
+  mechanical — `diff` the result against `git show HEAD:src/main.ts` and the only
+  changes should be `export` keywords. The guard has already caught one wrong
+  assumption about where a block started.
+- **Smoke a view module by calling it with a hand-built input.** Driving it through
+  the real pipeline in the browser does *not* work: vite serves an edited module
+  under a `?t=` URL, so a dynamic `import()` gets a second instance with its own
+  empty state, and the seeded data never reaches it.
+
 - [x] `types.ts` — `Sess`, `Phase`, shared interfaces (no logic; unblocks the rest)
 - [x] `format.ts` — `fmtDur`/`fmtUntil`/`fmtSpan`/`relTime`/`fmtDwell`, `esc`,
       `tilde`, `basename`, `sparkline`, `uUsd`/`uTok`/`uDelta`, `hslToHex`
@@ -187,7 +217,15 @@ needn't be rediscovered:
       starts, not just the result: parallel vs sequence is otherwise the same
       final state. Surfaced the dependency-resolution bug below.
 - [ ] Render modules — *no unit tests, size/readability only*: `sidebar.ts`,
-      `inspector.ts`, footer + usage popup, debug panel, DnD
+      `inspector.ts`, footer + usage popup, debug panel, DnD.
+      **Three done** — `usageview.ts`, `inspectorview.ts`, `sidebarview.ts` — on the
+      `*view.ts` boundary recorded below. Still to go: the footer proper
+      (`renderFoot` + the popovers `closeFootMenus` coordinates), the debug panel,
+      the DnD, and the four dialogs that are most of what is left of `main.ts` —
+      the new-session/worktree dialog (~830 lines, the biggest single cluster),
+      settings, the task manager and the ▶ Run picker. Those are DOM-and-state
+      heavy rather than markup, so expect them to move as whole units with their
+      own module state, not as `*view.ts` pairs.
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
