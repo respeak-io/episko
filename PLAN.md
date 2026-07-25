@@ -194,6 +194,37 @@ this phase.
       historical
 - [ ] Clippy: fix warnings, then drop the `|| true` in CI — a linter that can't
       fail is decoration
+- [ ] **Profiling pass: does anything still work when nobody is looking?**
+      Prompted by the debug-snapshot finding above, which was only noticed because
+      the UI got sluggish — nothing in the test net can see this class of problem.
+      The rule to check against: *periodic and per-event work should be skipped when
+      its output is not visible, and skipped when nothing changed.* Not a rewrite —
+      the render-everything-via-`renderAll()` pattern stays (see Out of scope); this
+      is about the guards around it, which is why it belongs after the Phase-1 render
+      split, when each surface is its own module and can be reasoned about alone.
+
+      Confirmed offender (measured): the 4s `flushDebug` interval, above.
+
+      Leads to measure, *not yet verified* — check before believing:
+      - the nine `setInterval`s in `main.ts` (external-session poll 3s, dirty states
+        5s, branches 4s, worktree age 1s, transcript mirror, debug flush 4s, plus
+        three others) — which of them run while their surface is hidden, or while the
+        window is entirely unfocused?
+      - `renderAll()` runs `renderSidebar()`, `renderMini()`, `renderFoot()`,
+        `renderAttn()` and `updateTray()` unconditionally on **every** telemetry
+        event — does the mini-rail render while the sidebar is expanded, and does the
+        tray menu get rebuilt on every hook?
+      - `renderDbgBadge()` + `dbgIssues()` on every `dlog()`, i.e. every hook.
+      - `document.hidden` / window-blur is not consulted anywhere. A fleet of agents
+        streaming hooks into a background window is the app's normal state.
+
+      How to measure without the OS edge: `pnpm dev` and profile the frontend in a
+      browser (see *Verifying a slice by hand*) — the Tauri calls throw but the
+      timers, the render path and the JSON work are all real and show up in a
+      performance trace. For the IPC and disk half, watch the snapshot file's write
+      rate and size. Record findings here; fix the cheap ones, and split anything
+      structural into its own commit with a before/after measurement.
+
 - [ ] Dead-code and TODO sweep, both sides
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
 - [ ] Manual release smoke checklist (launch → telemetry arrives → answer a
@@ -246,14 +277,28 @@ input returns — but do not read them as evidence the feature works. This is ex
 the drift the Phase-3 CLI contract test exists to catch, which argues for pulling
 that item forward.
 
-**Open — the debug console is expensive while open.** `dlog()` runs on every hook
-event and, when the panel is open, calls `renderDbgPanel()`, which rebuilds a
-250-row log plus a session table through `innerHTML`, and fires an `invoke` per
-line. Under a normal multi-session hook rate this makes the whole UI visibly
-sluggish (hover animations trailing the cursor). Underneath it is the deliberate
-render-everything-per-event design, which CLAUDE.md documents and which is out of
-scope here. Recorded so it is not rediscovered as a mystery; the debug panel is
-already on the Phase-1 render-module list, which is where any fix belongs.
+**Open — the debug snapshot flush costs the same whether anyone is watching.**
+Observed 2026-07-25: the UI went visibly sluggish (hover animations trailing the
+cursor, laggy pane selection) on an instance with six live sessions, and clearing
+the debug log fixed it **while the panel was closed** — which is the evidence that
+matters, because it rules out the panel's own rendering.
+
+The cause is `setInterval(flushDebug, 4000)`, unconditional and never cleared.
+`flushDebug` builds `dbgSnapshot()` — which embeds `dbgLog.slice(-250)` — then
+`JSON.stringify(…, null, 2)`, *pretty-printed*, ~29KB in practice, hands that string
+across the Tauri IPC boundary, and Rust writes it to disk. Every four seconds,
+forever, whether the panel is open, whether anything changed, whether the log is
+worth writing. Clearing the ring cut the `log:` array from 250 entries to 0 and so
+cut the stringify, the IPC payload and the disk write by roughly 90% — hence the
+immediate relief. Secondary, on the same hot path: `renderDbgBadge()` runs on
+*every* `dlog()` and `dbgIssues()` reduces the whole 400-entry ring each time.
+
+Note the snapshot is *meant* to be written with the panel closed — CLAUDE.md says
+its purpose is letting an external tool or an agent read live state while the app
+runs — so the fix is not "only flush when visible" but "flush cheaply and only when
+something changed": drop the pretty-printing, skip the write when the snapshot is
+unchanged, and stop re-slicing the log ring on every tick. See the profiling item
+in Phase 3; the debug panel is already on the Phase-1 render-module list.
 
 ## Verifying a slice by hand
 
