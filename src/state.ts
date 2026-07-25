@@ -83,6 +83,22 @@ export function accentFor(key: string): string {
 export const sessions = new Map<string, Sess>();
 export let activeId: string | null = null;
 export function setActiveId(id: string | null) { activeId = id; }
+// The stage shows exactly ONE thing: a live Episko session (activeId), a live
+// external session mirrored read-only, or a dormant session restorable from a past
+// run. Holding the two read-only kinds in a single discriminated pointer — rather
+// than a flag per kind — is what stops them fighting over the stage on the next
+// render tick (see the note in renderAll).
+//
+// The "ext" kind also carries the session's `pid`, because its `id` is Claude's
+// runtime session_id and that ROTATES on /clear, /compact and /resume. The pid is
+// what stays stable, so refreshExternals re-binds through it instead of dropping
+// the selection (which used to silently jump the sidebar to an unrelated session).
+// Same rule as Sess.resumeId and the telemetry path: hold the stable handle.
+export let mirror: { kind: "ext"; id: string; pid: number } | { kind: "past"; id: string } | null = null;
+export function setMirror(m: typeof mirror) { mirror = m; }
+export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
+export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
+export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
