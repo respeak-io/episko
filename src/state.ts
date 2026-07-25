@@ -45,6 +45,13 @@ export const SORT_MODES: SortMode[] = ["manual", "active", "attention"];
 export let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";
 if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
 export function setSortMode(m: SortMode) { sortMode = m; }
+// Each sort mode's rail glyph and one-line description — shared by the rail button
+// and the settings segment, so the two can never drift apart.
+export const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
+  manual:    { glyph: "≡", label: "Manual order — drag to arrange" },
+  active:    { glyph: "◷", label: "Latest activity first" },
+  attention: { glyph: "◆", label: "Needs you first" },
+};
 // --- sidebar worktree grouping -------------------------------------------------
 // Sessions of a repo already collapse into one project group (colorKey = repo root);
 // this decides how the worktrees WITHIN that group are shown. The distinguishing key
@@ -120,6 +127,10 @@ export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) =
 // Embedded is always available; installed external terminals are filled in from
 // the backend on startup (see `available_terminals`).
 export let availEngines: Engine[] = ["embedded"];
+// xterm cell size, in px. Persisted under cc-term-font; applyFontSize in main.ts
+// pushes it to every open terminal, because only that layer holds the xterm handles.
+export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
+export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
