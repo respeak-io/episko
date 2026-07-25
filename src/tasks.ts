@@ -112,14 +112,18 @@ export function waitForExit(sessionId: string): Promise<number> {
 
 /// Resolve `dependsOn` labels against the last discovery. VS Code names dependencies
 /// by label, not id, so this matches on label within the same project.
-export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] {
+///
+/// `null` means a dependency could not be resolved, and is deliberately distinct
+/// from `[]`, which means the task declares none. Returning `[]` for both is what
+/// let a task whose dependency had been renamed away run anyway — see the caller.
+export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
   const out: Runnable[] = [];
   for (const label of r.dependsOn) {
     const dep = [...lastRunnableById.values()].find((x) => x.label === label && x.source === r.source)
       ?? [...lastRunnableById.values()].find((x) => x.label === label);
-    if (!dep) { taskToast(`${r.label}: no task named “${label}”`); return []; }
+    if (!dep) { taskToast(`${r.label}: no task named “${label}” — not running it`); return null; }
     // A cycle would otherwise recurse until the stack gives out.
-    if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}”`); return []; }
+    if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}” — not running it`); return null; }
     out.push(dep);
   }
   return out;
@@ -129,6 +133,10 @@ export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] {
 // "build then test" must not test a build that didn't happen.
 export async function launchWithDeps(r: Runnable, project: string, opts: TaskLaunchOpts, seen = new Set<string>()): Promise<string | null> {
   const deps = resolveDeps(r, seen);
+  // A dependency that can't be resolved is a *failed* dependency, not an absent
+  // one. resolveDeps has already said which label and why; all that's left is to
+  // not run the task — same outcome as a dependency that ran and exited non-zero.
+  if (!deps) { taskLog("warn", `task ${r.id} skipped: dependency unresolved`); return null; }
   if (!deps.length) return taskLaunch(r, project, opts);
   seen.add(r.id);
 

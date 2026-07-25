@@ -211,17 +211,25 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
     expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set()).map((d) => d.label)).toEqual(["b", "a"]);
   });
+  // null and [] are different answers: "I could not resolve these" vs "there are
+  // none". Returning [] for both is what used to run a task whose build had been
+  // renamed away.
   it("gives up on the whole list when one label matches nothing, and says so", () => {
     seed(run({ id: "npm:a", label: "a" }));
-    expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set())).toEqual([]);
+    expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set())).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
+  });
+  it("says the task is not running, not merely that the label is unknown", () => {
+    seed(run({ id: "npm:a", label: "a" }));
+    resolveDeps(run({ label: "test", dependsOn: ["ghost"] }), new Set());
+    expect(toasts[0]).toMatch(/not running it/);
   });
   it("refuses a cycle rather than recursing until the stack gives out", () => {
     seed(run({ id: "npm:a", label: "a" }));
-    expect(resolveDeps(run({ label: "test", dependsOn: ["a"] }), new Set(["npm:a"]))).toEqual([]);
+    expect(resolveDeps(run({ label: "test", dependsOn: ["a"] }), new Set(["npm:a"]))).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
   });
-  it("returns nothing for a task that declares no dependencies", () => {
+  it("returns an empty list — not null — for a task that declares no dependencies", () => {
     expect(resolveDeps(run(), new Set())).toEqual([]);
     expect(toasts).toEqual([]);
   });
@@ -316,28 +324,28 @@ describe("launchWithDeps — the chain", () => {
     expect(labels()).toEqual(["gen", "build", "test"]);
     await expect(p).resolves.toBe("run3");
   });
-  // --- the two below pin CURRENT behaviour, which contradicts this module's own
-  // doc comment ("a failed dependency stops the chain"). resolveDeps returns []
-  // for three different situations — no dependencies, a label that matched
-  // nothing, and a cycle — and launchWithDeps reads all three as "nothing to wait
-  // for". See PLAN.md's findings; the fix is its own commit, and flips these.
-  it("KNOWN BUG: runs the task anyway when a dependency label matches nothing", async () => {
+  it("does not run a task whose dependency label matches nothing", async () => {
+    // A renamed build is exactly as dangerous as a failed one: testing against
+    // whatever happens to be on disk is the outcome the chain exists to prevent.
     const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
     await settle();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
-    expect(labels()).toEqual(["test"]);       // should be [] — the dep never ran
-    await expect(p).resolves.toBe("run1");    // should be null
+    expect(labels()).toEqual([]);
+    await expect(p).resolves.toBeNull();
   });
-  it("KNOWN BUG: a cycle drops the dependencies instead of stopping the chain", async () => {
+  it("launches nothing at all when the chain is a cycle", async () => {
     seed(run({ id: "npm:a", label: "a", dependsOn: ["test"] }), run({ id: "npm:test", label: "test", dependsOn: ["a"] }));
     const p = launchWithDeps(run({ id: "npm:test", label: "test", dependsOn: ["a"] }), "epi", {});
     await settle();
-    expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
-    expect(labels()).toEqual(["a"]);          // `a` ran without its own dependency
-    finish("run1", 0);
+    expect(toasts[0]).toMatch(/dependency cycle/);
+    expect(labels()).toEqual([]); // neither member runs half a chain
+    await expect(p).resolves.toBeNull();
+  });
+  it("narrates an unresolved dependency to the debug console", async () => {
+    const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
     await settle();
-    expect(labels()).toEqual(["a", "test"]);
-    await expect(p).resolves.toBe("run2");    // should be null, having launched nothing
+    await p;
+    expect(logs).toContain("warn task npm:test skipped: dependency unresolved");
   });
   it("hands a dependency the stage behaviour but not the parent's identity", async () => {
     seed(run({ id: "npm:build", label: "build" }));
