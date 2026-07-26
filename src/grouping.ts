@@ -6,7 +6,9 @@
 //
 // Pure over ./state: it reads the session map and the sidebar preferences and
 // returns fresh arrays, touching no DOM and calling no renderer. The render layer in
-// main.ts consumes ProjGroup/WtCluster; it does not build them.
+// main.ts consumes ProjGroup/WtCluster; it does not build them. (The one exception to
+// "pure over ./state" is `needsYou`, which also reads a task preference out of
+// ./tasks — that module owns the switch and nothing here should copy it.)
 //
 // See test/grouping.test.ts.
 
@@ -15,6 +17,7 @@ import type { ExtSession, Restorable, Sess } from "./types";
 import {
   accentFor, dormants, externals, FAVORITES, projOrder, sessions, sortMode, wtGroup,
 } from "./state";
+import { taskPrefs } from "./tasks";
 
 // `dormants` are restorable-from-last-run rows. They hang off the project group
 // rather than the worktree clusters: a dormant session has no live checkout state
@@ -143,4 +146,31 @@ export function nextAfterClose(s: Sess): Sess | null {
   const flat = orderedSessions();
   const fi = flat.indexOf(s);
   return flat[fi + 1] || flat[fi - 1] || null;
+}
+
+// ---------- the "needs you" set ----------
+// The other reading of the same fleet: not "what order does the sidebar show these
+// in" but "which of them is waiting on the human". Two surfaces render it — the
+// header reactor badge and the macOS tray title — so it sits here beside the sort it
+// shares urgencyRank with, rather than in whichever of the two was extracted first.
+
+// The fleet's "needs you" set — sessions with a blocking permission, an error, or
+// finished and awaiting your reply — most urgent first (waiting wins), longest in
+// that state first. Independent of the sidebar sort so the reactor is stable.
+// A failed run counts: the whole point of running tasks in Episko is that a red
+// build reaches you the same way a blocked session does. A *successful* run does
+// not — it settles quietly and auto-dismisses.
+export function needsYou(s: Sess): boolean {
+  if (s.kind === "shell") return false;
+  if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
+  return !!s.attention || s.phase === "done" || s.phase === "error";
+}
+export function needsYouSessions(): Sess[] {
+  return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
+}
+export function reactorState(s: Sess): "attention" | "error" | "done" { return s.attention ? "attention" : s.phase === "error" ? "error" : "done"; }
+export function reactorLabel(dom: "attention" | "error" | "done", n: number): string {
+  if (dom === "attention") return `${n} need${n === 1 ? "s" : ""} you`;
+  if (dom === "error") return `${n} error${n === 1 ? "" : "s"}`;
+  return `${n} your turn`;
 }

@@ -6,9 +6,11 @@ import {
   setProjOrder, setSortMode, setWtGroup,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, nextAfterClose, orderedSessions, projectList,
-  splitByWorktree, urgencyRank, type ProjGroup,
+  allProjects, clusterByWorktree, needsYou, needsYouSessions, nextAfterClose,
+  orderedSessions, projectList, reactorLabel, reactorState, splitByWorktree,
+  urgencyRank, type ProjGroup,
 } from "../src/grouping";
+import { taskPrefs } from "../src/tasks";
 
 const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
 
@@ -45,6 +47,7 @@ beforeEach(() => {
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
   setSortMode("manual"); setWtGroup("off");
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
+  taskPrefs.attention = true; // needsYou reads it; restore the shipped default
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -483,5 +486,118 @@ describe("nextAfterClose — which pane takes the stage", () => {
       sess({ id: "wt2", workdir: "/w/wt", branch: "feature" }),
     );
     expect(nextAfterClose(wt2)).toBe(wt1); // its own worktree group, not the root one
+  });
+});
+
+describe("needsYou — is this pane waiting on the human", () => {
+  it("counts a blocking permission whatever phase it interrupted", () => {
+    for (const phase of ["idle", "thinking", "working", "ended"] as const) {
+      expect(needsYou(sess({ phase, attention: "Bash" }))).toBe(true);
+    }
+  });
+  it("counts your turn and an error, but not work in progress", () => {
+    expect(needsYou(sess({ phase: "done" }))).toBe(true);
+    expect(needsYou(sess({ phase: "error" }))).toBe(true);
+    expect(needsYou(sess({ phase: "working" }))).toBe(false);
+    expect(needsYou(sess({ phase: "thinking" }))).toBe(false);
+    expect(needsYou(sess({ phase: "idle" }))).toBe(false);
+    expect(needsYou(sess({ phase: "ended" }))).toBe(false);
+  });
+  it("never counts a shell — not even a blocked-looking one", () => {
+    for (const phase of ["done", "error", "working", "idle", "ended"] as const) {
+      expect(needsYou(sess({ kind: "shell", phase }))).toBe(false);
+    }
+    expect(needsYou(sess({ kind: "shell", attention: "Bash" }))).toBe(false);
+  });
+  it("counts a failed run only — a green one settles quietly and auto-dismisses", () => {
+    expect(needsYou(sess({ kind: "task", phase: "error" }))).toBe(true);
+    expect(needsYou(sess({ kind: "task", phase: "done" }))).toBe(false);
+    expect(needsYou(sess({ kind: "task", phase: "working" }))).toBe(false);
+  });
+  it("ignores a task's attention string — only its exit code speaks for it", () => {
+    expect(needsYou(sess({ kind: "task", phase: "working", attention: "Bash" }))).toBe(false);
+  });
+  it("lets the task preference switch a failed run off, and nothing else", () => {
+    taskPrefs.attention = false;
+    expect(needsYou(sess({ kind: "task", phase: "error" }))).toBe(false);
+    expect(needsYou(sess({ phase: "error" }))).toBe(true); // an agent is not the switch's business
+  });
+});
+
+describe("needsYouSessions — the reactor's queue", () => {
+  it("keeps only the sessions that want you", () => {
+    open(
+      sess({ id: "busy", phase: "working" }),
+      sess({ id: "turn", phase: "done" }),
+      sess({ id: "shell", kind: "shell", phase: "error" }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["turn"]);
+  });
+  it("orders by urgency: blocked, error, your turn", () => {
+    open(
+      sess({ id: "turn", phase: "done" }),
+      sess({ id: "blocked", phase: "working", attention: "Bash" }),
+      sess({ id: "broken", phase: "error" }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["blocked", "broken", "turn"]);
+  });
+  it("breaks a tie by who has been waiting longest", () => {
+    open(
+      sess({ id: "recent", phase: "done", phaseSince: 900 }),
+      sess({ id: "oldest", phase: "done", phaseSince: 100 }),
+      sess({ id: "middle", phase: "done", phaseSince: 500 }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["oldest", "middle", "recent"]);
+  });
+  it("is independent of the sidebar sort, so the reactor stays stable", () => {
+    setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
+    setProjOrder(["/w/b", "/w/a"]);
+    open(
+      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", phaseSince: 100 }),
+      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", phaseSince: 900 }),
+    );
+    expect(ids(orderedSessions())).toEqual(["b1", "a1"]); // the sidebar puts b first…
+    expect(ids(needsYouSessions())).toEqual(["a1", "b1"]); // …the reactor still asks who waited
+  });
+  it("does not consult the sidebar order even to break an exact tie", () => {
+    // Same urgency, same wait: the stable sort falls back to the order the sessions
+    // were opened in, NOT to where the sidebar happens to be showing them.
+    setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
+    setProjOrder(["/w/b", "/w/a"]);
+    open(
+      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", phaseSince: 100 }),
+      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", phaseSince: 100 }),
+    );
+    expect(ids(orderedSessions())).toEqual(["b1", "a1"]);
+    expect(ids(needsYouSessions())).toEqual(["a1", "b1"]);
+  });
+  it("sorts a failed run in beside the agents, by its own wait", () => {
+    open(
+      sess({ id: "turn", phase: "done", phaseSince: 100 }),
+      sess({ id: "run", kind: "task", phase: "error", phaseSince: 900 }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["run", "turn"]); // error outranks your turn
+  });
+  it("is empty when nothing wants you", () => {
+    open(sess({ id: "a", phase: "working" }));
+    expect(needsYouSessions()).toEqual([]);
+  });
+});
+
+describe("reactorState / reactorLabel — the badge's one rollup", () => {
+  it("lets a blocking permission outrank an error it interrupted", () => {
+    expect(reactorState(sess({ phase: "error", attention: "Bash" }))).toBe("attention");
+  });
+  it("reads an error as an error and everything else as your turn", () => {
+    expect(reactorState(sess({ phase: "error" }))).toBe("error");
+    expect(reactorState(sess({ phase: "done" }))).toBe("done");
+  });
+  it("labels each state, singular and plural", () => {
+    expect(reactorLabel("attention", 1)).toBe("1 needs you");
+    expect(reactorLabel("attention", 3)).toBe("3 need you");
+    expect(reactorLabel("error", 1)).toBe("1 error");
+    expect(reactorLabel("error", 2)).toBe("2 errors");
+    expect(reactorLabel("done", 1)).toBe("1 your turn");
+    expect(reactorLabel("done", 4)).toBe("4 your turn");
   });
 });

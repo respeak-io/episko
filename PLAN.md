@@ -273,6 +273,14 @@ read by. Two consequences worth knowing before starting one:
       constants are fine (`navigator.userAgent` exists in node); the rewrite is bootstrap
       and stays in `main.ts`.
 
+      Then the **needs-you cluster** (`needsYou`, `needsYouSessions`, `reactorState`,
+      `reactorLabel`) into `grouping.ts` — *with* tests, because it is logic, not
+      markup. Two render modules want it (the header reactor badge and the tray title),
+      so neither can own it, and it is the same fleet `urgencyRank`/`orderedSessions`
+      already read: not "what order does the sidebar show these in" but "which of them
+      is waiting on the human". `PILL_TEXT` went to `types.ts` on `statusKey`'s
+      three-reader argument.
+
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
       *for*). These modules get no tests either way, so the only payoffs are the

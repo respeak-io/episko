@@ -11,9 +11,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type {
-  DiffStat, ExtSession, GitActionResult, Phase, Restorable, Runnable, Sess,
+  DiffStat, ExtSession, GitActionResult, Restorable, Runnable, Sess,
 } from "./types";
-import { isAgent, statusKey, type Engine } from "./types";
+import { isAgent, PILL_TEXT, statusKey, type Engine } from "./types";
 import { $, chord, IS_MAC, MOD, toast } from "./dom";
 import {
   clearIcon, customIcons, iconFor, pickCustomIcon, probeIcon, resetCustomIcon,
@@ -64,7 +64,8 @@ import {
   type SortMode, type WtGroup,
 } from "./state";
 import {
-  allProjects, nextAfterClose, orderedSessions, urgencyRank,
+  allProjects, needsYou, needsYouSessions, nextAfterClose, orderedSessions,
+  reactorLabel, reactorState, urgencyRank,
 } from "./grouping";
 import {
   dormantBusy, extWorking, GCLASS, GLYPH, taskStateText,
@@ -314,7 +315,6 @@ function cleanTitle(t: string, s: Sess): string {
   return x;
 }
 
-const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…", working: "working…", done: "your turn", error: "error", ended: "ended" };
 
 // ---------- launch ----------
 async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}) {
@@ -1189,26 +1189,6 @@ function openShortPop() {
   pop.classList.add("show");
 }
 function closeShortPop() { $("shortPop").classList.remove("show"); }
-// The fleet's "needs you" set — sessions with a blocking permission, an error, or
-// finished and awaiting your reply — most urgent first (waiting wins), longest in
-// that state first. Independent of the sidebar sort so the reactor is stable.
-// A failed run counts: the whole point of running tasks in Episko is that a red
-// build reaches you the same way a blocked session does. A *successful* run does
-// not — it settles quietly and auto-dismisses.
-function needsYou(s: Sess): boolean {
-  if (s.kind === "shell") return false;
-  if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
-  return !!s.attention || s.phase === "done" || s.phase === "error";
-}
-function needsYouSessions(): Sess[] {
-  return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
-}
-function reactorState(s: Sess): "attention" | "error" | "done" { return s.attention ? "attention" : s.phase === "error" ? "error" : "done"; }
-function reactorLabel(dom: "attention" | "error" | "done", n: number): string {
-  if (dom === "attention") return `${n} need${n === 1 ? "s" : ""} you`;
-  if (dom === "error") return `${n} error${n === 1 ? "" : "s"}`;
-  return `${n} your turn`;
-}
 // Header "reactor": one rollup of the fleet's most-urgent state. Clicking it jumps
 // straight to the longest-waiting session in that state (a picker if several).
 function renderAttn() {

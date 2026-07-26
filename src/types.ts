@@ -43,6 +43,10 @@ export const isAgent = (s: Sess) => s.kind === "claude";
 // phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
 // inspector pill, so it lives here rather than in any one of them.
 export const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
+// What a phase is called in prose. Read by the inspector pill, the reactor dropdown
+// and the tray menu — same three-reader argument as statusKey above, so it lives
+// beside it rather than in whichever of them was extracted first.
+export const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…", working: "working…", done: "your turn", error: "error", ended: "ended" };
 
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }
