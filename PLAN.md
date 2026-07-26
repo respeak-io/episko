@@ -262,7 +262,16 @@ read by. Two consequences worth knowing before starting one:
       Then `icons` (the per-project glyph store) — not a render module itself but the
       seam-rule-1 prerequisite for `sidebar`, since `projGlyph`/`iconFor` are read by
       four surfaces (sidebar rows, mini-rail, palette, colour popover) and so belong
-      below all of them.
+      below all of them. Then `sidebar` (`renderSidebar` + `renderMini` + the project
+      reorder + the file drop), which also moved `IS_MAC`/`MOD`/`chord` into `dom.ts`
+      for the same reason.
+
+      **New constraint learned here: `dom.ts` must not touch the DOM at module scope.**
+      `./debug` imports it, so vitest pulls `dom.ts` into the node environment through
+      every logic module that logs — putting the `if (!IS_MAC)` index.html glyph rewrite
+      there turned `test/tasks.test.ts` red with `document is not defined`. The
+      constants are fine (`navigator.userAgent` exists in node); the rewrite is bootstrap
+      and stays in `main.ts`.
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually

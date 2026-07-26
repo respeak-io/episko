@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, ask } from "@tauri-apps/plugin-dialog";
@@ -15,11 +14,15 @@ import type {
   DiffStat, ExtSession, GitActionResult, Phase, Restorable, Runnable, Sess,
 } from "./types";
 import { isAgent, statusKey, type Engine } from "./types";
-import { $, toast } from "./dom";
+import { $, chord, IS_MAC, MOD, toast } from "./dom";
 import {
-  clearIcon, customIcons, iconFor, pickCustomIcon, probeIcon, projGlyph,
-  resetCustomIcon, setIconRenderMini, setIconRenderSidebar,
+  clearIcon, customIcons, iconFor, pickCustomIcon, probeIcon, resetCustomIcon,
+  setIconRenderMini, setIconRenderSidebar,
 } from "./icons";
+import {
+  initFileDrop, initProjectDnD, renderMini, renderSidebar, reorderGuardUntil,
+  setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
+} from "./sidebar";
 import {
   closeBranchPop, closeWt, openWt, removeWorktreeSession, setWtCloseSession,
   setWtHandToTerminal, setWtLaunch, setWtRenderAll, setWtSetActive,
@@ -54,17 +57,17 @@ import {
   accentFor, activeId, ALL_ENGINES, availEngines, colorOverrides, dirtyByFolder,
   dormants, engineDef, externals, setAvailEngines, setTermFontSize, SORT_META,
   termFontSize,
-  extMirrorId, extMirrorPid, FAVORITES, folderDirty, isDirty, mirror, pastMirrorId,
-  saveFavorites, saveProjOrder, sessions, setActiveId, setDormants, setExternals,
-  setFavorites, setMirror, setProjOrder, setSortMode, setTermEngine,
+  extMirrorId, extMirrorPid, FAVORITES, isDirty, mirror, pastMirrorId,
+  saveFavorites, sessions, setActiveId, setDormants, setExternals,
+  setFavorites, setMirror, setSortMode, setTermEngine,
   setWtGroup as setWtGroupState, sortMode, SORT_MODES, termEngine, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
 import {
-  allProjects, nextAfterClose, orderedSessions, projectList, urgencyRank,
+  allProjects, nextAfterClose, orderedSessions, urgencyRank,
 } from "./grouping";
 import {
-  dormantBusy, dormantRows, extWorking, GCLASS, GLYPH, groupBody, taskStateText,
+  dormantBusy, extWorking, GCLASS, GLYPH, taskStateText,
 } from "./sidebarview";
 import {
   applyInputs, discoverTasks, execCmd, exitWaiters, lastRunnableById,
@@ -113,14 +116,10 @@ function loadWebgl(term: Terminal) {
     term.loadAddon(w);
   } catch { /* WebGL unavailable — DOM renderer is fine */ }
 }
-// Platform-aware shortcut hints. Display only: the key handlers already accept
-// both modifiers (`e.metaKey || e.ctrlKey`), so only the glyphs differ per OS.
-const IS_MAC = navigator.userAgent.includes("Mac");
-const MOD = IS_MAC ? "⌘" : "Ctrl";
-/** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
-const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
-// platforms (everything rendered from TS goes through MOD/chord instead).
+// platforms (everything rendered from TS goes through MOD/chord instead, which now
+// live in ./dom beside `$` — the sidebar, the palette and the footer all label
+// controls with a chord, so no one of them can own it).
 if (!IS_MAC) {
   document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.textContent = "Ctrl"; });
   document.querySelectorAll<HTMLElement>("[title]").forEach((el) => { if (el.title.includes("⌘")) el.title = el.title.replace(/⌘/g, "Ctrl+"); });
@@ -189,6 +188,9 @@ setTaskRepaint(renderAll);
 // that draw it.
 setIconRenderSidebar(renderSidebar);
 setIconRenderMini(renderMini);
+// A finished project reorder reasserts manual sort mode and repaints everything.
+setSidebarSetSort(setSort);
+setSidebarRenderAll(renderAll);
 // The settings window changes seven things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({ setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens });
@@ -216,14 +218,7 @@ function setWtGroup(m: WtGroup) {
 }
 // Dev affordance until the settings window ships: episkoWtGroup("chip") in the console.
 (window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
-// While a project group is being dragged, renderSidebar() must not rebuild the
-// #projects DOM — doing so would destroy the node the browser is dragging,
-// killing the drop. Telemetry ticks call renderAll() constantly, so this guard
-// is what makes reordering actually work during live sessions.
-let draggingProjects = false;
-// Set just after a pointer-driven reorder (see initProjectDnD): swallows the click a
-// pointerup may synthesise, so a drag that ends on a project doesn't also select it.
-let reorderGuardUntil = 0;
+// The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 // Leads with the bundled Nerd Font (see @font-face in styles.css) so the terminal
 // draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
 const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
@@ -767,165 +762,10 @@ function renderExtInspector(e: ExtSession) {
 
 // ---------- rendering ----------
 // The project/worktree grouping and the sidebar ordering now live in ./grouping;
-// what follows is only the painting of what it returns.
+// what follows is only the painting of what it returns. The sidebar and mini-rail
+// themselves — with the project reorder and the file drop that ride them — moved to
+// ./sidebar; what stays here is the stage: the header and the inspector.
 
-// The sidebar's row builders now live in ./sidebarview; renderSidebar below owns
-// the element they are painted into, and the drag state that must not be stomped.
-function renderSidebar() {
-  // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
-  if (draggingProjects) return;
-  $("projects").innerHTML = projectList().map((p) => {
-    const rows = groupBody(p) + dormantRows(p);
-    const total = p.sessions.length + p.externals.length;
-    const isFav = FAVORITES.some((f) => f.path === p.path);
-    // Any member folder (a session's workdir or an external's cwd) with uncommitted
-    // changes lights the project's dot — so a dirty worktree marks its parent too.
-    const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
-    const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
-    const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
-    let head: string;
-    if (p.sessions.length) {
-      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
-    } else if (isFav) {
-      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
-      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
-    } else {
-      // discovered via an external session or a restorable one only — not a saved project
-      const tail = p.externals.length
-        ? `<span class="pcount ext">${p.externals.length} ext</span>`
-        : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span></div>`;
-    }
-    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
-  }).join("");
-}
-// Reordering of project groups, on pointer events (not HTML5 drag). The window now
-// sets dragDropEnabled:true so external file drops paste a path instead of navigating
-// the webview (see initFileDrop) — but that native handler blocks HTML5 drag/drop, so
-// the reorder can no longer ride dragstart/dragover/drop. Pointer events are also fully
-// cross-platform (the old HTML5 path only worked with dragDropEnabled:false).
-//
-// Delegated on the persistent #projects container so it survives re-renders; a
-// separator line (.dropmark) shows where the group will land; the dragged group is only
-// physically moved on release, then the DOM order is read back and saved. A drag only
-// begins once the pointer crosses DRAG_SLOP, so a plain click still selects the project.
-function initProjectDnD() {
-  const container = $("projects");
-  const DRAG_SLOP = 5; // px before a press becomes a drag rather than a click
-  const marker = document.createElement("div");
-  marker.className = "dropmark";
-  let dragEl: HTMLElement | null = null;      // the group actually being dragged
-  let candidate: HTMLElement | null = null;   // pressed group, promoted to dragEl past the slop
-  let startX = 0, startY = 0;
-
-  const cleanup = () => {
-    marker.remove();
-    container.classList.remove("reordering");
-    dragEl?.classList.remove("dragging");
-    dragEl = candidate = null;
-    draggingProjects = false;
-  };
-
-  container.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || !e.isPrimary) return;
-    const t = e.target as HTMLElement;
-    // Leave the interactive bits (launch +, remove ✕, colour dot) to their own clicks.
-    if (t.closest(".padd, .plaunch, .premove, .pdot, .pdirty")) return;
-    const g = t.closest<HTMLElement>(".pgroup");
-    if (!g) return;
-    candidate = g;
-    startX = e.clientX; startY = e.clientY;
-  });
-
-  container.addEventListener("pointermove", (e) => {
-    if (!candidate) return;
-    if (!dragEl) {
-      if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_SLOP) return;
-      // Cross the slop → promote to a real drag.
-      dragEl = candidate;
-      draggingProjects = true;
-      container.classList.add("reordering");
-      dragEl.classList.add("dragging");
-      try { container.setPointerCapture(e.pointerId); } catch { /* */ }
-    }
-    e.preventDefault();
-    // Place the marker relative to whichever group the pointer is over.
-    const over = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-    const grp = over?.closest<HTMLElement>(".pgroup");
-    if (!grp || grp === dragEl) return;
-    const r = grp.getBoundingClientRect();
-    const after = e.clientY > r.top + r.height / 2;
-    container.insertBefore(marker, after ? grp.nextSibling : grp);
-  });
-
-  const finish = (e: PointerEvent) => {
-    try { container.releasePointerCapture(e.pointerId); } catch { /* */ }
-    if (!dragEl) { candidate = null; return; } // never crossed the slop: it was a click
-    if (marker.parentNode) container.insertBefore(dragEl, marker);
-    cleanup();
-    setProjOrder([...container.querySelectorAll<HTMLElement>(".pgroup")].map((el) => el.dataset.path!).filter(Boolean));
-    saveProjOrder();
-    // A manual drag captures the current visual order and reasserts manual mode
-    // (in a sorted mode the drag would otherwise be immediately overridden).
-    if (sortMode !== "manual") setSort("manual", false);
-    // A pointerup *may* synthesise a click (if the browser still pairs it with the
-    // pointerdown after the DOM moved); guard the click handler for a brief window so
-    // the reorder doesn't also select. A plain timestamp self-heals if no click fires —
-    // a lingering one-shot listener would otherwise eat the user's next real click.
-    reorderGuardUntil = performance.now() + 250;
-    renderAll();
-  };
-  container.addEventListener("pointerup", finish);
-  container.addEventListener("pointercancel", (e) => { try { container.releasePointerCapture(e.pointerId); } catch { /* */ } cleanup(); });
-}
-
-// External file drops. With dragDropEnabled:true the webview no longer navigates to a
-// dropped file's file:// URL (the old trap: a dropped PDF replaced the whole app with no
-// way back). Tauri's native drag-drop event carries the real absolute paths, which HTML5
-// drops never expose under WKWebView — so we paste them, shell-escaped, into the active
-// embedded session's PTY, matching what dragging a file into a normal terminal does.
-function initFileDrop() {
-  const zone = $("terminals");
-  getCurrentWebview().onDragDropEvent((e) => {
-    const p = e.payload;
-    if (p.type === "enter" || p.type === "over") zone.classList.add("dropping");
-    else zone.classList.remove("dropping");
-    if (p.type !== "drop") return;
-    const paths = p.paths || [];
-    if (!paths.length) return;
-    const s = activeId ? sessions.get(activeId) : null;
-    if (!s || s.external || !s.term) { toast("Drop files onto an embedded session's console to paste their paths"); return; }
-    const text = paths.map(shellEscapePath).join(" ") + " ";
-    invoke("write_pty", { sessionId: s.id, data: text });
-    s.term.focus();
-    dlog("info", `dropped ${paths.length} path${paths.length === 1 ? "" : "s"} into ${s.id.slice(0, 8)}`);
-  }).catch((err) => dlog("error", `onDragDropEvent wiring failed: ${err}`));
-}
-
-// Escape a path for a shell/REPL the way a terminal does on file drop: backslash before
-// anything outside the always-safe set, so spaces and metacharacters survive as one arg.
-function shellEscapePath(p: string): string {
-  return p.replace(/[^A-Za-z0-9_@%+=:,./-]/g, "\\$&");
-}
-function renderMini() {
-  const activeProj = activeId ? sessions.get(activeId)?.project : null;
-  $("railmini").innerHTML =
-    `<button class="rm-btn" data-rail="1" title="Expand sidebar (${chord("B")})">»</button>` +
-    projectList().map((p) => {
-      const first = p.sessions[0];
-      const firstExt = p.externals[0];
-      const attn = p.sessions.some((s) => s.attention || s.phase === "error");
-      const sel = first ? `data-sel="${first.id}"`
-        : firstExt ? `data-ext="${firstExt.session_id}"`
-        : `data-launch="${esc(p.path)}" data-proj="${esc(p.name)}"`;
-      const ic = iconFor(p.path);
-      const glyph = ic ? `<img class="rm-icon" src="${ic}" alt="" />` : `<span class="rm-dot"></span>`;
-      const onCls = p.name === activeProj || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
-      const extOnly = !first && firstExt ? "ext" : "";
-      return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
-    }).join("") +
-    `<button class="rm-btn rm-add" data-pal="1" title="New session (${chord("K")})">＋</button>`;
-}
 function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
   const hb = $("hBranch"); hb.classList.remove("ext-chip");
@@ -1775,7 +1615,7 @@ listen<{ id: string; data: any }>("permission", (e) => {
 // delegated clicks (sidebar / mini / inspector buttons)
 document.addEventListener("click", (e) => {
   // A reorder just ended: eat the click a pointerup may have synthesised (see initProjectDnD).
-  if (performance.now() < reorderGuardUntil) { reorderGuardUntil = 0; return; }
+  if (performance.now() < reorderGuardUntil) { setReorderGuard(0); return; }
   const t = e.target as HTMLElement;
   if (!t.closest("#colorPop, #ctxMenu, .pdot, .rm-dot")) closeColorPop();
   if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
@@ -2438,5 +2278,3 @@ initFileDrop();
 // reconcileCaf() paints the button. Note this is the ONE place agent-mode could
 // auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
 renderAll();
-
-
