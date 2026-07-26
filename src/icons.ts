@@ -91,4 +91,3 @@ export function projGlyph(key: string, accent: string): string {
     ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} — right-click for project actions" />`
     : `<span class="pdot" title="Click to recolor · right-click for project actions" style="background:${accent};color:${accent}"></span>`;
 }
-

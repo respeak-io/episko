@@ -12,27 +12,54 @@ Tick checkboxes as slices land; keep this file honest — it is the tracker.
 
 Green at baseline: 12 vitest + 61 cargo tests, `tsc --noEmit` clean.
 
-**Status 2026-07-25:** Phase 0 done. Phase 1 twenty-one slices in.
+**Status 2026-07-26: Phase 0 and Phase 1 are done.** `main.ts` is 642 lines of
+bootstrap, `listen()` handlers and `renderAll()`; there were 5,705 (**−89%**). 33
+modules, no import cycles.
 
 - **Tested logic modules** (eight): `types`, `format`, `rl`, `usage`, `phase`,
   `palette`, `grouping`, `tasks`.
 - **Markup-only view modules** (three, untested by design): `usageview`,
   `inspectorview`, `sidebarview`.
-- **DOM-owning modules** (six, untested by design): `debug`, `worktree`, `settings`,
-  `taskui`, `caffeinate`, `diffview`.
-- **Shared**: `state` (the session map, the stage pointer, and every persisted
-  preference later slices needed) and `dom` (`$`, `toast`, the shared scrim).
+- **DOM-owning / render modules** (untested by design): `debug`, `worktree`,
+  `settings`, `taskui`, `caffeinate`, `diffview`, `sidebar`, `footer`, `tray`,
+  `inspector`, `palui`, `projmenu`, `mirror`, `update`.
+- **Behaviour modules** (untested by design so far — see the note below):
+  `panes` (the three spawners + a pane's lifecycle), `taskrun` (run-on-stop),
+  `terminal` (the xterm plumbing), `actions` (the app-level verbs), `icons`.
+- **Shared**: `state` (the session map, the stage pointer, every persisted
+  preference) and `dom` (`$`, `toast`, the scrim, the chord glyphs).
 
-Green: **352 vitest + 69 cargo**, `tsc --noEmit` clean. `main.ts` 5,705 → 2,499
-lines (−56%). Three bugs found and fixed along the way, two open findings — all five
-under *Findings from the Phase-1 slices* below.
+Green: **368 vitest + 69 cargo**, `tsc --noEmit` clean, no import cycles across 34
+modules. Four bugs found and fixed along the way, two open findings — all six under
+*Findings from the Phase-1 slices* below.
 
-Read *Extracting a DOM-owning module* below before the next one; the recipe (guarded
-line-range slice → wire → `tsc`/`pnpm test` → byte-identical diff against HEAD →
-smoke through the app's own buttons) is settled, and so are the three traps that
-have already cost time: section comments that lie about a block's extent, regex
-call-rewrites that also rename declarations, and verification diffs that silently
-compare two empty files.
+**Worth knowing before Phase 2/3.** The frontend is now split but *not* fully tested:
+`panes`, `taskrun`, `actions` and `terminal` came out under the render-module rule (no
+unit tests) even though they are behaviour, not markup. That was right for the split —
+they are IPC and DOM all the way down — but it means the Phase-3 items are the only
+thing standing behind them. **`taskrun`'s three invariants (never two at once, never
+twice per turn, never unattended-hostile) are exactly the kind of thing worth testing
+now that they live in a module that imports nothing from `main.ts`** — a plausible
+first slice of a Phase 1½ if one is wanted.
+
+Nothing in this effort has been exercised in the running app: every slice was verified
+by `tsc`, `pnpm test` and a mechanical diff against `HEAD`. The click-through in
+*Verifying a slice by hand* is owed, and the worktree-grouping fix below is the one
+change with a visible before/after to check first.
+
+The recipe is settled — guarded line-range slice → wire → `tsc`/`pnpm test` →
+diff-against-HEAD → smoke through the app's own buttons — and so are the traps that
+have cost time. Beyond the three already recorded (section comments that lie about a
+block's extent, regex call-rewrites that also rename declarations, verification diffs
+that silently compare two empty files), two more from this session:
+
+- **A verification window that is a few lines short reports a difference that isn't
+  one.** It happened twice; both times the fix was to re-derive the boundary from
+  `HEAD` by grep rather than reusing a line number the earlier slice had shifted.
+  Compare the two blocks **line-sorted** — a move that only reorders declarations then
+  shows as identical, and a real edit still shows.
+- **`dom.ts` must not touch the DOM at module scope.** `./debug` imports it, so vitest
+  pulls it into the node environment through every logic module that logs.
 
 ## Baseline (2026-07-24)
 
@@ -340,7 +367,7 @@ read by. Two consequences worth knowing before starting one:
       Note the palette's *decisions* are already extracted and tested (`palette.ts`,
       39 tests): fuzzy match, scoring, prefix parsing, frecency. Only the painting
       is left, which is why moving it buys no coverage.
-- [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
+- [x] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
       Started 2026-07-26 from 1,593 lines. First out: **`update.ts`** (app self-update
@@ -396,6 +423,15 @@ read by. Two consequences worth knowing before starting one:
          they are not in `state.ts`: **mutate the preference, persist it, repaint.**
          `state.ts`'s setters assign and nothing else (PLAN's own `setX` decision); the
          persistence and the repaint are this layer's. One hook, `setActionsRenderAll`.
+
+      **Done.** What `main.ts` holds now, and deliberately: the imports and the whole
+      of the `setXHost` wiring (~70 lines — it is the seam map, and belongs in the file
+      that owns the graph), the one-time startup blocks (legacy-localStorage recovery,
+      the non-mac ⌘-glyph rewrite of index.html, engine validation, the theme
+      override), `renderAll()`, every `listen()` handler, the delegated `[data-*]`
+      click dispatcher and the global keydown, the ResizeObserver, the quit guard with
+      its `listPhrase` helper, the debug-console button wiring, and the nine
+      `setInterval`s. That is the item's own definition of bootstrap.
 
 ## Phase 2 — split `lib.rs` into modules
 
