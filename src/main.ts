@@ -17,6 +17,10 @@ import type {
 import { isAgent, statusKey, type Engine } from "./types";
 import { $, toast } from "./dom";
 import {
+  clearIcon, customIcons, iconFor, pickCustomIcon, probeIcon, projGlyph,
+  resetCustomIcon, setIconRenderMini, setIconRenderSidebar,
+} from "./icons";
+import {
   closeBranchPop, closeWt, openWt, removeWorktreeSession, setWtCloseSession,
   setWtHandToTerminal, setWtLaunch, setWtRenderAll, setWtSetActive,
 } from "./worktree";
@@ -181,6 +185,10 @@ setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
 setTaskRepaint(renderAll);
+// Setting, clearing or re-probing a project's icon changes exactly the two surfaces
+// that draw it.
+setIconRenderSidebar(renderSidebar);
+setIconRenderMini(renderMini);
 // The settings window changes seven things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({ setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens });
@@ -288,79 +296,13 @@ let extTranscriptTimer: number | undefined;
 // "has changes" dot and the external inspector's diff card: s.git only stays fresh
 // for the *active* session, so nothing else can rely on it across every project.
 
+// The per-project icon store (discovered, hand-picked, and the projGlyph that reads
+// them) moved to ./icons — the sidebar, the mini-rail, the palette and the colour
+// popover all read it, so it belongs below all four rather than inside one.
 
-// Per-project icon (a favicon/logo scoured from the repo), keyed by project path.
-// Value: data-URI = found, "" = probed & none (or user cleared). Presence of the
-// key means "already probed" so we don't hit the backend twice.
-const icons: Record<string, string> = JSON.parse(localStorage.getItem("cc-icons") || "{}");
-function saveIcons() { localStorage.setItem("cc-icons", JSON.stringify(icons)); }
-// find_project_icon's discovery has improved (it now reaches monorepo subdirs like
-// `01_frontend/public/`). When it does, forget projects we'd cached as "no icon"
-// (empty string) so they re-probe. Found data-URIs are kept as-is; a user who hid
-// an icon will see it re-probed once (acceptable for this spike).
-const ICON_CACHE_VERSION = "2";
-if (localStorage.getItem("cc-icons-v") !== ICON_CACHE_VERSION) {
-  for (const k of Object.keys(icons)) if (!icons[k]) delete icons[k];
-  localStorage.setItem("cc-icons-v", ICON_CACHE_VERSION);
-  saveIcons();
-}
-// A logo the user picked by hand. Kept in its own key — and consulted first — so
-// that neither a re-probe nor an ICON_CACHE_VERSION bump can overwrite a
-// deliberate choice with whatever discovery happens to find.
-const customIcons: Record<string, string> = JSON.parse(localStorage.getItem("cc-custom-icons") || "{}");
-function saveCustomIcons() { localStorage.setItem("cc-custom-icons", JSON.stringify(customIcons)); }
-function iconFor(key: string): string | null { const v = customIcons[key] || icons[key]; return v ? v : null; }
-async function probeIcon(key: string) {
-  if (key in icons) return; // already probed
-  icons[key] = ""; // mark in-flight so we don't double-probe
-  try {
-    const r = await invoke<{ data_uri: string } | null>("find_project_icon", { dir: key });
-    icons[key] = r?.data_uri || "";
-  } catch { icons[key] = ""; }
-  saveIcons();
-  renderSidebar(); renderMini();
-}
-// "Use the color dot instead" — drops the hand-picked logo *and* marks discovery
-// as "probed, none", so the row falls back to its accent dot and stays there.
-function clearIcon(key: string) {
-  delete customIcons[key]; saveCustomIcons();
-  icons[key] = ""; saveIcons();
-  renderSidebar(); renderMini();
-}
-// Pick an image file to use as this project's glyph, in place of whatever the
-// backend scoured out of the repo (or the color dot, when it found nothing).
-async function pickCustomIcon(key: string) {
-  const file = await open({
-    multiple: false,
-    title: `Logo for ${basename(key)}`,
-    defaultPath: key,
-    filters: [{ name: "Images", extensions: ["png", "svg", "ico", "jpg", "jpeg", "webp", "gif"] }],
-  });
-  if (!file || typeof file !== "string") return;
-  try {
-    const r = await invoke<{ data_uri: string }>("read_custom_icon", { path: file });
-    customIcons[key] = r.data_uri;
-    saveCustomIcons();
-    renderSidebar(); renderMini();
-    toast(`Logo set for ${basename(key)}`);
-  } catch (e) { toast(String(e)); }
-}
-// Forget the hand-picked logo and let discovery have another go at the repo.
-function resetCustomIcon(key: string) {
-  delete customIcons[key]; saveCustomIcons();
-  delete icons[key]; saveIcons();
-  probeIcon(key); // re-probes, then renders
-  renderSidebar(); renderMini();
-}
 async function openProjectFolder(key: string) {
   try { await invoke("open_folder", { dir: key }); }
   catch (e) { toast(String(e)); }
-}
-function projGlyph(key: string, accent: string): string {
-  const ic = iconFor(key);
-  return ic
-    ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} — right-click for project actions" />`
-    : `<span class="pdot" title="Click to recolor · right-click for project actions" style="background:${accent};color:${accent}"></span>`;
 }
 // Claude prepends an animated spinner to its OSC title: it cycles through braille
 // dots (U+2800-U+28FF) and an eight-spoked asterisk (U+2733), e.g. a braille dot or
@@ -2496,4 +2438,5 @@ initFileDrop();
 // reconcileCaf() paints the button. Note this is the ONE place agent-mode could
 // auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
 renderAll();
+
 

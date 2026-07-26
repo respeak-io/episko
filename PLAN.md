@@ -259,6 +259,10 @@ read by. Two consequences worth knowing before starting one:
       the task preference state relocated into `tasks.ts`.
       Since: `taskui` (the ▶ Run picker + the project tasks panel), `caffeinate`,
       `diffview`, and task discovery + the preference state folded into `tasks`.
+      Then `icons` (the per-project glyph store) — not a render module itself but the
+      seam-rule-1 prerequisite for `sidebar`, since `projGlyph`/`iconFor` are read by
+      four surfaces (sidebar rows, mini-rail, palette, colour popover) and so belong
+      below all of them.
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
