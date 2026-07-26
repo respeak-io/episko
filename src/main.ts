@@ -4,7 +4,6 @@ import { homeDir } from "@tauri-apps/api/path";
 import { open, ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import type { GitActionResult } from "./types";
 import { isAgent } from "./types";
 import { $, chord, IS_MAC, toast } from "./dom";
 import { updateTray } from "./tray";
@@ -21,8 +20,8 @@ import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, openPlainTerminal, refreshBranch, refreshBranches, refreshSessionStats,
-  renderHeader, requestLaunch, scheduleDismiss, setActive, setPanesRenderAll,
+  launchTask, openPlainTerminal, refreshBranches, refreshSessionStats, renderHeader,
+  requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
   syncStageButtons,
 } from "./panes";
 import {
@@ -61,7 +60,7 @@ import {
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
-import { dwellText, gitBusy, setGitBusy } from "./inspectorview";
+import { dwellText } from "./inspectorview";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
 } from "./phase";
@@ -159,7 +158,7 @@ setFooterSetActive(setActive);
 // A palette row can do almost anything the app can do, so the ⌘K UI takes one host
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
 setPaletteHost({
-  setActive, resolvePermission, runGit, openPlainTerminal, closeSession, addProject,
+  setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
 });
 // Same reasoning, six callees: a context-menu row starts panes and edits the project
@@ -535,42 +534,6 @@ $("inspBtn").addEventListener("click", toggleInsp);
 // The project tasks panel and the ▶ Run picker moved to ./taskui — both are UI
 // over what ./tasks discovers, and both own their own dialog state and handlers.
 
-// Which session (if any) has a git action in flight — the buttons grey out while
-// it runs, since fetch/pull/push can take seconds against a slow remote.
-// Run fetch/pull/push for a session's workdir. A refusal is not an error: the
-// backend declines the cases it can't finish safely and names the command that
-// would work, which we offer as a terminal handoff rather than a dead end.
-async function runGit(sessionId: string, op: string) {
-  const s = sessions.get(sessionId);
-  if (!s || gitBusy) return;
-  setGitBusy(sessionId);
-  // Only ever paint the inspector when this session still owns it: the palette can
-  // fire a git action at a background session, and a terminal handoff switches the
-  // active session to the new shell mid-run.
-  const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
-  repaint();
-  try {
-    const r = await invoke<GitActionResult>("git_action", { workdir: s.workdir, op });
-    dlog(r.ok ? "info" : "warn", `git ${op} · ${s.project} · ${r.summary}`);
-    if (r.ok) {
-      toast(`${op}: ${r.summary}`);
-    } else if (r.suggest) {
-      // Keep the toast clickable-adjacent: say what blocked it, then hand it over.
-      toast(`${op}: ${r.summary} → opening a terminal`);
-      await handToTerminal(s.project, s.workdir, r.suggest, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch });
-    } else {
-      toast(`${op}: ${r.summary}`);
-    }
-  } catch (e) {
-    dlog("error", `git ${op} failed: ${e}`);
-    toast(`git ${op}: ${e}`);
-  } finally {
-    setGitBusy(null);
-    void refreshSessionStats(s);   // ahead/behind moved — re-read it
-    void refreshBranch(s).then((changed) => { if (changed) renderAll(); });
-    repaint();
-  }
-}
 
 // "+ Session" starts a session in the current project (offering a worktree if it
 // already has one). With no active session there's no project context → palette.

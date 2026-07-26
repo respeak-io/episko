@@ -23,8 +23,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
-import { isAgent, type DiffStat, type Runnable, type Sess } from "./types";
+import {
+  isAgent, type DiffStat, type GitActionResult, type Runnable, type Sess,
+} from "./types";
 import { cleanTitle, fitSession, loadWebgl, macShellKeys, MONO } from "./terminal";
+import { gitBusy, setGitBusy } from "./inspectorview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderFoot } from "./footer";
@@ -414,4 +417,41 @@ export function syncStageButtons() {
   };
   set("btnRun", "Run a task or script from this project");
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
+}
+
+// Which session (if any) has a git action in flight — the buttons grey out while
+// it runs, since fetch/pull/push can take seconds against a slow remote.
+// Run fetch/pull/push for a session's workdir. A refusal is not an error: the
+// backend declines the cases it can't finish safely and names the command that
+// would work, which we offer as a terminal handoff rather than a dead end.
+export async function runGit(sessionId: string, op: string) {
+  const s = sessions.get(sessionId);
+  if (!s || gitBusy) return;
+  setGitBusy(sessionId);
+  // Only ever paint the inspector when this session still owns it: the palette can
+  // fire a git action at a background session, and a terminal handoff switches the
+  // active session to the new shell mid-run.
+  const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
+  repaint();
+  try {
+    const r = await invoke<GitActionResult>("git_action", { workdir: s.workdir, op });
+    dlog(r.ok ? "info" : "warn", `git ${op} · ${s.project} · ${r.summary}`);
+    if (r.ok) {
+      toast(`${op}: ${r.summary}`);
+    } else if (r.suggest) {
+      // Keep the toast clickable-adjacent: say what blocked it, then hand it over.
+      toast(`${op}: ${r.summary} → opening a terminal`);
+      await handToTerminal(s.project, s.workdir, r.suggest, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch });
+    } else {
+      toast(`${op}: ${r.summary}`);
+    }
+  } catch (e) {
+    dlog("error", `git ${op} failed: ${e}`);
+    toast(`git ${op}: ${e}`);
+  } finally {
+    setGitBusy(null);
+    void refreshSessionStats(s);   // ahead/behind moved — re-read it
+    void refreshBranch(s).then((changed) => { if (changed) renderAll(); });
+    repaint();
+  }
 }

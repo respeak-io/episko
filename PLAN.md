@@ -383,6 +383,11 @@ read by. Two consequences worth knowing before starting one:
          `scripts`-free cycle check over `src/*.ts` reports **no cycles across 33
          modules**; run it again after any slice that adds an import.
 
+         `runGit` followed in the same shape a commit later — it acts on a session's
+         workdir and re-reads that session's stats, so `panes` already had everything
+         it needs. That one *did* shrink a host: `palui` imports it now instead of
+         taking it as an eleventh member, and the cycle check still reads clean.
+
 ## Phase 2 — split `lib.rs` into modules
 
 Existing tests move with their subjects. The compiler and the Phase-0 net carry

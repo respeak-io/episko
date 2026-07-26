@@ -7,7 +7,7 @@
 // slices this one is size-and-readability only.
 //
 // It is also the widest-reaching surface in the app — a palette row can do almost
-// anything the app can do — which is why it takes a host object rather than eleven
+// anything the app can do — which is why it takes a host object rather than ten
 // setters, exactly as settings.ts does (PLAN: "a control panel may take one host
 // object instead of N setters").
 
@@ -15,6 +15,9 @@ import { $, chord, MOD } from "./dom";
 import { esc, tilde } from "./format";
 import { iconFor } from "./icons";
 import { setEngine } from "./footer";
+// runGit went to ./panes with the rest of a session's lifecycle, so it is a plain
+// import rather than a host member (seam rule 1).
+import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import { taskStateText } from "./sidebarview";
@@ -29,13 +32,12 @@ import {
   accentFor, availEngines, engineDef, sessions, termEngine,
 } from "./state";
 
-// Everything a palette row can do that this module does not own. Eleven callees is
+// Everything a palette row can do that this module does not own. Ten callees is
 // past the point where per-callee setters read as anything but noise, so this follows
 // settings.ts and takes one host; all default to no-ops so the module stands alone.
 let host: {
   setActive: (id: string) => void;
   resolvePermission: (id: string, behavior: string) => void;
-  runGit: (sessionId: string, op: string) => void;
   openPlainTerminal: () => void;
   closeSession: (id: string) => void;
   addProject: () => void;
@@ -45,7 +47,7 @@ let host: {
   toggleTheme: () => void;
   requestLaunch: (project: string, path: string) => void;
 } = {
-  setActive: () => {}, resolvePermission: () => {}, runGit: () => {},
+  setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   toggleTheme: () => {}, requestLaunch: () => {},
@@ -78,9 +80,9 @@ function sessionActions(s: Sess): PalItem[] {
     // Only offered for repo sessions — s.git is null when the workdir isn't one.
     if (s.git) {
       const b = s.git.behind, ah = s.git.ahead;
-      a.push(mk("Fetch from the remote", "↻", () => host.runGit(s.id, "fetch")));
-      a.push(mk(b ? `Pull ${b} commit${b === 1 ? "" : "s"}` : "Pull (fast-forward only)", "↓", () => host.runGit(s.id, "pull")));
-      a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => host.runGit(s.id, "push")));
+      a.push(mk("Fetch from the remote", "↻", () => runGit(s.id, "fetch")));
+      a.push(mk(b ? `Pull ${b} commit${b === 1 ? "" : "s"}` : "Pull (fast-forward only)", "↓", () => runGit(s.id, "pull")));
+      a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
     a.push(mk("New session here…", "⑃", () => openWt(s.project, s.colorKey)));
