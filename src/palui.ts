@@ -7,7 +7,7 @@
 // slices this one is size-and-readability only.
 //
 // It is also the widest-reaching surface in the app — a palette row can do almost
-// anything the app can do — which is why it takes a host object rather than a dozen
+// anything the app can do — which is why it takes a host object rather than eleven
 // setters, exactly as settings.ts does (PLAN: "a control panel may take one host
 // object instead of N setters").
 
@@ -21,13 +21,15 @@ import { taskStateText } from "./sidebarview";
 import { isAgent, type Runnable, type Sess } from "./types";
 import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
-import { askTrust, openRunPicker, openTaskManager, runTargetCtx } from "./taskui";
-import { discoverTasks, execCmd, launchWithDeps, type TaskLaunchOpts } from "./tasks";
+import {
+  askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
+} from "./taskui";
+import { discoverTasks, execCmd, launchWithDeps } from "./tasks";
 import {
   accentFor, availEngines, engineDef, sessions, termEngine,
 } from "./state";
 
-// Everything a palette row can do that this module does not own. Twelve callees is
+// Everything a palette row can do that this module does not own. Eleven callees is
 // past the point where per-callee setters read as anything but noise, so this follows
 // settings.ts and takes one host; all default to no-ops so the module stands alone.
 let host: {
@@ -42,12 +44,11 @@ let host: {
   toggleRail: () => void;
   toggleTheme: () => void;
   requestLaunch: (project: string, path: string) => void;
-  openInputPrompt: (r: Runnable, project: string, opts: TaskLaunchOpts) => void;
 } = {
   setActive: () => {}, resolvePermission: () => {}, runGit: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
-  toggleTheme: () => {}, requestLaunch: () => {}, openInputPrompt: () => {},
+  toggleTheme: () => {}, requestLaunch: () => {},
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -133,7 +134,7 @@ function buildPalGroups(raw: string): PalGroup[] {
       const c = runTargetCtx(); if (!c) return;
       const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
       if (r.id === "just:__untrusted") { void askTrust(c.colorKey, c.project); return; }
-      if (r.inputs.length) { host.openInputPrompt(r, c.project, o); return; }
+      if (r.inputs.length) { openInputPrompt(r, c.project, o); return; }
       void launchWithDeps(r, c.project, o);
     },
   }));

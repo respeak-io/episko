@@ -299,6 +299,10 @@ read by. Two consequences worth knowing before starting one:
       Then `projmenu` — the project context menu *and* the appearance/colour panel,
       one module because the panel is also the menu's Appearance submenu and each
       closes the other. Six callees, so another host object.
+      Then the `${input:…}` prompt into `taskui` — the last group-2 item. It needed no
+      hook of its own, and *removed* two: it was a member of both `taskui`'s and
+      `palui`'s host object, and is now a plain import from the module whose two
+      surfaces are its only callers (seam rule 1 again).
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually

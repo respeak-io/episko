@@ -45,8 +45,8 @@ import { setRlLogger } from "./rl";
 import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import {
-  closeRunPicker, closeTaskManager, mgrEdit, openRunPicker, renderMgr,
-  setMgrEdit, setTaskUiHost,
+  closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openInputPrompt,
+  openRunPicker, renderMgr, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
@@ -73,8 +73,8 @@ import {
 } from "./grouping";
 import { dormantBusy, extWorking } from "./sidebarview";
 import {
-  applyInputs, discoverTasks, execCmd, exitWaiters, lastRunnableById,
-  launchWithDeps, pinnedIds, rememberedInput, rememberInput, setTaskLauncher,
+  discoverTasks, execCmd, exitWaiters, lastRunnableById,
+  launchWithDeps, pinnedIds, setTaskLauncher,
   setTaskLogger, setTaskRepaint, setTaskToast, stopRuleBlocked, stopRules,
   taskPrefs, togglePin, type TaskLaunchOpts,
 } from "./tasks";
@@ -191,7 +191,7 @@ setFooterSetActive(setActive);
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
 setPaletteHost({
   setActive, resolvePermission, runGit, openPlainTerminal, closeSession, addProject,
-  cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch, openInputPrompt,
+  cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
 });
 // Same reasoning, six callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
@@ -207,7 +207,7 @@ setSettingsHost({ setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyF
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 setTaskUiHost({
-  launchTask, openInputPrompt, handToTerminal, activeProjectCtx, activeCwd,
+  launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
 });
 // The new-session dialog decides *where* a session starts but cannot start one:
@@ -1023,50 +1023,10 @@ async function rerunTask(s: Sess) {
 // Discovery (discoverTasks / rescanTasks) moved to ./tasks — every input they read
 // now lives there.
 
-// ---------- the inputs prompt ----------
-// A task declaring ${input:…} collects its values before anything runs. Discovery
-// deliberately leaves the placeholders intact, because only this side knows the
-// answers — so this is where they get filled in.
-let inputCtx: { r: Runnable; project: string; opts: TaskLaunchOpts } | null = null;
+// The ${input:…} prompt moved into ./taskui, beside the picker and the panel that
+// both reach it — so it stopped being a hook in two host objects and became a plain
+// import (seam rule 1).
 
-function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOpts) {
-  inputCtx = { r, project, opts };
-  $("inSub").textContent = `${r.label} · ${r.inputs.length} input${r.inputs.length === 1 ? "" : "s"}`;
-  $("inBody").innerHTML = r.inputs.map((i, n) => {
-    // What you typed last for this exact input wins over the file's default — but a
-    // password is never remembered, so it always starts empty.
-    const remembered = i.password ? undefined : rememberedInput(project, r.id, i.id);
-    const val = remembered ?? i.default ?? "";
-    const field = i.kind === "pickString"
-      ? `<select class="in-ctl" data-n="${n}">${i.options.map((o) => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`
-      : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? "")}" spellcheck="false" autocomplete="off" />`;
-    return `<div class="in-field">
-      <label class="in-lbl">${esc(i.description)}<span class="in-id">${esc(i.id)}</span></label>
-      ${field}
-    </div>`;
-  }).join("");
-  $("inDlg").classList.add("show");
-  $("scrim").classList.add("show");
-  setTimeout(() => ($("inBody").querySelector(".in-ctl") as HTMLElement | null)?.focus(), 30);
-}
-function closeInputPrompt() {
-  $("inDlg").classList.remove("show");
-  if (!$("palette").classList.contains("show") && !$("runPop").classList.contains("show")) $("scrim").classList.remove("show");
-  inputCtx = null;
-}
-function submitInputPrompt() {
-  if (!inputCtx) return;
-  const { r, project, opts } = inputCtx;
-  const vals: Record<string, string> = {};
-  $("inBody").querySelectorAll<HTMLInputElement | HTMLSelectElement>(".in-ctl").forEach((el) => {
-    const input = r.inputs[+el.dataset.n!];
-    vals[input.id] = el.value;
-    // Remember for next time — but never a password.
-    if (!input.password) rememberInput(project, r.id, input.id, el.value);
-  });
-  closeInputPrompt();
-  void launchWithDeps(applyInputs(r, vals), project, opts);
-}
 
 // The inspector's HTML builders now live in ./inspectorview; renderInspector
 // below stays here, because painting them into the page is its whole job.
@@ -1493,12 +1453,6 @@ $("btnNew").addEventListener("click", () => {
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
-$("inCancel").addEventListener("click", closeInputPrompt);
-$("inGo").addEventListener("click", submitInputPrompt);
-$("inBody").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); submitInputPrompt(); }
-  else if (e.key === "Escape") { e.preventDefault(); closeInputPrompt(); }
-});
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });

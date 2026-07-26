@@ -13,8 +13,11 @@
 //
 // Discovery, the preference state and the dependency chain all live in ./tasks;
 // this is only the UI over them. What it cannot own — panes, the stage, the ⌘K
-// palette, the ${input:…} prompt — arrives as one host object, the same shape
-// settings.ts uses and for the same reason: seven separate setters would be noise.
+// palette — arrives as one host object, the same shape settings.ts uses and for the
+// same reason: six separate setters would be noise.
+//
+// The ${input:…} prompt is at the bottom of this file rather than behind a hook: it
+// is the last step of the same launch, and both surfaces here reach it.
 
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -26,16 +29,16 @@ import type { Runnable } from "./types";
 import { activeId, externals, extMirrorId, sessions } from "./state";
 import { bumpFrec, frecScore } from "./palette";
 import {
-  discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds, PROVIDER_LABEL,
-  rescanTasks, RUNNERS, runnerFor, setRunner, stopRuleBlocked, stopRules,
-  toggleHidden, togglePin, toggleStopRule, trustProject,
+  applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
+  PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, RUNNERS, runnerFor,
+  setRunner, stopRuleBlocked, stopRules, toggleHidden, togglePin, toggleStopRule,
+  trustProject,
   type Provider, type Runner, type TaskLaunchOpts,
 } from "./tasks";
 
 // What these panels change but do not own.
 export interface TaskUiHost {
   launchTask: (r: Runnable, project: string, opts?: TaskLaunchOpts) => Promise<string | null>;
-  openInputPrompt: (r: Runnable, project: string, opts: TaskLaunchOpts) => void;
   handToTerminal: (project: string, workdir: string, cmd: string, opts?: { colorKey?: string; worktree?: string | null; branch?: string }) => Promise<void>;
   activeProjectCtx: () => { project: string; path: string } | null;
   activeCwd: () => string | null;
@@ -44,7 +47,7 @@ export interface TaskUiHost {
   closePalette: () => void;
 }
 let host: TaskUiHost = {
-  launchTask: async () => null, openInputPrompt: () => {}, handToTerminal: async () => {},
+  launchTask: async () => null, handToTerminal: async () => {},
   activeProjectCtx: () => null, activeCwd: () => null, setActive: () => {},
   renderAll: () => {}, closePalette: () => {},
 };
@@ -453,7 +456,7 @@ function pickRun(pin: boolean) {
   closeRunPicker();
   bumpFrec("task:" + r.id);
   const o = { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir };
-  if (r.inputs.length) { host.openInputPrompt(r, ctx.project, o); return; }
+  if (r.inputs.length) { openInputPrompt(r, ctx.project, o); return; }
   void launchWithDeps(r, ctx.project, o);
 }
 
@@ -502,3 +505,56 @@ $("runInput").addEventListener("keydown", (e) => {
 // Esc in the task panel backs out of the edit form first; the global keydown that
 // decides that lives in main.ts, so it reads the binding above and writes it here.
 export function setMgrEdit(v: typeof mgrEdit) { mgrEdit = v; }
+
+// ---------- the inputs prompt ----------
+// A task declaring ${input:…} collects its values before anything runs. Discovery
+// deliberately leaves the placeholders intact, because only this side knows the
+// answers — so this is where they get filled in.
+let inputCtx: { r: Runnable; project: string; opts: TaskLaunchOpts } | null = null;
+
+export function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOpts) {
+  inputCtx = { r, project, opts };
+  $("inSub").textContent = `${r.label} · ${r.inputs.length} input${r.inputs.length === 1 ? "" : "s"}`;
+  $("inBody").innerHTML = r.inputs.map((i, n) => {
+    // What you typed last for this exact input wins over the file's default — but a
+    // password is never remembered, so it always starts empty.
+    const remembered = i.password ? undefined : rememberedInput(project, r.id, i.id);
+    const val = remembered ?? i.default ?? "";
+    const field = i.kind === "pickString"
+      ? `<select class="in-ctl" data-n="${n}">${i.options.map((o) => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+      : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? "")}" spellcheck="false" autocomplete="off" />`;
+    return `<div class="in-field">
+      <label class="in-lbl">${esc(i.description)}<span class="in-id">${esc(i.id)}</span></label>
+      ${field}
+    </div>`;
+  }).join("");
+  $("inDlg").classList.add("show");
+  $("scrim").classList.add("show");
+  setTimeout(() => ($("inBody").querySelector(".in-ctl") as HTMLElement | null)?.focus(), 30);
+}
+export function closeInputPrompt() {
+  $("inDlg").classList.remove("show");
+  if (!$("palette").classList.contains("show") && !$("runPop").classList.contains("show")) $("scrim").classList.remove("show");
+  inputCtx = null;
+}
+function submitInputPrompt() {
+  if (!inputCtx) return;
+  const { r, project, opts } = inputCtx;
+  const vals: Record<string, string> = {};
+  $("inBody").querySelectorAll<HTMLInputElement | HTMLSelectElement>(".in-ctl").forEach((el) => {
+    const input = r.inputs[+el.dataset.n!];
+    vals[input.id] = el.value;
+    // Remember for next time — but never a password.
+    if (!input.password) rememberInput(project, r.id, input.id, el.value);
+  });
+  closeInputPrompt();
+  void launchWithDeps(applyInputs(r, vals), project, opts);
+}
+
+$("inCancel").addEventListener("click", closeInputPrompt);
+$("inGo").addEventListener("click", submitInputPrompt);
+$("inBody").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); submitInputPrompt(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeInputPrompt(); }
+});
+
