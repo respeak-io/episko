@@ -7,6 +7,7 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod external;
 mod git;
 mod platform;
 mod pty;
@@ -28,10 +29,7 @@ use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::git::git_repo_info;
-#[cfg(not(windows))]
-use crate::platform::sh_quote;
-use crate::platform::{home_dir, norm_path};
+use crate::platform::home_dir;
 use crate::telemetry::run_telemetry_server;
 
 pub(crate) struct Session {
@@ -635,270 +633,6 @@ fn read_legacy_localstorage() -> Result<std::collections::HashMap<String, String
         // pre-rename Windows build predates this scheme — nothing to recover.
         Ok(std::collections::HashMap::new())
     }
-}
-
-// ---------- external (non-Episko) Claude Code sessions ----------
-//
-// Claude Code writes a per-process registry file at
-// `~/.claude/sessions/<pid>.json` for every running interactive session, e.g.
-//   {"pid":80629,"sessionId":"…","cwd":"/…","name":"repo-a3","status":"idle",…}
-// Episko's own sessions DO register here too (verified on CC 2.1.211), so we
-// filter them out by pid — see `owned_pids` and the ancestry walk in
-// `list_external_sessions`. We must NOT filter by session id alone: /resume and
-// /clear rewrite this file with a new id, which would otherwise resurface our
-// own live session as "external". What remains is the sessions started outside
-// Episko (a plain terminal, an IDE, etc.) — we jump to their terminal window and
-// show a read-only mirror of their transcript.
-//
-// The registry format and directory are identical on Windows (verified on CC
-// 2.1.216: `%USERPROFILE%\.claude\sessions\<pid>.json`, VS Code-hosted sessions
-// included), so LISTING is fully cross-platform: liveness/ownership checks go
-// through `ProcTable`, an in-process `sysinfo` snapshot that works the same on
-// macOS, Windows and Linux. Only `focus_external_session` (jumping to the
-// owning terminal window) remains platform-specific — macOS-only today.
-
-#[derive(serde::Serialize)]
-struct ExternalSession {
-    pid: u32,
-    session_id: String,
-    cwd: String,
-    name: String,
-    status: String,
-    status_updated_at: Option<i64>,
-    started_at: Option<i64>,
-    version: String,
-    /// Main worktree root of this session's repo — the key the sidebar groups by, so
-    /// every worktree of one repo lands under it. None when cwd isn't a git repo.
-    repo_root: Option<String>,
-    /// Branch checked out in this session's cwd (None when detached / not a repo).
-    branch: Option<String>,
-}
-
-/// A point-in-time snapshot of the system process table (pid → parent + name),
-/// taken in-process via `sysinfo` so the exact same code serves macOS, Windows
-/// and Linux — no `ps`/`tasklist` child processes. The frontend polls external
-/// sessions every ~3s; refreshing only the bare process list (no CPU/memory/
-/// exe/cmd lookups) keeps a snapshot to a few milliseconds.
-struct ProcTable {
-    /// pid → (ppid, lowercased process name)
-    procs: std::collections::HashMap<u32, (Option<u32>, String)>,
-}
-
-impl ProcTable {
-    fn snapshot() -> Self {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        let procs = sys
-            .processes()
-            .iter()
-            .map(|(pid, p)| {
-                (
-                    pid.as_u32(),
-                    (p.parent().map(|pp| pp.as_u32()), p.name().to_string_lossy().to_lowercase()),
-                )
-            })
-            .collect();
-        Self { procs }
-    }
-
-    /// True if `pid` is currently a live process whose name contains "claude" —
-    /// the identity check that guards against stale registry files and pid
-    /// reuse. Matched loosely because the name varies: `claude` on macOS/Linux,
-    /// `claude.exe` on Windows, and self-update renames like
-    /// `claude.exe.old.<ts>` for a binary updated while running.
-    fn is_live_claude(&self, pid: u32) -> bool {
-        self.procs.get(&pid).is_some_and(|(_, name)| name.contains("claude"))
-    }
-
-    /// True if `pid` is `ancestor`, or a descendant of it (walks the ppid chain).
-    /// Used to recognise `claude` processes Episko launched — directly (embedded
-    /// PTY) or via a child terminal (e.g. Ghostty) — regardless of their session
-    /// id. The iteration cap also bounds ppid cycles, which Windows can produce
-    /// after pid reuse (a dead parent's pid handed to a new process).
-    fn is_descendant_of(&self, pid: u32, ancestor: u32) -> bool {
-        let mut cur = pid;
-        for _ in 0..24 {
-            if cur == ancestor {
-                return true;
-            }
-            match self.procs.get(&cur).and_then(|(ppid, _)| *ppid) {
-                Some(ppid) if ppid > 1 && ppid != cur => cur = ppid,
-                _ => return false,
-            }
-        }
-        false
-    }
-}
-
-/// Parse one `~/.claude/sessions/<pid>.json` registry file into an
-/// `ExternalSession` (repo_root/branch enriched later). None for malformed
-/// files and non-interactive entries (`claude -p`, SDK runs).
-fn parse_registry_entry(txt: &str) -> Option<ExternalSession> {
-    let v: serde_json::Value = serde_json::from_str(txt).ok()?;
-    if v.get("kind").and_then(|k| k.as_str()) != Some("interactive") {
-        return None;
-    }
-    let pid = v.get("pid").and_then(|x| x.as_u64())? as u32;
-    let session_id = v.get("sessionId").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    if session_id.is_empty() {
-        return None;
-    }
-    Some(ExternalSession {
-        pid,
-        session_id,
-        cwd: norm_path(v.get("cwd").and_then(|x| x.as_str()).unwrap_or("")),
-        name: v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("idle").to_string(),
-        status_updated_at: v.get("statusUpdatedAt").and_then(|x| x.as_i64()),
-        started_at: v.get("startedAt").and_then(|x| x.as_i64()),
-        version: v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        repo_root: None,
-        branch: None,
-    })
-}
-
-/// List interactive Claude Code sessions running OUTSIDE Episko. `exclude` is the
-/// set of session ids Episko already owns (belt-and-suspenders — ours don't
-/// register anyway). Dead/stale registry files are filtered by verifying the pid
-/// is still a live `claude` process.
-#[tauri::command(async)]
-fn list_external_sessions(state: State<AppState>, exclude: Vec<String>) -> Vec<ExternalSession> {
-    let home = home_dir();
-    if home.is_empty() {
-        return vec![];
-    }
-    let dir = std::path::Path::new(&home).join(".claude").join("sessions");
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return vec![],
-    };
-    let exclude: std::collections::HashSet<String> =
-        exclude.into_iter().map(|s| s.to_lowercase()).collect();
-
-    let mut parsed: Vec<ExternalSession> = entries
-        .flatten()
-        .map(|ent| ent.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .filter_map(|txt| parse_registry_entry(&txt))
-        .filter(|s| !exclude.contains(&s.session_id.to_lowercase()))
-        .collect();
-    if parsed.is_empty() {
-        return parsed;
-    }
-
-    // Liveness + identity: one process-table snapshot for all pids; keep those
-    // still running `claude` (guards against stale files and pid reuse).
-    let table = ProcTable::snapshot();
-    parsed.retain(|s| table.is_live_claude(s.pid));
-
-    // Drop Episko's OWN sessions, matched by pid — NOT by session id. Their id on
-    // disk changes when the user runs /resume or /clear (the pid file is rewritten
-    // with the new id), so a session-id exclude alone lets a live, Episko-owned
-    // session resurface here as "external". The pid is stable for the process'
-    // lifetime. `owned_pids` covers embedded PTYs directly; the ancestry walk also
-    // catches sessions launched into a child terminal (e.g. Ghostty).
-    let self_pid = std::process::id();
-    let owned = state.owned_pids.lock().unwrap().clone();
-    parsed.retain(|s| !owned.contains(&s.pid) && !table.is_descendant_of(s.pid, self_pid));
-
-    // Enrich survivors with their repo root + branch so worktrees of one repo group
-    // together (and merge into that repo's project) rather than each cwd becoming its
-    // own top-level entry. After the filters, so no git runs on stale or owned pids.
-    for s in parsed.iter_mut() {
-        let (root, branch) = git_repo_info(&s.cwd);
-        s.repo_root = root;
-        s.branch = branch;
-    }
-
-    // most-recently-active first
-    parsed.sort_by(|a, b| b.status_updated_at.unwrap_or(0).cmp(&a.status_updated_at.unwrap_or(0)));
-    parsed
-}
-
-/// Walk up the process tree from `pid` to the owning GUI terminal app.
-/// Returns (app_pid, app_exe_path) — e.g. (719, "/…/Terminal.app/Contents/MacOS/Terminal").
-#[cfg(not(windows))]
-fn owning_terminal(pid: u32) -> Option<(u32, String)> {
-    let mut cur = pid;
-    for _ in 0..16 {
-        let line = ps_one(cur, "ppid=,comm=")?;
-        let line = line.trim();
-        let mut it = line.splitn(2, char::is_whitespace);
-        let ppid = it.next()?.trim().parse::<u32>().ok()?;
-        let comm = it.next().unwrap_or("").trim().to_string();
-        if comm.contains(".app/Contents/MacOS/") {
-            return Some((cur, comm));
-        }
-        if ppid <= 1 {
-            return None;
-        }
-        cur = ppid;
-    }
-    None
-}
-
-/// External-session surfacing (and thus focusing) is macOS-only for now.
-#[cfg(windows)]
-#[tauri::command]
-fn focus_external_session(_pid: u32) -> Result<(), String> {
-    Err("focusing external sessions isn't supported on Windows yet".to_string())
-}
-
-/// Bring the terminal window/tab hosting an external session to the front.
-/// Exact tab focus for Terminal.app + iTerm2 (matched by tty); best-effort app
-/// activation for anything else.
-#[cfg(not(windows))]
-#[tauri::command]
-fn focus_external_session(pid: u32) -> Result<(), String> {
-    let tty = ps_one(pid, "tty=").unwrap_or_default().trim().to_string();
-    let (_app_pid, app_exe) =
-        owning_terminal(pid).ok_or_else(|| "couldn't find the terminal window for this session".to_string())?;
-    let lower = app_exe.to_lowercase();
-
-    let script = if lower.contains("terminal.app") {
-        format!(
-            "tell application \"Terminal\"\n  activate\n  repeat with w in windows\n    repeat with t in tabs of w\n      try\n        if tty of t is \"/dev/{tty}\" then\n          set selected of t to true\n          set index of w to 1\n          set frontmost of w to true\n          return \"ok\"\n        end if\n      end try\n    end repeat\n  end repeat\nend tell"
-        )
-    } else if lower.contains("iterm") {
-        format!(
-            "tell application \"iTerm2\"\n  activate\n  repeat with w in windows\n    repeat with t in tabs of w\n      repeat with s in sessions of t\n        try\n          if tty of s ends with \"{tty}\" then\n            select t\n            select w\n            return \"ok\"\n          end if\n        end try\n      end repeat\n    end repeat\n  end repeat\nend tell"
-        )
-    } else {
-        // Generic (VS Code, Warp, Ghostty, …): we can't address an individual
-        // tab/pane by tty via AppleScript, and Electron apps run the shell under a
-        // *helper* process that isn't in System Events' process list — targeting it
-        // by unix id fails with -1719. So just bring the owning app to the front by
-        // opening its top-level .app bundle (the first `.app` in the exe path).
-        let app_bundle = app_exe
-            .split_once(".app/")
-            .map(|(head, _)| format!("{head}.app"))
-            .unwrap_or_else(|| app_exe.clone());
-        let out = std::process::Command::new("open")
-            .arg(&app_bundle)
-            .output()
-            .map_err(|e| format!("open: {e}"))?;
-        return if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-        };
-    };
-
-    let out = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("osascript: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -1622,8 +1356,8 @@ pub fn run() {
             pty::available_terminals,
             pty::spawn_external_terminal,
             pty::open_terminal_here,
-            list_external_sessions,
-            focus_external_session,
+            external::list_external_sessions,
+            external::focus_external_session,
             read_transcript,
             list_past_sessions,
             token_usage_by_day,
@@ -1877,64 +1611,6 @@ mod tests {
         assert!(body.len() as u64 > 512 * 1024, "fixture must exceed the tail cap");
         assert_eq!(transcript_meta(&path).unwrap().0, "Fresh tail title");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn table(entries: &[(u32, Option<u32>, &str)]) -> ProcTable {
-        ProcTable {
-            procs: entries.iter().map(|&(pid, ppid, name)| (pid, (ppid, name.to_string()))).collect(),
-        }
-    }
-
-    #[test]
-    fn proc_table_identity_and_ancestry() {
-        // episko(100) → ghostty(200) → claude(300); unrelated claude(400) under init.
-        let t = table(&[
-            (100, Some(1), "episko"),
-            (200, Some(100), "ghostty"),
-            (300, Some(200), "claude"),
-            (400, Some(1), "claude.exe"),
-        ]);
-        assert!(t.is_descendant_of(300, 100), "grandchild via child terminal");
-        assert!(t.is_descendant_of(100, 100), "a pid is its own ancestor");
-        assert!(!t.is_descendant_of(400, 100), "unrelated session must stay external");
-        assert!(t.is_live_claude(300));
-        assert!(t.is_live_claude(400), "windows .exe name still matches");
-        assert!(!t.is_live_claude(200), "live but not claude");
-        assert!(!t.is_live_claude(999), "dead pid");
-    }
-
-    #[test]
-    fn proc_table_ancestry_survives_ppid_cycles() {
-        // Windows pid reuse can produce ppid cycles; the walk must terminate.
-        let t = table(&[(10, Some(20), "a"), (20, Some(10), "b")]);
-        assert!(!t.is_descendant_of(10, 99));
-    }
-
-    #[test]
-    fn proc_table_snapshot_sees_this_process() {
-        // Real sysinfo snapshot on whatever OS runs the tests: our own pid must
-        // be present and count as its own descendant.
-        let t = ProcTable::snapshot();
-        let me = std::process::id();
-        assert!(t.procs.contains_key(&me), "own pid missing from process snapshot");
-        assert!(t.is_descendant_of(me, me));
-    }
-
-    #[test]
-    fn parse_registry_entry_accepts_interactive_rejects_rest() {
-        // Shape verified against a real CC 2.1.216 registry file on Windows;
-        // the keys are identical on macOS.
-        let win = r#"{"pid":41708,"sessionId":"20283E01-6874-4FBB-B696-C29A89F13CC6","cwd":"E:\\Programming\\Work\\Respeak\\episko","startedAt":1784613714619,"procStart":"639202177128968910","version":"2.1.216","peerProtocol":1,"kind":"interactive","entrypoint":"cli","name":"episko-15","nameSource":"derived","status":"busy","updatedAt":1784614124255,"statusUpdatedAt":1784614124255}"#;
-        let s = parse_registry_entry(win).expect("interactive entry should parse");
-        assert_eq!(s.pid, 41708);
-        assert_eq!(s.cwd, r"E:\Programming\Work\Respeak\episko");
-        assert_eq!(s.status, "busy");
-        assert_eq!(s.status_updated_at, Some(1784614124255));
-
-        // Non-interactive (`claude -p`, SDK) and malformed entries are skipped.
-        assert!(parse_registry_entry(r#"{"pid":1,"sessionId":"x","kind":"print"}"#).is_none());
-        assert!(parse_registry_entry(r#"{"sessionId":"x","kind":"interactive"}"#).is_none());
-        assert!(parse_registry_entry("not json").is_none());
     }
 
 }
