@@ -250,7 +250,7 @@ read by. Two consequences worth knowing before starting one:
       the chain narrates and reports as it goes. Assert *when* each dependency
       starts, not just the result: parallel vs sequence is otherwise the same
       final state. Surfaced the dependency-resolution bug below.
-- [ ] Render modules — *no unit tests, size/readability only*: `sidebar.ts`,
+- [x] Render modules — *no unit tests, size/readability only*: `sidebar.ts`,
       `inspector.ts`, footer + usage popup, debug panel, DnD.
       **Six done.** Markup-only (`*view.ts`, see the boundary below): `usageview`,
       `inspectorview`, `sidebarview`. DOM-owning, moved whole with their state and
@@ -287,8 +287,7 @@ read by. Two consequences worth knowing before starting one:
       is one of them, so splitting them would have each module importing the other's
       close function. `setEngine` came too — it is the engine popover's action.
 
-      That closes evidence group 1. What is left of `renderAll`'s hot path in `main.ts`
-      is `renderInspector`/`renderHeader` (the stage) and `syncStageButtons`.
+      That closes evidence group 1 bar the stage itself, done last (below).
 
       Group 2 (cosmetic, no profiling payoff) then began with `palui` — the ⌘K box
       beside the `palette` that already held its tested decisions, the same split
@@ -303,6 +302,23 @@ read by. Two consequences worth knowing before starting one:
       hook of its own, and *removed* two: it was a member of both `taskui`'s and
       `palui`'s host object, and is now a plain import from the module whose two
       surfaces are its only callers (seam rule 1 again).
+
+      Last, `inspector` — the named module the two evidence groups never listed, because
+      `inspectorview` already held all of its markup. What was left is the dispatcher
+      (`renderInspector`) plus the two cards that are *not* an agent's: the shell card
+      and the task-run card with its four per-`Sess` button listeners. On `renderAll`'s
+      hot path, so it belongs to group 1 in spirit and was done last only because
+      `PILL_TEXT` had to reach `types.ts` first.
+
+      **Deliberately left in `main.ts`, and not oversights:**
+      - `renderHeader` (10 lines) and `syncStageButtons` (10) — the stage's chrome, and
+        small enough that a `stage.ts` would be a file per twenty lines.
+      - `renderExtHeader`/`renderExtInspector`/`extPeekHtml` and
+        `renderPastHeader`/`renderPastInspector`/`renderTranscript` — the read-only
+        mirrors. They are not a render cluster on their own: each is welded to the
+        `openExternal`/`openDormant`/`loadTranscript` machinery beside it, and that
+        whole external+dormant block is one candidate for the bootstrap trim below.
+      - `renderAll` itself, which is the orchestration the next item is named after.
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually

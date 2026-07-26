@@ -13,7 +13,7 @@ import "@xterm/xterm/css/xterm.css";
 import type {
   DiffStat, ExtSession, GitActionResult, Restorable, Runnable, Sess,
 } from "./types";
-import { isAgent, PILL_TEXT, statusKey } from "./types";
+import { isAgent } from "./types";
 import { $, chord, IS_MAC, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
@@ -25,6 +25,7 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
+import { renderInspector, setInspectorHost } from "./inspector";
 import { probeIcon, setIconRenderMini, setIconRenderSidebar } from "./icons";
 import {
   initFileDrop, initProjectDnD, renderMini, renderSidebar, reorderGuardUntil,
@@ -39,7 +40,7 @@ import {
   setAppVersion, telem, toggleDbg,
 } from "./debug";
 import {
-  basename, esc, fmtShort, relTime, setHome, tilde,
+  basename, esc, relTime, setHome, tilde,
 } from "./format";
 import { setRlLogger } from "./rl";
 import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
@@ -51,10 +52,7 @@ import {
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
-import {
-  dwellText, gaugesHtml, gitBusy, planHtml, resHtml, RISK_LABEL,
-  setGitBusy, timelineHtml, vitalHtml, wsetHtml,
-} from "./inspectorview";
+import { dwellText, gitBusy, setGitBusy } from "./inspectorview";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
 } from "./phase";
@@ -73,10 +71,9 @@ import {
 } from "./grouping";
 import { dormantBusy, extWorking } from "./sidebarview";
 import {
-  discoverTasks, execCmd, exitWaiters, lastRunnableById,
-  launchWithDeps, pinnedIds, setTaskLauncher,
-  setTaskLogger, setTaskRepaint, setTaskToast, stopRuleBlocked, stopRules,
-  taskPrefs, togglePin, type TaskLaunchOpts,
+  discoverTasks, execCmd, exitWaiters, lastRunnableById, launchWithDeps,
+  setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast, stopRuleBlocked,
+  stopRules, taskPrefs, type TaskLaunchOpts,
 } from "./tasks";
 
 // One-time recovery of localStorage stranded when the app was renamed
@@ -199,6 +196,9 @@ setProjMenuHost({
   renderAll, requestLaunch, launchShell, openProjectFolder, addProjectPath,
   removeFavorite,
 });
+// The task card's actions: re-run, reveal the file it came from, hand the failure to
+// an agent. All three own panes or the backend, so none of them is the inspector's.
+setInspectorHost({ rerunTask, revealSource, sendOutputToSession });
 // The settings window changes seven things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({ setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens });
@@ -783,18 +783,6 @@ function renderHeader(s: Sess | null) {
   $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   $("hPath").textContent = tilde(s.workdir);
 }
-function renderShellInspector(s: Sess) {
-  const ended = s.phase === "ended";
-  const pill = $("iPill"); pill.className = "pill " + (ended ? "ended" : "idle");
-  $("iPillTxt").textContent = ended ? "exited" : "shell";
-  $("inspector").innerHTML = `
-    <div class="ext-card">
-      <div class="ext-hl">❯ Plain shell</div>
-      <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
-      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
-    </div>`;
-}
 // The task preference state — prefs, trust, pins, hidden ids, run-on-stop rules —
 // moved to ./tasks, beside the runner override and remembered inputs it already had.
 
@@ -875,55 +863,6 @@ async function maybeRunOnStop(s: Sess) {
 function listPhrase(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? "";
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-}
-function renderTaskInspector(s: Sess) {
-  const r = s.run!;
-  const failed = r.exitCode != null && r.exitCode !== 0;
-  const running = r.exitCode == null;
-  const pill = $("iPill");
-  pill.className = "pill " + (running ? "working" : failed ? "error" : "done");
-  $("iPillTxt").textContent = running ? (r.background ? "running · background" : "running") : failed ? `exit ${r.exitCode}` : "passed";
-
-  // Offer the failure to a live agent in the same project — the one thing a plain
-  // terminal can't do. Only agents, and only when the run actually failed.
-  // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
-  // into, so offering the handoff there would fail at the click.
-  const candidates = failed ? [...sessions.values()].filter((x) => isAgent(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
-  // A run-on-stop failure goes back to the session whose turn it was checking — and
-  // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
-  // type into), offer nothing rather than misdirecting the output to an unrelated
-  // agent that happens to sort first. A hand-run task (no forSession) still offers
-  // the first live agent, which is the useful default there.
-  const target = r.forSession ? candidates.find((x) => x.id === r.forSession) : candidates[0];
-  const handoff = target
-    ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
-    : "";
-
-  $("inspector").innerHTML = `
-    <div class="ext-card">
-      <div class="ext-hl">▶ ${esc(r.label)}</div>
-      <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
-      <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
-      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
-      ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
-    </div>
-    <div class="tacts">
-      ${handoff}
-      <button class="tact" data-rerun="1">⟳ Re-run</button>
-      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
-      <button class="tact" data-reveal="1">↗ Reveal source</button>
-      ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
-    </div>`;
-
-  const insp = $("inspector");
-  insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
-  insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
-  insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
-  insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
-  insp.querySelector("[data-send]")?.addEventListener("click", (e) => {
-    sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
-  });
 }
 
 // Type the failure into a Claude session's stdin — deliberately *without* a
@@ -1028,38 +967,10 @@ async function rerunTask(s: Sess) {
 // import (seam rule 1).
 
 
-// The inspector's HTML builders now live in ./inspectorview; renderInspector
-// below stays here, because painting them into the page is its whole job.
+// The inspector moved to ./inspector: the dispatcher plus the shell and task cards,
+// painted from the pure builders in ./inspectorview.
 
 // The working-set diff viewer moved to ./diffview.
-function renderInspector(s: Sess | null) {
-  if (s?.kind === "shell") { renderShellInspector(s); return; }
-  if (s?.kind === "task") { renderTaskInspector(s); return; }
-  const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
-  pill.className = "pill " + k;
-  $("iPillTxt").textContent = s ? (s.attention ? s.attention : PILL_TEXT[s.phase]) : "–";
-  if (!s) { $("inspector").innerHTML = `<div class="insp-empty">No session selected.</div>`; return; }
-
-  const html: string[] = [];
-  // ACT — a pending permission is the only thing that should ever jump the queue.
-  if (s.attention) {
-    const risk = s.pendingPermId && s.pendRisk ? `<span class="risk ${s.pendRisk}">${RISK_LABEL[s.pendRisk]}</span>` : "";
-    const permBtns = s.pendingPermId
-      ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
-      : "";
-    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
-  }
-  html.push(vitalHtml(s));                                        // state, dwell, current tool
-  html.push(gaugesHtml(s));                                       // TRACK — context + cost
-  if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
-  // What's changed on disk, and how the branch sits against its upstream. Shown
-  // for any repo session — a clean tree that's behind is exactly what you want to
-  // see, and it's the only place the fetch/pull/push buttons live.
-  if (s.git) html.push(wsetHtml(s));
-  html.push(timelineHtml(s));                                     // activity, by tool
-  if (s.res) html.push(resHtml(s));                              // REFERENCE — cpu/mem, pinned to the bottom
-  $("inspector").innerHTML = html.join("");
-}
 // Two more renderAll() surfaces moved out: the status bar and its popovers (with the
 // header's reactor badge, which shares their exclusive-menu rule) to ./footer, and the
 // menu-bar mirror to ./tray — a native surface, so its repaint is an IPC call rather
