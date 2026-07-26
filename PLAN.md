@@ -368,12 +368,19 @@ read by. Two consequences worth knowing before starting one:
          `setInspectorHost` is gone and it imports them. `launchTask` did **not** come
          along — it builds a pane (xterm, PTY, `Sess`), so it belongs to item 3 and is
          a `setTaskRunLaunchTask` seam until then.
-      3. **The pane layer** — `launch`, `launchShell`, `closeSession`, `setActive`,
-         `fitSession`/`refit`/`applyFontSize`/`bumpFont`, `loadWebgl`, `macShellKeys`,
-         `MONO`, `cleanTitle`. The most interconnected of the three and the one most
-         likely to need a real decision; do it last, and expect it to leave the
-         `listen()` handlers, `renderAll()` and the startup wiring behind — which is
-         exactly what this item asks for.
+      3. **The pane layer** — `launch`, `launchShell`, `launchTask`, `closeSession`,
+         `setActive`, `refreshSessionStats`/`refreshBranch(es)`, `scheduleDismiss`,
+         `openPlainTerminal`/`handToTerminal`, `activeProjectCtx`/`activeCwd`, and
+         (to kill two hooks) `renderHeader` + `syncStageButtons`. The most
+         interconnected of the three; expect it to leave the `listen()` handlers,
+         `renderAll()` and the startup wiring behind, which is what this item asks for.
+
+         **Prerequisite done: `terminal.ts`** — the xterm half all three spawners
+         share (`MONO`, `loadWebgl`, `macShellKeys`, `fitSession`/`refit`/
+         `applyFontSize`/`bumpFont`, the font-atlas reload, `cleanTitle`). Seam rule 1
+         ahead of the move, the same way `icons.ts` preceded `sidebar.ts`; it needed no
+         hook at all. What is left of the pane layer is the three spawners and the
+         session lifecycle around them.
 
 ## Phase 2 — split `lib.rs` into modules
 
