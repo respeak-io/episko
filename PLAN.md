@@ -280,7 +280,15 @@ read by. Two consequences worth knowing before starting one:
       already read: not "what order does the sidebar show these in" but "which of them
       is waiting on the human". `PILL_TEXT` went to `types.ts` on `statusKey`'s
       three-reader argument.
-      Then `tray` (the native menu-bar mirror).
+      Then `tray` (the native menu-bar mirror) and `footer` (the status bar,
+      `closeFootMenus` and its four popovers — usage, shortcuts, terminal-engine,
+      reactor). The **header reactor badge went into `footer`** despite not being in the
+      footer: `closeFootMenus` is the only-one-menu-open rule and the badge's dropdown
+      is one of them, so splitting them would have each module importing the other's
+      close function. `setEngine` came too — it is the engine popover's action.
+
+      That closes evidence group 1. What is left of `renderAll`'s hot path in `main.ts`
+      is `renderInspector`/`renderHeader` (the stage) and `syncStageButtons`.
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
