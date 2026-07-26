@@ -647,56 +647,103 @@ Decided 2026-07-24, so it needn't be re-argued mid-restructure.
   cost/benefit is poor; the smoke checklist covers it.
 - `styles.css` split, framework adoption, render diffing, rewrites of any kind.
 
-## Kickoff prompt
+## Kickoff prompt — Phase 2
 
-Paste into a fresh session on this branch. It is written to be worked
-**autonomously** — the effort has stalled before on an agent stopping at a tidy
-checkpoint that was not a blocker.
+Paste into a fresh session on this branch. Written to be worked **autonomously** — the
+effort has stalled before on an agent stopping at a tidy checkpoint that was not a
+blocker. (The Phase-1 version of this prompt is in git history; Phase 1 is done.)
 
 > Read PLAN.md and CLAUDE.md first. PLAN.md is the tracker and its ground rules bind
-> you. The decisions already recorded there — the seam rules, the test conventions,
-> the `*view.ts` boundary, the DOM-owning-module recipe, and the ordering of what is
-> left — were settled in earlier sessions and are **not to be re-argued**.
+> you. The decisions already recorded there — ground rules 1–5, *On integration tests*,
+> and the Phase-2 module list — were settled in earlier sessions and are **not to be
+> re-argued**. Phase 0 and Phase 1 are done; **Phase 2 splits `src-tauri/src/lib.rs`
+> (4,711 lines) into modules.**
 >
-> **Work the plan without checking in.** Take the first unchecked item of the
-> earliest unfinished phase, land it as its own commit, then take the next one, and
-> keep going. Do not stop between slices to summarise, do not ask whether to
-> continue, and do not treat "this is a natural place to pause" as a reason to stop
-> — it isn't. Stop only when the phase is complete or you hit a real blocker.
+> **Work the plan without checking in.** Take the first unchecked item of Phase 2, land
+> it as its own commit, then take the next one, and keep going. Do not stop between
+> slices to summarise, do not ask whether to continue, and do not treat "this is a
+> natural place to pause" as a reason to stop — it isn't. Stop only when the phase is
+> complete or you hit a real blocker.
 >
 > **Real blockers** — the only reasons to stop and ask:
-> - Something needs the app *run interactively* (the Windows statusLine finding is
->   the live example: CLAUDE.md says that half cannot be checked headlessly).
+> - Something needs the app *run interactively*.
 > - A behaviour change that is not a bug fix — a default, a wording, anything where
 >   "correct" is a product call rather than a contradiction in the code.
-> - A seam or decision PLAN.md's rules genuinely do not cover. Record what you
->   decide; don't invent an answer silently.
+> - A seam or decision PLAN's rules genuinely do not cover. Record what you decide;
+>   don't invent an answer silently.
 > - Anything outward-facing: pushing, releasing, touching a remote.
 >
-> Running low on context is not a blocker — it is a handoff. Update PLAN.md so the
-> next session can continue without the user, then say so.
+> Running low on context is not a blocker — it is a handoff. Update PLAN.md so the next
+> session can continue without the user, then say so.
 >
-> **Per slice:** extract → (test, if the plan says so) → commit, ticking that item's
-> checkbox **in the same commit**. Mechanical moves only: relocate code, do not
-> rewrite, rename or improve it. Verify by diffing the relocated block against
-> `git show HEAD:src/main.ts` — the only differences should be the seams you
-> intended. For a logic module, prove each new test bites by mutating the subject,
-> and say in the commit how many mutations you ran, how many were killed, and why any
-> survivor is equivalent rather than a coverage gap.
+> **What a Rust slice is, concretely.** The Phase-1 recipe carries over — guarded
+> line-range slice → wire → gates → diff the relocated block against
+> `git show HEAD:src-tauri/src/lib.rs`, where the only differences should be the seams
+> you intended. What changes is the seam mechanism. There is no hook rule here; Rust
+> has real visibility:
 >
-> **Gates, all green before every commit:** `pnpm exec tsc --noEmit`, `pnpm test`,
-> and — only if you touched Rust — `cargo test` in `src-tauri/`. Use **pnpm**, not
-> npm. `tsconfig`'s `include` is `["src"]`, so tsc does *not* check `test/`; a broken
-> test file only shows up under vitest. Run both, every time. `noUnusedLocals` is on,
-> so an import left behind by an extraction is a hard error — let it guide you.
+> - **`mod x;` in `lib.rs`, `pub(crate)` on anything crossing the boundary, `use
+>   crate::x::…` at the consumer.** `pub(crate)`, never `pub` — the crate's public API
+>   is `run()` and nothing else, and *On integration tests* depends on that.
+> - **`#[tauri::command]` fns must stay in `tauri::generate_handler![…]`.** Path-qualify
+>   them the way the already-extracted module does (`tasks::discover_runnables`,
+>   `tasks::save_episko_task`). Reassuringly this one is compiler-caught: a command that
+>   falls out of scope fails the build rather than silently vanishing at runtime.
+> - **Tests move with their subjects, in-file.** `#[cfg(test)] mod tests` inside the new
+>   module, so they still reach private items — that is the whole reason PLAN refused a
+>   `src-tauri/tests/` directory. `tasks.rs` (39 tests, its own module, `use super::*`)
+>   is the shape to copy.
+> - **`tasks.rs` is already the target pattern and needs nothing.** Don't touch it.
+>
+> **Three traps specific to this phase.**
+>
+> 1. **`#[cfg]` pairs must move as pairs.** `lib.rs` has 34 cfg-gated items, many as
+>    `#[cfg(windows)]` / `#[cfg(not(windows))]` twins: `resolve_claude`,
+>    `augmented_path`, `apply_utf8_locale`, `interactive_shell`, `task_shell`,
+>    `find_ghostty`, `available_terminals`, `spawn_external_terminal`,
+>    `open_terminal_here`, `focus_external_session`, `ps_one`, `set_caffeinate`
+>    (+ `KeepAwake`, `execution_state_for`), and the macOS-only legacy-localStorage
+>    readers. Take one half and it still compiles **on your platform** and breaks the
+>    other in CI, which runs both. Grep each name before you cut and check you have
+>    every arm.
+> 2. **The test count is platform-specific.** 73 `#[test]` fns are declared; **69 run on
+>    Windows**, because some are cfg-gated. So the check is "`cargo test` reports the
+>    same number as it did before this slice", not a number copied out of this file. A
+>    dropped or orphaned test changes it.
+> 3. **Don't tidy `build.rs`.** Its `/MANIFESTDEPENDENCY` link arg exists because
+>    building a `tauri::App` in a test harness gets no manifest and the exe dies at load
+>    with `STATUS_ENTRYPOINT_NOT_FOUND` before any test runs. The rationale is in the
+>    file. It looks removable and is not.
+>
+> **Two decisions to make in the first slice, and record.**
+>
+> - **Where `AppState` and `Session` go.** 18 sites take `State<AppState>`, and the pty,
+>   telemetry, caffeinate, external and tray clusters all touch it — this is Phase 1's
+>   `state.ts` question again. Either a `state.rs`, or leave it in the crate root where
+>   every module reaches it as `crate::AppState`. Pick one, say why, don't mix.
+> - **Whether `platform.rs` really comes last.** PLAN lists it last, but the shared leaf
+>   helpers live in it and everything else calls them: `sys_command` (17 uses),
+>   `norm_path` (12), `sh_quote` (11), `home_dir` (9). That is Phase 1's seam rule 1 —
+>   move the callee down first — and it is what made `icons.ts` precede `sidebar.ts` and
+>   `terminal.ts` precede `panes.ts`. Check the greps yourself before reordering, and
+>   note that `git_cmd` (15) / `git_run` (8) are git-only and belong in `git.rs`.
+>
+> **Gates, all green before every commit:** `cargo test` in `src-tauri/` — that is the
+> real net here, and far stronger than the frontend had. Also `pnpm exec tsc --noEmit`
+> and `pnpm test` **only if you touched TypeScript**, which this phase should not.
+> `cargo clippy` is advisory (CI runs it with `|| true`, and it may not be installed) —
+> don't block on it. Use **pnpm**, not npm.
 >
 > **If you find a real bug:** finish the move first, flag it, then fix it in its own
 > commit with the failing test written first. Never in the same commit as a move.
 >
 > **Report honestly.** If a verification step examined nothing, say so rather than
-> reporting that it passed — that has already happened once on this effort. If tests
-> fail, show the output. If you skipped part of a slice, name it.
+> reporting that it passed — that has happened on this effort, twice through a diff
+> window a few lines short. Compare the two blocks **line-sorted**, so a pure reorder
+> reads as identical and a real edit still shows. If tests fail, show the output. If you
+> skipped part of a slice, name it.
 >
-> Two open findings are worth more than another frontend module, and one of them
-> needs the user: see *Findings from the Phase-1 slices*.
-
+> **Two open findings are worth more than another module, and one of them needs the
+> user:** see *Findings from the Phase-1 slices*. The Windows statusLine one in
+> particular blocks reading roughly a hundred of the new frontend tests as evidence the
+> feature works — and Phase 2's `telemetry.rs` is the module that half runs through.
