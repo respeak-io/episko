@@ -464,12 +464,39 @@ this phase.
   `resolve_claude`/`augmented_path` *did* come, because `augmented_path` is called
   from `git_cmd` as well as the launch engines.
 
+**Two mechanics confirmed by compiling, not by reasoning** — both were open
+questions in the kickoff prompt:
+
+- **`pub(crate)` works on a `#[tauri::command]` fn** in a private module, so the
+  prompt's "`pub(crate)`, never `pub`" rule holds throughout and needs no exception.
+  (`tasks.rs` uses plain `pub`, which reads like a counter-example but isn't: `mod
+  tasks;` is private, so `pub` inside it is unreachable from outside the crate
+  anyway. Don't "fix" `tasks.rs` — PLAN says don't touch it.)
+- **Struct *fields* need no annotation at all.** A private field is visible to the
+  defining module *and every descendant*, and every module here is a descendant of
+  the crate root — so `git.rs` reads `state.sessions` and `s.workdir` with
+  `AppState`/`Session` fields left exactly as they were. Only the structs
+  themselves take `pub(crate)`, and only to satisfy the private-in-public lint on
+  a `pub(crate) fn` that names them. This is a second argument for the crate-root
+  decision above: a `state.rs` would have needed `pub(crate)` on every field.
+
 - [x] `platform.rs` (moved to the front — see above) — `home_dir`, `norm_path`,
       `sys_command`, `resolve_claude`, `augmented_path`, `sh_quote`, `ps_one`, and
       the three tests over them. 173 lines, verified line-sorted against `HEAD` with
       one intended difference: `ps_one`'s doc comment said "the cross-platform
       `ProcTable` below", which the move made false.
-- [ ] `git.rs` — worktrees, branches, diffs, commit info (largest tested block)
+- [x] `git.rs` — worktrees, branches, diffs, commit info (largest tested block).
+      1,006 lines of source in one contiguous block (`create_worktree` through
+      `git_action`) plus 15 of the 69 tests. `same_path`, `git_cmd`, `git_run`,
+      `upstream_state` and `remove_worktree_impl` stayed private to it; only
+      `git_repo_info` crosses back (`list_external_sessions` calls it).
+
+      **Also added: `#[cfg(test)] mod testutil;`** — `scratch_dir` is used by the git
+      tests, the transcript tests and (later) the usage tests, so it cannot live in
+      any one of them, and copying it per module is the `SORT_META` drift bug. It
+      holds `scratch_dir` + its `COUNTER` and nothing else: `wt_root`, `git()` and
+      `commit()` have a single owner and went into `git.rs`'s own test mod. Resist
+      growing it — a helper belongs here only once a *second* module needs it.
 - [ ] `telemetry.rs` — server + `write_instrument_settings`. The Phase-0 server
       test already covers the sid-forcing end-to-end; optionally lift it into a
       pure function here for cheap edge-case tests (no sid header at all,
