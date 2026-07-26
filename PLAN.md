@@ -296,6 +296,9 @@ read by. Two consequences worth knowing before starting one:
       **one host object of twelve callees** rather than twelve setters, on `settings.ts`'s
       precedent. The terminal-engine popover, also listed under group 2, had already
       gone out with `footer`.
+      Then `projmenu` — the project context menu *and* the appearance/colour panel,
+      one module because the panel is also the menu's Appearance submenu and each
+      closes the other. Six callees, so another host object.
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
