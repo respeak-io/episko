@@ -14,11 +14,26 @@
 //   totals by model family, deduplicating on message id so a resumed transcript
 //   isn't counted twice.
 //
-// PLAN's Phase-2 item for this module also asks for an injectable base dir so these
-// become testable against a fixture tree instead of the developer's real ~/.claude.
-// That changes signatures, so it is the next commit, not this move.
+// **Every reader here takes its base directory as an argument.** `~/.claude` is
+// resolved once, by `claude_dir()`, and only the three `#[tauri::command]` wrappers
+// call it; the work happens in `*_in(base, …)` functions a test can point at a
+// fixture tree. The commands' own signatures are the IPC contract and are unchanged.
+// Without this the only way to test any of it was against the developer's real
+// `~/.claude` — unreproducible, and shared by cargo's parallel test threads.
+
+use std::path::{Path, PathBuf};
 
 use crate::platform::home_dir;
+
+/// The `~/.claude` Episko reads. None when there is no home directory at all, which
+/// every caller reports rather than silently returning nothing.
+fn claude_dir() -> Option<PathBuf> {
+    let home = home_dir();
+    if home.is_empty() {
+        return None;
+    }
+    Some(Path::new(&home).join(".claude"))
+}
 
 #[derive(serde::Serialize)]
 pub(crate) struct TranscriptMsg {
@@ -26,18 +41,14 @@ pub(crate) struct TranscriptMsg {
     text: String,
 }
 
-/// Claude stores a project's transcripts under `~/.claude/projects/<enc>/`, where
+/// Claude stores a project's transcripts under `<base>/projects/<enc>/`, where
 /// `<enc>` is the cwd with every non-ASCII-alphanumeric char replaced by `-`.
-fn project_transcript_dir(cwd: &str) -> Option<std::path::PathBuf> {
-    let home = home_dir();
-    if home.is_empty() {
-        return None;
-    }
+fn project_transcript_dir(base: &Path, cwd: &str) -> PathBuf {
     let enc: String = cwd
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    Some(std::path::Path::new(&home).join(".claude").join("projects").join(enc))
+    base.join("projects").join(enc)
 }
 
 /// A finished (or at least not-currently-owned) session found on disk, offered to
@@ -61,10 +72,12 @@ pub(crate) struct PastSession {
 /// read reliably catches the latest one without paying for a 4MB transcript.
 #[tauri::command(async)]
 pub(crate) fn list_past_sessions(workdir: String) -> Result<Vec<PastSession>, String> {
-    let dir = match project_transcript_dir(&workdir) {
-        Some(d) => d,
-        None => return Err("no home directory".to_string()),
-    };
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    list_past_sessions_in(&base, &workdir)
+}
+
+fn list_past_sessions_in(base: &Path, workdir: &str) -> Result<Vec<PastSession>, String> {
+    let dir = project_transcript_dir(base, workdir);
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return Ok(vec![]), // project never had a session — not an error
@@ -263,19 +276,18 @@ pub(crate) async fn token_usage_by_day(days: u64) -> Result<Vec<DayUsage>, Strin
     // The scan reads whole transcripts (the recent corpus can run to ~1GB), so hand
     // it to a blocking thread. A *synchronous* command runs on the main thread and
     // would freeze the entire UI for the length of the first, uncached scan.
-    tauri::async_runtime::spawn_blocking(move || scan_usage(days))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+        scan_usage_in(&base, days)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn scan_usage(days: u64) -> Result<Vec<DayUsage>, String> {
+fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
     use std::collections::{HashMap, HashSet};
     use std::io::{BufRead, BufReader};
-    let home = home_dir();
-    if home.is_empty() {
-        return Err("no home directory".to_string());
-    }
-    let root = std::path::Path::new(&home).join(".claude").join("projects");
+    let root = base.join("projects");
     let cutoff = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(days.saturating_mul(86_400)));
 
@@ -352,10 +364,13 @@ fn scan_usage(days: u64) -> Result<Vec<DayUsage>, String> {
 /// thinking are dropped), and the last `limit` messages are returned.
 #[tauri::command(async)]
 pub(crate) fn read_transcript(cwd: String, session_id: String, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    read_transcript_in(&base, &cwd, &session_id, limit)
+}
+
+fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let path = project_transcript_dir(&cwd)
-        .ok_or_else(|| "no home directory".to_string())?
-        .join(format!("{session_id}.jsonl"));
+    let path = project_transcript_dir(base, cwd).join(format!("{session_id}.jsonl"));
     let file = std::fs::File::open(&path).map_err(|e| format!("transcript not found: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
     const CAP: u64 = 512 * 1024;
@@ -551,4 +566,254 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---------- against a fixture ~/.claude ----------
+    //
+    // Everything below drives the `*_in(base, …)` functions the base-dir injection
+    // introduced. Before it, these three could only be run against the developer's
+    // real `~/.claude` — which cargo's parallel test threads share, and which has no
+    // known contents.
+
+    /// Set a file's mtime, via std rather than a new dependency — `FileTimes` has
+    /// been stable since 1.75 and this is the only thing the tests need it for.
+    fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(t)).unwrap();
+    }
+
+    /// Build `<scratch>/projects/<enc(cwd)>/` and return (base, project dir), so a
+    /// fixture is laid out exactly where the encoder will look for it.
+    fn fixture(cwd: &str) -> (PathBuf, PathBuf) {
+        let base = scratch_dir();
+        let proj = project_transcript_dir(&base, cwd);
+        std::fs::create_dir_all(&proj).unwrap();
+        (base, proj)
+    }
+
+    /// The cwd → `<enc>` scheme Claude Code uses for a project's transcript folder.
+    /// Everything that isn't ASCII-alphanumeric becomes `-`, which is why both a
+    /// POSIX and a Windows path collapse the same way.
+    #[test]
+    fn project_dir_encodes_every_non_alphanumeric_char() {
+        let base = Path::new("/base");
+        assert_eq!(
+            project_transcript_dir(base, "/Users/tim/dev/episko"),
+            base.join("projects").join("-Users-tim-dev-episko")
+        );
+        assert_eq!(
+            project_transcript_dir(base, r"E:\Work\Respeak"),
+            base.join("projects").join("E--Work-Respeak")
+        );
+        // Dots, spaces and non-ASCII letters are all "not alphanumeric".
+        assert_eq!(
+            project_transcript_dir(base, "/a b/.git/über"),
+            base.join("projects").join("-a-b--git--ber")
+        );
+        assert_eq!(project_transcript_dir(base, ""), base.join("projects").join(""));
+    }
+
+    /// The restorable-sessions list: newest first, labelled by the fallback chain, and
+    /// nothing in the folder that isn't a transcript.
+    #[test]
+    fn list_past_sessions_orders_by_mtime_and_ignores_non_transcripts() {
+        let cwd = "/Users/tim/dev/proj";
+        let (base, proj) = fixture(cwd);
+
+        let write = |name: &str, body: &str| {
+            std::fs::write(proj.join(name), body).unwrap();
+        };
+        write("older.jsonl", "{\"type\":\"ai-title\",\"aiTitle\":\"The older one\"}\n");
+        write("newer.jsonl", "{\"type\":\"last-prompt\",\"lastPrompt\":\"no title, so this\"}\n");
+        // Not transcripts: a different extension, and an extensionless file.
+        write("notes.txt", "ignore me");
+        write("README", "ignore me too");
+
+        // Make the ordering unambiguous rather than relying on write order — a
+        // filesystem with coarse mtime granularity would otherwise flake.
+        let day = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+        set_mtime(&proj.join("older.jsonl"), day);
+
+        let out = list_past_sessions_in(&base, cwd).expect("a project with transcripts");
+        assert_eq!(out.len(), 2, "only the two .jsonl files are sessions");
+        assert_eq!(out[0].session_id, "newer", "newest first");
+        assert_eq!(out[0].title, "no title, so this", "falls back to last-prompt");
+        assert_eq!(out[1].session_id, "older");
+        assert_eq!(out[1].title, "The older one");
+        assert!(out[0].mtime > out[1].mtime);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A project Claude has never written a transcript for is empty, not an error —
+    /// the Resume list simply has nothing to offer.
+    #[test]
+    fn list_past_sessions_is_empty_for_an_unknown_project() {
+        let base = scratch_dir();
+        assert!(list_past_sessions_in(&base, "/never/seen").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The read-only mirror. Only human/assistant prose survives: tool calls, tool
+    /// results and thinking blocks are noise in a conversation view, and an assistant
+    /// turn that is *only* tool calls collapses to nothing and is dropped entirely.
+    #[test]
+    fn read_transcript_keeps_prose_and_drops_tool_traffic() {
+        let cwd = "/Users/tim/dev/mirror";
+        let (base, proj) = fixture(cwd);
+        std::fs::write(
+            proj.join("sid.jsonl"),
+            concat!(
+                r#"{"type":"user","message":{"content":"plain string content"}}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"first"},{"type":"text","text":"second"}]}}"#, "\n",
+                // A block whose type we don't know but which happens to carry a
+                // `text` field. The filter is a whitelist on `type`, deliberately:
+                // this format is unstable, so an unrecognised block must stay out of
+                // a conversation mirror rather than leak in on a field-name match.
+                r#"{"type":"assistant","message":{"content":[{"type":"redacted_thinking","text":"should not appear"}]}}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#, "\n",
+                r#"{"type":"system","message":{"content":"not a turn"}}"#, "\n",
+                "torn write, not json\n",
+                r#"{"type":"user","message":{"content":"   "}}"#, "\n",
+                r#"{"type":"user","message":{"content":"last human turn"}}"#, "\n",
+            ),
+        )
+        .unwrap();
+
+        let msgs = read_transcript_in(&base, cwd, "sid", 100).expect("transcript exists");
+        let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("user", "plain string content"),
+                ("assistant", "first\nsecond"), // text blocks joined, thinking dropped
+                ("user", "last human turn"),    // the tool-only turn, the system line,
+            ],                                  // the garbage and the blank all dropped
+        );
+
+        // `limit` takes the LAST n, because the mirror shows the end of a conversation.
+        let tail = read_transcript_in(&base, cwd, "sid", 1).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].text, "last human turn");
+
+        // A session id with no transcript is an error, not an empty mirror — the UI
+        // must be able to tell "nothing was said" from "there is no such session".
+        assert!(read_transcript_in(&base, cwd, "no-such-session", 10).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// One over-long message is truncated rather than shipped whole across the IPC
+    /// boundary and into the DOM.
+    #[test]
+    fn read_transcript_truncates_a_huge_message() {
+        let cwd = "/Users/tim/dev/huge";
+        let (base, proj) = fixture(cwd);
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "content": "x".repeat(9000) },
+        });
+        std::fs::write(proj.join("sid.jsonl"), format!("{line}\n")).unwrap();
+
+        let msgs = read_transcript_in(&base, cwd, "sid", 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].text.ends_with('…'), "truncation must be visible: {}", &msgs[0].text[..40]);
+        assert_eq!(msgs[0].text.chars().count(), 4001, "4000 chars plus the ellipsis");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The token ledger, folded across two projects: totals by type and by family,
+    /// the per-project breakdown, days sorted ascending, and — the fiddly one — a
+    /// session counted **once per day it touched**, not once per usage line.
+    #[test]
+    fn scan_usage_folds_days_families_and_counts_sessions_once() {
+        let base = scratch_dir();
+        let write = |proj: &str, file: &str, body: &str| {
+            let d = base.join("projects").join(proj);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(file), body).unwrap();
+        };
+        let line = |day: &str, cwd: &str, model: &str, toks: [u64; 4]| {
+            format!(
+                concat!(
+                    r#"{{"type":"assistant","timestamp":"{}T10:00:00.000Z","cwd":"{}","message":{{"model":"{}","#,
+                    r#""usage":{{"input_tokens":{},"output_tokens":{},"cache_read_input_tokens":{},"cache_creation_input_tokens":{}}}}}}}"#,
+                    "\n"
+                ),
+                day, cwd, model, toks[0], toks[1], toks[2], toks[3]
+            )
+        };
+
+        // One session spanning two days, with two lines on the first day.
+        write(
+            "-work-alpha",
+            "s1.jsonl",
+            &format!(
+                "{}{}{}",
+                line("2026-07-20", "/work/alpha", "claude-opus-4-8", [10, 1, 0, 0]),
+                line("2026-07-20", "/work/alpha", "claude-sonnet-4-5", [20, 2, 0, 0]),
+                line("2026-07-21", "/work/alpha", "claude-haiku-4-5", [5, 0, 7, 3]),
+            ),
+        );
+        // A second session, same day as the first, different project.
+        write(
+            "-work-beta",
+            "s2.jsonl",
+            &format!("{}", line("2026-07-20", "/work/beta", "some-future-model", [1, 1, 1, 1])),
+        );
+        // Not a transcript, and a stray file at the project level.
+        write("-work-beta", "notes.md", "ignored");
+
+        let days = scan_usage_in(&base, 3650).expect("a populated fixture");
+        assert_eq!(days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(), ["2026-07-20", "2026-07-21"],
+            "ascending by day");
+
+        let d20 = &days[0];
+        assert_eq!((d20.input, d20.output, d20.cache_read, d20.cache_write), (31, 4, 1, 1));
+        assert_eq!(d20.opus, 11);
+        assert_eq!(d20.sonnet, 22);
+        assert_eq!(d20.other, 4, "an unrecognised model falls into `other`");
+        assert_eq!(d20.haiku, 0);
+        assert_eq!(d20.sessions, 2, "two files touched this day");
+        assert_eq!(d20.projects.get("alpha"), Some(&33), "keyed by cwd basename");
+        assert_eq!(d20.projects.get("beta"), Some(&4));
+
+        let d21 = &days[1];
+        assert_eq!(d21.haiku, 15);
+        assert_eq!(d21.sessions, 1, "the SAME file again — counted once per day, not per line");
+        assert_eq!(d21.projects.get("beta"), None, "beta wasn't active on the 21st");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The window is what keeps a full-year scan bounded: a transcript untouched
+    /// within it cannot hold an in-range day, so it is skipped without being read.
+    #[test]
+    fn scan_usage_skips_transcripts_older_than_the_window() {
+        let base = scratch_dir();
+        let d = base.join("projects").join("-work-alpha");
+        std::fs::create_dir_all(&d).unwrap();
+        let body = concat!(
+            r#"{"type":"assistant","timestamp":"2026-07-20T10:00:00.000Z","cwd":"/work/alpha","#,
+            r#""message":{"model":"claude-opus-4-8","usage":{"input_tokens":10}}}"#, "\n"
+        );
+        std::fs::write(d.join("stale.jsonl"), body).unwrap();
+
+        // In range with a generous window...
+        assert_eq!(scan_usage_in(&base, 3650).unwrap().len(), 1);
+
+        // ...and skipped once its mtime falls outside a tight one.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
+        set_mtime(&d.join("stale.jsonl"), old);
+        assert!(scan_usage_in(&base, 2).unwrap().is_empty(), "outside the window, not read at all");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// No transcripts at all is an empty ledger, not an error — a fresh install.
+    #[test]
+    fn scan_usage_is_empty_without_a_projects_dir() {
+        let base = scratch_dir();
+        assert!(scan_usage_in(&base, 30).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
