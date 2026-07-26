@@ -343,6 +343,32 @@ read by. Two consequences worth knowing before starting one:
 - [ ] `main.ts` reduced to bootstrap: state, the `listen()` handlers,
       `renderAll()` orchestration
 
+      Started 2026-07-26 from 1,593 lines. First out: **`update.ts`** (app self-update
+      + the footer version label). It is the one cluster in what remains that needs
+      *nothing* from main.ts — the only thing it asks about the rest of the app is how
+      many live panes an install would kill, and that is `./state`. So it takes no hook
+      and exports nothing either: `import "./update"` for its side effects **is** the
+      wiring. First module in the repo imported that way; say so at the import, or it
+      reads like a leftover.
+
+      Ordered by independence, what is left in `main.ts` and where it should go:
+      1. **The external + dormant block** (~250 lines) — `refreshExternals`,
+         `openExternal`/`closeExternalView`, the whole dormant/roster half
+         (`loadDormants`, `resumeDormant`, `forgetDormant`, `rosterEntry`,
+         `saveRoster`, `queueRosterSave`), `loadTranscript*`, and the four read-only
+         `render*` mirrors the render item deliberately left behind. One coherent
+         module: they share the `mirror` pointer and nothing else needs them.
+      2. **The run-on-stop / task-run block** — `maybeRunOnStop`, `launchTask`,
+         `rerunTask`, `revealSource`, `sendOutputToSession`, `stopRunAt`,
+         `stopInFlight`. Note this is what `inspector.ts` and `tasks.ts` currently
+         hook back into, so moving it *removes* hooks the way the `${input:…}` move did.
+      3. **The pane layer** — `launch`, `launchShell`, `closeSession`, `setActive`,
+         `fitSession`/`refit`/`applyFontSize`/`bumpFont`, `loadWebgl`, `macShellKeys`,
+         `MONO`, `cleanTitle`. The most interconnected of the three and the one most
+         likely to need a real decision; do it last, and expect it to leave the
+         `listen()` handlers, `renderAll()` and the startup wiring behind — which is
+         exactly what this item asks for.
+
 ## Phase 2 — split `lib.rs` into modules
 
 Existing tests move with their subjects. The compiler and the Phase-0 net carry
