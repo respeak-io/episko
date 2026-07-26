@@ -18,19 +18,12 @@ import { esc, fmtShort, tilde } from "./format";
 import { isAgent, PILL_TEXT, statusKey, type Sess } from "./types";
 import { pinnedIds, togglePin } from "./tasks";
 import { sessions } from "./state";
+// The task card's three actions. They took a host object while they lived in
+// main.ts; now that they are ./taskrun this module simply imports them.
+import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
   gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml, vitalHtml, wsetHtml,
 } from "./inspectorview";
-
-// The task card's four actions all belong to the run machinery in main.ts, which owns
-// panes and the backend calls. Four callees is where per-callee setters stop being
-// clearly better than one host, so this takes a host — same shape as settings.ts.
-let host: {
-  rerunTask: (s: Sess) => void;
-  revealSource: (root: string, sourceFile: string) => void;
-  sendOutputToSession: (task: Sess, targetId: string) => void;
-} = { rerunTask: () => {}, revealSource: () => {}, sendOutputToSession: () => {} };
-export function setInspectorHost(h: typeof host) { host = h; }
 
 export function renderInspector(s: Sess | null) {
   if (s?.kind === "shell") { renderShellInspector(s); return; }
@@ -115,11 +108,11 @@ function renderTaskInspector(s: Sess) {
     </div>`;
 
   const insp = $("inspector");
-  insp.querySelector("[data-rerun]")?.addEventListener("click", () => host.rerunTask(s));
+  insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
   insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
-  insp.querySelector("[data-reveal]")?.addEventListener("click", () => host.revealSource(r.root, r.sourceFile));
+  insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
   insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
   insp.querySelector("[data-send]")?.addEventListener("click", (e) => {
-    host.sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
+    sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
   });
 }

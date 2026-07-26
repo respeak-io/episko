@@ -361,10 +361,13 @@ read by. Two consequences worth knowing before starting one:
          welded to the open/load machinery beside it and none is ever called with a
          `Sess`. `refreshDirtyStates` came too (it feeds both the sidebar dot and the
          external diff card, and `openExternal` calls it). Three seam-rule-2 setters.
-      2. **The run-on-stop / task-run block** — `maybeRunOnStop`, `launchTask`,
-         `rerunTask`, `revealSource`, `sendOutputToSession`, `stopRunAt`,
-         `stopInFlight`. Note this is what `inspector.ts` and `tasks.ts` currently
-         hook back into, so moving it *removes* hooks the way the `${input:…}` move did.
+      2. ~~The run-on-stop / task-run block~~ — **done, as `taskrun.ts`**, and the
+         prediction held: it *removed* a host. `inspector.ts` existed with a
+         three-member host object solely because `rerunTask`/`revealSource`/
+         `sendOutputToSession` were in `main.ts`; they are now below it, so
+         `setInspectorHost` is gone and it imports them. `launchTask` did **not** come
+         along — it builds a pane (xterm, PTY, `Sess`), so it belongs to item 3 and is
+         a `setTaskRunLaunchTask` seam until then.
       3. **The pane layer** — `launch`, `launchShell`, `closeSession`, `setActive`,
          `fitSession`/`refit`/`applyFontSize`/`bumpFont`, `loadWebgl`, `macShellKeys`,
          `MONO`, `cleanTitle`. The most interconnected of the three and the one most
