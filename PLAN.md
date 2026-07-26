@@ -368,19 +368,20 @@ read by. Two consequences worth knowing before starting one:
          `setInspectorHost` is gone and it imports them. `launchTask` did **not** come
          along — it builds a pane (xterm, PTY, `Sess`), so it belongs to item 3 and is
          a `setTaskRunLaunchTask` seam until then.
-      3. **The pane layer** — `launch`, `launchShell`, `launchTask`, `closeSession`,
-         `setActive`, `refreshSessionStats`/`refreshBranch(es)`, `scheduleDismiss`,
-         `openPlainTerminal`/`handToTerminal`, `activeProjectCtx`/`activeCwd`, and
-         (to kill two hooks) `renderHeader` + `syncStageButtons`. The most
-         interconnected of the three; expect it to leave the `listen()` handlers,
-         `renderAll()` and the startup wiring behind, which is what this item asks for.
+      3. ~~The pane layer~~ — **done, as `terminal.ts` then `panes.ts`.** The xterm half
+         all three spawners share went first (seam rule 1, the way `icons.ts` preceded
+         `sidebar.ts`) and needed no hook; then the three spawners themselves, the
+         session lifecycle, the stage chrome (`renderHeader`, `syncStageButtons`) and
+         the two context resolvers, behind a single `setPanesRenderAll`.
 
-         **Prerequisite done: `terminal.ts`** — the xterm half all three spawners
-         share (`MONO`, `loadWebgl`, `macShellKeys`, `fitSession`/`refit`/
-         `applyFontSize`/`bumpFont`, the font-atlas reload, `cleanTitle`). Seam rule 1
-         ahead of the move, the same way `icons.ts` preceded `sidebar.ts`; it needed no
-         hook at all. What is left of the pane layer is the three spawners and the
-         session lifecycle around them.
+         **One decision worth recording: `panes.ts` keeps `taskrun.ts`'s three setters
+         alive on purpose.** `taskrun` could import `setActive`/`closeSession`/
+         `launchTask` directly and drop them — except `inspector.ts` imports `taskrun`
+         and `panes` imports `inspector` (for `renderInspector`), so a direct import
+         would close the loop `inspector → taskrun → panes → inspector`. Ground rule 3
+         forbids that, and three setters are the cheaper side of the trade. A
+         `scripts`-free cycle check over `src/*.ts` reports **no cycles across 33
+         modules**; run it again after any slice that adds an import.
 
 ## Phase 2 — split `lib.rs` into modules
 
