@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
-import { open, ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { isAgent } from "./types";
@@ -18,6 +18,11 @@ import {
 } from "./projmenu";
 import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
+import {
+  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
+  removeFavorite, resolvePermission, setActionsRenderAll, setSort, setTheme,
+  toggleInsp, toggleRail, toggleTheme,
+} from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
   launchTask, openPlainTerminal, refreshBranches, refreshSessionStats, renderHeader,
@@ -66,10 +71,8 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
-  mirror, pastMirrorId, saveFavorites, sessions, setAvailEngines, setFavorites,
-  setSortMode, setTermEngine, setTermFontSize, SORT_META,
-  setWtGroup as setWtGroupState, sortMode, SORT_MODES, termEngine, wtGroup,
-  type SortMode, type WtGroup,
+  mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine, setTermFontSize,
+  sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
 import {
@@ -173,6 +176,9 @@ setTaskRunCloseSession(closeSession);
 setTaskRunLaunchTask(launchTask);
 // A pane's whole lifecycle ends in a repaint of everything, which this file owns.
 setPanesRenderAll(renderAll);
+// The small app-level verbs several surfaces trigger — pin a project, change the sort,
+// flip the theme, answer a permission — all end in the same repaint.
+setActionsRenderAll(renderAll);
 // The read-only mirrors reconcile the stage when what they point at goes away, and a
 // dormant row resumes into a real pane — neither of which they own.
 setMirrorSetActive(setActive);
@@ -196,15 +202,6 @@ setWtCloseSession(closeSession);
 setWtSetActive(setActive);
 setWtRenderAll(renderAll);
 setWtHandToTerminal(handToTerminal);
-// The app-level action: set the state, persist it, repaint. state.ts owns the
-// assignment (and its validation) under the same name, hence the import alias.
-function setWtGroup(m: WtGroup) {
-  setWtGroupState(m);
-  localStorage.setItem("cc-worktree-group", wtGroup);
-  renderAll();
-}
-// Dev affordance until the settings window ships: episkoWtGroup("chip") in the console.
-(window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -237,38 +234,9 @@ function setWtGroup(m: WtGroup) {
 // them) moved to ./icons — the sidebar, the mini-rail, the palette and the colour
 // popover all read it, so it belongs below all four rather than inside one.
 
-async function openProjectFolder(key: string) {
-  try { await invoke("open_folder", { dir: key }); }
-  catch (e) { toast(String(e)); }
-}
 
 
 
-async function addProject() {
-  const dir = await open({ directory: true, multiple: false, title: "Add a project folder" });
-  if (!dir || typeof dir !== "string") return;
-  addProjectPath(dir);
-}
-// Pin a folder to the sidebar. Also reachable from the context menu of a folder
-// Episko knows about but hasn't been asked to keep (an external session's cwd).
-function addProjectPath(dir: string) {
-  if (FAVORITES.some((f) => f.path === dir)) { toast("Already a project"); return; }
-  FAVORITES.push({ name: basename(dir), path: dir });
-  saveFavorites();
-  renderAll();
-  probeIcon(dir); // scour the repo for a favicon/logo to use as the project glyph
-  toast(`Added ${basename(dir)}`);
-}
-function removeFavorite(path: string) {
-  setFavorites(FAVORITES.filter((f) => f.path !== path));
-  saveFavorites();
-  renderAll();
-}
-function resolvePermission(id: string, behavior: string) {
-  invoke("resolve_permission", { id, behavior }).catch(() => {});
-  for (const s of sessions.values()) if (s.pendingPermId === id) { s.pendingPermId = null; s.attention = null; s.pendingCmd = ""; }
-  renderAll();
-}
 
 
 // External and dormant (restorable) sessions moved to ./mirror. What stays here is
@@ -363,31 +331,9 @@ function renderAll() {
 // owns the task settings that would otherwise be hardcoded bets.
 
 // ---------- panels / theme ----------
-function setSort(m: SortMode, announce = true) {
-  setSortMode(m);
-  localStorage.setItem("cc-sort", m);
-  const b = $("railSort");
-  b.textContent = SORT_META[m].glyph;
-  b.title = `Sort: ${SORT_META[m].label} · click to change`;
-  b.classList.toggle("on", m !== "manual");
-  if (announce) toast(SORT_META[m].label);
-  renderSidebar(); renderMini();
-}
-function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length]); }
-function toggleRail() { $("app").classList.toggle("rail-mini"); }
-function toggleInsp() { $("app").classList.toggle("insp-off"); $("inspBtn").classList.toggle("on", !$("app").classList.contains("insp-off")); refit(); }
-// The effective theme = an explicit data-theme override, else the OS preference.
-function effectiveTheme(): "dark" | "light" {
-  const a = document.documentElement.getAttribute("data-theme");
-  if (a === "dark" || a === "light") return a;
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-function setTheme(t: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", t);
-  localStorage.setItem("cc-theme", t);
-  renderSettings(); // keep the settings picker in sync if it's open
-}
-function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
+// The app-level verbs — pin/unpin a project, the sort mode, the rail and inspector
+// toggles, the theme, the worktree grouping, answering a permission — moved to
+// ./actions. Several surfaces trigger each of them and none owns it.
 
 
 // The new-session/worktree dialog and the branch chooser moved to ./worktree —

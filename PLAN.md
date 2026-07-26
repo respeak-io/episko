@@ -388,6 +388,15 @@ read by. Two consequences worth knowing before starting one:
          it needs. That one *did* shrink a host: `palui` imports it now instead of
          taking it as an eleventh member, and the cycle check still reads clean.
 
+      4. **`actions.ts`** (added to the order once 1–3 were out and what remained was
+         visible): the small app-level verbs several surfaces trigger and none owns —
+         `addProject`/`addProjectPath`/`removeFavorite`, `openProjectFolder`,
+         `resolvePermission`, `setSort`/`cycleSort`, `toggleRail`/`toggleInsp`, the
+         theme trio, and the app-level `setWtGroup`. All one shape, which is the reason
+         they are not in `state.ts`: **mutate the preference, persist it, repaint.**
+         `state.ts`'s setters assign and nothing else (PLAN's own `setX` decision); the
+         persistence and the repaint are this layer's. One hook, `setActionsRenderAll`.
+
 ## Phase 2 — split `lib.rs` into modules
 
 Existing tests move with their subjects. The compiler and the Phase-0 net carry
