@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import { isAgent, PILL_TEXT, statusKey, type Engine } from "./types";
 import { $, chord, IS_MAC, MOD, toast } from "./dom";
+import { updateTray } from "./tray";
 import {
   clearIcon, customIcons, iconFor, pickCustomIcon, probeIcon, resetCustomIcon,
   setIconRenderMini, setIconRenderSidebar,
@@ -1219,35 +1220,8 @@ function openAttnPop(list: Sess[]) {
   pop.classList.add("show");
 }
 function closeAttnPop() { $("attnPop").classList.remove("show"); }
-// ---------- macOS menu-bar (tray) mirror of the sidebar ----------
-let lastTraySig = "";
-function updateTray() {
-  const list = orderedSessions();
-  const items = list.map((s) => {
-    const k = statusKey(s);
-    const branch = s.worktree ? `⑃ ${s.branch}` : (s.branch || "session");
-    const status = s.attention ? s.attention : PILL_TEXT[s.phase];
-    return { id: s.id, label: `${GLYPH[k]}  ${s.project} · ${branch}  —  ${status}` };
-  });
-  const needy = needsYouSessions();
-  const n = list.length;
-  let title = "", tooltip = "Episko — no active sessions";
-  if (n > 0) {
-    if (needy.length) {
-      const dom = reactorState(needy[0]);
-      const c = needy.filter((s) => reactorState(s) === dom).length;
-      title = `${GLYPH[dom]} ${c}`;
-      tooltip = `Episko — ${n} session${n === 1 ? "" : "s"}, ${reactorLabel(dom, c)}`;
-    } else {
-      title = `● ${n}`;
-      tooltip = `Episko — ${n} session${n === 1 ? "" : "s"}`;
-    }
-  }
-  const sig = title + "|" + tooltip + "|" + items.map((i) => i.label).join("§");
-  if (sig === lastTraySig) return; // avoid rebuilding the native menu on every telemetry tick
-  lastTraySig = sig;
-  invoke("update_tray", { title, tooltip, items }).catch(() => {});
-}
+// The tray mirror moved to ./tray — a native surface, so its repaint is an IPC call
+// rather than an innerHTML assignment, but it hangs off renderAll() like the rest.
 // ▶ Run and ❯ Terminal both act on the active project's directory, so with no
 // session, shell or mirrored external there is nothing for them to act on. Greying
 // them says so up front; a live button whose only response is an error toast reads

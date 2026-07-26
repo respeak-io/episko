@@ -280,6 +280,7 @@ read by. Two consequences worth knowing before starting one:
       already read: not "what order does the sidebar show these in" but "which of them
       is waiting on the human". `PILL_TEXT` went to `types.ts` on `statusKey`'s
       three-reader argument.
+      Then `tray` (the native menu-bar mirror).
 
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
