@@ -290,6 +290,13 @@ read by. Two consequences worth knowing before starting one:
       That closes evidence group 1. What is left of `renderAll`'s hot path in `main.ts`
       is `renderInspector`/`renderHeader` (the stage) and `syncStageButtons`.
 
+      Group 2 (cosmetic, no profiling payoff) then began with `palui` — the ⌘K box
+      beside the `palette` that already held its tested decisions, the same split
+      `tasks`/`taskui` has. It is the widest-reaching surface in the app, so it takes
+      **one host object of twelve callees** rather than twelve setters, on `settings.ts`'s
+      precedent. The terminal-engine popover, also listed under group 2, had already
+      gone out with `footer`.
+
       **What remains is not equal, so it is ordered by evidence rather than by
       file order** (decided 2026-07-25 after asking what the split is actually
       *for*). These modules get no tests either way, so the only payoffs are the
