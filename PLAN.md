@@ -470,7 +470,7 @@ this phase.
 
 ## Findings from the Phase-1 slices
 
-Extracting-then-testing found five things. Three were fixed (each in its own
+Extracting-then-testing found six things. Four were fixed (each in its own
 commit, after the moves landed — never in the same commit as a move); two are
 open and neither is caused by this effort.
 
@@ -484,6 +484,20 @@ outcome the chain exists to prevent, and the opposite of what its own comment
 promised. `null` now means "could not resolve" and `[]` keeps meaning "has none".
 Found by writing the chain tests, not by reading the code — the test that deadlocked
 was the tell.
+
+**Fixed** (a name collision that silently disabled a settings control) — the settings
+window's **worktree-grouping** picker called `state.ts`'s `setWtGroup`, not the
+app-level one in `actions.ts`. Same name, two different jobs: state's setter *assigns
+and nothing else* (that is the `setX` convention this plan chose deliberately), while
+the app-level one assigns, writes `cc-worktree-group` and calls `renderAll()`. So
+picking a mode from Settings changed the in-memory value and repainted the settings
+picker only — the sidebar did not regroup until some unrelated telemetry tick, and the
+choice was gone on restart. Found while extracting `actions.ts`, which is what put the
+two same-named functions in front of each other for the first time. Fixed by routing it
+through `SettingsHost` (an eighth member); a direct import would be a cycle, since
+`actions.ts` imports `settings.ts` for `renderSettings`. No test: `settings.ts` is
+DOM-owning and untested by design, so the check is the click-through — this one is
+*visible*, the sidebar regroups the moment you pick.
 
 **Fixed** (`6949087`), each with the failing test written first:
 

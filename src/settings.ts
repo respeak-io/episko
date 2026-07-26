@@ -17,7 +17,7 @@ import { basename, esc, tilde } from "./format";
 import type { Engine } from "./types";
 import {
   availEngines, engineDef, setTermFontSize, SORT_META, SORT_MODES, sortMode,
-  termEngine, termFontSize, wtGroup, setWtGroup,
+  termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
 import {
@@ -37,10 +37,16 @@ export interface SettingsHost {
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   refreshTokens: (force?: boolean) => void;
+  // Must be the app-level setWtGroup (./actions), NOT state.ts's same-named setter:
+  // that one assigns and nothing else, so picking a mode here would neither persist
+  // nor regroup the sidebar. It arrives through the host because ./actions imports
+  // this module (for renderSettings) and a direct import back would be a cycle.
+  setWtGroup: (m: WtGroup) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
+  setWtGroup: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -223,7 +229,7 @@ function wtPreviewBody(mode: WtGroup): string {
 }
 // The worktree-grouping picker as a grid of selectable, live-preview cards. Each card
 // carries the same data-set/data-val the seg picker uses, so the existing #setBody
-// click handler routes it through applySetting → setWtGroup with no new wiring.
+// click handler routes it through applySetting → host.setWtGroup with no new wiring.
 function renderWtPreview(active: string): string {
   const cards = WT_GROUP_SEGS.map((m) => {
     const on = m.value === active;
@@ -276,7 +282,7 @@ function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
-  else if (set === "wtgroup") setWtGroup(val as WtGroup);
+  else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {
     const p = val as Provider;
     const on = taskPrefs.providers.includes(p);
