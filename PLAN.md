@@ -433,10 +433,26 @@ read by. Two consequences worth knowing before starting one:
       its `listPhrase` helper, the debug-console button wiring, and the nine
       `setInterval`s. That is the item's own definition of bootstrap.
 
-## Phase 2 — split `lib.rs` into modules
+## Phase 2 — split `lib.rs` into modules ✅
 
 Existing tests move with their subjects. The compiler and the Phase-0 net carry
 this phase.
+
+**Done 2026-07-26.** `lib.rs` 4,711 → 449 lines across ten modules; 69 → 77 tests.
+Module map, dependencies pointing downward:
+
+| Module | Lines | What |
+| --- | --- | --- |
+| `lib.rs` | 449 | `run()`, `AppState`/`Session`, tray, panic hook, the handler list |
+| `tasks.rs` | 2,394 | runnable discovery (pre-existing; untouched) |
+| `git.rs` | 1,532 | worktrees, branches, diffs, the toolbar ops |
+| `usage.rs` | 819 | transcripts + the token ledger, everything under `~/.claude` |
+| `pty.rs` | 705 | the four launch engines and the PTY lifecycle |
+| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
+| `telemetry.rs` | 469 | the instrument file, the server, `resolve_permission` |
+| `external.rs` | 339 | the session registry, `ProcTable`, focus |
+| `icons.rs` | 184 | project favicon/logo probing |
+| `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
 
 **Two decisions, made in the first slice as the kickoff prompt asked.**
 
@@ -497,16 +513,58 @@ questions in the kickoff prompt:
       holds `scratch_dir` + its `COUNTER` and nothing else: `wt_root`, `git()` and
       `commit()` have a single owner and went into `git.rs`'s own test mod. Resist
       growing it — a helper belongs here only once a *second* module needs it.
-- [ ] `telemetry.rs` — server + `write_instrument_settings`. The Phase-0 server
-      test already covers the sid-forcing end-to-end; optionally lift it into a
-      pure function here for cheap edge-case tests (no sid header at all,
-      unparseable body, non-object payload)
-- [ ] `pty.rs` — `stream_pty_session` + the spawners
-- [ ] `external.rs` — registry parsing, `ProcTable`, focus
-- [ ] `usage.rs` — `scan_usage` + `parse_usage_line`; inject a base dir
-      (default `~/.claude`) so `scan_usage`, `list_past_sessions`,
-      `read_transcript` become testable, then test them
-- [ ] `icons.rs`, `platform.rs` — icon probing, cfg-gated OS helpers
+- [x] `telemetry.rs` — server + `write_instrument_settings`, and `resolve_permission`
+      with them: it is the only thing that ever answers a held-open
+      `PermissionRequest`, so the blocking half of the mechanism is incomplete
+      without it. The Phase-0 server test moved here intact; the optional
+      "lift it into a pure function" idea was **not** taken — the value of that
+      test is that it drives the real `tiny_http` server, and a pure function
+      would test the part that was never in doubt.
+- [x] `pty.rs` — `stream_pty_session` + the spawners. **All five**, not just the
+      three that open a PTY: `spawn_ghostty` and `spawn_external_terminal` write
+      the same `--settings` file and are the same choice from the frontend's side
+      (`termEngine`), so splitting them would put one launch path in two modules.
+      Plus `write_pty`/`resize_pty`/`kill_session` and `session_resources`.
+- [x] `external.rs` — registry parsing, `ProcTable`, focus. One contiguous block.
+- [x] `usage.rs` — done in **two commits**, per ground rule 2. First the move
+      (transcripts *and* the token ledger: one directory, one unstable format,
+      one set of fallback chains). Then the base-dir injection and its tests:
+      `claude_dir()` resolves `~/.claude` once and the work moved into
+      `*_in(base, …)` functions, leaving the three commands' signatures — the IPC
+      contract — untouched. **8 new tests, 69 → 77, 14 mutations run and 14
+      killed.** One survivor on the first pass was a real gap, not an equivalent
+      mutant; see the commit.
+- [x] `icons.rs`, `platform.rs` — icon probing, and the OS integrations appended
+      to the `platform.rs` that went out first: `open_folder`/`reveal_path`, the
+      caffeinate/keep-awake pair, and the macOS legacy-localStorage recovery.
+      That makes `platform.rs` two halves, and its module doc now says so: the
+      leaves import nothing from the crate (which is what lets everything depend
+      on it), while the integrations may — `set_caffeinate` takes
+      `State<AppState>`. **Don't let the first half grow a crate dependency.**
+
+**Phase 2 is done.** `lib.rs` is **449 lines**; there were 4,711 (**−90%**). Ten
+modules. What it holds, and deliberately: the `mod` list, `AppState`/`Session`,
+`write_debug_file`/`log_frontend` (the frontend's end of the two-tier logging,
+which belongs beside `install_panic_hook`), `confirm_quit`, the tray mirror, the
+panic hook, and `run()` with its `invoke_handler!` list. That is the Rust
+equivalent of Phase 1's "reduced to bootstrap".
+
+Green: **77 cargo + 368 vitest**, `tsc --noEmit` clean.
+
+**A verification technique worth keeping, and a trap it caught.** `cargo check` on
+Windows never compiles the `cfg(not(windows))` arms, so a stale import inside one is
+invisible locally and a warning in CI — PLAN's trap #1 from the other direction.
+Flipping every `cfg(windows)` ↔ `cfg(not(windows))` on a scratch copy and
+re-checking type-checks the other half. It found one: the `pty.rs` slice left a dead
+`#[cfg(not(windows))] use crate::platform::sh_quote;` behind in `lib.rs`. Its one
+false positive is `reveal_path`'s `exists`, because the flip does not touch
+`cfg(target_os = …)` and that function has three such arms.
+
+Second trap, new: **when a slice *appends* into an existing module, check the merge
+as a multiset** — every non-blank line of the result must be one the target already
+had or one the spec cut, with nothing missing. The append script's header-skip used
+`startsWith("//")`, which also matches `///`, so it silently ate three lines of
+`open_folder`'s doc comment. Nothing else would have noticed.
 
 ## Phase 3 — due diligence & polish
 
