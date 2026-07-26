@@ -352,12 +352,15 @@ read by. Two consequences worth knowing before starting one:
       reads like a leftover.
 
       Ordered by independence, what is left in `main.ts` and where it should go:
-      1. **The external + dormant block** (~250 lines) — `refreshExternals`,
-         `openExternal`/`closeExternalView`, the whole dormant/roster half
-         (`loadDormants`, `resumeDormant`, `forgetDormant`, `rosterEntry`,
-         `saveRoster`, `queueRosterSave`), `loadTranscript*`, and the four read-only
-         `render*` mirrors the render item deliberately left behind. One coherent
-         module: they share the `mirror` pointer and nothing else needs them.
+      1. ~~The external + dormant block~~ — **done, as `mirror.ts`** (274 lines out).
+         Named for what actually unites the two halves: the `mirror` stage pointer in
+         `state.ts`, which is mutually exclusive with `activeId`. Everything in it
+         either sets that pointer, repaints what it points at, or reconciles it when
+         the thing it points at goes away — which is also the answer to why the four
+         read-only `render*` functions belong here and not in `inspector.ts`: each is
+         welded to the open/load machinery beside it and none is ever called with a
+         `Sess`. `refreshDirtyStates` came too (it feeds both the sidebar dot and the
+         external diff card, and `openExternal` calls it). Three seam-rule-2 setters.
       2. **The run-on-stop / task-run block** — `maybeRunOnStop`, `launchTask`,
          `rerunTask`, `revealSource`, `sendOutputToSession`, `stopRunAt`,
          `stopInFlight`. Note this is what `inspector.ts` and `tasks.ts` currently
