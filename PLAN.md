@@ -438,6 +438,37 @@ read by. Two consequences worth knowing before starting one:
 Existing tests move with their subjects. The compiler and the Phase-0 net carry
 this phase.
 
+**Two decisions, made in the first slice as the kickoff prompt asked.**
+
+- **`AppState` and `Session` stay in the crate root**, reached as `crate::AppState`
+  from every module. No `state.rs`. Three reasons: `run()` is their only
+  constructor and it lives in `lib.rs`, so the owner and the definition stay
+  together; Rust needs no setter convention to keep the boundary honest —
+  `pub(crate)` fields plus the compiler do what Phase 1 needed 7 `setX` functions
+  for; and a `state.rs` holding two structs would be a file per 34 lines, which is
+  the same argument that kept `renderHeader` out of a `stage.ts`. The cfg-gated
+  `caffeinate` field also means a `state.rs` would have to import `KeepAwake` back
+  out of the platform layer for no gain. Don't mix in a `state.rs` later.
+- **`platform.rs` goes first, not last.** The greps settle it: `sys_command` 18
+  uses, `norm_path` 12, `sh_quote` 11, `home_dir` 9 — every other Phase-2 module
+  calls them, so this is seam rule 1 (move the callee down first), the same reason
+  `icons.ts` preceded `sidebar.ts`. Confirmed too that `git_cmd`/`git_run` are
+  git-only *and* that `git_cmd` itself calls `augmented_path` — so `git.rs` depends
+  on `platform.rs`, not the reverse.
+
+  **What `platform.rs` does *not* take**, and the rule behind it: a cfg-gated
+  helper with a single consumer module belongs to *that* module. So
+  `apply_utf8_locale`, `interactive_shell` and `task_shell` are held for `pty.rs`
+  (`apply_utf8_locale` takes a `portable_pty::CommandBuilder`, which is the tell —
+  the leaf layer must not import `portable_pty`), and `same_path` for `git.rs`.
+  `resolve_claude`/`augmented_path` *did* come, because `augmented_path` is called
+  from `git_cmd` as well as the launch engines.
+
+- [x] `platform.rs` (moved to the front — see above) — `home_dir`, `norm_path`,
+      `sys_command`, `resolve_claude`, `augmented_path`, `sh_quote`, `ps_one`, and
+      the three tests over them. 173 lines, verified line-sorted against `HEAD` with
+      one intended difference: `ps_one`'s doc comment said "the cross-platform
+      `ProcTable` below", which the move made false.
 - [ ] `git.rs` — worktrees, branches, diffs, commit info (largest tested block)
 - [ ] `telemetry.rs` — server + `write_instrument_settings`. The Phase-0 server
       test already covers the sid-forcing end-to-end; optionally lift it into a
