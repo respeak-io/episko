@@ -16,7 +16,8 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
 - `pnpm test` — 368 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 77 tests
+- `cargo check --locked` and `cargo test --locked` — 79 tests on macOS, 77 on
+  Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
 Both legs matter and neither is redundant: the platform code is `cfg`-gated, so each
@@ -87,6 +88,23 @@ Tick these in order — each depends on the one above.
 - [ ] **Phases track reality.** The sidebar glyph moves idle → thinking → working →
       your-turn as the agent works, and the pane doesn't show the ended `·` while the
       process is still alive.
+
+### Keyboard, and the sidebar repaint guard
+
+Both of these are code with no automated cover that moved recently — the key handlers
+were re-applied into `terminal.ts` during the dev merge, and the repaint guard is new.
+A regression in either is silent.
+
+- [ ] **A double `^C` interrupts, it does not end the session.** In an embedded claude
+      pane, press Ctrl+C twice quickly: the turn cancels, a toast explains, and the
+      pane stays live. Then press it again after ~3s — it must interrupt normally.
+      In a **shell** pane the same keystroke must still kill the process outright.
+- [ ] **Windows only: Ctrl+V pastes an image** into a claude pane (copy a screenshot
+      first). Plain text paste must still work in the same pane.
+- [ ] **The sidebar still repaints when it should.** `renderSidebar` now skips the
+      `innerHTML` write when the markup is byte-identical, so watch that a phase
+      change, an arriving permission, a new session, and closing one *all* still move
+      the sidebar — and that a drag-reorder leaves it correct.
 
 ### The blocking path
 
