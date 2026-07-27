@@ -85,7 +85,7 @@ function cafPersist() {
   localStorage.setItem("cc-caf-await", cafAgentsAwait ? "1" : "0");
 }
 // Is any real (non-shell) session doing work worth staying awake for?
-export function cafAgentsBusy(): boolean {
+function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
     if (s.kind === "shell" || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
@@ -116,7 +116,7 @@ export function reconcileCaf() {
   }
   renderCaf();
 }
-export function renderCaf() {
+function renderCaf() {
   const p = cafPreset(cafPresetId);
   $("caf").classList.toggle("on", cafArmed);
   $("caf").classList.toggle("asserting", cafAssertKey !== "");
@@ -128,7 +128,7 @@ export function renderCaf() {
 const cafDurLabel = (sec: number) => (CAF_DURATIONS.find((d) => d.sec === sec) || { label: sec + "s" }).label;
 
 // user actions -------------------------------------------------------------
-export function cafToggle() { cafArmed = !cafArmed; cafPersist(); cafArmTimer(); reconcileCaf(); dlog("info", `caffeinate ${cafArmed ? "on · " + cafPresetId : "off"}`); }
+function cafToggle() { cafArmed = !cafArmed; cafPersist(); cafArmTimer(); reconcileCaf(); dlog("info", `caffeinate ${cafArmed ? "on · " + cafPresetId : "off"}`); }
 function cafPick(id: string) { cafPresetId = id; cafArmed = true; cafPersist(); cafArmTimer(); reconcileCaf(); dlog("info", `caffeinate on · ${id}`); }
 function cafStop() { cafArmed = false; cafPersist(); cafArmTimer(); reconcileCaf(); }
 function cafSetDuration(sec: number) { cafTimerSec = sec; cafPresetId = "timer"; cafArmed = true; cafPersist(); cafArmTimer(); reconcileCaf(); fillCafPop(); }

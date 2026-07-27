@@ -108,7 +108,7 @@ function wtStateOf(w: WtInfo, repoDir: string): WtState {
 }
 /** What to call a checkout. Its branch when it has one; otherwise its folder,
  *  because a row still has to be nameable. */
-export function wtLabelOf(w: WtInfo) {
+function wtLabelOf(w: WtInfo) {
   return w.branch && w.branch !== "(detached)" ? w.branch : basename(w.path) + "/";
 }
 const wtSessionsIn = (path: string) => [...sessions.values()].filter((s) => s.workdir === path);
@@ -698,7 +698,7 @@ let bPopSel = 0;
 let bPopOn: ((name: string) => void) | null = null;
 let bPopAnchor: HTMLElement | null = null;
 
-export function bPopOpen() { return $("bPop").classList.contains("show"); }
+function bPopOpen() { return $("bPop").classList.contains("show"); }
 function openBranchPop(anchor: HTMLElement, items: BranchPick[], current: string, onPick: (name: string) => void) {
   bPopItems = items; bPopOn = onPick; bPopAnchor = anchor;
   const at = items.findIndex((i) => i.name === current);

@@ -119,7 +119,7 @@ export function maybeMidSnap(win: RlWin, reset: number | null) {
   const f = win === "h5" ? forecast5h() : forecast7d();
   if (f.hasRate && f.proj != null) midSnap[win] = { proj: f.proj };
 }
-export function logWindowClose(win: RlWin, finalPct: number | null) {
+function logWindowClose(win: RlWin, finalPct: number | null) {
   if (typeof finalPct !== "number") return;
   const snap = midSnap[win];
   const e: FcLogEntry = {

@@ -28,7 +28,7 @@ import {
 // The most useful signal here is "unrouted telemetry": telemetry arriving for a
 // session id the UI doesn't know (the class of bug that made panes look ended).
 export type DbgLvl = "info" | "warn" | "error";
-export let appVersion = "";
+let appVersion = "";
 export function setAppVersion(v: string) { appVersion = v; }
 export const dbgLog: { t: number; lvl: DbgLvl; msg: string }[] = [];
 let dbgOpen = false;

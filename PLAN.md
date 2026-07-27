@@ -656,7 +656,55 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       rate and size. Record findings here; fix the cheap ones, and split anything
       structural into its own commit with a before/after measurement.
 
-- [ ] Dead-code and TODO sweep, both sides
+- [x] Dead-code and TODO sweep, both sides
+
+      **Done 2026-07-27, and the headline is that there is none.** Recorded here
+      because "we looked and found nothing" is only worth anything if it says *what*
+      was looked at:
+
+      - **TODOs: zero.** No `TODO`/`FIXME`/`XXX`/`HACK`/`TBD` anywhere in `src/`,
+        `src-tauri/src/`, `index.html` or `styles.css`, and no `todo!()`,
+        `unimplemented!()`, `#[allow(dead_code)]` or `@ts-ignore`. The single
+        suppression in the repo is a legitimate `@ts-expect-error` in
+        `vite.config.ts` for the node `process` global. So the item's
+        fix / promote / delete triage had nothing to triage.
+      - **Rust dead code: none.** `cargo clippy --all-targets -- -D warnings`
+        includes rustc's `dead_code`, and it is clean — on the Windows arms and,
+        under the cfg flip, on the `not(windows)` ones. `pub(crate)` throughout is
+        what makes that meaningful. **Caveat, not a pass:** the `cfg(target_os =
+        "macos")` arms were not checked, because they cannot be here (see the flip
+        notes in Phase 2).
+      - **The one dead-code class rustc *cannot* see was checked separately**: a
+        `#[tauri::command]` is "used" by `invoke_handler!`, so one nothing calls
+        stays quiet forever. Cross-checking defined vs. registered vs. `invoke()`d
+        from TS gives **47 / 47 / 47** — no orphans in either direction. (First run
+        reported `read_legacy_localstorage` as uncalled; that was the checker's
+        regex failing on `invoke<Record<string, string>>`, not a finding.)
+      - **`index.html`: 103 ids, every one referenced from `src/*.ts`.** No dead
+        markup left behind by the render split.
+      - **Frontend: no dead code, but 28 dead *exports*.** `noUnusedLocals` never
+        flags an exported symbol, so this is the class the gate cannot see and the
+        one the split actually created — a symbol exported for a move that nothing
+        ended up importing. 402 exported symbols; 28 values were named nowhere
+        outside their own module and had their `export` dropped. The rule applied,
+        so it needn't be re-argued: **un-export a value nothing else names; leave
+        types exported**, since a type export costs nothing at runtime and tsc can't
+        tell whether a consumer relies on naming it. 18 type exports remain in that
+        state and are fine.
+
+        This is also how the sweep *proves* there was no dead code rather than
+        assuming it: with `noUnusedLocals` on, an un-exported symbol that is also
+        unused inside its module becomes a **tsc error**. All 28 came out clean, so
+        all 28 were genuinely in use — just over-exposed.
+
+      **Found and promoted rather than fixed: `test/` is never typechecked.**
+      `tsconfig.json` has `include: ["src"]`, so `pnpm exec tsc --noEmit` — which
+      CLAUDE.md calls "the real linter" — silently skips all eight test files and 368
+      tests. Adding `test` to `include` fails today with 7 errors: six are `Cannot
+      find name 'process'` (the repo has no `@types/node`) and one is a real
+      `Object is possibly 'null'` at `test/tasks.test.ts:212`. Fixing it means a new
+      devDependency and a `pnpm install`, which is a remote and outside this item;
+      it is a small, self-contained slice for whoever picks it up.
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
 - [ ] Manual release smoke checklist (launch → telemetry arrives → answer a
       permission → resume → external session visible → task run + on-stop rule)

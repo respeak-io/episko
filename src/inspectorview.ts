@@ -22,18 +22,18 @@ import { sessions } from "./state";
 export let gitBusy: string | null = null;
 export function setGitBusy(id: string | null) { gitBusy = id; }
 // Shared by the resource bars and the shell inspector: colour a 0–100 meter.
-export const mc = (v: number) => (v >= 80 ? "hot" : v >= 55 ? "warn" : "");
+const mc = (v: number) => (v >= 80 ? "hot" : v >= 55 ? "warn" : "");
 
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
-export function toolVerb(tool: string): string {
+function toolVerb(tool: string): string {
   if (!tool) return "Working";
   if (tool.startsWith("Task")) return "Delegating";
   if (tool.startsWith("mcp__")) return "Calling tool";
   return TOOL_VERB[tool] || "Working";
 }
 // Maps a tool to the CSS colour class that tints its dot / name / verb.
-export function toolClass(tool: string): string {
+function toolClass(tool: string): string {
   if (!tool) return "";
   if (tool === "Read" || tool === "Grep" || tool === "Glob") return "t-read";
   if (tool === "Edit" || tool === "Write" || tool === "NotebookEdit") return "t-edit";
@@ -148,7 +148,7 @@ export function wsetHtml(s: Sess): string {
 // hand the user a prefilled terminal; disabling those would amputate the useful
 // half. "Nothing to do" needs a known upstream, since without one ahead/behind are
 // both 0 and would otherwise read as "nothing to push".
-export function gitBtnsHtml(s: Sess, g: DiffStat): string {
+function gitBtnsHtml(s: Sess, g: DiffStat): string {
   const busy = gitBusy === s.id;
   const up = !!g.upstream;
   const btn = (op: string, label: string, off: string, hint: string) =>

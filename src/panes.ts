@@ -308,7 +308,7 @@ export async function refreshSessionStats(s: Sess) {
 // branch actually checked out rather than the one the worktree/session was born
 // with (a worktree shows whatever branch is checked out, and that can change).
 // Returns true if the label changed. Detached HEAD shows "(detached @<sha>)".
-export async function refreshBranch(s: Sess): Promise<boolean> {
+async function refreshBranch(s: Sess): Promise<boolean> {
   if (!s.workdir) return false;
   const info = await invoke<{ branch: string | null; short: string } | null>("git_head", { workdir: s.workdir }).catch(() => null);
   if (!info) return false; // not a git repo (or gone) — leave the label as-is

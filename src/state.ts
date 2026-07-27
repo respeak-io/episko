@@ -66,7 +66,7 @@ export const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
 // cc-worktree-group; no in-app control yet — the settings window (separate branch)
 // will own the picker, until then flip it via setWtGroup() / localStorage.
 export type WtGroup = "off" | "subheader" | "toplevel" | "chip";
-export const WT_GROUPS: WtGroup[] = ["off", "subheader", "toplevel", "chip"];
+const WT_GROUPS: WtGroup[] = ["off", "subheader", "toplevel", "chip"];
 export let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGroup) || "subheader";
 if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
 export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "subheader"; }

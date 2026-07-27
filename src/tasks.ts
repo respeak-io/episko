@@ -222,9 +222,9 @@ export function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.str
 // Folders the user has explicitly allowed Episko to introspect. Adding a folder as
 // a project counts as saying yes — you chose it deliberately; a directory that
 // merely happens to hold a session does not.
-export const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
-export function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
-export function isTrusted(path: string): boolean {
+const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
+function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
+function isTrusted(path: string): boolean {
   return FAVORITES.some((f) => f.path === path) || trustedPaths.includes(path);
 }
 export function trustProject(path: string) {
@@ -242,8 +242,8 @@ export function explicitlyTrusted(): string[] { return [...trustedPaths]; }
 // Pins are personal, not project state, so they sit in localStorage beside
 // cc-favorites rather than in the repo. Keyed by project root → Runnable ids,
 // which discovery guarantees are stable across a rescan.
-export const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
-export function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
+const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
+function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
 export function pinnedIds(key: string): string[] { return taskPins[key] || []; }
 export function togglePin(key: string, id: string) {
   const cur = pinnedIds(key);
@@ -264,7 +264,7 @@ export function togglePin(key: string, id: string) {
 // every project first.
 export type StopRule = { id: string; label: string };
 export const stopRules: Record<string, StopRule> = JSON.parse(localStorage.getItem("cc-task-onstop") || "{}");
-export function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
+function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
 export function toggleStopRule(key: string, r: Runnable) {
   if (stopRules[key]?.id === r.id) delete stopRules[key];
   else stopRules[key] = { id: r.id, label: r.label };
@@ -276,8 +276,8 @@ export function clearStopRule(key: string) { delete stopRules[key]; saveStopRule
 // Episko's own file is ever written — a discovered VS Code task or justfile
 // belongs to another tool and stays read-only.
 
-export const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
-export function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
+const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
+function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
 export function hiddenIds(key: string): string[] { return taskHidden[key] || []; }
 export function toggleHidden(key: string, id: string) {
   const cur = hiddenIds(key);

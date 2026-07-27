@@ -38,12 +38,12 @@ export function toolArg(tool: string, input: any): string {
 // Open a timeline entry on PreToolUse; closeActivity fills its latency on the
 // matching PostToolUse. Matching the most-recent open call of the same tool name
 // is approximate under parallel subagents, but right for the common serial case.
-export function openActivity(s: Sess, tool: string, arg: string) {
+function openActivity(s: Sess, tool: string, arg: string) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null });
   if (s.activity.length > 12) s.activity.length = 12;
 }
-export function closeActivity(s: Sess, tool: string) {
+function closeActivity(s: Sess, tool: string) {
   const a = s.activity.find((x) => x.tool === tool && x.durMs == null);
   if (a) a.durMs = Date.now() - a.startMs;
 }

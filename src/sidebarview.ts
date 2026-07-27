@@ -26,11 +26,11 @@ export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping",
 
 // A stable colour per branch, from the same hash as project accents so the sidebar's
 // colour language stays consistent (a branch and a project just seed different hues).
-export const branchHue = (c: WtCluster) => accentFor(c.branch || c.key);
+const branchHue = (c: WtCluster) => accentFor(c.branch || c.key);
 
 // `chip` (chip mode only) tags the row with its worktree's colour-coded branch,
 // which expands from a bare ⑃ to the branch name on row hover.
-export function sessionRow(s: Sess, chip?: WtCluster): string {
+function sessionRow(s: Sess, chip?: WtCluster): string {
   const k = statusKey(s);
   // Prefer the abbreviated title; fall back to the branch/worktree only until
   // Claude sets a title, so idle rows stay identifiable. (Branch is kept in the
@@ -81,7 +81,7 @@ export function groupBody(p: ProjGroup): string {
 export function dormantRows(p: ProjGroup): string {
   return p.dormants.map((d) => dormantRow(d)).join("");
 }
-export function dormantRow(d: Restorable): string {
+function dormantRow(d: Restorable): string {
   const busy = dormantBusy(d);
   const label = d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
   const when = relTime(d.lastActivity);
@@ -101,7 +101,7 @@ export function dormantBusy(d: Restorable): boolean {
   for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
   return externals.some((e) => e.session_id === d.resumeId);
 }
-export function extRow(e: ExtSession, chip?: WtCluster): string {
+function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
   const chipHtml = chip
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
