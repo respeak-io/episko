@@ -26,3 +26,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright MCP session artifacts (page snapshots / console logs from browser-driven
+# profiling runs). Scratch output, never part of the project.
+.playwright-mcp/
