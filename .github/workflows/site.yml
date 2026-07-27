@@ -44,9 +44,14 @@ jobs:
         with:
           ref: main
 
+      # package-manager-cache defaults to true, which detects `packageManager: pnpm`
+      # in package.json and then fails on a runner where pnpm was never installed.
+      # Nothing here needs dependencies: the stamp script is node built-ins only, and
+      # wrangler-action brings its own wrangler. So: no package manager, no cache.
       - uses: actions/setup-node@v5
         with:
           node-version: 20
+          package-manager-cache: false
 
       # No arg on push/dispatch-without-input -> the script falls back to
       # package.json, which main already carries at the released version.
