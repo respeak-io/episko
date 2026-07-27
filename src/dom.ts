@@ -31,8 +31,15 @@ export function dropScrim() {
 // module, so vitest pulls it into the node environment via every logic module that
 // logs. The one-time rewrite of index.html's hard-coded ⌘ glyphs is bootstrap and
 // stays in main.ts for exactly that reason.
-export const IS_MAC = navigator.userAgent.includes("Mac");
-export const IS_WIN = navigator.userAgent.includes("Windows");
+// `navigator` is a *browser* global, and the note above promises this module is safe
+// to import from vitest's `node` environment — which it was not: `globalThis.navigator`
+// only exists from Node 21, so on the Node 20 CI pins, every suite that transitively
+// reaches this file died at import with "navigator is not defined". It passed locally
+// purely because the dev machine ran a newer Node. Read it defensively so the promise
+// is actually true; in the WebView the app ships in, the fallback never fires.
+const UA = typeof navigator === "undefined" ? "" : navigator.userAgent;
+export const IS_MAC = UA.includes("Mac");
+export const IS_WIN = UA.includes("Windows");
 export const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 export const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);

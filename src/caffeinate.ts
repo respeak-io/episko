@@ -14,7 +14,7 @@
 // (see `execution_state_for`) rather than making the UI speak two dialects.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, toast } from "./dom";
+import { $, IS_WIN, toast } from "./dom";
 import { esc } from "./format";
 import { dlog } from "./debug";
 
@@ -41,8 +41,7 @@ export function setCafHost(h: typeof host) { host = h; }
 // The flags below are macOS `caffeinate` switches, and they stay the wire format
 // on both platforms: the Windows backend maps them onto `SetThreadExecutionState`
 // bits (see `execution_state_for`) rather than making the UI speak two dialects.
-const IS_WINDOWS = navigator.userAgent.includes("Windows");
-const CAF_HOST = IS_WINDOWS ? "PC" : "Mac";
+const CAF_HOST = IS_WIN ? "PC" : "Mac";
 type CafKind = "static" | "timer" | "agents";
 interface CafPreset { id: string; kind: CafKind; label: string; desc: string; glyph: string; flags?: string[] }
 const ALL_CAF_PRESETS: CafPreset[] = [
@@ -55,13 +54,13 @@ const ALL_CAF_PRESETS: CafPreset[] = [
 // Windows has no disk (`-m`) or user-active (`-u`) assertion, so "Fully
 // caffeinated" would be a second, identical "Keep display awake" row there.
 // Drop it — the validity check below rewrites a stored "full" to the first preset.
-const CAF_PRESETS: CafPreset[] = IS_WINDOWS ? ALL_CAF_PRESETS.filter((p) => p.id !== "full") : ALL_CAF_PRESETS;
+const CAF_PRESETS: CafPreset[] = IS_WIN ? ALL_CAF_PRESETS.filter((p) => p.id !== "full") : ALL_CAF_PRESETS;
 // The popover's right-hand chip: the literal flags on macOS, the execution state
 // they translate to on Windows, where the raw flags would be meaningless jargon.
 function cafChip(p: CafPreset): string {
   const flags = p.kind === "agents" ? ["-i"] : (p.flags ?? []);
   if (!flags.length) return "";
-  if (!IS_WINDOWS) return flags.join(" ");
+  if (!IS_WIN) return flags.join(" ");
   return flags.some((f) => f.includes("d")) ? "display" : "system";
 }
 const CAF_DURATIONS: { sec: number; label: string }[] = [
