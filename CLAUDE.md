@@ -271,6 +271,22 @@ Four rules keep that graph honest. **There are no import cycles across the 34 mo
 - **A `*view.ts` takes data and returns a string** — no `$()`, no `innerHTML`, no renderer call. The `render*` function that paints the result stays with whoever owns the element, its timers and its delegated handlers. If a candidate seems to need a `setSomething`, it is a `render*` and should stay behind.
 - **`state.ts`'s `setX` setters assign and nothing else.** Persistence and `renderAll()` belong to the call site — that is what `actions.ts` is for. (Conflating the two is a bug this codebase has already shipped once: a settings picker called `state.ts`'s `setWtGroup` instead of `actions.ts`'s, so the choice never persisted.) Reads are the live ESM binding and stay bare identifiers (`activeId`, never `state.activeId`).
 
+**Two surfaces on `renderAll`'s path are guarded, and the guard is a pattern, not a
+one-off.** `renderSidebar` builds its markup every time but assigns `#projects.innerHTML`
+only when the string differs from what it last wrote; `updateTray` diffs a signature
+before rebuilding the native menu. Both exist because `renderAll()` fires on *every*
+telemetry event and most events change nothing those surfaces show — 84.5% of sidebar
+repaints were byte-identical under a realistic event stream. This is **not** render
+diffing (no DOM is compared or patched) and it does not weaken the render-everything
+rule; it is "skip when nothing changed", applied where it was measured to matter. If
+you add a surface to `renderAll`, measure it before assuming it is free.
+
+**When you measure a render function, force layout or the number is a lie.** An
+`innerHTML` assignment defers style recalc and layout to the next frame, which a
+benchmark loop never reaches, so the expensive part is invisible. Read
+`document.body.offsetHeight` after each call. `renderSidebar` measures 0.13 ms without
+this and 7.0 ms with it — the difference between "free" and "the hot path".
+
 And the things that hold however the files are arranged:
 
 - **`Sess.kind`** (`"claude" | "shell" | "task"`) decides whether telemetry, cost

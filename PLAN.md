@@ -625,7 +625,10 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       Verified against **both** cfg arms: with the fixes in, the flip leaves only
       `reveal_path`'s `exists`, the known false positive. **The macOS-only arms
       could not be checked at all** — see the two notes below.
-- [ ] **Profiling pass: does anything still work when nobody is looking?**
+- [x] **Profiling pass: does anything still work when nobody is looking?**
+      *(Frontend half done 2026-07-27 — two fixes landed, four leads disproved, one
+      confirmed-and-unfixed because it needs the real app. Results at the end of this
+      item.)*
       Prompted by the debug-snapshot finding above, which was only noticed because
       the UI got sluggish — nothing in the test net can see this class of problem.
       The rule to check against: *periodic and per-event work should be skipped when
@@ -655,6 +658,82 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       performance trace. For the IPC and disk half, watch the snapshot file's write
       rate and size. Record findings here; fix the cheap ones, and split anything
       structural into its own commit with a before/after measurement.
+
+      ### Results, 2026-07-27
+
+      **Method, and one thing worth stealing.** Driven through Playwright against
+      `pnpm dev` on a spare port, with the live modules reached by dynamic `import()`
+      — which returns the *same* instance for an unedited module, so `state.sessions`
+      could be seeded with the six-session fleet the original finding was observed on
+      and `dbgLog` filled to its 400 cap. A DevTools flame chart was **not** used:
+      what these questions need is a repeatable number per function, and an in-page
+      `performance.now()` harness gives that.
+
+      **The one thing that decides whether this pass finds anything: force layout.**
+      A microbenchmark of a render function measures the string building and *not*
+      the style recalc and layout the `innerHTML` assignment causes, because the
+      browser defers that to a frame a tight loop never reaches. Reading
+      `document.body.offsetHeight` after each call folds it in. `renderSidebar`
+      measures **0.13 ms** without it and **7.0 ms** with it — a 54× difference, and
+      the entire finding. Any future profiling of this codebase should start there.
+
+      **Confirmed and fixed:**
+
+      - **`renderSidebar` was the real hot spot** — not on PLAN's lead list at all,
+        and ~95% of `renderAll`'s cost. It repaints on every telemetry event, and
+        84.5% of those repaints (95% for a quiet session) produced byte-identical
+        markup, because the rows show only a glyph, a title and `Math.round(ctxPct)`.
+        Guarded: 7.41 → **1.39 ms** per event with hooks mixed in (−81.3%), **0.51 ms**
+        for a quiet session (−93.2%).
+      - **`flushDebug`** — fixed as argued, but *the argument was partly wrong* and
+        the correction matters. Its CPU cost is **0.059 ms per flush**, 0.0015% of a
+        core, so the stringify was never what made the UI sluggish, and neither is
+        the log-ring re-slice this plan suggested hoisting (0.0043 ms). What is real
+        is the payload and the IO: 27KB across IPC and onto disk every 4s forever.
+        Now compact (−26.3% bytes) and skipped when the snapshot is unchanged — **100%
+        of flushes skipped while idle**, bar a 60s heartbeat so a stale `generatedAt`
+        can't be mistaken for a frozen app.
+
+      **Disproved — measure before believing, and these did not survive it:**
+
+      - **The tray is *not* rebuilt on every hook.** `updateTray` already diffs a
+        signature of what it would draw: 0.0125 ms even when the signature changes,
+        0.006 ms when it doesn't. This is also the precedent the sidebar guard follows.
+      - **`renderDbgBadge()` + `dbgIssues()` on every `dlog()`: 0.0034 ms** with the
+        ring full. Reducing 400 entries per hook sounds expensive and isn't.
+      - **The mini-rail does render while the sidebar is expanded** — the lead is true —
+        **but it is free**: 0.027 ms, because `#railmini` is `display:none` and a hidden
+        subtree isn't laid out. True, and not worth a guard.
+      - **`renderAll`'s other surfaces are not a problem**: footer 0.083 ms, attention
+        badge 0.035 ms, inspector 0.171 ms, caffeinate 0.001 ms, all with layout forced.
+      - **Three of the four polls already guard their *render* half** —
+        `refreshDirtyStates` returns early unless a diffstat signature changed,
+        `refreshSessionStats` compares rounded CPU/RAM so jitter can't rebuild the
+        inspector, `refreshBranches` repaints only if a branch actually moved. That
+        half of the lead was already done.
+
+      **Confirmed and NOT fixed — the biggest one left, and deliberately not guessed
+      at.** `document.hidden` and `visibilitychange` appear **nowhere** in `src/`
+      (the only focus listener is `worktree.ts`'s, refreshing its dialog). So the
+      four backend polls keep spawning subprocesses whether or not anyone is looking:
+      `list_external_sessions` every 3s (a `sysinfo` process-table snapshot),
+      `git_diffstat` per distinct folder every 5s, `git_diffstat` + `session_resources`
+      (a `ps` on macOS) for the active session every 4s, and a `git rev-parse` per
+      session every 4s. For the six-session fleet above that is on the order of **four
+      subprocess spawns a second, forever**, and process spawn is not cheap on Windows.
+
+      That is a *reasoned estimate, not a measurement* — the dev-server frontend has no
+      backend, so none of it can be measured from where the rest of this pass was done,
+      and a performance commit without a measurement is a guess. **To settle it, run
+      the real app and count spawns** (Process Monitor on Windows, `fs_usage`/Activity
+      Monitor on macOS) with the window focused and then fully hidden. It is also the
+      most likely explanation for the original symptom — hover animations trailing the
+      cursor is main-thread starvation, which 27KB of JSON every 4s does not cause.
+
+      If it is confirmed, the fix is a visibility guard on the *polls*, not the
+      renders — and note that is a **product call**, not a pure "how often" change: it
+      trades up to one poll interval of staleness when the window comes back for the
+      spawns saved while it is away.
 
 - [x] Dead-code and TODO sweep, both sides
 
@@ -781,7 +860,19 @@ input returns — but do not read them as evidence the feature works. This is ex
 the drift the Phase-3 CLI contract test exists to catch, which argues for pulling
 that item forward.
 
-**Open — the debug snapshot flush costs the same whether anyone is watching.**
+**Fixed 2026-07-27, and partly corrected — the debug snapshot flush costs the same
+whether anyone is watching.** The diagnosis below was right that the flush is
+unconditional and wasteful, and it is now compact and skipped when nothing changed
+(100% skipped while idle, −26.3% bytes when it does write). But the *causal* claim —
+that this is what made the UI sluggish — did not survive measurement: `dbgSnapshot()`
++ `JSON.stringify` costs **0.059 ms**, and `renderDbgBadge`/`dbgIssues` **0.0034 ms**
+with the ring full. Neither can starve a main thread. The real CPU offender was
+`renderSidebar` (7.0 ms per telemetry event, now guarded), and the most likely cause
+of the original symptom is the unguarded backend polling — see the profiling results
+in Phase 3. Kept below as written, because the reasoning is instructive about what
+"measured" has to mean.
+
+**The original entry, 2026-07-25:**
 Observed 2026-07-25: the UI went visibly sluggish (hover animations trailing the
 cursor, laggy pane selection) on an instance with six live sessions, and clearing
 the debug log fixed it **while the panel was closed** — which is the evidence that
