@@ -56,6 +56,8 @@ const IS_MAC = navigator.userAgent.includes("Mac");
 const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
+/** Where "open folder" actually lands, so a row or shortcut can name it. */
+const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "Explorer" : IS_MAC ? "Finder" : "file manager";
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
 // platforms (everything rendered from TS goes through MOD/chord instead).
 if (!IS_MAC) {
@@ -2894,6 +2896,7 @@ const SHORTCUTS: { label: string; chords: string[][] }[] = [
   { label: "Command palette", chords: [["⌘", "K"]] },
   { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
   { label: "Open a terminal here", chords: [["⌘", "T"]] },
+  { label: `Reveal this folder in ${FILE_MANAGER}`, chords: [["⌘", "⏎"]] },
   { label: "Toggle sidebar", chords: [["⌘", "B"]] },
   { label: "Toggle inspector", chords: [["⌘", "I"]] },
   { label: "Settings", chords: [["⌘", ","]] },
@@ -3186,12 +3189,17 @@ function sessionActions(s: Sess): PalItem[] {
     // clean up its worktree (and merged branch) without dropping to a shell.
     if (s.worktree) a.push(mk("Remove this worktree…", "⌫", () => removeWorktreeSession(s)));
   }
+  // Not gated on isAgent — every pane kind has a real directory behind it (a task's
+  // run cwd, a shell's launch dir), and unlike ⌘⏎ this names *this* session's
+  // folder rather than whichever one holds the stage.
+  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => openProjectFolder(s.workdir)));
   a.push(mk("Close session", "✕", () => closeSession(s.id)));
   return a;
 }
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: addProject },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal, sc: [MOD, "T"] },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: revealActiveFolder, sc: [MOD, "⏎"] },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: cycleSort },
@@ -4655,8 +4663,6 @@ $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
 // reused verbatim) so the everyday actions stay one click deep.
 let ctxKey: string | null = null;
 const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name || basename(key);
-// Where "Open project folder" actually lands, so the row can name it.
-const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "Explorer" : navigator.userAgent.includes("Mac") ? "Finder" : "file manager";
 
 type CtxRow = { act: string; ic: string; label: string; sub?: string; cls?: string; chev?: boolean };
 const ctxRowHtml = (r: CtxRow) =>
@@ -5012,6 +5018,16 @@ function activeCwd(): string | null {
   if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); return d ? d.workdir : null; }
   const s = activeId ? sessions.get(activeId) : null;
   return s ? s.workdir : null;
+}
+// The file-manager sibling of ⌘T (⌘⏎): show the current selection's folder. Keyed
+// off activeCwd(), so it lands on the same directory a terminal would — a worktree
+// session's own checkout rather than the repo it groups under, an external
+// session's cwd, a dormant session's recorded workdir. A workdir that's since been
+// deleted (a removed worktree) surfaces as the backend's error, not a silent no-op.
+function revealActiveFolder() {
+  const wd = activeCwd();
+  if (!wd) { toast("No active session"); return; }
+  void openProjectFolder(wd);
 }
 // Open a plain (non-Claude) terminal at the active project's cwd for running shell
 // commands alongside a session. When the launch engine is "embedded" it opens an
@@ -5716,6 +5732,23 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { mgrEdit = null; renderMgr(); } else closeTaskManager(); }
 });
+// ⌘⏎ — reveal the current selection's folder. Deliberately a second listener, in the
+// CAPTURE phase, because ⏎ is the one key every dialog already owns: the palette's
+// Enter runs the selected item and closes itself, dropping the scrim *before* a
+// bubble-phase listener would run — so "is a dialog up?" has to be asked ahead of
+// their handlers, not after. Blocked (not consumed) while one is, which leaves the
+// chord free for the run picker's ⌘⏎ pin.
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+  if ($("scrim").classList.contains("show")) return;
+  // Not every Enter-bound field sits behind the scrim — the colour popover's hex box
+  // doesn't — so also stand down while a real text field has focus. xterm's own
+  // hidden textarea is not one of those: a focused terminal is the normal case here.
+  const t = e.target;
+  if (t instanceof HTMLElement && t.matches("input, textarea") && !t.classList.contains("xterm-helper-textarea")) return;
+  e.preventDefault();
+  revealActiveFolder();
+}, true);
 // Debounce container resizes. A window drag or a sidebar/inspector toggle fires this
 // many times per second; without a settle delay each tick pushes a new width to the
 // PTY, and Claude's Ink renderer — which erases its previous frame by line count at
