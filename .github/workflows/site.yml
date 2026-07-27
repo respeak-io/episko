@@ -44,10 +44,14 @@ jobs:
         with:
           ref: main
 
-      # package-manager-cache defaults to true, which detects `packageManager: pnpm`
-      # in package.json and then fails on a runner where pnpm was never installed.
-      # Nothing here needs dependencies: the stamp script is node built-ins only, and
-      # wrangler-action brings its own wrangler. So: no package manager, no cache.
+      # pnpm has to exist even though this job installs no project dependencies:
+      # wrangler-action detects the package manager from pnpm-lock.yaml and shells
+      # out to it to install wrangler. Version comes from `packageManager` in
+      # package.json, same as ci.yml and release.yml.
+      - uses: pnpm/action-setup@v6
+
+      # No cache: nothing here runs `pnpm install`. The stamp script is node
+      # built-ins only, and wrangler is installed fresh by the action below.
       - uses: actions/setup-node@v5
         with:
           node-version: 20
@@ -85,8 +89,13 @@ jobs:
             echo "::warning::CLOUDFLARE_API_TOKEN is not set — skipping the deploy. The version stamp above was still committed."
           fi
 
+      # packageManager is stated rather than inferred, and wrangler is major-pinned:
+      # v3 of this action would otherwise be free to install a wrangler old enough to
+      # predate the Workers static-assets config this site is built on.
       - name: Deploy to Cloudflare
         if: steps.cf.outputs.enabled == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          packageManager: pnpm
+          wranglerVersion: "4"
