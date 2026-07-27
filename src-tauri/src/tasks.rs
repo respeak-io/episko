@@ -263,8 +263,13 @@ fn stamp(root: &Path) -> Stamp {
         .collect()
 }
 
-static CACHE: LazyLock<Mutex<HashMap<(String, bool), (Stamp, Vec<Runnable>)>>> =
-    LazyLock::new(Default::default);
+/// The memo table: `(root, trusted)` -> the stamp the entry was parsed at, and what
+/// that parse found. Named for the same reason `Stamp` above is — the nesting is
+/// what clippy's `type_complexity` objects to, and the alias is where the key and
+/// the value can be explained.
+type CacheMap = HashMap<(String, bool), (Stamp, Vec<Runnable>)>;
+
+static CACHE: LazyLock<Mutex<CacheMap>> = LazyLock::new(Default::default);
 
 /// `discover`, memoised against the source files it read. Anything wanting a
 /// guaranteed-fresh parse (the tests) calls `discover` directly.

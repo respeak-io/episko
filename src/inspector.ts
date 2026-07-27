@@ -1,0 +1,118 @@
+// The right-hand inspector: the one panel whose contents depend entirely on what kind
+// of pane is on stage. renderInspector is the dispatcher — a shell gets a card saying
+// what it is, a task run gets its command, exit code and actions, and an agent gets
+// the full stack of cards ./inspectorview builds.
+//
+// That split is the *view.ts boundary at work: every card's markup is a pure function
+// in ./inspectorview, and what stays here is the element they are painted into, the
+// status pill beside them, and the task card's per-button listeners — which address
+// one specific Sess and so were never part of the global [data-*] dispatcher.
+//
+// It is on renderAll()'s hot path (an agent's inspector repaints on every telemetry
+// event for the session on stage), which is why it is a module of its own rather than
+// something for the bootstrap trim to sweep up.
+
+import { invoke } from "@tauri-apps/api/core";
+import { $ } from "./dom";
+import { esc, fmtShort, tilde } from "./format";
+import { isAgent, PILL_TEXT, statusKey, type Sess } from "./types";
+import { pinnedIds, togglePin } from "./tasks";
+import { sessions } from "./state";
+// The task card's three actions. They took a host object while they lived in
+// main.ts; now that they are ./taskrun this module simply imports them.
+import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
+import {
+  gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml, vitalHtml, wsetHtml,
+} from "./inspectorview";
+
+export function renderInspector(s: Sess | null) {
+  if (s?.kind === "shell") { renderShellInspector(s); return; }
+  if (s?.kind === "task") { renderTaskInspector(s); return; }
+  const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
+  pill.className = "pill " + k;
+  $("iPillTxt").textContent = s ? (s.attention ? s.attention : PILL_TEXT[s.phase]) : "–";
+  if (!s) { $("inspector").innerHTML = `<div class="insp-empty">No session selected.</div>`; return; }
+
+  const html: string[] = [];
+  // ACT — a pending permission is the only thing that should ever jump the queue.
+  if (s.attention) {
+    const risk = s.pendingPermId && s.pendRisk ? `<span class="risk ${s.pendRisk}">${RISK_LABEL[s.pendRisk]}</span>` : "";
+    const permBtns = s.pendingPermId
+      ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
+      : "";
+    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
+  }
+  html.push(vitalHtml(s));                                        // state, dwell, current tool
+  html.push(gaugesHtml(s));                                       // TRACK — context + cost
+  if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
+  // What's changed on disk, and how the branch sits against its upstream. Shown
+  // for any repo session — a clean tree that's behind is exactly what you want to
+  // see, and it's the only place the fetch/pull/push buttons live.
+  if (s.git) html.push(wsetHtml(s));
+  html.push(timelineHtml(s));                                     // activity, by tool
+  if (s.res) html.push(resHtml(s));                              // REFERENCE — cpu/mem, pinned to the bottom
+  $("inspector").innerHTML = html.join("");
+}
+
+function renderShellInspector(s: Sess) {
+  const ended = s.phase === "ended";
+  const pill = $("iPill"); pill.className = "pill " + (ended ? "ended" : "idle");
+  $("iPillTxt").textContent = ended ? "exited" : "shell";
+  $("inspector").innerHTML = `
+    <div class="ext-card">
+      <div class="ext-hl">❯ Plain shell</div>
+      <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
+      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
+      <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
+    </div>`;
+}
+
+function renderTaskInspector(s: Sess) {
+  const r = s.run!;
+  const failed = r.exitCode != null && r.exitCode !== 0;
+  const running = r.exitCode == null;
+  const pill = $("iPill");
+  pill.className = "pill " + (running ? "working" : failed ? "error" : "done");
+  $("iPillTxt").textContent = running ? (r.background ? "running · background" : "running") : failed ? `exit ${r.exitCode}` : "passed";
+
+  // Offer the failure to a live agent in the same project — the one thing a plain
+  // terminal can't do. Only agents, and only when the run actually failed.
+  // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
+  // into, so offering the handoff there would fail at the click.
+  const candidates = failed ? [...sessions.values()].filter((x) => isAgent(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
+  // A run-on-stop failure goes back to the session whose turn it was checking — and
+  // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
+  // type into), offer nothing rather than misdirecting the output to an unrelated
+  // agent that happens to sort first. A hand-run task (no forSession) still offers
+  // the first live agent, which is the useful default there.
+  const target = r.forSession ? candidates.find((x) => x.id === r.forSession) : candidates[0];
+  const handoff = target
+    ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
+    : "";
+
+  $("inspector").innerHTML = `
+    <div class="ext-card">
+      <div class="ext-hl">▶ ${esc(r.label)}</div>
+      <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
+      <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
+      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
+      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
+      ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
+    </div>
+    <div class="tacts">
+      ${handoff}
+      <button class="tact" data-rerun="1">⟳ Re-run</button>
+      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
+      <button class="tact" data-reveal="1">↗ Reveal source</button>
+      ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
+    </div>`;
+
+  const insp = $("inspector");
+  insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
+  insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
+  insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
+  insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
+  insp.querySelector("[data-send]")?.addEventListener("click", (e) => {
+    sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
+  });
+}
