@@ -114,7 +114,8 @@ fn list_past_sessions_in(base: &Path, workdir: &str) -> Result<Vec<PastSession>,
         out.push(PastSession { session_id, title, last_prompt, mtime });
     }
 
-    out.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    // newest first (Reverse, because sort_by_key sorts ascending)
+    out.sort_by_key(|s| std::cmp::Reverse(s.mtime));
     Ok(out)
 }
 

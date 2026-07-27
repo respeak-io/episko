@@ -478,7 +478,7 @@ fn newest_localstorage_db(base: &std::path::Path) -> Option<std::path::PathBuf> 
                 stack.push((p, depth + 1));
             } else if p.file_name().and_then(|n| n.to_str()) == Some("localstorage.sqlite3") {
                 let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
-                if best.as_ref().map_or(true, |(b, _)| sz > *b) {
+                if best.as_ref().is_none_or(|(b, _)| sz > *b) {
                     best = Some((sz, p));
                 }
             }

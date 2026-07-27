@@ -188,8 +188,8 @@ pub(crate) fn list_external_sessions(state: State<AppState>, exclude: Vec<String
         s.branch = branch;
     }
 
-    // most-recently-active first
-    parsed.sort_by(|a, b| b.status_updated_at.unwrap_or(0).cmp(&a.status_updated_at.unwrap_or(0)));
+    // most-recently-active first (Reverse, because sort_by_key sorts ascending)
+    parsed.sort_by_key(|s| std::cmp::Reverse(s.status_updated_at.unwrap_or(0)));
     parsed
 }
 
