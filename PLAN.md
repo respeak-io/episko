@@ -568,9 +568,29 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
 
 ## Phase 3 — due diligence & polish
 
-- [ ] Doc drift: CLAUDE.md gets the module map (replaces the "one file"
+- [x] Doc drift: CLAUDE.md gets the module map (replaces the "one file"
       descriptions); README mentions the Windows embedded port; SPIKE.md marked
       historical
+
+      **Done 2026-07-27.** CLAUDE.md's two structural sections were rewritten around
+      the module tables (backend ten, frontend 34 grouped by test status), each
+      carrying the conventions Phases 1–2 settled — the crate-root `AppState`
+      decision, `pub(crate)` never `pub`, `platform.rs`'s import-free first half; the
+      seam-resolution order, the `*view.ts` boundary, and the `setX`-assigns-only rule
+      with the `setWtGroup` collision as its cautionary tale. Its test paragraph said
+      "thin and unit-only … currently the diff parser"; it now says 368 + 77 and which
+      modules are untested *by design*. **The no-cycles claim was verified, not
+      asserted**: a throwaway DFS over `src/*.ts` reports 34 modules, 187 import edges,
+      no cycles.
+
+      README was wrong, not merely stale: *"Windows needs a PowerShell/`curl.exe`
+      variant"* for a port that shipped, an `Install (macOS)` section for a release
+      matrix that has built Windows x64 for some time, and a **Launch Claude ▸**
+      button that no longer exists. Known limitations now name what is *actually*
+      macOS-only (engine handoff, external-terminal focus, the `ps` resource bars) and
+      carry the open Windows-statusLine finding with its hedge. Tasks, run-on-stop and
+      external/dormant sessions were missing from *What it does* entirely and were
+      added. SPIKE.md took a banner and no other edit, as specified.
 - [ ] Clippy: fix warnings, then drop the `|| true` in CI — a linter that can't
       fail is decoration
 - [ ] **Profiling pass: does anything still work when nobody is looking?**

@@ -19,7 +19,9 @@ Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **thin and unit-only** — there is no end-to-end harness. What exists: `vitest` over pure frontend logic (currently the diff parser, `test/diff.test.ts`, importing from `src/diff.ts`) and `#[cfg(test)]` integration tests in `lib.rs` that drive real `git` against a temp repo. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked headlessly with `claude -p`. `tsc` (strict) is the real linter. Requires `claude` on PATH, Node 18+, and Rust stable + Tauri system deps.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **368 vitest + 77 cargo**, both run in CI on both OSes. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+
+What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked headlessly with `claude -p`. `tsc` (strict) is the real linter. Requires `claude` on PATH, Node 18+, and Rust stable + Tauri system deps.
 
 CLI *mechanics*, though, often can be checked headlessly — drive `claude -p` against a **throwaway** session in a temp dir and inspect the resulting `.jsonl` (never a real session: resuming appends to it).
 
@@ -199,25 +201,79 @@ Four smaller P4 affordances, all in the frontend:
   button and the picker's ⌘⇧R both route through it. The escape hatch for the one
   thing the stamp can't see: a file an introspector imports itself.
 
-## Backend (`src-tauri/src/lib.rs`)
+## Backend (`src-tauri/src/`) — ten modules
 
-`main.rs` only calls `episko_lib::run()`; `tasks.rs` holds runnable discovery. `AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), the held-open `pending` permission requests, and `caffeinate`.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~7,600. Dependencies point downward, `platform.rs` at the bottom.
+
+| Module | Lines | What |
+| --- | --- | --- |
+| `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
+| `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
+| `usage.rs` | 819 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
+| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
+| `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `icons.rs` | 184 | project favicon/logo probing |
+| `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
+
+Four conventions hold across them:
+
+- **`AppState` and `Session` live in the crate root**, reached as `crate::AppState`. There is deliberately **no `state.rs`** — `run()` is their only constructor and it lives in `lib.rs`, so owner and definition stay together. Their *fields* need no visibility annotation at all (a private field is visible to the defining module and every descendant, and every module here is a descendant of the crate root); only the structs carry `pub(crate)`, and only to satisfy the private-in-public lint. Don't mix in a `state.rs` later.
+- **`pub(crate)`, never `pub`** — including on a `#[tauri::command]` fn in a private module, which works. `tasks.rs` uses plain `pub` and reads like a counter-example but isn't: `mod tasks;` is private, so `pub` inside it is unreachable from outside the crate anyway.
+- **`platform.rs`'s first half imports nothing from the crate.** That is exactly what lets every other module depend on it; the second half (the OS integrations) may, since `set_caffeinate` takes `State<AppState>`. **Don't let the first half grow a crate dependency.**
+- **A cfg-gated helper with a single consumer module belongs to *that* module**, not to `platform.rs` — `apply_utf8_locale` and `interactive_shell` are `pty.rs`'s (`apply_utf8_locale` takes a `portable_pty::CommandBuilder`, and the leaf layer must not import `portable_pty`), `same_path` is `git.rs`'s.
+
+`AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), the held-open `pending` permission requests, and `caffeinate`.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/main.ts`, `index.html`, `src/styles.css`)
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 34 modules
 
-One large `main.ts`, no framework. State lives in a `sessions: Map<session_id, Sess>` plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~7,200 lines across 34 modules; `main.ts` is 642 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
+What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
+
+**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 368 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+
+| Module | What |
+| --- | --- |
+| `types.ts` | the shared data model: `Sess`, `Phase`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`) |
+| `format.ts` | durations, paths, escaping, sparklines, money and token counts — data in, string out |
+| `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
+| `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join |
+| `phase.ts` | `applyHook` / `applyStatusline` — telemetry → session state. The heart of the display |
+| `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
+| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
+| `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
+
+**Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
+
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
+
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `update`.
+
+**Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
+
+Four rules keep that graph honest. **There are no import cycles across the 34 modules; re-run a cycle check after any change that adds an import.**
+
+- **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
+- **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
+- **A `*view.ts` takes data and returns a string** — no `$()`, no `innerHTML`, no renderer call. The `render*` function that paints the result stays with whoever owns the element, its timers and its delegated handlers. If a candidate seems to need a `setSomething`, it is a `render*` and should stay behind.
+- **`state.ts`'s `setX` setters assign and nothing else.** Persistence and `renderAll()` belong to the call site — that is what `actions.ts` is for. (Conflating the two is a bug this codebase has already shipped once: a settings picker called `state.ts`'s `setWtGroup` instead of `actions.ts`'s, so the choice never persisted.) Reads are the live ESM binding and stay bare identifiers (`activeId`, never `state.activeId`).
+
+And the things that hold however the files are arranged:
 
 - **`Sess.kind`** (`"claude" | "shell" | "task"`) decides whether telemetry, cost
   and git actions apply to a pane — use the `isAgent(s)` helper rather than
   re-testing the string. It is orthogonal to `Sess.external`, which means "the
   terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
   applies to a claude session.
-- **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of the file. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
+- **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
@@ -258,4 +314,6 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 
 macOS-first assumptions remain in the window/terminal layer: `osascript`, `open -a`, external-terminal engines, per-session CPU/RAM via `ps`, terminal-window focus. Windows has a working embedded-only port (PowerShell/`curl.exe` hook variants behind `#[cfg(windows)]`, cross-platform external-session listing); Linux is unported but the non-`ps` paths are written to be OS-agnostic.
 
-`SPIKE.md` and `README.md` describe an earlier state (single-session, "observe-only" permissions). The code has moved past both — it is multi-session and the permission hook is answerable. **Trust the code over the docs** when they disagree.
+**`SPIKE.md` is a historical record and is not maintained.** It describes the Phase-0 spike — single-session, "observe-only" permissions, one file per side — and is kept because it is the record of where this started, not because it is true. It carries a banner saying so. Don't consult it for how the app works today, and don't edit it to match; `README.md` is current.
+
+**Trust the code over the docs** when they disagree, and fix the doc in the same commit.
