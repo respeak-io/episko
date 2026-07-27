@@ -466,4 +466,217 @@ mod tests {
         resolve_permission(app.state(), id, "allow".to_string());
     }
 
+    // ---------- the CLI contract, against the real `claude` ----------
+    //
+    // The only test here that runs the external binary, and the only one that is
+    // #[ignore]d. Everything above proves *our* two ends agree with each other; this
+    // proves they still agree with **Claude Code**, which ships weekly and whose hook
+    // schema and transcript layout CLAUDE.md itself calls unstable.
+    //
+    // That gap is the reason it exists. If a release renames `hook_event_name`, or
+    // stops passing `cwd`, or moves `message.usage`, everything here still compiles,
+    // every other test stays green, and the app simply goes quiet — a pane with no
+    // phase, a cost meter stuck at zero. Nothing else in this repo can see that.
+    //
+    //   cargo test -- --ignored --nocapture
+    //
+    // Never a PR gate: it needs `claude` on PATH, an authenticated account, and it
+    // **spends tokens**. It belongs to the release checklist (see RELEASE.md).
+    //
+    // What it CANNOT cover, and why the coverage is not a lie by omission:
+    //
+    // - **The statusLine half.** `claude -p` is non-interactive and statusLine only
+    //   fires from a live REPL, so model / context % / cost / duration and every
+    //   rate-limit field are out of reach here. That is exactly the half that has
+    //   been observed missing on Windows, so this test passing says nothing about it.
+    // - **`~/.claude/sessions/<pid>.json`.** That registry holds one entry per running
+    //   *interactive* session; a `-p` run is not one. External-session discovery
+    //   stays a click-through check.
+    // - **PermissionRequest.** Answering it needs a UI; `-p` would either
+    //   auto-approve or hang. The blocking behaviour is covered against our own
+    //   server above, which is the part we own.
+
+    /// A v4-shaped uuid for the throwaway session. Episko's real ids come from the
+    /// frontend's `crypto.randomUUID`, so the backend has never needed to mint one
+    /// and this stays test-local rather than becoming a dependency.
+    fn throwaway_uuid() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mix = nanos ^ ((std::process::id() as u128) << 96)
+            ^ ((COUNTER.fetch_add(1, Ordering::SeqCst) as u128) << 64);
+        let h = format!("{mix:032x}");
+        // Set the version (4) and variant (8) nibbles so it is a well-formed v4.
+        format!("{}-{}-4{}-8{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
+    }
+
+    #[test]
+    #[ignore = "runs the real `claude` binary and spends tokens — `cargo test -- --ignored`"]
+    fn claude_cli_still_honours_our_instrumentation() {
+        use crate::platform::{augmented_path, resolve_claude};
+        use crate::testutil::scratch_dir;
+        use tauri::Listener;
+
+        let claude = resolve_claude();
+        // A throwaway directory, and emphatically NOT a real session's: `--session-id`
+        // on an existing conversation appends to its transcript.
+        let cwd = scratch_dir();
+        let sid = throwaway_uuid();
+
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("telemetry", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+
+        let settings = write_instrument_settings(port, &sid).expect("write the instrument file");
+
+        // stdout/stderr go to files rather than pipes: nothing reads a pipe while the
+        // child runs, so a chatty response could fill the buffer and deadlock.
+        let out_path = cwd.join("claude-stdout.txt");
+        let err_path = cwd.join("claude-stderr.txt");
+        let mut child = std::process::Command::new(&claude)
+            .arg("-p")
+            .arg("Reply with exactly the word pong and nothing else.")
+            .arg("--session-id")
+            .arg(&sid)
+            .arg("--settings")
+            .arg(&settings)
+            .current_dir(&cwd)
+            // A GUI-spawned app gets a stripped PATH, and so does a cargo test runner
+            // launched from one — the same reason the app rebuilds it before spawning.
+            .env("PATH", augmented_path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&out_path).expect("create stdout capture"))
+            .stderr(std::fs::File::create(&err_path).expect("create stderr capture"))
+            .spawn()
+            .unwrap_or_else(|e| panic!("could not run `claude` at {claude:?}: {e}\n\
+                 This test needs Claude Code installed and on PATH."));
+
+        // std has no timeout on wait(), and a hung `claude` would otherwise hang a
+        // release checklist indefinitely.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+        let status = loop {
+            match child.try_wait().expect("poll the claude process") {
+                Some(st) => break st,
+                None if std::time::Instant::now() > deadline => {
+                    let _ = child.kill();
+                    panic!("`claude -p` did not finish within 240s");
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(250)),
+            }
+        };
+        let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+        assert!(
+            status.success(),
+            "`claude -p` exited {status}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        // Hooks are fire-and-forget (`async: true`), so the last few can still be in
+        // flight when the process exits. Drain until the channel goes quiet.
+        let mut events: Vec<serde_json::Value> = Vec::new();
+        while let Ok(raw) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            events.push(serde_json::from_str(&raw).expect("telemetry payload should be json"));
+        }
+
+        // --- 1. the mechanism works at all ---
+        assert!(
+            !events.is_empty(),
+            "Claude ran but NOTHING reached our telemetry server. Either the hook \
+             schema changed, or the generated command no longer executes.\nstdout:\n{stdout}"
+        );
+
+        // --- 2. every event routes to the launch id we chose ---
+        for ev in &events {
+            assert_eq!(
+                ev["data"]["session_id"], sid.as_str(),
+                "an event was not tagged with our stable id — routing is broken: {ev}"
+            );
+        }
+
+        // --- 3. the hook fields the phase state machine branches on still exist ---
+        let names: Vec<String> = events
+            .iter()
+            .filter(|e| e["kind"] == "hook")
+            .filter_map(|e| e["data"]["hook_event_name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "hook events arrived but none carried `hook_event_name`; applyHook keys \
+             the entire phase state machine off that field. Got: {events:#?}"
+        );
+        for want in ["SessionStart", "UserPromptSubmit", "Stop"] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "no {want} hook arrived — got {names:?}"
+            );
+        }
+
+        // `cwd` is how a hook is correlated with the pane's workdir.
+        let hook = events.iter().find(|e| e["kind"] == "hook").expect("a hook event");
+        assert!(
+            hook["data"]["cwd"].as_str().is_some_and(|c| !c.is_empty()),
+            "hooks no longer carry `cwd`: {hook}"
+        );
+
+        // --- 4. the transcript layout the usage ledger reads ---
+        // Deliberately parsed raw rather than through parse_usage_line: the point is
+        // to check the EXTERNAL format, not our reader's agreement with itself.
+        let enc: String = cwd
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let transcript = std::path::Path::new(&crate::platform::home_dir())
+            .join(".claude")
+            .join("projects")
+            .join(&enc)
+            .join(format!("{sid}.jsonl"));
+        assert!(
+            transcript.is_file(),
+            "no transcript at {transcript:?} — the cwd->dir encoding or the naming \
+             scheme changed, which breaks resume labels and the cost ledger"
+        );
+        let text = std::fs::read_to_string(&transcript).expect("read the transcript");
+        let mut saw_usage = false;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue, // a record we don't read; not our contract
+            };
+            assert!(
+                v.get("timestamp").and_then(|t| t.as_str()).is_some_and(|t| t.len() >= 10),
+                "a transcript record lost its ISO `timestamp`; the daily rollup keys \
+                 every total off `timestamp[..10]`: {line}"
+            );
+            let Some(usage) = v.get("message").and_then(|m| m.get("usage")) else { continue };
+            saw_usage = true;
+            for field in ["input_tokens", "output_tokens"] {
+                assert!(
+                    usage.get(field).and_then(|x| x.as_u64()).is_some(),
+                    "message.usage.{field} is gone — the token ledger reads it by name: {line}"
+                );
+            }
+            assert!(
+                v["message"]["model"].as_str().is_some_and(|m| !m.is_empty()),
+                "message.model is gone — the per-model split falls back to `other`: {line}"
+            );
+            assert!(
+                v.get("cwd").and_then(|x| x.as_str()).is_some(),
+                "a transcript record lost `cwd` — the per-project spend split reads it: {line}"
+            );
+        }
+        assert!(
+            saw_usage,
+            "the transcript has no `message.usage` record at all, so the cost ledger \
+             would silently total zero"
+        );
+
+        let _ = std::fs::remove_file(&settings);
+        let _ = std::fs::remove_dir_all(&cwd);
+        // The transcript is deliberately left on disk: it is under a throwaway temp
+        // path in ~/.claude/projects, and deleting things there is not this test's job.
+    }
 }
