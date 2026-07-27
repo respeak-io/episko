@@ -26,6 +26,14 @@ which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any fil
 
 Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`, `cargo clippy --all-targets`. **Clippy is a CI gate** (`-- -D warnings`, both OSes) — keep it clean, and if a lint wants a real change rather than a tidy-up, `#[allow]` it with a comment saying why.
 
+**Install the gate before you rely on it: `rustup component add clippy`.** It is not
+in a default toolchain, and a gate you cannot run is one you will only meet in CI.
+This is not hypothetical — clippy, `cargo test` and the vitest suite each went red on
+the very branch that made CI enforce them, all three for the same reason: the check
+was never run locally, so the branch asserted green it had not earned. Run the gates
+in the block above before pushing, and match the toolchain CI uses (`stable` for Rust,
+`.nvmrc` for Node) so a pass locally means a pass there.
+
 **Two verification tricks the platform split makes necessary.** `cargo check` and clippy only compile the arms for *their own* target, so half this code is invisible on any one machine:
 
 - **The cfg flip.** Swap every `cfg(windows)` ↔ `cfg(not(windows))` in `src-tauri/src`, re-run `cargo clippy --all-targets`, then `git checkout -- src-tauri/src` to swap back. This type-checks and lints the other half, and has caught a dead import that was invisible locally and a warning in CI. Two cautions: it does **not** touch `cfg(target_os = …)` or `cfg(unix)`, so `reveal_path`'s unused `exists` is a known false positive; and **commit or stash your real changes first** — the `git checkout` that reverts the flip reverts everything else in that directory too.
