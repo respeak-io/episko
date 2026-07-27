@@ -16,7 +16,7 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
 - `pnpm test` — 368 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 79 tests on macOS, 77 on
+- `cargo check --locked` and `cargo test --locked` — 80 tests on macOS, 78 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -81,10 +81,18 @@ Tick these in order — each depends on the one above.
       a release blocker. A fresh instance reads `rx 0` until a session is launched
       *inside it*.
 - [ ] **The statusLine half arrives**, which the hook counter does not tell you —
-      hooks log a line each, statusLine deliberately does not. The evidence is the
-      inspector's **model / context % / cost / duration** and the footer meters being
-      populated rather than `–`. **This is the known-suspect one on Windows** (see
-      README's known limitations); confirm it explicitly rather than assuming.
+      hooks log a line each, statusLine deliberately does not, and `rx`/`routed` climb
+      happily on hooks alone. The evidence is the inspector's **model / context % /
+      cost / duration**, the footer meters, and the **5h / 7d rate-limit windows**
+      being populated rather than `–`. All of them ride this one path, so they fail
+      together and silently; a healthy-looking pane is not evidence.
+      **Costs nothing to check:** launch a session and read the inspector *without
+      prompting it*. An unprompted session makes no API call, and the statusLine still
+      fires on start and every 3s. **Do it on both OSes** — the two run in different
+      shells, and Windows shipped this broken once (`shell` is a hook field the
+      statusLine has no counterpart for, so Git Bash got a PowerShell command). CI now
+      executes the generated command in every shell Claude might pick; what only you
+      can see is whether Claude still hands it to one of them.
 - [ ] **Phases track reality.** The sidebar glyph moves idle → thinking → working →
       your-turn as the agent works, and the pane doesn't show the ended `·` while the
       process is still alive.

@@ -112,13 +112,23 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
 /// payload to our telemetry server. Both platforms use absolute paths to a
 /// guaranteed `curl` because Claude runs hooks/statusLine with a stripped PATH:
 /// `/usr/bin/curl` (macOS/Linux) or `C:\Windows\System32\curl.exe` (Windows,
-/// present since Win10 1803). On Windows the command is PowerShell — forced via
-/// the hook's `shell` field, since Claude Code's default hook shell there is Git
-/// Bash. curl reads Claude's payload straight from the shell's *inherited* stdin
-/// (`--data-binary @-`); we deliberately do NOT round-trip it through a PowerShell
-/// string (`$x=[Console]::In.ReadToEnd(); $x | curl`), because PowerShell prepends
-/// a UTF-8 BOM when piping a string to a native process, which `serde_json` then
-/// refuses to parse — silently dropping every payload. (Verified empirically.)
+/// present since Win10 1803). curl reads Claude's payload straight from the
+/// shell's *inherited* stdin (`--data-binary @-`); we deliberately do NOT
+/// round-trip it through a PowerShell string (`$x=[Console]::In.ReadToEnd(); $x |
+/// curl`), because PowerShell prepends a UTF-8 BOM when piping a string to a
+/// native process, which `serde_json` then refuses to parse — silently dropping
+/// every payload. (Verified empirically.)
+///
+/// **Windows runs the two halves in different shells, and only one of them can be
+/// told which.** `shell` is a *hook* field; Claude Code has no such field for the
+/// statusLine and routes it through Git Bash whenever Git Bash is installed (else
+/// PowerShell). So the hooks are pinned to `powershell` and written in it, while
+/// the statusLine command must parse in *either* shell: no `&` call operator, no
+/// `$null` (Git Bash would expand it away and leave a bare `1>`), no
+/// `Write-Output`, and forward slashes, since Git Bash eats lone backslashes as
+/// escapes. `echo` and single-quoted arguments mean the same thing in both.
+/// Getting this wrong costs no hook and no error — just every figure the
+/// statusLine carries (model, context %, cost, duration, rate limits), silently.
 pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io::Result<String> {
     let mut dir = std::env::temp_dir();
     dir.push("cc-launcher");
@@ -131,9 +141,13 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
     #[cfg(windows)]
     let (statusline_cmd, hook_cmd, shell): (String, String, Option<&str>) = {
         let curl = r"C:\Windows\System32\curl.exe";
+        // Shell-agnostic (see above): the statusLine can't say which shell it wants,
+        // so it says nothing either shell would choke on. `-o NUL` replaces the
+        // PowerShell-only `1>$null 2>$null`; `echo` replaces `Write-Output`.
         let statusline = format!(
-            "& '{curl}' -s --max-time 1 -X POST 'http://127.0.0.1:{port}/statusline' -H 'X-CC-Session: {session_id}' --data-binary '@-' 1>$null 2>$null; Write-Output 'cc-launcher'"
+            "C:/Windows/System32/curl.exe -s -o NUL --max-time 1 -X POST 'http://127.0.0.1:{port}/statusline' -H 'X-CC-Session: {session_id}' --data-binary '@-'; echo cc-launcher"
         );
+        // Hooks *are* pinned to PowerShell below, so this half stays PowerShell.
         let hook = format!(
             "& '{curl}' -s --max-time 2 -X POST 'http://127.0.0.1:{port}/hook' -H 'X-CC-Session: {session_id}' --data-binary '@-' 1>$null 2>$null"
         );
@@ -179,10 +193,9 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
         ]),
     );
 
-    let mut statusline = serde_json::json!({ "type": "command", "command": statusline_cmd, "refreshInterval": 3, "padding": 0 });
-    if let Some(sh) = shell {
-        statusline["shell"] = serde_json::Value::String(sh.to_string());
-    }
+    // No `shell` here: Claude Code doesn't define one for the statusLine, so setting
+    // it would be silently ignored while reading as though the shell were pinned.
+    let statusline = serde_json::json!({ "type": "command", "command": statusline_cmd, "refreshInterval": 3, "padding": 0 });
 
     let settings = serde_json::json!({
         "statusLine": statusline,
@@ -239,15 +252,17 @@ mod tests {
         assert!(path.ends_with(&format!("instrument-{sid}.json")), "unexpected path {path}");
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
+        // The statusLine spells its curl with forward slashes on Windows — Git Bash,
+        // which may be the shell that runs it, would eat the backslashes as escapes.
         #[cfg(windows)]
-        let curl = r"C:\Windows\System32\curl.exe";
+        let (curl, sl_curl) = (r"C:\Windows\System32\curl.exe", "C:/Windows/System32/curl.exe");
         #[cfg(not(windows))]
-        let curl = "/usr/bin/curl";
+        let (curl, sl_curl) = ("/usr/bin/curl", "/usr/bin/curl");
 
         let statusline = &v["statusLine"];
         assert_eq!(statusline["type"], "command");
         let sl = statusline["command"].as_str().expect("statusLine command");
-        assert!(sl.contains(curl), "statusLine must call curl by absolute path: {sl}");
+        assert!(sl.contains(sl_curl), "statusLine must call curl by absolute path: {sl}");
         assert!(sl.contains(&format!("X-CC-Session: {sid}")), "statusLine must tag our stable id");
         assert!(sl.contains("http://127.0.0.1:45678/statusline"), "statusLine must POST to our port");
 
@@ -271,17 +286,23 @@ mod tests {
         assert!(perm.get("async").is_none(), "PermissionRequest must block until the user answers");
         assert!(perm["timeout"].as_u64().unwrap_or(0) >= 60, "a human needs longer than a hook default to decide");
 
-        // Claude Code's default hook shell on Windows is Git Bash, so the PowerShell
-        // commands must say so; off Windows the field must be absent, not empty.
+        // `shell` is a *hook* field, and only a hook may carry it. Claude Code defines
+        // none for the statusLine — on Windows it runs that command through Git Bash
+        // whenever Git Bash is installed — so setting one there is worse than useless:
+        // it is ignored, while reading as though the shell were pinned. It isn't; the
+        // command parses in either shell, which `statusline_command_posts_from_every_
+        // shell_claude_might_pick` proves by running the string this file generates.
+        assert!(statusline.get("shell").is_none(), "the statusLine has no shell field to set: {statusline}");
         #[cfg(windows)]
         {
-            assert_eq!(statusline["shell"], "powershell");
+            // Claude Code's default hook shell on Windows is Git Bash, so the
+            // PowerShell hook commands must say so.
             assert_eq!(hooks["Stop"][0]["hooks"][0]["shell"], "powershell");
             assert!(perm.get("shell").is_none(), "an http hook has no shell to set");
         }
         #[cfg(not(windows))]
         {
-            assert!(statusline.get("shell").is_none(), "no shell override off Windows");
+            // Off Windows the field must be absent, not empty.
             assert!(hooks["Stop"][0]["hooks"][0].get("shell").is_none());
         }
 
@@ -421,6 +442,148 @@ mod tests {
         read_response(open_post(port, "/hook", &[("X-CC-Session", "ours-abc")], "\u{feff}{not json}"), wait);
         let ev = next();
         assert_eq!(ev["data"]["session_id"], "ours-abc");
+    }
+
+    /// The bash Claude Code would actually use on Windows: *Git* Bash, not whatever
+    /// `bash` happens to come first on PATH. On a machine with WSL that is
+    /// `C:\Windows\System32\bash.exe` — a Linux shell, where `C:/Windows/...` genuinely
+    /// doesn't exist and a passing or failing result would say nothing about the
+    /// product. Claude Code reads `CLAUDE_CODE_GIT_BASH_PATH` for the same reason, so
+    /// honour it first, then the default install locations, then git's own directory.
+    #[cfg(windows)]
+    fn git_bash() -> Option<std::path::PathBuf> {
+        if let Some(p) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(std::path::PathBuf::from) {
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let mut roots = vec![
+            std::path::PathBuf::from(r"C:\Program Files\Git"),
+            std::path::PathBuf::from(r"C:\Program Files (x86)\Git"),
+        ];
+        // `git --exec-path` lands somewhere under the install root (…/Git/mingw64/
+        // libexec/git-core), so walk back up looking for the one with bin/bash.exe.
+        if let Ok(out) = std::process::Command::new("git").arg("--exec-path").output() {
+            let p = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            roots.extend(p.ancestors().map(|a| a.to_path_buf()));
+        }
+        roots.into_iter().map(|r| r.join("bin").join("bash.exe")).find(|p| p.is_file())
+    }
+
+    /// The statusLine's command string, actually **executed**. Everything the cockpit
+    /// shows that isn't a phase — model, context %, cost, duration and the account-wide
+    /// rate limits — arrives on this one path and nowhere else, so a command the shell
+    /// won't parse takes all of them out at once while the hooks keep the pane looking
+    /// perfectly healthy. That is not hypothetical: Windows shipped exactly that. The
+    /// statusLine was written in PowerShell and marked `"shell": "powershell"`, but
+    /// `shell` is a hook field with no statusLine counterpart, so Claude handed the
+    /// string to Git Bash, which failed on the leading `&` and posted nothing.
+    ///
+    /// Reading the generated JSON cannot catch this — such a test agrees with our
+    /// intent, and our intent was the bug (the old one asserted that very `"shell"`
+    /// key, and stayed green throughout). Only the shell's own parser is authoritative,
+    /// so run the real string through every shell Claude might pick and require the
+    /// payload out the far end. No Claude and no tokens: the command is just curl.
+    #[test]
+    fn statusline_command_posts_from_every_shell_claude_might_pick() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("telemetry", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+
+        let sid = format!("test-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+        let path = write_instrument_settings(port, &sid).expect("settings file should be written");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let cmd = v["statusLine"]["command"].as_str().expect("statusLine command").to_string();
+
+        // Claude's own payload shape, trimmed to the fields `applyStatusline` reads.
+        // `session_id` differs from ours on purpose: a statusLine fires after /clear
+        // too, and the header is what routes it back to the pane.
+        let payload = concat!(
+            r#"{"session_id":"claude-rotated","model":{"display_name":"Opus"},"#,
+            r#""context_window":{"used_percentage":37},"cost":{"total_cost_usd":1.25},"#,
+            r#""rate_limits":{"five_hour":{"used_percentage":42}}}"#
+        );
+
+        // On Windows Claude picks Git Bash when it's installed and PowerShell when it
+        // isn't, and never tells us which — so both have to work.
+        #[cfg(windows)]
+        let shells: Vec<(std::path::PathBuf, &[&str])> = {
+            let mut v: Vec<(std::path::PathBuf, &[&str])> = Vec::new();
+            match git_bash() {
+                Some(b) => v.push((b, &["-c"][..])),
+                None => eprintln!("skipping Git Bash: not installed (Claude would use PowerShell here too)"),
+            }
+            v.push((std::path::PathBuf::from("powershell"), &["-NoProfile", "-Command"][..]));
+            v
+        };
+        #[cfg(not(windows))]
+        let shells: Vec<(std::path::PathBuf, &[&str])> = vec![(std::path::PathBuf::from("sh"), &["-c"][..])];
+
+        let mut ran = Vec::new();
+        for (prog, args) in shells {
+            let bin = prog.display().to_string();
+            let spawned = std::process::Command::new(&prog)
+                .args(args)
+                .arg(&cmd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+            let mut child = match spawned {
+                Ok(c) => c,
+                // Claude only picks a shell that exists, and so does this test. A box
+                // without Git Bash is one where Claude would use PowerShell anyway.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                Err(e) => panic!("could not spawn {bin}: {e}"),
+            };
+            // Dropping the handle at the end of the statement closes the pipe, which is
+            // the EOF `--data-binary @-` waits for.
+            let mut sin = child.stdin.take().expect("child stdin");
+            sin.write_all(payload.as_bytes()).expect("pipe the payload in");
+            drop(sin);
+            let out = child.wait_with_output().expect("wait for the statusLine command");
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            // The trailing `; echo` makes the exit status echo's, so it stays 0 even
+            // when curl never ran — stderr is the honest channel here. A shell that
+            // can't parse the command, or can't find curl, says so there and nowhere
+            // else, because `-s` means curl itself is silent either way.
+            assert!(
+                out.status.success() && err.is_empty(),
+                "{bin} could not run the statusLine command ({}):\n  {cmd}\n  {err}",
+                out.status
+            );
+            // Whatever it prints is what Claude renders in the status bar.
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("cc-launcher"),
+                "{bin} ran it but printed no marker: {:?}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+
+            let raw = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("{bin} ran the statusLine command but nothing reached the telemetry server"));
+            let ev: serde_json::Value = serde_json::from_str(&raw).expect("event payload should be json");
+            assert_eq!(ev["kind"], "statusline", "{bin}");
+            assert_eq!(ev["data"]["session_id"], sid.as_str(), "{bin}: the header must route it to our launch id");
+            assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "{bin}: the resume target must survive");
+            // A body mangled in transit — a PowerShell BOM, a lost pipe, a shell that
+            // ate a quote — lands here as a parse failure rather than these figures.
+            assert_eq!(ev["data"]["model"]["display_name"], "Opus", "{bin}");
+            assert_eq!(ev["data"]["context_window"]["used_percentage"], 37, "{bin}");
+            assert_eq!(ev["data"]["cost"]["total_cost_usd"], 1.25, "{bin}");
+            assert_eq!(ev["data"]["rate_limits"]["five_hour"]["used_percentage"], 42, "{bin}");
+            ran.push(bin);
+        }
+        assert!(!ran.is_empty(), "no shell was available to run the statusLine command in");
+        eprintln!("statusLine verified through: {}", ran.join(", "));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The one *blocking* hook. Claude sits on the open request until the user
