@@ -560,6 +560,22 @@ re-checking type-checks the other half. It found one: the `pty.rs` slice left a 
 false positive is `reveal_path`'s `exists`, because the flip does not touch
 `cfg(target_os = …)` and that function has three such arms.
 
+**Two things learned about the flip in Phase 3, both worth knowing before using it
+again.**
+
+- **Commit or stash your real changes first.** Reverting the flip is `git checkout --
+  src-tauri/src`, which is indiscriminate: it took three finished clippy fixes with
+  it. Flip → check → revert → *then* fix, or stash.
+- **The flip cannot be extended to the macOS-only arms, and that is not a small
+  gap.** Swapping `target_os = "macos"` ↔ `"windows"` as well was tried and fails
+  hard, not with lints: `rusqlite` is a **macOS-only dependency** in `Cargo.toml`, so
+  the code behind those arms cannot resolve its crate on Windows. `cfg(unix)` is the
+  same story one layer down (`std::os::unix::fs::PermissionsExt` in `pty.rs`), which
+  is also why the plain flip compiles at all — it leaves `cfg(unix)` alone. So the
+  ~15 `cfg(target_os = …)` sites, which are most of `platform.rs`'s OS integrations,
+  have **no local check on Windows**; CI's macOS leg is the only one. Expect it to
+  find lints the first time the clippy gate is real.
+
 Second trap, new: **when a slice *appends* into an existing module, check the merge
 as a multiset** — every non-blank line of the result must be one the target already
 had or one the spec cut, with nothing missing. The append script's header-skip used
@@ -591,8 +607,24 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       carry the open Windows-statusLine finding with its hedge. Tasks, run-on-stop and
       external/dormant sessions were missing from *What it does* entirely and were
       added. SPIKE.md took a banner and no other edit, as specified.
-- [ ] Clippy: fix warnings, then drop the `|| true` in CI — a linter that can't
+- [x] Clippy: fix warnings, then drop the `|| true` in CI — a linter that can't
       fail is decoration
+
+      **Done 2026-07-27.** All three warnings the kickoff predicted, fixed as
+      tidy-ups: a useless `format!` in a `usage.rs` test (written during the
+      Phase-2 base-dir commit, as predicted), a manual char comparison in
+      `parse_usage_line`, and `type_complexity` on `tasks.rs`'s `CACHE` — the last
+      resolved with a `CacheMap` alias rather than an `#[allow]`, following the
+      `Stamp` alias four lines above it in the same file. No `#[allow]` was needed
+      anywhere; nothing was restructured.
+
+      **`|| true` alone would have changed nothing** — plain `cargo clippy` exits 0
+      with warnings. The gate is `cargo clippy --all-targets --locked -- -D
+      warnings`, on both legs.
+
+      Verified against **both** cfg arms: with the fixes in, the flip leaves only
+      `reveal_path`'s `exists`, the known false positive. **The macOS-only arms
+      could not be checked at all** — see the two notes below.
 - [ ] **Profiling pass: does anything still work when nobody is looking?**
       Prompted by the debug-snapshot finding above, which was only noticed because
       the UI got sluggish — nothing in the test net can see this class of problem.

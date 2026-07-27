@@ -220,7 +220,7 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
     let project = v
         .get("cwd")
         .and_then(|x| x.as_str())
-        .and_then(|c| c.rsplit(|ch: char| ch == '/' || ch == '\\').find(|s| !s.is_empty()))
+        .and_then(|c| c.rsplit(['/', '\\']).find(|s| !s.is_empty()))
         .unwrap_or("unknown")
         .to_string();
     Some(LineUsage {
@@ -758,7 +758,7 @@ mod tests {
         write(
             "-work-beta",
             "s2.jsonl",
-            &format!("{}", line("2026-07-20", "/work/beta", "some-future-model", [1, 1, 1, 1])),
+            &line("2026-07-20", "/work/beta", "some-future-model", [1, 1, 1, 1]),
         );
         // Not a transcript, and a stray file at the project level.
         write("-work-beta", "notes.md", "ignored");

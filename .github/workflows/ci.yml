@@ -72,8 +72,14 @@ jobs:
         working-directory: ./src-tauri
         run: cargo test --locked
 
-      # Lint signal only — does not fail the build on warnings, so a pre-existing
-      # style nit can't block an unrelated PR.
-      - name: Clippy (non-blocking)
+      # A real gate as of Phase 3 — a linter that can't fail is decoration. Note
+      # `-D warnings` is what does the gating: plain `cargo clippy` exits 0 with
+      # warnings, so dropping the old `|| true` alone would have changed nothing.
+      #
+      # This runs on both legs deliberately. Clippy only lints the arms that compile
+      # for its own target, so the Windows leg never sees the `cfg(not(windows))` /
+      # `cfg(target_os = "macos")` code and vice versa — the same reason the build and
+      # test steps above are a matrix.
+      - name: Clippy
         working-directory: ./src-tauri
-        run: cargo clippy --all-targets || true
+        run: cargo clippy --all-targets --locked -- -D warnings
