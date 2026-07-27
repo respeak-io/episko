@@ -26,7 +26,7 @@ import { basename, esc, tilde } from "./format";
 import {
   isAgent, type DiffStat, type GitActionResult, type Runnable, type Sess,
 } from "./types";
-import { cleanTitle, fitSession, loadWebgl, macShellKeys, MONO } from "./terminal";
+import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
@@ -71,7 +71,8 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     term.loadAddon(fit);
     loadWebgl(term);
     term.open(pane);
-    term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+    term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
+    winClaudePaste(id, term, pane);
   }
 
   const s: Sess = {

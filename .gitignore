@@ -34,3 +34,9 @@ dist-ssr
 # Coverage output (`pnpm coverage`). A yardstick, not an artifact. cargo llvm-cov
 # writes under src-tauri/target/, already ignored by src-tauri/.gitignore.
 coverage/
+
+# generated Artifact bundle for site/index.html (not deployed, not source)
+build/
+
+# wrangler
+.wrangler/

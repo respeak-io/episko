@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://episko.dev/sitemap.xml

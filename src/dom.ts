@@ -32,6 +32,7 @@ export function dropScrim() {
 // logs. The one-time rewrite of index.html's hard-coded ⌘ glyphs is bootstrap and
 // stays in main.ts for exactly that reason.
 export const IS_MAC = navigator.userAgent.includes("Mac");
+export const IS_WIN = navigator.userAgent.includes("Windows");
 export const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 export const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);

@@ -14,7 +14,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { toast } from "./dom";
+import { IS_WIN, toast } from "./dom";
+import { dlog } from "./debug";
 import { basename, tilde } from "./format";
 import type { Sess } from "./types";
 import { activeId, sessions, setTermFontSize, termFontSize } from "./state";
@@ -52,6 +53,73 @@ export function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
     }
     return true;
   };
+}
+
+// A claude pane's keystrokes are NOT raw pass-through — this is the one input path
+// that filters. Ctrl+C must stay an *interrupt*, never an exit: Claude's REPL quits on
+// a second ^C inside its own double-press window, and in an embedded pane that reads
+// as Episko losing a session rather than a terminal doing what terminals do — the pane
+// is left behind as a dead `·` row. So a claude pane forwards the first ^C (cancel the
+// turn / clear the prompt) and swallows whatever follows inside the guard window; press
+// again a moment later and it interrupts normally. Ending a session stays an explicit
+// act: ✕, ⌘K → Close, or `/exit` typed into Claude.
+//
+// Only claude panes get this — ^C in a shell or task pane is the whole point of those
+// panes, and killing the process there is the expected outcome. Those two wire
+// `term.onData` straight to `write_pty` (see ./panes).
+//
+// The window is deliberately a little longer than Claude's own (~2s): too long merely
+// delays a repeat interrupt, too short lets the exit through.
+const INTR_GUARD_MS = 3000;
+export function claudeInput(id: string): (d: string) => void {
+  let lastIntr = 0, warned = false;
+  return (d) => {
+    // Exactly ^C and nothing else: a paste arrives wrapped in bracketed-paste
+    // sequences, so pasted text containing \x03 never lands here as a lone byte.
+    if (d === "\x03") {
+      const now = Date.now();
+      if (now - lastIntr < INTR_GUARD_MS) {
+        // One toast per burst — key repeat would otherwise fire it continuously.
+        if (!warned) {
+          warned = true;
+          toast("Ctrl+C interrupts — use ✕ or /exit to end the session");
+          dlog("info", `guarded repeat ^C · ${id.slice(0, 8)}`);
+        }
+        return;
+      }
+      lastIntr = now;
+      warned = false;
+    }
+    invoke("write_pty", { sessionId: id, data: d });
+  };
+}
+
+// Windows image paste for Claude panes. Claude Code's only default binding for
+// chat:imagePaste on native Windows is alt+v (ctrl+v joins it only under WSL) —
+// and xterm makes Ctrl+V a dead key on top: it swallows the browser paste and
+// sends ^V, which Claude ignores there. Net effect: Ctrl+V did *nothing* in an
+// embedded pane on Windows. Route by clipboard content instead: tell xterm to
+// leave Ctrl+V to the browser, then on the resulting paste event send ESC v
+// (Claude's own alt+v chord) when an image is aboard — Claude reads the bitmap
+// through its native clipboard path and shows its own feedback — while plain
+// text falls through to xterm's normal bracketed paste.
+//
+// NOTE: xterm keeps only **one** custom key-event handler per terminal, so a new key
+// rule for a claude pane belongs in here or in `claudeInput` above — never in a second
+// `attachCustomKeyEventHandler` call. (`macShellKeys` is safe: it is the *shell* pane's
+// handler, and no pane is both.)
+export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
+  if (!IS_WIN) return;
+  term.attachCustomKeyEventHandler((e) =>
+    !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
+  // Capture phase: runs before xterm's textarea paste handler, so an image paste
+  // never double-fires as a (empty) text paste.
+  pane.addEventListener("paste", (e) => {
+    if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke("write_pty", { sessionId: id, data: "\x1bv" });
+  }, true);
 }
 
 // Fit one terminal to its pane, push the new size to its PTY, and force a full
