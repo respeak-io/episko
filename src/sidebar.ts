@@ -44,10 +44,36 @@ export function setReorderGuard(v: number) { reorderGuardUntil = v; }
 
 // The sidebar's row builders now live in ./sidebarview; renderSidebar below owns
 // the element they are painted into, and the drag state that must not be stomped.
+
+// The markup last written to #projects, and the reason renderSidebar is guarded.
+//
+// This is the hot path in the whole app: renderAll() repaints it on EVERY telemetry
+// event, and a fleet of agents produces those continuously. Building the string is
+// cheap (0.13ms with six sessions) but *assigning* it is not — #projects is ~6.7KB
+// of rows, and replacing it invalidates the sidebar's entire layout. Measured with
+// layout forced, renderSidebar costs **7.0ms**, which is ~95% of renderAll's total.
+// (Without forcing layout it measures 0.13ms and looks free — the browser defers
+// the work to the next frame, which is exactly how this stayed invisible.)
+//
+// Most of those repaints change nothing. The rows show a phase glyph, a title and
+// `Math.round(ctxPct)`, so a statusLine moving cost or context by a hair is usually
+// invisible here. Over a realistic event stream, **84.5%** of repaints produced
+// byte-identical markup with hooks mixed in, and **95%** for a session thinking
+// quietly. So: build always, assign only on a change.
+//
+// Not render diffing (which PLAN puts out of scope) — no DOM is compared or
+// patched. It is the same guard ./tray already uses before rebuilding the native
+// menu, applied to the surface that turned out to cost the most.
+let lastHtml: string | null = null;
+// The pointer-driven reorder physically moves nodes inside #projects, so the cache
+// must not be trusted across one. Cleared in the drag's cleanup below; the cost is
+// one guaranteed repaint per drag, which is the correct trade.
+function invalidateSidebarCache() { lastHtml = null; }
+
 export function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
-  $("projects").innerHTML = projectList().map((p) => {
+  const html = projectList().map((p) => {
     const rows = groupBody(p) + dormantRows(p);
     const total = p.sessions.length + p.externals.length;
     const isFav = FAVORITES.some((f) => f.path === p.path);
@@ -71,6 +97,9 @@ export function renderSidebar() {
     }
     return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
   }).join("");
+  if (html === lastHtml) return; // nothing the sidebar shows has changed
+  lastHtml = html;
+  $("projects").innerHTML = html;
 }
 // Reordering of project groups, on pointer events (not HTML5 drag). The window now
 // sets dragDropEnabled:true so external file drops paste a path instead of navigating
@@ -97,6 +126,9 @@ export function initProjectDnD() {
     dragEl?.classList.remove("dragging");
     dragEl = candidate = null;
     draggingProjects = false;
+    // A drag moved real nodes in #projects, so what is on screen no longer
+    // necessarily matches the cached markup — force the next render to paint.
+    invalidateSidebarCache();
   };
 
   container.addEventListener("pointerdown", (e) => {
