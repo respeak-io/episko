@@ -763,103 +763,145 @@ Decided 2026-07-24, so it needn't be re-argued mid-restructure.
   cost/benefit is poor; the smoke checklist covers it.
 - `styles.css` split, framework adoption, render diffing, rewrites of any kind.
 
-## Kickoff prompt — Phase 2
+## Kickoff prompt — Phase 3
 
 Paste into a fresh session on this branch. Written to be worked **autonomously** — the
 effort has stalled before on an agent stopping at a tidy checkpoint that was not a
-blocker. (The Phase-1 version of this prompt is in git history; Phase 1 is done.)
+blocker. (The Phase-1 and Phase-2 versions are in git history; both phases are done.)
+
+**Phase 3 is not like the two before it**, and this says so up front because it changes
+how the work has to be done. Phases 0–2 were moves: the compiler and 77 + 368 tests
+said whether each one was right. Phase 3 is measurement, judgement and product calls,
+and *nothing in the test net can see any of it*. Expect to check in more.
 
 > Read PLAN.md and CLAUDE.md first. PLAN.md is the tracker and its ground rules bind
-> you. The decisions already recorded there — ground rules 1–5, *On integration tests*,
-> and the Phase-2 module list — were settled in earlier sessions and are **not to be
-> re-argued**. Phase 0 and Phase 1 are done; **Phase 2 splits `src-tauri/src/lib.rs`
-> (4,711 lines) into modules.**
+> you. The decisions recorded there — ground rules 1–5, *On integration tests*, *Out of
+> scope*, and everything under Phases 0–2 — were settled in earlier sessions and are
+> **not to be re-argued**. Phases 0, 1 and 2 are done: `main.ts` is 642 lines of
+> bootstrap across 34 modules, `lib.rs` is 449 across 10, and the gates are **77 cargo
+> + 368 vitest**, `tsc --noEmit` clean. **Phase 3 is due diligence and polish.**
 >
-> **Work the plan without checking in.** Take the first unchecked item of Phase 2, land
-> it as its own commit, then take the next one, and keep going. Do not stop between
-> slices to summarise, do not ask whether to continue, and do not treat "this is a
-> natural place to pause" as a reason to stop — it isn't. Stop only when the phase is
-> complete or you hit a real blocker.
+> **Work the plan without checking in.** Take the items in the order below, land each as
+> its own commit, then take the next. Do not stop between items to summarise, do not ask
+> whether to continue, and do not treat "this is a natural place to pause" as a reason
+> to stop — it isn't. Stop only when the phase is complete or you hit a real blocker.
+>
+> **Order, and why it is not PLAN's file order.** Two of the seven items need a human at
+> a keyboard and one needs the user's Claude quota. Do everything that needs neither
+> first, and batch what does into one hand-off at the end rather than stalling three
+> separate times.
+>
+> 1. **Doc drift.** First, because CLAUDE.md is now actively wrong rather than merely
+>    stale — it says "One large `main.ts`, no framework" and describes `lib.rs` as *the*
+>    backend file. Both predate 33 frontend and 9 backend modules, so an agent reading
+>    it is misled by the first thing it learns about the codebase. Give it the module
+>    map; PLAN's Phase-1 and Phase-2 sections already hold the content *and* the
+>    reasons, so lift them rather than re-deriving. README gets the Windows embedded
+>    port. SPIKE.md gets a "historical" banner rather than an edit — it describes a
+>    single-session, observe-only app that no longer exists, and rewriting it would
+>    destroy the record of where this started.
+> 2. **Clippy.** Small and already surveyed: `cargo clippy --all-targets` reports
+>    **3 distinct warnings today** — 1 in `tasks.rs`, 2 in `usage.rs`, and one of those
+>    is a useless `format!` in a test written during the Phase-2 base-dir commit. Fix
+>    them, then drop the `|| true` at `.github/workflows/ci.yml:79`. **Two cautions.**
+>    Clippy on Windows only lints the Windows arms, so run the cfg flip (below) before
+>    believing that count, and expect CI's macOS leg to find more the first time the
+>    gate is real. And a lint fix is a code change: `tasks.rs` and `usage.rs` are both
+>    tested, so they must stay green, but do not let clippy talk you into restructuring
+>    anything. If a lint wants a real change rather than a tidy-up, `#[allow]` it with a
+>    comment saying why — that is a decision, and PLAN's rules say record it.
+> 3. **Dead-code and TODO sweep, both sides.** Cheap now *because* of the split: an
+>    unused item in a 4,700-line file was invisible, in a 200-line module it is obvious,
+>    and `pub(crate)` means the compiler can finally see reachability properly. Grep the
+>    TODOs, list them, and for each either fix it, promote it into PLAN, or delete the
+>    comment — a TODO nobody will action is noise. **Never delete a cfg-gated item on
+>    the strength of a Windows build**: `ps_one`'s Windows arm looks dead here and is
+>    the entire point on macOS.
+> 4. **The profiling pass** — the substantial item, and the reason this phase exists.
+>    PLAN lists one confirmed offender and four unverified leads. **The leads are leads,
+>    not findings: measure before believing any of them, and say which ones you
+>    disproved.** Do the frontend half yourself — `pnpm dev`, load `localhost:1420` in a
+>    browser (Tauri `invoke` throws, but the timers, the render path and the JSON work
+>    are all real), and take a performance trace. Chrome DevTools MCP tools are
+>    available; use them rather than asking the user to click. Fix the cheap ones one
+>    commit each, **each with a before/after number in the message** — a performance
+>    commit without a measurement is a guess. The confirmed offender (`flushDebug`:
+>    ~29KB of pretty-printed JSON across the IPC boundary every 4s, forever) already has
+>    its fix argued in *Findings*, and the argument matters: **not** "only flush when
+>    visible", because CLAUDE.md says the snapshot is *meant* to be readable with the
+>    panel closed — but "flush cheaply, and only when something changed". Anything
+>    structural is its own commit.
+> 5. **Coverage as a yardstick** (PLAN marks it optional). Only if 1–4 landed cleanly
+>    and you still have context. Wire `@vitest/coverage-v8` and `cargo llvm-cov`, record
+>    the numbers in PLAN, and **do not add tests to chase a percentage** — the render
+>    and DOM-owning modules are untested *by design*, and a coverage gate would argue
+>    with a decision this plan already made twice. Yardstick, not target.
+> 6. **Write the release smoke checklist** as a document — `RELEASE.md`, or a section of
+>    README; your call, but say which and why. Writing it is yours. *Running* it is the
+>    user's, and it is one of the two hand-offs below.
+> 7. **CLI contract test against real `claude -p`.** Write it, `#[ignore]`d, compiling
+>    and registered — that part is yours. **Do not run it without asking**: it spends the
+>    user's Claude quota. Heed PLAN's own warning while writing it — a **throwaway**
+>    session in a temp dir, never a real one, because resuming appends to it.
 >
 > **Real blockers** — the only reasons to stop and ask:
-> - Something needs the app *run interactively*.
-> - A behaviour change that is not a bug fix — a default, a wording, anything where
->   "correct" is a product call rather than a contradiction in the code.
-> - A seam or decision PLAN's rules genuinely do not cover. Record what you decide;
->   don't invent an answer silently.
-> - Anything outward-facing: pushing, releasing, touching a remote.
+> - Something needs the app *run interactively* (the OS edge: PTY, tray, windows,
+>   permissions, external terminals). Phase 3 has more of this than any phase so far.
+> - A behaviour change that is not a bug fix — a default, a wording, a threshold,
+>   anything where "correct" is a product call rather than a contradiction in the code.
+>   **A performance fix that changes what the app does, rather than how often it does
+>   it, is one of these.**
+> - Anything that spends the user's Claude quota, or touches a remote.
+> - A decision PLAN's rules genuinely do not cover. Record what you decide; don't invent
+>   an answer silently.
 >
 > Running low on context is not a blocker — it is a handoff. Update PLAN.md so the next
 > session can continue without the user, then say so.
 >
-> **What a Rust slice is, concretely.** The Phase-1 recipe carries over — guarded
-> line-range slice → wire → gates → diff the relocated block against
-> `git show HEAD:src-tauri/src/lib.rs`, where the only differences should be the seams
-> you intended. What changes is the seam mechanism. There is no hook rule here; Rust
-> has real visibility:
+> **Three things carried in from the earlier phases. All still open, none of them a
+> checkbox** — so don't let them vanish just because the boxes above are tickable
+> without them:
 >
-> - **`mod x;` in `lib.rs`, `pub(crate)` on anything crossing the boundary, `use
->   crate::x::…` at the consumer.** `pub(crate)`, never `pub` — the crate's public API
->   is `run()` and nothing else, and *On integration tests* depends on that.
-> - **`#[tauri::command]` fns must stay in `tauri::generate_handler![…]`.** Path-qualify
->   them the way the already-extracted module does (`tasks::discover_runnables`,
->   `tasks::save_episko_task`). Reassuringly this one is compiler-caught: a command that
->   falls out of scope fails the build rather than silently vanishing at runtime.
-> - **Tests move with their subjects, in-file.** `#[cfg(test)] mod tests` inside the new
->   module, so they still reach private items — that is the whole reason PLAN refused a
->   `src-tauri/tests/` directory. `tasks.rs` (39 tests, its own module, `use super::*`)
->   is the shape to copy.
-> - **`tasks.rs` is already the target pattern and needs nothing.** Don't touch it.
+> - **The click-through is owed for the whole effort.** PLAN says it plainly: nothing in
+>   Phases 0–2 has been exercised in the running app. Every slice was verified by `tsc`,
+>   `pnpm test`, `cargo test` and mechanical diffs — which prove the code is *the same*,
+>   not that the app still *works*. *Verifying a slice by hand* is the procedure. This
+>   is hand-off one, and item 4 wants the app running anyway.
+> - **Windows statusLine telemetry (open, needs the user).** Not yet reproduced on
+>   0.11.0 — confirm that first. It decides whether ~100 of the Phase-1 frontend tests
+>   currently guard code that never runs on this platform, and `telemetry.rs` is the
+>   module that half goes through. It is also the strongest argument for item 7, which
+>   is why PLAN suggests pulling that item forward: **if 1–4 finish early, do 7 before
+>   5 and 6.**
+> - **The debug-snapshot flush (open, and yours to fix).** Diagnosed in *Findings*, and
+>   it is item 4's confirmed offender. Don't rediscover it — fix it.
 >
-> **Three traps specific to this phase.**
+> **Two tools from Phase 2 worth reusing.** The rationale for both is in git history's
+> commit messages if you want it:
 >
-> 1. **`#[cfg]` pairs must move as pairs.** `lib.rs` has 34 cfg-gated items, many as
->    `#[cfg(windows)]` / `#[cfg(not(windows))]` twins: `resolve_claude`,
->    `augmented_path`, `apply_utf8_locale`, `interactive_shell`, `task_shell`,
->    `find_ghostty`, `available_terminals`, `spawn_external_terminal`,
->    `open_terminal_here`, `focus_external_session`, `ps_one`, `set_caffeinate`
->    (+ `KeepAwake`, `execution_state_for`), and the macOS-only legacy-localStorage
->    readers. Take one half and it still compiles **on your platform** and breaks the
->    other in CI, which runs both. Grep each name before you cut and check you have
->    every arm.
-> 2. **The test count is platform-specific.** 73 `#[test]` fns are declared; **69 run on
->    Windows**, because some are cfg-gated. So the check is "`cargo test` reports the
->    same number as it did before this slice", not a number copied out of this file. A
->    dropped or orphaned test changes it.
-> 3. **Don't tidy `build.rs`.** Its `/MANIFESTDEPENDENCY` link arg exists because
->    building a `tauri::App` in a test harness gets no manifest and the exe dies at load
->    with `STATUS_ENTRYPOINT_NOT_FOUND` before any test runs. The rationale is in the
->    file. It looks removable and is not.
+> - **The cfg flip.** `cargo check` on Windows never compiles the `cfg(not(windows))`
+>   arms, so a stale import or a dead item inside one is invisible locally and a warning
+>   in CI. Swap every `cfg(windows)` ↔ `cfg(not(windows))` on a scratch copy, re-check,
+>   swap back. It found a real dead import in Phase 2. Its one known false positive is
+>   `reveal_path`'s `exists`, because the swap doesn't touch `cfg(target_os = …)` and
+>   that function has three such arms. **Items 2 and 3 both need it.**
+> - **Mutation testing, for anything you add tests to.** PLAN's convention: every new
+>   test must be shown to bite, and the commit says how many mutations ran, how many
+>   were killed, and why any survivor is *equivalent* rather than a coverage gap.
+>   Phase 2's usage tests ran 14 and killed 14 — but only after the first pass turned up
+>   a survivor that was a real gap. Don't assume a survivor is benign.
 >
-> **Two decisions to make in the first slice, and record.**
+> **Gates, all green before every commit:** `cargo test` in `src-tauri/` (77), and — if
+> you touched TypeScript, which items 1, 4 and 5 all will — `pnpm exec tsc --noEmit` and
+> `pnpm test` (368). Use **pnpm**, not npm. From item 2 onward `cargo clippy
+> --all-targets` is a gate rather than advisory; that is the point of the item.
 >
-> - **Where `AppState` and `Session` go.** 18 sites take `State<AppState>`, and the pty,
->   telemetry, caffeinate, external and tray clusters all touch it — this is Phase 1's
->   `state.ts` question again. Either a `state.rs`, or leave it in the crate root where
->   every module reaches it as `crate::AppState`. Pick one, say why, don't mix.
-> - **Whether `platform.rs` really comes last.** PLAN lists it last, but the shared leaf
->   helpers live in it and everything else calls them: `sys_command` (17 uses),
->   `norm_path` (12), `sh_quote` (11), `home_dir` (9). That is Phase 1's seam rule 1 —
->   move the callee down first — and it is what made `icons.ts` precede `sidebar.ts` and
->   `terminal.ts` precede `panes.ts`. Check the greps yourself before reordering, and
->   note that `git_cmd` (15) / `git_run` (8) are git-only and belong in `git.rs`.
->
-> **Gates, all green before every commit:** `cargo test` in `src-tauri/` — that is the
-> real net here, and far stronger than the frontend had. Also `pnpm exec tsc --noEmit`
-> and `pnpm test` **only if you touched TypeScript**, which this phase should not.
-> `cargo clippy` is advisory (CI runs it with `|| true`, and it may not be installed) —
-> don't block on it. Use **pnpm**, not npm.
->
-> **If you find a real bug:** finish the move first, flag it, then fix it in its own
-> commit with the failing test written first. Never in the same commit as a move.
+> **If you find a real bug:** flag it, then fix it in its own commit with the failing
+> test written first — never folded into an unrelated change.
 >
 > **Report honestly.** If a verification step examined nothing, say so rather than
-> reporting that it passed — that has happened on this effort, twice through a diff
-> window a few lines short. Compare the two blocks **line-sorted**, so a pure reorder
-> reads as identical and a real edit still shows. If tests fail, show the output. If you
-> skipped part of a slice, name it.
->
-> **Two open findings are worth more than another module, and one of them needs the
-> user:** see *Findings from the Phase-1 slices*. The Windows statusLine one in
-> particular blocks reading roughly a hundred of the new frontend tests as evidence the
-> feature works — and Phase 2's `telemetry.rs` is the module that half runs through.
+> reporting that it passed — that has happened on this effort three times now: twice
+> through a diff window a few lines short, once through a merge that silently ate three
+> lines of a doc comment. If a measurement *disproved* a lead, say so; a disproved lead
+> is a result and PLAN wants it recorded. If tests fail, show the output. If you skipped
+> part of an item, name it.
