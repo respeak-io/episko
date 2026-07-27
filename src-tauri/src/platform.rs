@@ -575,6 +575,13 @@ pub(crate) fn read_legacy_localstorage() -> Result<std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the legacy-store test below needs these, and it is macOS-only — so the
+    // imports are gated too, or the other platforms get an unused-import warning
+    // (which CI's clippy `-D warnings` turns into a failure).
+    #[cfg(target_os = "macos")]
+    use crate::testutil::COUNTER;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::Ordering;
 
     /// All three real-world spellings of one Windows folder (git's forward
     /// slashes, the dialog's native path, VS Code's lowercase drive) must
