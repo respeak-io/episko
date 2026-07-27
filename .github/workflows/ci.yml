@@ -32,10 +32,14 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
 
+      # Read from .nvmrc so CI and a local `nvm use` cannot drift. That drift is not
+      # hypothetical: this workflow pinned Node 20 while dev machines ran newer, and
+      # `globalThis.navigator` (Node 21+) made two vitest suites pass locally and die
+      # here. One file is now the single source of truth for both.
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Set up Rust
