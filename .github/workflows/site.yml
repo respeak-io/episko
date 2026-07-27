@@ -50,11 +50,13 @@ jobs:
       # package.json, same as ci.yml and release.yml.
       - uses: pnpm/action-setup@v6
 
-      # No cache: nothing here runs `pnpm install`. The stamp script is node
-      # built-ins only, and wrangler is installed fresh by the action below.
+      # Node 22, not the 20 that ci.yml and release.yml build with: wrangler v4
+      # refuses to run on anything older. No cache — nothing here runs
+      # `pnpm install`; the stamp script is node built-ins only, and wrangler is
+      # installed fresh by the action below.
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           package-manager-cache: false
 
       # No arg on push/dispatch-without-input -> the script falls back to
