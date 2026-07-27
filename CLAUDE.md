@@ -28,7 +28,9 @@ Test coverage is **unit-only — there is no end-to-end harness**, but it is no 
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked headlessly with `claude -p`. `tsc` (strict) is the real linter. Requires `claude` on PATH, Node 18+, and Rust stable + Tauri system deps.
 
-CLI *mechanics*, though, often can be checked headlessly — drive `claude -p` against a **throwaway** session in a temp dir and inspect the resulting `.jsonl` (never a real session: resuming appends to it).
+CLI *mechanics*, though, often can be checked headlessly — drive `claude -p` against a **throwaway** session in a temp dir and inspect the resulting `.jsonl` (never a real session: resuming appends to it). That is what the one `#[ignore]`d test does (`claude_cli_still_honours_our_instrumentation` in `telemetry.rs`): it runs the real binary and asserts Claude Code's hook schema and transcript layout still match what this app reads. It is **not** in CI — it needs auth and spends tokens — and is run via `cargo test -- --ignored` as part of `RELEASE.md`'s checklist.
+
+**`RELEASE.md` holds the manual release procedure** — what CI already guarantees, the click-through for the OS edge, and the tag/verify steps. Anything that can only be checked by running the app belongs there, not here.
 
 ## The core mechanism: per-launch instrumentation
 

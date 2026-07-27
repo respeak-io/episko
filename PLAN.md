@@ -785,8 +785,24 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       devDependency and a `pnpm install`, which is a remote and outside this item;
       it is a small, self-contained slice for whoever picks it up.
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
-- [ ] Manual release smoke checklist (launch → telemetry arrives → answer a
+- [x] Manual release smoke checklist (launch → telemetry arrives → answer a
       permission → resume → external session visible → task run + on-stop rule)
+
+      **Written 2026-07-27 as `RELEASE.md`, not a README section** — README is for
+      someone deciding whether to *use* Episko, this is a procedure for the one
+      person shipping it, and it changes when the OS edge changes rather than when
+      the app does. Folding it in would have buried the install instructions.
+
+      Structured as *what CI already guarantees* (so nothing is re-checked by hand),
+      then the two things it cannot: the `--ignored` CLI contract test, and the
+      click-through. The list is ordered by dependency rather than by feature, and
+      calls out the three checks whose failure is a hard blocker — a `dropped`
+      counter above zero, an unanswerable permission, and a `/clear` that orphans the
+      pane. It also names the one step that cannot be checked before tagging (the
+      updater, which needs a *previous* version installed) and the one whose failure
+      is silently permanent for everyone already on it.
+
+      **Running it is the user's**, and it is hand-off two.
 - [ ] **CLI contract test against real `claude -p`**, marked `#[ignore]` and run
       via `cargo test -- --ignored` as part of the release checklist — never a PR
       gate (needs `claude` on PATH, auth, tokens, and it is slow). Rationale: the
