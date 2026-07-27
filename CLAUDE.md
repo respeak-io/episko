@@ -13,7 +13,16 @@ pnpm tauri build    # production bundle
 pnpm build          # tsc typecheck + vite build (frontend only; the beforeBuildCommand)
 pnpm exec tsc --noEmit       # typecheck only (tsconfig is noEmit)
 pnpm test               # vitest — frontend unit tests (test/*.test.ts)
+pnpm coverage           # the same suites with v8 coverage
 ```
+
+Coverage is a **yardstick, not a target** — there is deliberately no gate, because the
+render and DOM-owning modules are untested by design. Current: **85.8%** statements
+over the modules the suites load, **17.4%** over all of `src/`, and **72.3%** Rust
+lines (`cargo llvm-cov --summary-only` from `src-tauri/`). Both gaps are the OS edge,
+which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any file at
+100% in all four columns**, so a fully-covered module looks absent; use
+`--coverage.reporter=json-summary` for per-file truth.
 
 Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`, `cargo clippy --all-targets`. **Clippy is a CI gate** (`-- -D warnings`, both OSes) — keep it clean, and if a lint wants a real change rather than a tidy-up, `#[allow]` it with a comment saying why.
 

@@ -584,12 +584,11 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
 
 ## Phase 3 — due diligence & polish
 
-**Status 2026-07-27: six of seven items done**, in nine commits. Gates are **77 cargo
-(+1 `#[ignore]`d) + 368 vitest**, `tsc --noEmit` clean, and `cargo clippy
---all-targets -- -D warnings` now **exits 0 and is a CI gate** rather than decoration.
-
-Item 5 (coverage) is the only one not done, and is blocked on the user: both halves
-need a remote fetch and one adds a devDependency. See it below.
+**Status 2026-07-27: Phase 3 is done — all seven items.** Gates are **77 cargo (+1
+`#[ignore]`d) + 368 vitest**, `tsc --noEmit` clean, and `cargo clippy --all-targets
+-- -D warnings` now **exits 0 and is a CI gate** rather than decoration. Coverage,
+recorded as a yardstick and not gated: **85.8%** frontend over the tested modules
+(17.4% over all of `src/`), **72.3%** Rust lines.
 
 **What is owed to a human, and cannot be done from here.** All three need the app run
 interactively or the user's Claude account:
@@ -810,19 +809,63 @@ interactively or the user's Claude account:
       it is a small, self-contained slice for whoever picks it up.
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
 
-      **Not done — blocked on the user, 2026-07-27.** Both halves need a remote and
-      neither tool is present: `@vitest/coverage-v8` is a new **devDependency** (so a
-      `package.json` + `pnpm-lock.yaml` change and a new supply-chain entry), and
-      `cargo llvm-cov` needs `cargo install cargo-llvm-cov`. The kickoff names
-      "touches a remote" as a real blocker, and this is the one item marked optional,
-      so it was left rather than installed unilaterally. Everything else in Phase 3 is
-      done.
+      **Done 2026-07-27**, after checking in: both halves needed a remote
+      (`@vitest/coverage-v8` as a devDependency, `cargo install cargo-llvm-cov`) and
+      the user approved both. `pnpm coverage` is now a script; the Rust side is
+      `cargo llvm-cov --summary-only` from `src-tauri/`.
 
-      When it is picked up, PLAN's constraint stands and is the whole point: **record
-      the numbers, do not chase them.** The render, view and DOM-owning modules are
-      untested *by design* — decided twice in this plan — so a coverage gate would
-      argue with a decision already made. Expect the logic modules to read high and
-      the app to read low, and expect that to be correct.
+      **These are a yardstick, not a target — no test was written to move them, and
+      no gate was added.** A gate would argue with a decision this plan has already
+      made twice: the render, view and DOM-owning modules are untested *by design*.
+
+      **Frontend — and it takes two numbers, not one.** Over the files the suites
+      actually load: **85.8% statements, 85.7% branches, 66.8% functions, 85.1%
+      lines**. Over all of `src/` (`--coverage.include='src/**'`): **17.4%**. Neither
+      is the honest number alone — the gap between them *is* the design decision, and
+      quoting only the first would hide it while quoting only the second would read
+      as neglect.
+
+      | Module | Stmts | Branch | Funcs | Lines |
+      | --- | --- | --- | --- | --- |
+      | `format.ts` | 100 | 100 | 100 | 100 |
+      | `rl.ts` | 100 | 100 | 100 | 100 |
+      | `grouping.ts` | 100 | 99.1 | 100 | 100 |
+      | `phase.ts` | 100 | 96.9 | 92.3 | 100 |
+      | `palette.ts` | 100 | 97.5 | 100 | 100 |
+      | `diff.ts` | 100 | 90.0 | 100 | 100 |
+      | `usage.ts` | 98.9 | 98.1 | 100 | 100 |
+      | `types.ts` | 80.0 | 0 | 50.0 | 100 |
+      | `state.ts` | 69.6 | 64.1 | 31.8 | 80.0 |
+      | `tasks.ts` | 58.4 | 65.9 | 43.1 | 61.8 |
+
+      Two of those are worth reading rather than skimming. **`tasks.ts` at 58% is the
+      lowest tested module and the only number here that looks like a gap** — the
+      untested part is its `localStorage` preference layer (pins, hidden, trust,
+      stop rules), not the chain logic the slice was written for. **`state.ts` at 69%
+      is expected and fine**: most of its uncovered half is `setX` one-liners.
+
+      **A reporter trap worth knowing:** vitest's `text` reporter **omits any file at
+      100% in all four columns**, so `format.ts` and `rl.ts` are absent from the table
+      it prints and it reads as though they have no coverage at all. Use
+      `--coverage.reporter=json-summary` for per-file truth.
+
+      **Rust (`cargo llvm-cov`): 74.4% regions, 72.3% lines, 67.2% functions.**
+
+      | Module | Lines | | Module | Lines |
+      | --- | --- | --- | --- | --- |
+      | `tasks.rs` | 91.9% | | `platform.rs` | 30.9% |
+      | `usage.rs` | 89.9% | | `pty.rs` | 8.3% |
+      | `git.rs` | 81.5% | | `lib.rs` | 0.0% |
+      | `external.rs` | 66.9% | | `icons.rs` | 36.8% |
+      | `telemetry.rs` | 62.7% | | | |
+
+      The shape is the same on both sides and is the right shape: **what is uncovered
+      is the OS edge**, exactly what *Out of scope* says will never have an automated
+      net. `pty.rs` at 8% is the four launch engines (they need a real terminal),
+      `lib.rs` at 0% is `run()`, the tray and the panic hook (they need an app),
+      `platform.rs` at 31% is the OS integrations. Those are `RELEASE.md`'s job, not a
+      test's. `telemetry.rs` at 63% is lower than it looks — the uncovered half is the
+      `cfg(not(windows))` arms, which this machine cannot execute.
 - [x] Manual release smoke checklist (launch → telemetry arrives → answer a
       permission → resume → external session visible → task run + on-stop rule)
 

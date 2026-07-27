@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^4.1.10",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vitest": "^4.1.10"

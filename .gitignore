@@ -30,3 +30,7 @@ dist-ssr
 # Playwright MCP session artifacts (page snapshots / console logs from browser-driven
 # profiling runs). Scratch output, never part of the project.
 .playwright-mcp/
+
+# Coverage output (`pnpm coverage`). A yardstick, not an artifact. cargo llvm-cov
+# writes under src-tauri/target/, already ignored by src-tauri/.gitignore.
+coverage/
