@@ -53,6 +53,7 @@ function loadWebgl(term: Terminal) {
 // Platform-aware shortcut hints. Display only: the key handlers already accept
 // both modifiers (`e.metaKey || e.ctrlKey`), so only the glyphs differ per OS.
 const IS_MAC = navigator.userAgent.includes("Mac");
+const IS_WIN = navigator.userAgent.includes("Windows");
 const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
@@ -85,6 +86,62 @@ function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
     }
     return true;
   };
+}
+// Ctrl+C must stay an *interrupt*, never an exit. Claude's REPL quits on a second
+// ^C inside its own double-press window, and in an embedded pane that reads as
+// Episko losing a session rather than a terminal doing what terminals do — the
+// pane is left behind as a dead `·` row. So a Claude pane forwards the first ^C
+// (cancel the turn / clear the prompt) and swallows whatever follows inside the
+// guard window; press again a moment later and it interrupts normally. Ending a
+// session stays an explicit act: ✕, ⌘K → Close, or `/exit` typed into Claude.
+// Only claude panes get this — ^C in a shell or task pane is the whole point of
+// those panes, and killing the process there is the expected outcome.
+// The window is deliberately a little longer than Claude's own (~2s): too long
+// merely delays a repeat interrupt, too short lets the exit through.
+const INTR_GUARD_MS = 3000;
+function claudeInput(id: string): (d: string) => void {
+  let lastIntr = 0, warned = false;
+  return (d) => {
+    // Exactly ^C and nothing else: a paste arrives wrapped in bracketed-paste
+    // sequences, so pasted text containing \x03 never lands here as a lone byte.
+    if (d === "\x03") {
+      const now = Date.now();
+      if (now - lastIntr < INTR_GUARD_MS) {
+        // One toast per burst — key repeat would otherwise fire it continuously.
+        if (!warned) {
+          warned = true;
+          toast("Ctrl+C interrupts — use ✕ or /exit to end the session");
+          dlog("info", `guarded repeat ^C · ${id.slice(0, 8)}`);
+        }
+        return;
+      }
+      lastIntr = now;
+      warned = false;
+    }
+    invoke("write_pty", { sessionId: id, data: d });
+  };
+}
+// Windows image paste for Claude panes. Claude Code's only default binding for
+// chat:imagePaste on native Windows is alt+v (ctrl+v joins it only under WSL) —
+// and xterm makes Ctrl+V a dead key on top: it swallows the browser paste and
+// sends ^V, which Claude ignores there. Net effect: Ctrl+V did *nothing* in an
+// embedded pane on Windows. Route by clipboard content instead: tell xterm to
+// leave Ctrl+V to the browser, then on the resulting paste event send ESC v
+// (Claude's own alt+v chord) when an image is aboard — Claude reads the bitmap
+// through its native clipboard path and shows its own feedback — while plain
+// text falls through to xterm's normal bracketed paste.
+function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
+  if (!IS_WIN) return;
+  term.attachCustomKeyEventHandler((e) =>
+    !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
+  // Capture phase: runs before xterm's textarea paste handler, so an image paste
+  // never double-fires as a (empty) text paste.
+  pane.addEventListener("paste", (e) => {
+    if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke("write_pty", { sessionId: id, data: "\x1bv" });
+  }, true);
 }
 type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 interface EngineDef { id: Engine; label: string; sub: string }
@@ -200,6 +257,35 @@ interface DiffStat {
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
 interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
+// What a pane actually contains. All three run in an identical PTY; the kind is
+// what decides whether telemetry, cost and git actions apply to it.
+//   claude — an instrumented `claude` session (the only kind with telemetry)
+//   shell  — a plain login shell (❯ Terminal)
+//   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
+// Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
+// rather than an embedded pane", and only ever applies to a claude session.
+type SessKind = "claude" | "shell" | "task";
+const isAgent = (s: Sess) => s.kind === "claude";
+
+// The resolved half of a Runnable — what the backend needs to actually start it.
+interface Exec { mode: "argv"; program: string; args: string[] }
+interface ExecShell { mode: "shell"; line: string }
+// One value a task needs before it can run — a VS Code `${input:…}` declaration,
+// or a just recipe parameter with no default.
+interface InputSpec {
+  id: string; kind: "promptString" | "pickString"; description: string;
+  default: string | null; options: string[]; password: boolean;
+}
+interface Runnable {
+  id: string; label: string; detail: string | null;
+  source: string; sourceFile: string; group: string | null;
+  exec: Exec | ExecShell; cwd: string; env: Record<string, string>;
+  background: boolean; inputs: InputSpec[];
+  // Labels, not ids — VS Code names dependencies by label.
+  dependsOn: string[]; dependsOrder: "parallel" | "sequence";
+  blocked: string | null;
+}
+
 interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
   // resumeId = the id `claude --resume` must target. It starts equal to `id` (we
@@ -213,7 +299,18 @@ interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: { cpu: number; memMb: number } | null;
   lastEvent: string; activity: Act[];
-  external: boolean; shell?: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  // task panes only
+  run?: {
+    id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
+    startedAt: number; exitCode: number | null; tail: string[];
+    /// The directory discovery ran in — where `sourceFile` is rooted, so *reveal
+    /// source* can find the file even for a task whose run cwd is a subfolder.
+    root: string;
+    /// Set when a run-on-stop rule started this — the session whose turn it was
+    /// verifying, and therefore the one a failure should be offered back to.
+    forSession?: string;
+  };
 }
 const sessions = new Map<string, Sess>();
 let activeId: string | null = null;
@@ -410,7 +507,7 @@ function rosterEntry(s: Sess): Restorable {
   };
 }
 function saveRoster() {
-  const open = [...sessions.values()].filter((s) => !s.shell && s.workdir).map(rosterEntry);
+  const open = [...sessions.values()].filter((s) => isAgent(s) && s.workdir).map(rosterEntry);
   // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
   // restores only some of them doesn't quietly discard the rest.
   const live = new Set(open.map((r) => r.id));
@@ -480,7 +577,7 @@ function addUsage(delta: number, s?: Sess) {
   const k = todayKey();
   usage[k] = (usage[k] || 0) + delta;
   localStorage.setItem("cc-usage", JSON.stringify(usage));
-  if (!s || s.shell) return;
+  if (!s || !isAgent(s)) return;
   // Attribute the cost delta to whichever model is active right now and to the
   // session's project — the closest honest split the statusLine data allows.
   const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {}, sessions: [] });
@@ -631,7 +728,8 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
     term.loadAddon(fit);
     loadWebgl(term);
     term.open(pane);
-    term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+    term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
+    winClaudePaste(id, term, pane);
   }
 
   const s: Sess = {
@@ -640,7 +738,7 @@ async function launch(project: string, workdir: string, opts: { colorKey?: strin
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
-    lastEvent: "", activity: [], external, term, fit, pane,
+    lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => {
@@ -717,6 +815,9 @@ function removeFavorite(path: string) {
 }
 function closeSession(id: string) {
   const s = sessions.get(id); if (!s) return;
+  // Closing a pane mid-chain counts as a failure, not a hang.
+  const waiter = exitWaiters.get(id);
+  if (waiter) { exitWaiters.delete(id); waiter(-1); }
   const wasActive = activeId === id;
   // Resolve the successor while the closing session is still in the map, so its
   // sidebar position (same-project neighbour) is known.
@@ -761,7 +862,7 @@ function setActive(id: string) {
 // working-set diff (git_diffstat) and the claude process's CPU/RAM
 // (session_resources). Both are cheap and only fetched for the visible session.
 async function refreshSessionStats(s: Sess) {
-  if (s.shell || s.external) return;
+  if (!isAgent(s) || s.external) return;
   const [git, res] = await Promise.all([
     invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
     invoke<{ cpu: number; mem_mb: number } | null>("session_resources", { sessionId: s.id }).catch(() => null),
@@ -836,7 +937,7 @@ async function refreshExternals() {
 // call the inspector already makes; here it fans out across the distinct folders.
 async function refreshDirtyStates() {
   const folders = new Set<string>();
-  for (const s of sessions.values()) if (!s.shell && s.workdir) folders.add(s.workdir);
+  for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
   const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
@@ -1140,7 +1241,9 @@ function applyHook(s: Sess, data: any) {
     }
     case "PostToolUse": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "working"); break;
     case "PostToolUseFailure": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "error"); break;
-    case "Stop": setPhase(s, "done"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
+    // The turn is over — which is exactly when a project's run-on-stop rule, if it
+    // has one, gets to check the agent's work.
+    case "Stop": setPhase(s, "done"); clearPending(s); s.curTool = ""; s.curArg = ""; void maybeRunOnStop(s); break;
     case "StopFailure": setPhase(s, "error"); clearPending(s); break;
     case "SessionEnd": setPhase(s, "ended"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
     case "Notification": {
@@ -1293,7 +1396,8 @@ function projectList(): ProjGroup[] {
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
 function urgencyRank(s: Sess): number {
-  if (s.shell) return 6;
+  if (s.kind === "shell") return 6;
+  if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
   if (s.phase === "done") return 2;  // your turn
@@ -1328,17 +1432,19 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
   // Prefer the abbreviated title; fall back to the branch/worktree only until
   // Claude sets a title, so idle rows stay identifiable. (Branch is kept in the
   // stage header — dropped here to save sidebar space.)
-  const label = s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
-  // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited)
-  const glyph = s.shell ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
-  const gcls = s.shell ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
+  const label = s.kind === "task" ? `▶ ${s.run?.label ?? "task"}` : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
+  // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited).
+  // tasks keep the status glyphs: an exit code *is* a done/error phase, so a red
+  // build reads exactly like a broken session in the rail.
+  const glyph = s.kind === "shell" ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
+  const gcls = s.kind === "shell" ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
   const chipHtml = chip
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
   return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
     <span class="sbranch" title="${esc(label)}">${esc(label)}</span>${chipHtml}
-    <span class="sctx">${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
+    <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }
 // The full body of a project group (owned sessions + external rows), shaped by the
@@ -1573,9 +1679,9 @@ function renderHeader(s: Sess | null) {
   const hb = $("hBranch"); hb.classList.remove("ext-chip");
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
-  if (s.shell) { hb.textContent = "shell"; hb.hidden = false; hb.classList.add("ext-chip"); }
+  if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
-  $("hTitle").textContent = s.shell ? "" : (s.title || "");
+  $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   $("hPath").textContent = tilde(s.workdir);
 }
 function fmtDur(ms: number) {
@@ -1615,6 +1721,536 @@ function renderShellInspector(s: Sess) {
       <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
     </div>`;
 }
+// ---------- task settings & trust ----------
+// Everything here is *personal* preference and lives in localStorage beside
+// cc-favorites. Project-shaped facts (what a task runs, its cwd, its env) belong
+// in .episko/tasks.toml, which is committable — the split is what keeps a shared
+// repo working for a colleague who never opens Episko.
+
+// Must list every `source` the backend can emit (see tasks.rs `discover`): anything
+// missing here is discovered and then silently filtered out of the picker.
+const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
+type Provider = (typeof ALL_PROVIDERS)[number];
+const PROVIDER_LABEL: Record<Provider, string> = {
+  episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
+  just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
+};
+
+interface TaskPrefs {
+  providers: Provider[];
+  /// Providers that existed when this was last saved. One added later isn't in the
+  /// stored `providers` array either, and without this we couldn't tell "the user
+  /// switched it off" from "it didn't exist yet".
+  known: Provider[];
+  introspect: boolean;        // may a trusted project be *run* to enumerate itself?
+  cwd: "session" | "root";    // which directory a run inherits
+  dismissMs: number;          // 0 = never auto-dismiss a green run
+  attention: boolean;         // does a failed run raise the badge?
+}
+const DEFAULT_TASK_PREFS: TaskPrefs = {
+  providers: [...ALL_PROVIDERS], known: [...ALL_PROVIDERS], introspect: true, cwd: "session", dismissMs: 20000, attention: true,
+};
+const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...JSON.parse(localStorage.getItem("cc-task-prefs") || "{}") };
+for (const p of ALL_PROVIDERS) {
+  if (!taskPrefs.known.includes(p)) taskPrefs.providers = [...taskPrefs.providers, p];
+}
+taskPrefs.known = [...ALL_PROVIDERS];
+function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.stringify(taskPrefs)); renderAll(); }
+
+// Folders the user has explicitly allowed Episko to introspect. Adding a folder as
+// a project counts as saying yes — you chose it deliberately; a directory that
+// merely happens to hold a session does not.
+const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
+function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
+function isTrusted(path: string): boolean {
+  return FAVORITES.some((f) => f.path === path) || trustedPaths.includes(path);
+}
+function trustProject(path: string) {
+  if (!trustedPaths.includes(path)) { trustedPaths.push(path); saveTrusted(); }
+}
+function untrustProject(path: string) {
+  const i = trustedPaths.indexOf(path);
+  if (i >= 0) { trustedPaths.splice(i, 1); saveTrusted(); }
+  renderAll();
+}
+// Only projects the user opted in by hand can be revoked here — a favourite is
+// trusted *because* it's a favourite, and removing it is how you undo that.
+function explicitlyTrusted(): string[] { return [...trustedPaths]; }
+
+// ---------- runnables (tasks & scripts) ----------
+// Discovery lives in Rust (src-tauri/src/tasks.rs) and only ever *parses* files —
+// it never executes the project to find out what it can do. This half is choosing
+// and observing.
+
+// Pins are personal, not project state, so they sit in localStorage beside
+// cc-favorites rather than in the repo. Keyed by project root → Runnable ids,
+// which discovery guarantees are stable across a rescan.
+const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
+function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
+function pinnedIds(key: string): string[] { return taskPins[key] || []; }
+function togglePin(key: string, id: string) {
+  const cur = pinnedIds(key);
+  taskPins[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!taskPins[key].length) delete taskPins[key];
+  saveTaskPins();
+  renderAll();
+}
+
+// ---------- package-runner override ----------
+// The lockfile decides the runner in Rust (`package_runner`), and it's right for
+// essentially every repo. This is the escape hatch for one that lies — a stray
+// pnpm-lock in an npm project. It's a *personal* per-project fact, so localStorage,
+// and it's applied here rather than in Rust: an npm task's exec is already
+// `{program:<runner>, args:["run", name]}`, so swapping the program after discovery
+// is the whole change — the discovery cache never has to learn about it.
+const RUNNERS = ["auto", "npm", "pnpm", "yarn", "bun"] as const;
+type Runner = (typeof RUNNERS)[number];
+const taskRunner: Record<string, Runner> = JSON.parse(localStorage.getItem("cc-task-runner") || "{}");
+function runnerFor(key: string): Runner { return taskRunner[key] || "auto"; }
+function setRunner(key: string, r: Runner) {
+  if (r === "auto") delete taskRunner[key]; else taskRunner[key] = r;
+  localStorage.setItem("cc-task-runner", JSON.stringify(taskRunner));
+  renderAll();
+}
+function applyRunner(list: Runnable[], key: string): Runnable[] {
+  const r = runnerFor(key);
+  if (r === "auto") return list;
+  return list.map((t) => t.source === "npm" && t.exec.mode === "argv"
+    ? { ...t, exec: { ...t.exec, program: r } } : t);
+}
+
+// ---------- remembered ${input:…} values ----------
+// A task with an input prompt shouldn't ask cold every time. Values are remembered
+// per project + task + input, so next run pre-fills what you typed last. Passwords
+// are never stored — the whole point of `password:true` is that it doesn't linger.
+const taskInputs: Record<string, string> = JSON.parse(localStorage.getItem("cc-task-inputs") || "{}");
+const inputKey = (project: string, taskId: string, inputId: string) => `${project}␟${taskId}␟${inputId}`;
+function rememberInput(project: string, taskId: string, inputId: string, val: string) {
+  taskInputs[inputKey(project, taskId, inputId)] = val;
+  localStorage.setItem("cc-task-inputs", JSON.stringify(taskInputs));
+}
+function rememberedInput(project: string, taskId: string, inputId: string): string | undefined {
+  return taskInputs[inputKey(project, taskId, inputId)];
+}
+
+// ↗ Reveal source — where a task came from, selected in the OS file manager. `root`
+// is the directory discovery ran in, so the repo-relative `sourceFile` resolves; a
+// blocked/synthetic row has no real file and shows nothing to reveal.
+function revealSource(root: string, sourceFile: string) {
+  invoke("reveal_path", { dir: root, rel: sourceFile }).catch((e) => toast("reveal failed: " + e));
+}
+
+// ---------- run on stop ----------
+// The part a plain terminal can't do. Episko already receives Claude's `Stop`
+// hook, so a project can say "when an agent finishes a turn here, run the tests" —
+// and every turn becomes a verified turn. A green run auto-dismisses like any
+// other; a red one persists, raises the same badge a blocked session does, and
+// offers its output back to the very session that caused it.
+//
+// One rule per project, keyed like pins (project root → task). The label is stored
+// beside the id only so Settings can list the rules without running discovery for
+// every project first.
+type StopRule = { id: string; label: string };
+const stopRules: Record<string, StopRule> = JSON.parse(localStorage.getItem("cc-task-onstop") || "{}");
+function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
+function toggleStopRule(key: string, r: Runnable) {
+  if (stopRules[key]?.id === r.id) delete stopRules[key];
+  else stopRules[key] = { id: r.id, label: r.label };
+  saveStopRules();
+  renderAll();
+}
+function clearStopRule(key: string) { delete stopRules[key]; saveStopRules(); renderAll(); }
+
+/// Why this task can't be a rule, or "" if it can. Unattended means unattended: an
+/// `${input:…}` prompt would block on a dialog nobody opened, a background task
+/// never exits so it could only pile up one dev server per turn, and a blocked one
+/// can't run at all.
+function stopRuleBlocked(r: Runnable): string {
+  if (r.blocked) return r.blocked;
+  if (r.background) return "a long-running task never finishes a turn";
+  if (r.inputs.length) return "it asks for input, which needs someone there";
+  return "";
+}
+
+// A Stop fires at the end of *every* turn — that's the point — but two can land in
+// quick succession, and a slow suite must never race a second copy of itself in
+// the same worktree. The floor is deliberately short: it exists to swallow a
+// double-fire, not to ration runs.
+const stopRunAt = new Map<string, number>();
+const STOP_RUN_FLOOR = 5000;
+// A run-on-stop launch is only visible as a pane *after* its dependency chain has
+// run — so a rule with `dependsOn` has no `run.id === rule.id` pane during the whole
+// dep phase, and the 5s floor alone can't stop a turn that lands mid-build from
+// racing a second chain. This marks "a chain for this project is starting", claimed
+// synchronously before the first await and cleared once the launch settles; by then
+// the rule pane exists and the in-flight scan below takes over.
+const stopInFlight = new Set<string>();
+
+async function maybeRunOnStop(s: Sess) {
+  const rule = stopRules[s.colorKey];
+  if (!rule || !isAgent(s)) return;
+  // Claimed before the first await: discovery is async, so two Stops in the same
+  // tick would otherwise both get past this.
+  if (Date.now() - (stopRunAt.get(s.colorKey) ?? 0) < STOP_RUN_FLOOR) return;
+  // A chain still starting (deps running, rule pane not created yet) wins — the pane
+  // scan below can't see it, so this covers the window the floor can't.
+  if (stopInFlight.has(s.colorKey)) {
+    dlog("info", `run-on-stop ${rule.id} skipped — a chain is already starting`);
+    return;
+  }
+  // A run of this rule still in flight wins. Restarting the suite from the top
+  // mid-flight tells you nothing and doubles the load on the machine.
+  if ([...sessions.values()].some((x) => x.kind === "task" && x.colorKey === s.colorKey && x.run?.id === rule.id && x.run.exitCode == null)) {
+    dlog("info", `run-on-stop ${rule.id} skipped — still running`);
+    return;
+  }
+  stopRunAt.set(s.colorKey, Date.now());
+  stopInFlight.add(s.colorKey);
+  try {
+    // Discover in the *session's* workdir, so with several worktrees of one repo
+    // open the run verifies the checkout the agent actually just edited. Hidden
+    // tasks count — hiding is about the picker, not about what may run.
+    const spec = (await discoverTasks(s.workdir, s.colorKey, true)).find((r) => r.id === rule.id);
+    if (!spec) {
+      dlog("warn", `run-on-stop ${rule.id} gone from ${s.project}`);
+      toast(`Run after a turn: “${rule.label}” isn’t in ${s.project} any more`);
+      return;
+    }
+    const why = stopRuleBlocked(spec);
+    if (why) { dlog("warn", `run-on-stop ${rule.id} skipped: ${why}`); return; }
+    dlog("info", `run-on-stop ${rule.id} · ${s.project} · ${s.id.slice(0, 8)} finished a turn`);
+    await launchWithDeps(spec, s.project, {
+      colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
+      discoveredIn: spec.cwd, forSession: s.id, focus: false,
+    });
+  } finally {
+    stopInFlight.delete(s.colorKey);
+  }
+}
+
+/// The command as a human reads it — the picker's subtitle and the inspector's
+/// "command" row both show exactly what will run.
+function execCmd(r: Runnable): string {
+  return r.exec.mode === "shell" ? r.exec.line : [r.exec.program, ...r.exec.args].join(" ");
+}
+
+// The trailing column in the sidebar, and the palette subtitle. A background run
+// never claims to be finished, so it reads "bg" for as long as it lives.
+function taskStateText(s: Sess): string {
+  const r = s.run;
+  if (!r) return "";
+  if (s.phase === "working") return r.background ? "bg" : fmtShort(Date.now() - r.startedAt);
+  if (r.exitCode == null) return "";
+  return r.exitCode === 0 ? fmtShort(Date.now() - r.startedAt) : `exit ${r.exitCode}`;
+}
+// "a, b and c" — the quit guard lists up to three kinds of running thing.
+function listPhrase(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+function fmtShort(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function renderTaskInspector(s: Sess) {
+  const r = s.run!;
+  const failed = r.exitCode != null && r.exitCode !== 0;
+  const running = r.exitCode == null;
+  const pill = $("iPill");
+  pill.className = "pill " + (running ? "working" : failed ? "error" : "done");
+  $("iPillTxt").textContent = running ? (r.background ? "running · background" : "running") : failed ? `exit ${r.exitCode}` : "passed";
+
+  // Offer the failure to a live agent in the same project — the one thing a plain
+  // terminal can't do. Only agents, and only when the run actually failed.
+  // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
+  // into, so offering the handoff there would fail at the click.
+  const candidates = failed ? [...sessions.values()].filter((x) => isAgent(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
+  // A run-on-stop failure goes back to the session whose turn it was checking — and
+  // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
+  // type into), offer nothing rather than misdirecting the output to an unrelated
+  // agent that happens to sort first. A hand-run task (no forSession) still offers
+  // the first live agent, which is the useful default there.
+  const target = r.forSession ? candidates.find((x) => x.id === r.forSession) : candidates[0];
+  const handoff = target
+    ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
+    : "";
+
+  $("inspector").innerHTML = `
+    <div class="ext-card">
+      <div class="ext-hl">▶ ${esc(r.label)}</div>
+      <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
+      <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
+      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
+      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
+      ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
+    </div>
+    <div class="tacts">
+      ${handoff}
+      <button class="tact" data-rerun="1">⟳ Re-run</button>
+      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
+      <button class="tact" data-reveal="1">↗ Reveal source</button>
+      ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
+    </div>`;
+
+  const insp = $("inspector");
+  insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
+  insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
+  insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
+  insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
+  insp.querySelector("[data-send]")?.addEventListener("click", (e) => {
+    sendOutputToSession(s, (e.currentTarget as HTMLElement).dataset.send!);
+  });
+}
+
+// Type the failure into a Claude session's stdin — deliberately *without* a
+// trailing newline, so you read what's about to be sent and press Enter yourself.
+// Same contract as handToTerminal: Episko prefills, the human commits.
+function sendOutputToSession(task: Sess, targetId: string) {
+  const t = sessions.get(targetId);
+  if (!t?.term) { toast("That session is gone"); return; }
+  const r = task.run!;
+  const tail = r.tail.join("\n").trim();
+  const msg = `\`${r.cmd}\` failed with exit ${r.exitCode}:\n\n${tail}\n\nPlease fix it.`;
+  setActive(targetId);
+  invoke("write_pty", { sessionId: targetId, data: msg.replace(/\n/g, "\r") })
+    .then(() => toast("Pasted into the session — press Enter to send"))
+    .catch((e) => toast("send failed: " + e));
+}
+
+// `discoveredIn` is the directory discovery ran in, which is how we tell a task
+// that declared its own cwd from one that merely inherited the default.
+interface TaskLaunchOpts {
+  colorKey?: string; worktree?: string | null; branch?: string; discoveredIn?: string;
+  /// `false` for a run nobody clicked — a run-on-stop pane must not yank the stage
+  /// away from the session you were reading. It still appears in the sidebar.
+  focus?: boolean;
+  /// The session whose turn this run is verifying (see run-on-stop).
+  forSession?: string;
+}
+
+// Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
+// same xterm setup — because a task genuinely is just another pane.
+async function launchTask(r: Runnable, project: string, opts: TaskLaunchOpts = {}): Promise<string | null> {
+  if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return null; }
+  const id = crypto.randomUUID();
+  const colorKey = opts.colorKey ?? r.cwd;
+  // Which directory the run inherits (Settings › Tasks). "session" keeps the
+  // folder it was discovered in — the active session's, so with several worktrees
+  // open "run tests" means *this* worktree. "root" redirects to the repo root.
+  // Either way a task that declared its own cwd (tasks.toml `cwd`, VS Code
+  // `options.cwd`) keeps it: an explicit directory is never second-guessed.
+  const declaredOwnCwd = !!opts.discoveredIn && r.cwd !== opts.discoveredIn;
+  const cwd = taskPrefs.cwd === "root" && !declaredOwnCwd ? colorKey : r.cwd;
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  $("terminals").appendChild(pane);
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  loadWebgl(term);
+  term.open(pane);
+  // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
+  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+
+  const cmd = execCmd(r);
+  const s: Sess = {
+    id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
+    phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    lastEvent: "", activity: [],
+    resumeId: id, kind: "task", external: false, term, fit, pane,
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession },
+  };
+  sessions.set(id, s);
+  // An unfocused pane can't be measured, so it starts at xterm's default 24×80 and
+  // gets a real size the moment you activate it (setActive refits and resizes the
+  // PTY). Only run-on-stop takes that path.
+  if (opts.focus !== false) setActive(id);
+  dlog("info", `task ${r.id} · ${project} · ${cmd}`);
+  term.writeln(`\x1b[90m$ ${cmd}\x1b[0m\r\n`);
+  try {
+    await invoke("spawn_task", {
+      sessionId: id,
+      spec: { exec: r.exec, cwd, env: r.env },
+      rows: term.rows || 24, cols: term.cols || 80,
+    });
+  } catch (e) {
+    dlog("error", `task ${r.id} failed to start: ${e}`);
+    toast("task failed: " + e);
+    term.writeln(`\r\n\x1b[31m[task error] ${e}\x1b[0m`);
+    s.phase = "error";
+    s.run!.exitCode = -1;
+  }
+  renderAll();
+  return id;
+}
+
+// ---------- dependsOn ----------
+// The frontend owns the panes, so it's the only side that can wait on an exit code
+// and decide whether the next thing should start at all.
+
+const exitWaiters = new Map<string, (code: number) => void>();
+function waitForExit(sessionId: string): Promise<number> {
+  return new Promise((resolve) => exitWaiters.set(sessionId, resolve));
+}
+
+/// Resolve `dependsOn` labels against the last discovery. VS Code names dependencies
+/// by label, not id, so this matches on label within the same project.
+function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] {
+  const out: Runnable[] = [];
+  for (const label of r.dependsOn) {
+    const dep = [...lastRunnableById.values()].find((x) => x.label === label && x.source === r.source)
+      ?? [...lastRunnableById.values()].find((x) => x.label === label);
+    if (!dep) { toast(`${r.label}: no task named “${label}”`); return []; }
+    // A cycle would otherwise recurse until the stack gives out.
+    if (seen.has(dep.id)) { toast(`${r.label}: dependency cycle at “${label}”`); return []; }
+    out.push(dep);
+  }
+  return out;
+}
+
+// Run a task's dependencies, then the task. A failed dependency stops the chain —
+// "build then test" must not test a build that didn't happen.
+async function launchWithDeps(r: Runnable, project: string, opts: TaskLaunchOpts, seen = new Set<string>()): Promise<string | null> {
+  const deps = resolveDeps(r, seen);
+  if (!deps.length) return launchTask(r, project, opts);
+  seen.add(r.id);
+
+  const sequence = r.dependsOrder === "sequence";
+  dlog("info", `task ${r.id} · ${deps.length} dep${deps.length === 1 ? "" : "s"} (${sequence ? "sequence" : "parallel"})`);
+
+  // A dependency inherits the stage behaviour (`focus`) but not the identity of the
+  // run that pulled it in: `forSession` belongs to the rule pane, not its build step,
+  // and `discoveredIn` is the parent's cwd, wrong for the dep's own *reveal source*.
+  // Let the dep resolve its own root (falls back to the project root).
+  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, discoveredIn: undefined };
+  const runDep = async (d: Runnable): Promise<boolean> => {
+    const id = await launchWithDeps(d, project, depOpts, new Set(seen));
+    if (!id) return false;
+    return (await waitForExit(id)) === 0;
+  };
+
+  const ok = sequence
+    // Sequential: stop at the first failure rather than running the rest.
+    ? await deps.reduce<Promise<boolean>>(async (prev, d) => (await prev) && runDep(d), Promise.resolve(true))
+    : (await Promise.all(deps.map(runDep))).every(Boolean);
+
+  if (!ok) {
+    toast(`${r.label}: a dependency failed — not running it`);
+    dlog("warn", `task ${r.id} skipped: dependency failed`);
+    return null;
+  }
+  return launchTask(r, project, opts);
+}
+
+// Re-running reuses nothing — it opens a fresh pane and closes the old one, so the
+// sidebar doesn't accumulate a row per attempt while the scrollback stays honest
+// about which attempt you're reading.
+async function rerunTask(s: Sess) {
+  const r = s.run; if (!r) return;
+  const spec = lastRunnableById.get(r.id);
+  if (!spec) { toast("Task definition is gone — rescan"); return; }
+  if (spec.inputs.length) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd }); return; }
+  const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
+  closeSession(s.id);
+  await launchTask(spec, project, { colorKey, worktree, branch });
+}
+
+// The most recent discovery result, so a re-run doesn't need the picker open.
+const lastRunnableById = new Map<string, Runnable>();
+
+// `trusted` is what lets the backend shell out to `just --dump` — which evaluates
+// the justfile. It takes all three of: the global toggle, the provider being on,
+// and this specific folder being one the user chose.
+async function discoverTasks(workdir: string, colorKey = workdir, includeHidden = false): Promise<Runnable[]> {
+  const trusted = taskPrefs.introspect && taskPrefs.providers.includes("just") && (isTrusted(workdir) || isTrusted(colorKey));
+  try {
+    const raw = (await invoke<Runnable[]>("discover_runnables", { workdir, trusted }))
+      .filter((r) => taskPrefs.providers.includes(r.source as Provider));
+    // Swap in the project's runner override before anything caches the result, so a
+    // re-run months later uses the same runner the picker showed.
+    const all = applyRunner(raw, colorKey);
+    // Resolve dependsOn against everything discovered, hidden or not — hiding a
+    // task from the picker shouldn't quietly break another task that needs it.
+    for (const r of all) lastRunnableById.set(r.id, r);
+    const hid = hiddenIds(colorKey);
+    return includeHidden ? all : all.filter((r) => !hid.includes(r.id));
+  } catch (e) {
+    dlog("warn", `discover failed (${workdir}): ${e}`);
+    return [];
+  }
+}
+
+// Drop the backend's cached parse for this project so the next discover re-reads
+// from disk. The stamp already catches edits to files Episko reads; this is the
+// escape hatch for what it can't see — a file an introspector imports itself.
+async function rescanTasks(workdir: string) {
+  await invoke("rescan_runnables", { workdir }).catch((e) => dlog("warn", `rescan: ${e}`));
+}
+
+// ---------- the inputs prompt ----------
+// A task declaring ${input:…} collects its values before anything runs. Discovery
+// deliberately leaves the placeholders intact, because only this side knows the
+// answers — so this is where they get filled in.
+let inputCtx: { r: Runnable; project: string; opts: TaskLaunchOpts } | null = null;
+
+function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOpts) {
+  inputCtx = { r, project, opts };
+  $("inSub").textContent = `${r.label} · ${r.inputs.length} input${r.inputs.length === 1 ? "" : "s"}`;
+  $("inBody").innerHTML = r.inputs.map((i, n) => {
+    // What you typed last for this exact input wins over the file's default — but a
+    // password is never remembered, so it always starts empty.
+    const remembered = i.password ? undefined : rememberedInput(project, r.id, i.id);
+    const val = remembered ?? i.default ?? "";
+    const field = i.kind === "pickString"
+      ? `<select class="in-ctl" data-n="${n}">${i.options.map((o) => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+      : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? "")}" spellcheck="false" autocomplete="off" />`;
+    return `<div class="in-field">
+      <label class="in-lbl">${esc(i.description)}<span class="in-id">${esc(i.id)}</span></label>
+      ${field}
+    </div>`;
+  }).join("");
+  $("inDlg").classList.add("show");
+  $("scrim").classList.add("show");
+  setTimeout(() => ($("inBody").querySelector(".in-ctl") as HTMLElement | null)?.focus(), 30);
+}
+function closeInputPrompt() {
+  $("inDlg").classList.remove("show");
+  if (!$("palette").classList.contains("show") && !$("runPop").classList.contains("show")) $("scrim").classList.remove("show");
+  inputCtx = null;
+}
+function submitInputPrompt() {
+  if (!inputCtx) return;
+  const { r, project, opts } = inputCtx;
+  const vals: Record<string, string> = {};
+  $("inBody").querySelectorAll<HTMLInputElement | HTMLSelectElement>(".in-ctl").forEach((el) => {
+    const input = r.inputs[+el.dataset.n!];
+    vals[input.id] = el.value;
+    // Remember for next time — but never a password.
+    if (!input.password) rememberInput(project, r.id, input.id, el.value);
+  });
+  closeInputPrompt();
+  void launchWithDeps(applyInputs(r, vals), project, opts);
+}
+
+/// Substitute collected values into every string that reaches the command line.
+function applyInputs(r: Runnable, vals: Record<string, string>): Runnable {
+  const fill = (s: string) => s.replace(/\$\{input:([^}]+)\}/g, (m, id) => (id in vals ? vals[id] : m));
+  const exec = r.exec.mode === "shell"
+    ? { mode: "shell" as const, line: fill(r.exec.line) }
+    : { mode: "argv" as const, program: fill(r.exec.program), args: r.exec.args.map(fill) };
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(r.env)) env[k] = fill(v);
+  return { ...r, exec, cwd: fill(r.cwd), env, inputs: [] };
+}
+
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
 function toolVerb(tool: string): string {
@@ -1671,7 +2307,7 @@ function dwellText(s: Sess): string {
 // True when this is the "your turn" session that's been blocked longest — the one
 // to jump to first. Only meaningful when several are waiting.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && !x.shell && !x.attention);
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention);
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 // A mini area+line sparkline as an inline SVG. Fixed intrinsic size so the endpoint
@@ -1883,7 +2519,8 @@ function resHtml(s: Sess): string {
     <div class="rr"><span class="rk">mem</span><span class="rbar ${mc(memPct)}"><i style="width:${memPct}%"></i></span><span class="rv">${r.memMb.toFixed(0)} MB</span></div></div>`;
 }
 function renderInspector(s: Sess | null) {
-  if (s?.shell) { renderShellInspector(s); return; }
+  if (s?.kind === "shell") { renderShellInspector(s); return; }
+  if (s?.kind === "task") { renderTaskInspector(s); return; }
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
   $("iPillTxt").textContent = s ? (s.attention ? s.attention : PILL_TEXT[s.phase]) : "–";
@@ -2343,7 +2980,14 @@ function closeShortPop() { $("shortPop").classList.remove("show"); }
 // The fleet's "needs you" set — sessions with a blocking permission, an error, or
 // finished and awaiting your reply — most urgent first (waiting wins), longest in
 // that state first. Independent of the sidebar sort so the reactor is stable.
-function needsYou(s: Sess): boolean { return !s.shell && (!!s.attention || s.phase === "done" || s.phase === "error"); }
+// A failed run counts: the whole point of running tasks in Episko is that a red
+// build reaches you the same way a blocked session does. A *successful* run does
+// not — it settles quietly and auto-dismisses.
+function needsYou(s: Sess): boolean {
+  if (s.kind === "shell") return false;
+  if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
+  return !!s.attention || s.phase === "done" || s.phase === "error";
+}
 function needsYouSessions(): Sess[] {
   return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
 }
@@ -2412,8 +3056,23 @@ function updateTray() {
   lastTraySig = sig;
   invoke("update_tray", { title, tooltip, items }).catch(() => {});
 }
+// ▶ Run and ❯ Terminal both act on the active project's directory, so with no
+// session, shell or mirrored external there is nothing for them to act on. Greying
+// them says so up front; a live button whose only response is an error toast reads
+// as if the click failed. The guards in openRunPicker/openPlainTerminal stay, since
+// ⌘⇧R and ⌘T bypass the button entirely.
+function syncStageButtons() {
+  const wd = activeCwd();
+  const set = (id: string, enabled: string) => {
+    const b = $(id) as HTMLButtonElement;
+    b.disabled = !wd;
+    b.title = wd ? enabled : "Start a session first — this runs in the active project";
+  };
+  set("btnRun", "Run a task or script from this project");
+  set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
+}
 function renderAll() {
-  renderSidebar(); renderMini(); renderFoot(); renderAttn();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
   // When mirroring an external session, activeId is null but the stage/inspector
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
@@ -2468,7 +3127,7 @@ function dbgSnapshot() {
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
-      lastEvent: s.lastEvent, external: s.external, branch: s.branch, workdir: s.workdir,
+      lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
     })),
     externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
     dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),
@@ -2508,7 +3167,7 @@ async function flushDebug() {
 // opens an action panel (jump, terminal, worktree, kill, answer permission) without
 // leaving the box — a page stack you back out of with Backspace/Esc.
 interface PalItem {
-  kind: "session" | "launch" | "command" | "action" | "fallback";
+  kind: "session" | "launch" | "command" | "action" | "task" | "fallback";
   key: string;                 // stable key for frecency (commands/launches)
   label: string; labelHtml: string; sub?: string;
   sw?: string; icon?: string; glyph?: string;
@@ -2571,7 +3230,7 @@ function sessionActions(s: Sess): PalItem[] {
     a.push(mk("Deny the pending permission", "✕", () => resolvePermission(s.pendingPermId!, "deny")));
     a.push(mk("Answer it in the terminal", "❯", () => resolvePermission(s.pendingPermId!, "terminal")));
   }
-  if (!s.shell) {
+  if (isAgent(s)) {
     // Only offered for repo sessions — s.git is null when the workdir isn't one.
     if (s.git) {
       const b = s.git.behind, ah = s.git.ahead;
@@ -2590,7 +3249,9 @@ function sessionActions(s: Sess): PalItem[] {
 }
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: addProject },
-  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal, sc: ["⌘", "T"] },
+  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: openPlainTerminal, sc: [MOD, "T"] },
+  { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
+  { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: toggleInsp, sc: [MOD, "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: toggleRail, sc: [MOD, "B"] },
@@ -2614,10 +3275,25 @@ function buildPalGroups(raw: string): PalGroup[] {
 
   const sessCands: PalItem[] = [...sessions.values()].filter(matchesState).map((s) => {
     const i = order.get(s.id);
-    const label = `${s.project} · ${s.title || s.branch || (s.shell ? "shell" : "session")}`;
-    const sub = s.shell ? "shell" : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
+    const label = `${s.project} · ${s.kind === "task" ? "▶ " + (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
+    const sub = s.kind === "shell" ? "shell"
+      : s.kind === "task" ? `task · ${taskStateText(s)}`
+      : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
     return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? [MOD, String(i + 1)] : undefined, session: s, run: () => setActive(s.id) };
   });
+  // Tasks for the active project. Discovery is async, so this reads a cache the
+  // palette warms on open — an empty first frame is corrected in place.
+  const taskCands: PalItem[] = palTasks.map((r) => ({
+    kind: "task", key: "task:" + r.id, label: `Run ${r.label}`, labelHtml: esc(`Run ${r.label}`),
+    sub: `${r.source} · ${execCmd(r)}`, glyph: r.blocked ? "⃠" : "▶",
+    run: () => {
+      const c = runTargetCtx(); if (!c) return;
+      const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
+      if (r.id === "just:__untrusted") { void askTrust(c.colorKey, c.project); return; }
+      if (r.inputs.length) { openInputPrompt(r, c.project, o); return; }
+      void launchWithDeps(r, c.project, o);
+    },
+  }));
   // Same source as the sidebar (see allProjects) — a project detected from an external
   // session is just as launchable as a favourite, and hiding it here made "+ Session"
   // with nothing selected look like it was picking projects at random.
@@ -2630,7 +3306,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   const byFrec = (a: PalItem, b: PalItem) => frecScore(b.key) - frecScore(a.key);
   const sessNatural = (a: PalItem, b: PalItem) => urgencyRank(a.session!) - urgencyRank(b.session!) || b.session!.lastActivity - a.session!.lastActivity;
 
-  const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands);
+  const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands), tsk = score(taskCands);
   const needy = sess.filter((i) => needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
   const rest = sess.filter((i) => !needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
 
@@ -2638,12 +3314,13 @@ function buildPalGroups(raw: string): PalGroup[] {
   const recentKeys = new Set<string>();
   if (mode !== "cmd" && needy.length) groups.push({ name: "Needs you", count: needy.length, items: needy });
   if (emptyTerm && mode === "all") {
-    const recent = [...cmds, ...launch].filter((i) => frecScore(i.key) > 0).sort(byFrec).slice(0, 3);
+    const recent = [...cmds, ...launch, ...tsk].filter((i) => frecScore(i.key) > 0).sort(byFrec).slice(0, 3);
     recent.forEach((i) => recentKeys.add(i.key));
     if (recent.length) groups.push({ name: "Recent", items: recent });
   }
   if (mode !== "cmd" && rest.length) groups.push({ name: "Sessions", count: rest.length, items: rest });
   if (mode === "all" || mode === "sess") { const l = launch.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (l.length) groups.push({ name: "Launch", items: l }); }
+  if (mode === "all" || mode === "sess") { const t = tsk.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (t.length) groups.push({ name: "Tasks", count: t.length, items: t }); }
   if (mode === "all" || mode === "cmd") { const c = cmds.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (c.length) groups.push({ name: "Commands", items: c }); }
   if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: addProject }] });
   return groups;
@@ -2672,8 +3349,24 @@ function renderPal() {
   $("palList").querySelector(".pal-item.on")?.scrollIntoView({ block: "nearest" });
 }
 function refreshPal() { palGroups = buildPalGroups(($("palInput") as HTMLInputElement).value); palFlat = palGroups.flatMap((g) => g.items); palSel = 0; renderPal(); }
-function openPalette() { palPage = "root"; palActionSess = null; palSel = 0; $("scrim").classList.add("show"); $("palette").classList.add("show"); ($("palInput") as HTMLInputElement).value = ""; refreshPal(); setTimeout(() => ($("palInput") as HTMLInputElement).focus(), 30); }
+let palTasks: Runnable[] = [];
+function openPalette() {
+  palPage = "root"; palActionSess = null; palSel = 0;
+  const c = runTargetCtx();
+  palTasks = [];
+  if (c) void discoverTasks(c.workdir, c.colorKey).then((l) => { palTasks = l; if ($("palette").classList.contains("show")) refreshPal(); });
+  $("scrim").classList.add("show");
+  $("palette").classList.add("show");
+  ($("palInput") as HTMLInputElement).value = "";
+  refreshPal();
+  setTimeout(() => ($("palInput") as HTMLInputElement).focus(), 30);
+}
 function closePalette() { $("scrim").classList.remove("show"); $("palette").classList.remove("show"); palPage = "root"; palActionSess = null; }
+
+// ---------- settings ----------
+// The window main.ts has wanted for a while: it finally gives the worktree-grouping
+// mode a control (it was reachable only as episkoWtGroup() in the console), and it
+// owns the task settings that would otherwise be hardcoded bets.
 
 // ---------- panels / theme ----------
 function setSort(m: SortMode, announce = true) {
@@ -3562,7 +4255,11 @@ type SetSeg = { value: string; label: string; sub?: string; glyph?: string };
 type SetControl =
   | { kind: "seg"; set: string; label: string; hint?: string; active: () => string; segs: () => SetSeg[] }
   | { kind: "font"; label: string; hint?: string }
-  | { kind: "wtpreview"; label: string; hint?: string; active: () => string };
+  | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
+  // A single on/off switch.
+  | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
+  // Independently-toggled values — "which providers to scan" isn't a pick-one.
+  | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string };
 // Most tabs are a list of declarative controls; a tab may instead supply `render`
 // for a bespoke pane (the Usage analytics tab), which also widens the dialog.
 interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[]; render?: () => string }
@@ -3598,6 +4295,48 @@ const SET_TABS: SetTab[] = [
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
+    ],
+  },
+  {
+    id: "tasks", label: "Tasks", glyph: "▶",
+    controls: () => [
+      { kind: "multi", set: "prov", label: "Scan for task files",
+        hint: "Which formats Episko looks for when you open the Run picker.",
+        on: () => taskPrefs.providers,
+        segs: () => ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })) },
+      { kind: "toggle", set: "introspect", label: "Let trusted projects introspect themselves",
+        hint: "Listing justfile, Taskfile or mise tasks means running that tool, which evaluates the file and can execute code from the folder. Off means those tasks stay undiscovered.",
+        on: () => taskPrefs.introspect },
+      { kind: "multi", set: "untrust", label: "Trusted projects",
+        hint: "Click to revoke. Your project folders are trusted because you added them; anything else asks once.",
+        on: () => explicitlyTrusted(),
+        segs: () => explicitlyTrusted().map((p) => ({ value: p, label: basename(p), sub: tilde(p) })),
+        empty: "Nothing trusted by hand yet — your project folders already are." },
+      { kind: "seg", set: "taskcwd", label: "Working directory",
+        hint: "With several worktrees open, “run tests” is otherwise ambiguous. A task that declares its own directory always keeps it.",
+        active: () => taskPrefs.cwd,
+        segs: () => [
+          { value: "session", label: "Active session", glyph: "▤", sub: "The worktree you're looking at" },
+          { value: "root", label: "Repo root", glyph: "⌂", sub: "Always the main checkout" },
+        ] },
+      { kind: "seg", set: "dismiss", label: "Dismiss successful runs",
+        hint: "Failures always stay until you close them.",
+        active: () => String(taskPrefs.dismissMs),
+        segs: () => [
+          { value: "0", label: "Never", glyph: "◉", sub: "Keep every finished run" },
+          { value: "20000", label: "After 20s", glyph: "◔", sub: "Unless you're looking at it" },
+          { value: "1", label: "At once", glyph: "○", sub: "Close as soon as it passes" },
+        ] },
+      { kind: "toggle", set: "taskattn", label: "Raise attention when a run fails",
+        hint: "Uses the same badge and tray notification as a blocked session.",
+        on: () => taskPrefs.attention },
+      // Set where the tasks are (the project's task panel); reviewed and revoked
+      // here, the same shape as the trust list above.
+      { kind: "multi", set: "unstop", label: "Run after a session stops",
+        hint: "When an agent finishes a turn in one of these projects, its task runs — unfocused, so it never takes the stage. A failure keeps its pane and offers the output back to that session. Click to remove.",
+        on: () => Object.keys(stopRules),
+        segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
+        empty: "No rules yet — set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
     ],
   },
   {
@@ -3709,6 +4448,22 @@ function renderSetControl(c: SetControl): string {
       <button class="set-freset" data-setfont="reset">Reset</button>
     </div></div>`;
   }
+  if (c.kind === "toggle") {
+    const on = c.on();
+    // The label and hint have to be one block, or the row lays them out as two
+    // flex siblings of the switch and the whole group centres itself.
+    return `<div class="set-group set-inline"><div class="set-itxt">${head}</div>` +
+      `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button></div>`;
+  }
+  if (c.kind === "multi") {
+    const on = c.on();
+    const segs = c.segs();
+    if (!segs.length) return `<div class="set-group">${head}<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div></div>`;
+    const opts = segs.map((s) =>
+      `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}" title="${esc(s.sub || s.label)}">` +
+        `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
+    return `<div class="set-group">${head}<div class="chips">${opts}</div></div>`;
+  }
   const active = c.active();
   const opts = c.segs().map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}">` +
@@ -3723,6 +4478,20 @@ function applySetting(set: string, val: string) {
   else if (set === "engine") setEngine(val as Engine);
   else if (set === "sort") setSort(val as SortMode);
   else if (set === "wtgroup") setWtGroup(val as WtGroup);
+  else if (set === "prov") {
+    const p = val as Provider;
+    const on = taskPrefs.providers.includes(p);
+    // Never let every provider be switched off — an empty picker looks broken.
+    if (on && taskPrefs.providers.length === 1) { toast("At least one provider has to stay on"); return; }
+    taskPrefs.providers = on ? taskPrefs.providers.filter((x) => x !== p) : [...taskPrefs.providers, p];
+    saveTaskPrefs();
+  }
+  else if (set === "introspect") { taskPrefs.introspect = val === "1"; saveTaskPrefs(); }
+  else if (set === "taskcwd") { taskPrefs.cwd = val as TaskPrefs["cwd"]; saveTaskPrefs(); }
+  else if (set === "dismiss") { taskPrefs.dismissMs = +val; saveTaskPrefs(); }
+  else if (set === "taskattn") { taskPrefs.attention = val === "1"; saveTaskPrefs(); }
+  else if (set === "untrust") untrustProject(val);
+  else if (set === "unstop") clearStopRule(val);
   renderSettings();
 }
 function setFontFromSettings(cmd: string) {
@@ -3734,15 +4503,60 @@ function setFontFromSettings(cmd: string) {
 // ---------- events ----------
 listen<{ sessionId: string; data: string }>("pty-output", (e) => {
   const s = sessions.get(e.payload.sessionId); if (!s?.term) return;
-  s.term.write(Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0)));
+  const bytes = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
+  s.term.write(bytes);
+  // A task keeps a small tail of its own output so a failure can be handed to a
+  // Claude session without re-reading the pane. Bounded hard — this is a hint for
+  // the agent, not a transcript.
+  if (s.run) {
+    const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim()) s.run.tail.push(line.trimEnd());
+    }
+    if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
+  }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   dlog("info", `pty-exit ${e.payload.sessionId.slice(0, 8)} · code ${e.payload.code}`);
+  // Release anything waiting on this pane before the early return below, so a
+  // dependency chain can never deadlock on a session that vanished.
+  const waiter = exitWaiters.get(e.payload.sessionId);
+  if (waiter) { exitWaiters.delete(e.payload.sessionId); waiter(e.payload.code); }
   const s = sessions.get(e.payload.sessionId); if (!s) return;
-  s.phase = "ended"; s.attention = null;
-  s.term?.writeln(`\r\n\x1b[90m[claude exited: code ${e.payload.code}]\x1b[0m`);
+  const code = e.payload.code;
+  s.attention = null;
+  if (s.kind === "task") {
+    // The exit code *is* the phase — that's what buys tasks the sidebar glyphs,
+    // the attention badge and the tray without a line of new plumbing.
+    s.run!.exitCode = code;
+    setPhase(s, code === 0 ? "done" : "error");
+    s.term?.writeln(code === 0
+      ? `\r\n\x1b[32m✓ ${s.run!.label} — exit 0\x1b[0m`
+      : `\r\n\x1b[31m✕ ${s.run!.label} — exit ${code}\x1b[0m`);
+    if (code === 0) scheduleDismiss(s);
+    // Nobody clicked this one and its pane isn't on screen, so the badge alone
+    // would be the only sign it went red.
+    else if (s.run!.forSession) toast(`${s.run!.label} failed after that turn — exit ${code}`);
+    dlog(code === 0 ? "info" : "warn", `task ${s.run!.id} exit ${code}`);
+  } else {
+    s.phase = "ended";
+    s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+  }
   renderAll();
 });
+
+// A green run shouldn't linger — tasks are far more numerous and shorter-lived
+// than sessions, and without this the rail silently fills with ticks. A pane you
+// are actually looking at is never yanked away, and a failure never auto-closes.
+function scheduleDismiss(s: Sess) {
+  if (s.run?.background || !taskPrefs.dismissMs) return;
+  window.setTimeout(() => {
+    const cur = sessions.get(s.id);
+    if (!cur || cur.run?.exitCode !== 0) return;   // re-run or still failing → leave it
+    if (activeId === cur.id) return;               // you're reading it
+    closeSession(cur.id);
+  }, taskPrefs.dismissMs);
+}
 listen<{ kind: string; data: any }>("telemetry", (e) => {
   const { kind, data } = e.payload; if (!data) return;
   telem.rx++;
@@ -3912,7 +4726,7 @@ function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
   ctxKey = key;
   const fav = FAVORITES.some((f) => f.path === key);
-  const live = [...sessions.values()].filter((s) => s.colorKey === key && !s.shell).length;
+  const live = [...sessions.values()].filter((s) => s.colorKey === key && isAgent(s)).length;
   const ic = iconFor(key);
   const rows: (CtxRow | null)[] = [
     { act: "launch", ic: "＋", label: "New session", sub: live ? `${live} already running here` : "start Claude Code in this folder" },
@@ -4095,7 +4909,7 @@ function cafPersist() {
 // Is any real (non-shell) session doing work worth staying awake for?
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
-    if (s.shell || s.phase === "ended") continue;
+    if (s.kind === "shell" || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
     if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
   }
@@ -4276,6 +5090,439 @@ function openPlainTerminal() {
   const branch = s ? s.branch : (e?.branch || d?.branch || "");
   launchShell(s ? s.project : (d?.project ?? basename(colorKey)), wd, { colorKey, worktree, branch });
 }
+// ---------- the project tasks panel ----------
+// Manage what the picker shows. Two kinds of change live here and they persist to
+// different places on purpose: hiding a task is *yours* (localStorage), while a
+// task's command is the *project's* (.episko/tasks.toml, committable). Only
+// Episko's own file is ever written — a discovered VS Code task or justfile
+// belongs to another tool and stays read-only.
+
+const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
+function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
+function hiddenIds(key: string): string[] { return taskHidden[key] || []; }
+function toggleHidden(key: string, id: string) {
+  const cur = hiddenIds(key);
+  taskHidden[key] = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!taskHidden[key].length) delete taskHidden[key];
+  saveHidden();
+}
+
+let mgrCtx: { project: string; colorKey: string; workdir: string } | null = null;
+let mgrList: Runnable[] = [];
+// The discovered ids the project overrides — a discovered task edited into a
+// committable `[override.*]` rather than a mutation of the file it came from.
+let mgrOverrides: string[] = [];
+// `kind` decides where a save lands: "own" writes a `[[task]]`, "override" writes an
+// `[override."<id>"]` keyed by the discovered task's id.
+let mgrEdit: { id: string | null; kind: "own" | "override"; label: string; run: string; group: string; background: boolean; cwd: string } | null = null;
+
+async function openTaskManager() {
+  const c = runTargetCtx();
+  if (!c) { toast("No active project"); return; }
+  mgrCtx = { project: c.project, colorKey: c.colorKey, workdir: c.workdir };
+  mgrEdit = null;
+  await refreshMgr();
+  $("mgrDlg").classList.add("show");
+  $("scrim").classList.add("show");
+}
+async function refreshMgr() {
+  if (!mgrCtx) return;
+  // Show hidden tasks too — this is the panel where you un-hide them.
+  mgrList = await discoverTasks(mgrCtx.workdir, mgrCtx.colorKey, true);
+  mgrOverrides = await invoke<string[]>("list_task_overrides", { workdir: mgrCtx.workdir }).catch(() => []);
+  renderMgr();
+}
+function closeTaskManager() {
+  $("mgrDlg").classList.remove("show");
+  if (!$("palette").classList.contains("show") && !$("runPop").classList.contains("show")) $("scrim").classList.remove("show");
+  mgrCtx = null; mgrEdit = null;
+}
+
+function renderMgr() {
+  if (!mgrCtx) return;
+  const { colorKey, project } = mgrCtx;
+  $("mgrSub").textContent = project;
+
+  const editing = !!mgrEdit;
+  ($("mgrBack") as HTMLButtonElement).hidden = !editing;
+  ($("mgrSave") as HTMLButtonElement).hidden = !editing;
+  ($("mgrNew") as HTMLButtonElement).hidden = editing;
+  ($("mgrOpen") as HTMLButtonElement).hidden = editing;
+  ($("mgrRescan") as HTMLButtonElement).hidden = editing;
+  if (mgrEdit) { renderMgrForm(); return; }
+
+  const pins = pinnedIds(colorKey), hid = hiddenIds(colorKey);
+  const rule = stopRules[colorKey];
+  // A committable command edit lands in .episko/tasks.toml either way: our own
+  // task in place, a discovered one as an [override.*] that never touches its file.
+  const rowsHtml = mgrList.map((r) => {
+        const own = r.source === "episko";
+        const overridden = mgrOverrides.includes(r.id);
+        const dangling = r.id.startsWith("override:");   // an override whose target vanished
+        const editable = !r.blocked;
+        // At most one task per project runs after a turn, so the glyph is a radio
+        // in disguise: clicking another moves the rule, clicking this one clears it.
+        const onStop = rule?.id === r.id;
+        const noStop = stopRuleBlocked(r);
+        const tags = `${r.background ? " · bg" : ""}${overridden ? " · overridden" : ""}${r.blocked ? " · " + esc(r.blocked) : ""}${onStop ? " · runs after each turn" : ""}`;
+        const editBtn = own
+          ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .episko/tasks.toml">✎</button>
+             <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .episko/tasks.toml">✕</button>`
+          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit — writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
+        const revertBtn = (overridden || dangling)
+          ? `<button class="mgr-b" data-revert="${esc(dangling ? r.id.slice("override:".length) : r.id)}" title="Revert to what ${esc(r.sourceFile)} declares">↺</button>`
+          : "";
+        return `<div class="mgr-row${hid.includes(r.id) ? " off" : ""}">
+          <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.sourceFile)}${tags}</small></span>
+          <span class="mgr-acts">
+            <button class="mgr-b${pins.includes(r.id) ? " on" : ""}" data-pin="${esc(r.id)}" title="${pins.includes(r.id) ? "Unpin" : "Pin to the top of the picker"}">${pins.includes(r.id) ? "★" : "☆"}</button>
+            <button class="mgr-b" data-hide="${esc(r.id)}" title="${hid.includes(r.id) ? "Show in the picker" : "Hide from the picker"}">${hid.includes(r.id) ? "◌" : "◎"}</button>
+            <button class="mgr-b${onStop ? " on" : ""}${noStop ? " quiet" : ""}" ${noStop ? "disabled" : ""} data-onstop="${esc(r.id)}"
+              title="${noStop ? esc(`Can't run after a turn — ${noStop}`) : onStop ? "Stop running this after a turn" : "Run this whenever a session in this project finishes a turn"}">⟲</button>
+            ${revertBtn}${editable ? editBtn : ""}
+          </span>
+        </div>`;
+      }).join("");
+  // A per-project runner override — only meaningful when the project actually has
+  // npm scripts. Absent everywhere else, so it doesn't imply a knob that does nothing.
+  const runnerStrip = mgrList.some((r) => r.source === "npm")
+    ? `<div class="mgr-row mgr-runner">
+         <span class="txt"><b>Package runner</b><small>the lockfile picks this — override a repo that ships the wrong one</small></span>
+         <span class="s-ctl">${RUNNERS.map((rn) =>
+           `<button class="opt${runnerFor(colorKey) === rn ? " on" : ""}" data-runner="${rn}">${rn}</button>`).join("")}</span>
+       </div>`
+    : "";
+  $("mgrBody").innerHTML = mgrList.length ? runnerStrip + rowsHtml : `<div class="run-empty">No tasks found in this project.</div>`;
+
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-pin]").forEach((el) =>
+    el.addEventListener("click", () => { togglePin(colorKey, el.dataset.pin!); renderMgr(); }));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-hide]").forEach((el) =>
+    el.addEventListener("click", () => { toggleHidden(colorKey, el.dataset.hide!); renderMgr(); }));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-onstop]").forEach((el) =>
+    el.addEventListener("click", () => {
+      const r = mgrList.find((x) => x.id === el.dataset.onstop!);
+      if (!r) return;
+      toggleStopRule(colorKey, r);
+      toast(stopRules[colorKey]?.id === r.id
+        ? `${r.label} will run when a session here finishes a turn`
+        : `${r.label} no longer runs after a turn`);
+      renderMgr();
+    }));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-runner]").forEach((el) =>
+    el.addEventListener("click", () => { setRunner(colorKey, el.dataset.runner as Runner); void refreshMgr(); }));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-edit]").forEach((el) =>
+    el.addEventListener("click", () => startMgrEdit(el.dataset.edit!)));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-revert]").forEach((el) =>
+    el.addEventListener("click", () => void revertMgrOverride(el.dataset.revert!)));
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-del]").forEach((el) =>
+    el.addEventListener("click", () => void deleteMgrTask(el.dataset.del!)));
+}
+
+function startMgrEdit(id: string | null) {
+  const r = id ? mgrList.find((x) => x.id === id) : null;
+  // Editing a discovered task doesn't rewrite its file — it captures the effective
+  // command as an override. Our own tasks edit in place.
+  const kind: "own" | "override" = r && r.source !== "episko" ? "override" : "own";
+  mgrEdit = r
+    ? { id: r.id, kind, label: r.label, run: r.exec.mode === "shell" ? r.exec.line : execCmd(r), group: r.group ?? "", background: r.background, cwd: "" }
+    : { id: null, kind: "own", label: "", run: "", group: "", background: false, cwd: "" };
+  renderMgr();
+}
+
+async function revertMgrOverride(id: string) {
+  if (!mgrCtx) return;
+  try {
+    await invoke("remove_task_override", { workdir: mgrCtx.workdir, id });
+    toast(`Reverted “${id}” to its own definition`);
+    await refreshMgr();
+  } catch (err) { toast("revert failed: " + err); }
+}
+
+function renderMgrForm() {
+  const e = mgrEdit!;
+  // Editing a task another tool owns is an override, not a rewrite — say so, because
+  // it's the surprising-but-deliberate half of "Episko never touches a file it didn't create".
+  const note = e.kind === "override"
+    ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.episko/tasks.toml</code>. The original stays as its tool declared it; ↺ Revert removes the override.</div>`
+    : "";
+  $("mgrBody").innerHTML = note + `
+    <div class="in-field"><label class="in-lbl">Label</label>
+      <input class="in-ctl" id="mgrLabel" value="${esc(e.label)}" placeholder="Dev server" spellcheck="false" /></div>
+    <div class="in-field"><label class="in-lbl">Command<span class="in-id">runs in a login shell</span></label>
+      <input class="in-ctl" id="mgrRun" value="${esc(e.run)}" placeholder="pnpm tauri dev" spellcheck="false" /></div>
+    <div class="in-field"><label class="in-lbl">Working directory<span class="in-id">optional · relative</span></label>
+      <input class="in-ctl" id="mgrCwd" value="${esc(e.cwd)}" placeholder="src-tauri" spellcheck="false" /></div>
+    <div class="in-field"><label class="in-lbl">Group</label>
+      <span class="s-ctl">${["", "build", "test", "run", "check", "clean"].map((g) =>
+        `<button class="opt${g === e.group ? " on" : ""}" data-group="${g}">${g || "none"}</button>`).join("")}</span></div>
+    <div class="in-field"><label class="in-lbl">Long-running<span class="in-id">a server or watcher, never “done”</span></label>
+      <span class="s-ctl"><button class="opt${e.background ? " on" : ""}" data-bg="1">background</button></span></div>`;
+
+  $("mgrBody").querySelectorAll<HTMLElement>("[data-group]").forEach((el) =>
+    el.addEventListener("click", () => { mgrEdit!.group = el.dataset.group!; syncMgrForm(); renderMgr(); }));
+  $("mgrBody").querySelector("[data-bg]")?.addEventListener("click", () => {
+    mgrEdit!.background = !mgrEdit!.background; syncMgrForm(); renderMgr();
+  });
+  ($("mgrLabel") as HTMLInputElement).focus();
+}
+// Keep typed text when a click re-renders the form.
+function syncMgrForm() {
+  if (!mgrEdit) return;
+  mgrEdit.label = ($("mgrLabel") as HTMLInputElement).value;
+  mgrEdit.run = ($("mgrRun") as HTMLInputElement).value;
+  mgrEdit.cwd = ($("mgrCwd") as HTMLInputElement).value;
+}
+
+async function saveMgrTask() {
+  if (!mgrCtx || !mgrEdit) return;
+  syncMgrForm();
+  const e = mgrEdit;
+  if (!e.label.trim() || !e.run.trim()) { toast("A task needs a label and a command"); return; }
+
+  // Creating .episko/tasks.toml puts a new committable file in someone's repo —
+  // that's a side effect worth asking about once, not something to do silently.
+  const [path, exists] = await invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir });
+  if (!exists) {
+    const ok = await ask(
+      `Episko will create ${tilde(path)}.\n\nIt's a normal file in your repo — commit it and your team gets these tasks too, in any editor.`,
+      { title: "Create .episko/tasks.toml?", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+    if (!ok) return;
+  }
+  const task = { label: e.label.trim(), run: e.run.trim(), group: e.group || null, background: e.background, cwd: e.cwd.trim() || null };
+  try {
+    if (e.kind === "override") {
+      // The override is keyed by the discovered id verbatim ("vscode:test").
+      await invoke("save_task_override", { workdir: mgrCtx.workdir, id: e.id, task });
+      toast(`Overrode ${e.label}`);
+    } else {
+      // Discovery ids are namespaced ("episko:dev"); the file addresses the bare slug.
+      await invoke("save_episko_task", { workdir: mgrCtx.workdir, id: e.id ? e.id.replace(/^episko:/, "") : null, task });
+      toast(e.id ? `Updated ${e.label}` : `Added ${e.label}`);
+    }
+    mgrEdit = null;
+    await refreshMgr();
+  } catch (err) {
+    toast("save failed: " + err);
+    dlog("error", `save task: ${err}`);
+  }
+}
+
+async function deleteMgrTask(id: string) {
+  if (!mgrCtx) return;
+  const r = mgrList.find((x) => x.id === id);
+  const ok = await ask(`Delete “${r?.label ?? id}” from .episko/tasks.toml?`, {
+    title: "Delete task?", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel",
+  });
+  if (!ok) return;
+  try {
+    await invoke("delete_episko_task", { workdir: mgrCtx.workdir, id: id.replace(/^episko:/, "") });
+    await refreshMgr();
+  } catch (err) { toast("delete failed: " + err); }
+}
+
+// ---------- the ▶ Run picker ----------
+// A popover over the stage, grouped by source so it's obvious where each task came
+// from. Blocked runnables stay visible but greyed: hiding them reads as "Episko
+// didn't find my task", which is the more expensive confusion.
+let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string; workdir: string } | null = null;
+let runList: Runnable[] = [];
+let runSel = 0;
+let runSource: string | null = null;   // jump-bar filter; null = every source
+
+function runTargetCtx() {
+  const wd = activeCwd();
+  if (!wd) return null;
+  const s = activeId ? sessions.get(activeId) : null;
+  const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
+  return {
+    workdir: wd,
+    project: s ? s.project : e ? basename(e.repo_root || e.cwd) : basename(wd),
+    colorKey: s ? s.colorKey : e ? (e.repo_root || e.cwd) : wd,
+    worktree: s ? s.worktree : null,
+    branch: s ? s.branch : (e?.branch || ""),
+  };
+}
+
+async function openRunPicker() {
+  const c = runTargetCtx();
+  if (!c) { toast("No active project"); return; }
+  runCtx = { project: c.project, colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, workdir: c.workdir };
+  runList = await discoverTasks(c.workdir, c.colorKey);
+  runSel = 0;
+  runSource = null;
+  $("runSub").textContent = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · ${tilde(c.workdir)}`;
+  const pop = $("runPop");
+  pop.classList.add("show");
+  $("scrim").classList.add("show");
+  renderRunPicker("");
+  const inp = $("runInput") as HTMLInputElement;
+  inp.value = "";
+  setTimeout(() => inp.focus(), 20);
+}
+function closeRunPicker() {
+  $("runPop").classList.remove("show");
+  if (!$("palette").classList.contains("show")) $("scrim").classList.remove("show");
+  runCtx = null;
+}
+
+// Pinned first (they're the ones you run fifty times a day), then by source.
+// Short chip labels for the jump bar. Group headers use the Runnable's own
+// sourceFile instead, which is authoritative — it's the file discovery actually
+// found, so ".vscode/tasks.json" and ".vscode/launch.json" name themselves, and a
+// repo with `Justfile` doesn't get told it has a `justfile`.
+const sourceShort = (r: Runnable) => PROVIDER_LABEL[r.source as Provider] || r.source;
+
+function runMatches(term: string): Runnable[] {
+  const t = term.trim().toLowerCase();
+  const match = (r: Runnable) => !t || r.label.toLowerCase().includes(t) || execCmd(r).toLowerCase().includes(t) || (r.group || "").includes(t);
+  return runList.filter(match);
+}
+
+/// The jump bar: every source present under the current search, with its count.
+/// Built from the search results rather than the whole list, so a chip never
+/// promises rows the current term has filtered away.
+function runSources(term: string): { src: string; short: string; count: number }[] {
+  const out: { src: string; short: string; count: number }[] = [];
+  for (const r of runMatches(term)) {
+    const hit = out.find((o) => o.src === r.source);
+    if (hit) hit.count++;
+    else out.push({ src: r.source, short: sourceShort(r), count: 1 });
+  }
+  return out;
+}
+
+// How many tasks the "recent" group floats to the top. Small on purpose — it's a
+// shortcut to the two or three you keep re-running, not a second copy of the list.
+const RUN_RECENT_MAX = 5;
+
+function runGroups(term: string): { name: string; sub?: string; items: Runnable[] }[] {
+  const list = runMatches(term).filter((r) => !runSource || r.source === runSource);
+  const pins = runCtx ? pinnedIds(runCtx.colorKey) : [];
+  const groups: { name: string; sub?: string; items: Runnable[] }[] = [];
+  // A row shown in a float-to-top group (pinned, recent) is pulled out of its source
+  // group below, so nothing appears twice.
+  const lifted = new Set<string>();
+  // Pinned float to the top, but only in the unfiltered view — inside a single
+  // source, splitting two of its own rows into a separate block just hides them.
+  const pinned = runSource ? [] : list.filter((r) => pins.includes(r.id));
+  if (pinned.length) { groups.push({ name: "pinned", items: pinned }); pinned.forEach((r) => lifted.add(r.id)); }
+  // Recent: the tasks you actually reach for, ranked by the same frecency the palette
+  // uses (every launch bumps `task:<id>`). Only in the unfiltered "all" view — typing
+  // or picking a source is already a narrower intent, and a Recent block there would
+  // just be another thing to scan. Pinned are already up top, so they don't repeat.
+  if (!runSource && !term.trim()) {
+    const recent = list
+      .filter((r) => !lifted.has(r.id) && !r.blocked && frecScore("task:" + r.id) > 0)
+      .sort((a, b) => frecScore("task:" + b.id) - frecScore("task:" + a.id))
+      .slice(0, RUN_RECENT_MAX);
+    if (recent.length) { groups.push({ name: "recent", items: recent }); recent.forEach((r) => lifted.add(r.id)); }
+  }
+  const bySource = new Map<string, Runnable[]>();
+  for (const r of list) {
+    if (lifted.has(r.id)) continue;
+    if (!bySource.has(r.source)) bySource.set(r.source, []);
+    bySource.get(r.source)!.push(r);
+  }
+  for (const [, items] of bySource) {
+    groups.push({ name: items[0].sourceFile || sourceShort(items[0]), sub: String(items.length), items });
+  }
+  return groups;
+}
+
+function renderRunTabs(term: string) {
+  const srcs = runSources(term);
+  const bar = $("runTabs");
+  // One source is not a choice — the bar would just be a label taking up a row.
+  bar.hidden = srcs.length < 2;
+  if (bar.hidden) return;
+  const total = srcs.reduce((n, s2) => n + s2.count, 0);
+  bar.innerHTML =
+    `<button class="run-tab${runSource === null ? " on" : ""}" data-src="">All<span class="n">${total}</span></button>` +
+    srcs.map((s2) =>
+      `<button class="run-tab${runSource === s2.src ? " on" : ""}" data-src="${esc(s2.src)}">${esc(s2.short)}<span class="n">${s2.count}</span></button>`).join("");
+  bar.querySelectorAll<HTMLElement>("[data-src]").forEach((el) =>
+    el.addEventListener("click", () => setRunSource(el.dataset.src || null)));
+}
+
+function setRunSource(src: string | null) {
+  runSource = src;
+  runSel = 0;
+  renderRunPicker(($("runInput") as HTMLInputElement).value);
+  ($("runInput") as HTMLInputElement).focus();
+}
+
+/// Tab / ⇧Tab step through the jump bar — the keyboard equivalent of clicking a
+/// chip, so the whole picker stays reachable without the mouse.
+function cycleRunSource(dir: 1 | -1) {
+  const srcs = runSources(($("runInput") as HTMLInputElement).value);
+  if (srcs.length < 2) return;
+  const order: (string | null)[] = [null, ...srcs.map((s2) => s2.src)];
+  const i = order.indexOf(runSource);
+  setRunSource(order[(i + dir + order.length) % order.length]);
+}
+
+function renderRunPicker(term: string) {
+  renderRunTabs(term);
+  const groups = runGroups(term);
+  const flat = groups.flatMap((g) => g.items);
+  if (runSel >= flat.length) runSel = Math.max(0, flat.length - 1);
+  const body = $("runList");
+  if (!flat.length) {
+    body.innerHTML = runList.length
+      ? `<div class="run-empty">Nothing matches${term ? ` “${esc(term)}”` : ""}${runSource ? ` in ${esc(PROVIDER_LABEL[runSource as Provider] || runSource)}` : ""}.</div>`
+      : `<div class="run-empty">No tasks found in this project.<br><span class="dim">Episko reads <code>package.json</code> scripts and <code>.episko/tasks.toml</code>.</span></div>`;
+    return;
+  }
+  let i = 0;
+  body.innerHTML = groups.map((g) => {
+    const rows = g.items.map((r) => {
+      const on = i === runSel ? " on" : "";
+      const idx = i++;
+      const pinned = runCtx && pinnedIds(runCtx.colorKey).includes(r.id);
+      return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(r))}">
+        <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
+        <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
+        <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+      </div>`;
+    }).join("");
+    return `<div class="run-grp">${esc(g.name)}${g.sub ? `<span class="n">${esc(g.sub)}</span>` : ""}</div>${rows}`;
+  }).join("");
+  body.querySelectorAll<HTMLElement>(".run-row").forEach((el) => {
+    el.addEventListener("click", () => { runSel = +el.dataset.i!; pickRun(false); });
+  });
+  body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function pickRun(pin: boolean) {
+  const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
+  const r = flat[runSel];
+  if (!r || !runCtx) return;
+  if (pin) { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
+  // The trust gate is the one blocked row you can act on: choosing it asks for
+  // permission rather than shrugging.
+  if (r.id === "just:__untrusted") { void askTrust(runCtx.colorKey, runCtx.project); return; }
+  if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return; }
+  const ctx = runCtx;
+  closeRunPicker();
+  bumpFrec("task:" + r.id);
+  const o = { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir };
+  if (r.inputs.length) { openInputPrompt(r, ctx.project, o); return; }
+  void launchWithDeps(r, ctx.project, o);
+}
+
+// Trusting a folder means Episko may execute code from it to enumerate tasks, so
+// it is asked for plainly and once, never inferred from mere use.
+async function askTrust(path: string, project: string) {
+  const ok = await ask(
+    `Episko will run \`just --dump\` inside ${project} to list its recipes.\n\n`
+    + `That evaluates the justfile, which can execute code from this folder. Only do this for projects you trust.`,
+    { title: `Trust ${project}?`, kind: "warning", okLabel: "Trust and rescan", cancelLabel: "Cancel" });
+  if (!ok) return;
+  trustProject(path);
+  dlog("info", `trusted ${path}`);
+  await openRunPicker();
+}
+
 // Hand a command over to a terminal at `workdir` instead of running it ourselves.
 // The embedded engine can genuinely prefill: it opens a shell pane and types the
 // command *without* a newline, so the user reads it and presses Enter. External
@@ -4361,7 +5608,7 @@ async function launchShell(project: string, workdir: string, opts: { colorKey?: 
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [],
-    external: false, shell: true, term, fit, pane,
+    kind: "shell", external: false, term, fit, pane,
   };
   sessions.set(id, s);
   setActive(id);
@@ -4383,11 +5630,42 @@ $("btnNew").addEventListener("click", () => {
   if (c) requestLaunch(c.project, c.path); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+$("btnRun").addEventListener("click", () => { void openRunPicker(); });
+$("inCancel").addEventListener("click", closeInputPrompt);
+$("inGo").addEventListener("click", submitInputPrompt);
+$("inBody").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); submitInputPrompt(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeInputPrompt(); }
+});
+$("setClose").addEventListener("click", closeSettings);
+$("mgrClose").addEventListener("click", closeTaskManager);
+$("mgrNew").addEventListener("click", () => startMgrEdit(null));
+$("mgrSave").addEventListener("click", () => { void saveMgrTask(); });
+$("mgrBack").addEventListener("click", () => { mgrEdit = null; renderMgr(); });
+$("mgrOpen").addEventListener("click", () => {
+  if (mgrCtx) void invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir })
+    .then(([path]) => openUrl("file://" + path))
+    .catch((e) => toast("open failed: " + e));
+});
+$("mgrRescan").addEventListener("click", () => { if (mgrCtx) void rescanTasks(mgrCtx.workdir).then(() => refreshMgr()).then(() => toast("Rescanned")); });
+$("runInput").addEventListener("input", () => { runSel = 0; renderRunPicker(($("runInput") as HTMLInputElement).value); });
+$("runInput").addEventListener("keydown", (e) => {
+  const meta = e.metaKey || e.ctrlKey;
+  const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
+  if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
+  else if (e.key === "Enter") { e.preventDefault(); pickRun(meta); }
+  // ⌘⇧R inside the picker is a *real* rescan: drop the cache, then re-discover.
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
+  else if (e.key === "Tab") { e.preventDefault(); cycleRunSource(e.shiftKey ? -1 : 1); }
+  else if (e.key === "Escape") { e.preventDefault(); closeRunPicker(); }
+});
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("fEngineSeg").addEventListener("click", (e) => { e.stopPropagation(); $("enginePop").classList.contains("show") ? closeEnginePop() : openEnginePopover(); });
 $("fUsageSeg").addEventListener("click", (e) => { e.stopPropagation(); $("usagePop").classList.contains("show") ? closeUsagePop() : openUsagePop(); });
 $("fShortSeg").addEventListener("click", (e) => { e.stopPropagation(); $("shortPop").classList.contains("show") ? closeShortPop() : openShortPop(); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
+
 // The dialog handles its own clicks and keys: rows are addressed by index into
 // wtRows, so nothing leaks into the global [data-*] dispatcher.
 $("wtRefresh").addEventListener("click", () => { void wtReadLocal(true).then(() => wtMaybeFetch(true)); });
@@ -4455,7 +5733,7 @@ $("wtList").addEventListener("dblclick", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>("[data-wti]");
   if (row) { e.preventDefault(); wtRun(wtRows[+row.dataset.wti!]); }
 });
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); });
 $("diffClose").addEventListener("click", closeDiff);
 // Collapse / expand a file section by clicking its header.
 $("diffBody").addEventListener("click", (e) => {
@@ -4490,9 +5768,11 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }
   else if (meta && e.key === "0") { e.preventDefault(); termFontSize = 12.5; applyFontSize(); toast("Terminal font 12.5px"); }
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
+  else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { mgrEdit = null; renderMgr(); } else closeTaskManager(); }
 });
 // Debounce container resizes. A window drag or a sidebar/inspector toggle fires this
 // many times per second; without a settle delay each tick pushes a new width to the
@@ -4597,13 +5877,16 @@ listen("tray-check-updates", () => { void checkForUpdates(true); });
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {
   const live = [...sessions.values()].filter((s) => s.phase !== "ended");
-  const agents = live.filter((s) => !s.shell).length;
-  const terms = live.filter((s) => s.shell).length;
-  if (agents + terms === 0) { await invoke("confirm_quit"); return; }
+  const agents = live.filter((s) => isAgent(s)).length;
+  const terms = live.filter((s) => s.kind === "shell").length;
+  const runs = live.filter((s) => s.kind === "task").length;
+  const total = agents + terms + runs;
+  if (total === 0) { await invoke("confirm_quit"); return; }
   const parts: string[] = [];
   if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
   if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
-  const ok = await ask(`${parts.join(" and ")} still running — quitting ends ${agents + terms === 1 ? "it" : "them"}.`, {
+  if (runs) parts.push(`${runs} ${runs === 1 ? "task" : "tasks"}`);
+  const ok = await ask(`${listPhrase(parts)} still running — quitting ends ${total === 1 ? "it" : "them"}.`, {
     title: "Quit Episko?",
     kind: "warning",
     okLabel: "Quit",
@@ -4655,7 +5938,7 @@ setInterval(() => {
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
-  if (!s || s.shell) return;
+  if (!s || !isAgent(s)) return;
   const el = document.getElementById("iDwell");
   if (el) el.textContent = dwellText(s);
 }, 1000);
