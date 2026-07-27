@@ -584,6 +584,30 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
 
 ## Phase 3 — due diligence & polish
 
+**Status 2026-07-27: six of seven items done**, in nine commits. Gates are **77 cargo
+(+1 `#[ignore]`d) + 368 vitest**, `tsc --noEmit` clean, and `cargo clippy
+--all-targets -- -D warnings` now **exits 0 and is a CI gate** rather than decoration.
+
+Item 5 (coverage) is the only one not done, and is blocked on the user: both halves
+need a remote fetch and one adds a devDependency. See it below.
+
+**What is owed to a human, and cannot be done from here.** All three need the app run
+interactively or the user's Claude account:
+
+1. **The click-through for the whole effort** (Phases 0–3). Still owed and still the
+   single biggest gap: nothing in this restructure has been exercised in the running
+   app. `RELEASE.md` is now the concrete procedure; *Verifying a slice by hand* below
+   is the background. **Two Phase-3 changes are the first things to look at**, because
+   both alter what the app does at runtime: the sidebar repaint guard (the sidebar must
+   still update the instant a phase flips or a permission arrives) and the debug flush
+   guard (`episko-debug.json` must still refresh, at worst every 60s).
+2. **Windows statusLine telemetry on 0.11.0** — reproduce or clear it. It decides
+   whether ~100 Phase-1 tests currently guard code that never runs on this platform.
+   The `#[ignore]`d CLI test does *not* settle this: `claude -p` is non-interactive
+   and statusLine only fires from a live REPL, which is exactly the half in question.
+3. **`cargo test -- --ignored`** — the CLI contract test. Written, compiling,
+   registered, and deliberately **not run**: it spends the user's Claude quota.
+
 - [x] Doc drift: CLAUDE.md gets the module map (replaces the "one file"
       descriptions); README mentions the Windows embedded port; SPIKE.md marked
       historical
@@ -785,6 +809,20 @@ had or one the spec cut, with nothing missing. The append script's header-skip u
       devDependency and a `pnpm install`, which is a remote and outside this item;
       it is a small, self-contained slice for whoever picks it up.
 - [ ] Optional: coverage as a yardstick (`@vitest/coverage-v8`, `cargo llvm-cov`)
+
+      **Not done — blocked on the user, 2026-07-27.** Both halves need a remote and
+      neither tool is present: `@vitest/coverage-v8` is a new **devDependency** (so a
+      `package.json` + `pnpm-lock.yaml` change and a new supply-chain entry), and
+      `cargo llvm-cov` needs `cargo install cargo-llvm-cov`. The kickoff names
+      "touches a remote" as a real blocker, and this is the one item marked optional,
+      so it was left rather than installed unilaterally. Everything else in Phase 3 is
+      done.
+
+      When it is picked up, PLAN's constraint stands and is the whole point: **record
+      the numbers, do not chase them.** The render, view and DOM-owning modules are
+      untested *by design* — decided twice in this plan — so a coverage gate would
+      argue with a decision already made. Expect the logic modules to read high and
+      the app to read low, and expect that to be correct.
 - [x] Manual release smoke checklist (launch → telemetry arrives → answer a
       permission → resume → external session visible → task run + on-stop rule)
 
