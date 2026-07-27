@@ -20,8 +20,8 @@ import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
-  removeFavorite, resolvePermission, setActionsRenderAll, setSort, setTheme,
-  setWtGroup, toggleInsp, toggleRail, toggleTheme,
+  removeFavorite, resolvePermission, revealActiveFolder, setActionsRenderAll,
+  setSort, setTheme, setWtGroup, toggleInsp, toggleRail, toggleTheme,
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
@@ -163,6 +163,7 @@ setFooterSetActive(setActive);
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
+  revealActiveFolder, openProjectFolder,
 });
 // Same reasoning, six callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
@@ -514,6 +515,23 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
 });
+// ⌘⏎ — reveal the current selection's folder. Deliberately a *second* listener, in the
+// CAPTURE phase, rather than another branch in the handler above: ⏎ is the one key
+// every dialog already owns, and the palette's Enter runs the selected item and closes
+// itself, dropping the scrim *before* a bubble-phase listener would run — so "is a
+// dialog up?" has to be asked ahead of their handlers, not after. It stands down
+// rather than consuming the key, which leaves ⌘⏎ free for the run picker's pin.
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+  if ($("scrim").classList.contains("show")) return;
+  // Not every Enter-bound field sits behind the scrim — the colour popover's hex box
+  // doesn't — so also stand down while a real text field has focus. xterm's own
+  // hidden textarea is not one of those: a focused terminal is the normal case here.
+  const t = e.target;
+  if (t instanceof HTMLElement && t.matches("input, textarea") && !t.classList.contains("xterm-helper-textarea")) return;
+  e.preventDefault();
+  revealActiveFolder();
+}, true);
 // Debounce container resizes. A window drag or a sidebar/inspector toggle fires this
 // many times per second; without a settle delay each tick pushes a new width to the
 // PTY, and Claude's Ink renderer — which erases its previous frame by line count at

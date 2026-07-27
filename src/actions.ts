@@ -14,6 +14,7 @@ import { $, toast } from "./dom";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";
+import { activeCwd } from "./panes";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import {
@@ -29,6 +30,17 @@ export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
 export async function openProjectFolder(key: string) {
   try { await invoke("open_folder", { dir: key }); }
   catch (e) { toast(String(e)); }
+}
+
+// The file-manager sibling of ⌘T (⌘⏎): show the current selection's folder. Keyed
+// off activeCwd(), so it lands on the same directory a terminal would — a worktree
+// session's own checkout rather than the repo it groups under, an external
+// session's cwd, a dormant session's recorded workdir. A workdir that's since been
+// deleted (a removed worktree) surfaces as the backend's error, not a silent no-op.
+export function revealActiveFolder() {
+  const wd = activeCwd();
+  if (!wd) { toast("No active session"); return; }
+  void openProjectFolder(wd);
 }
 
 export async function addProject() {

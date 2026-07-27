@@ -8,7 +8,7 @@
 // right-click and on a dot click, and nowhere else.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, IS_MAC, IS_WIN, toast } from "./dom";
+import { $, FILE_MANAGER, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import { closeFootMenus } from "./footer";
 import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
@@ -119,7 +119,6 @@ $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
 let ctxKey: string | null = null;
 const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name || basename(key);
 // Where "Open project folder" actually lands, so the row can name it.
-const FILE_MANAGER = IS_WIN ? "Explorer" : IS_MAC ? "Finder" : "file manager";
 
 type CtxRow = { act: string; ic: string; label: string; sub?: string; cls?: string; chev?: boolean };
 const ctxRowHtml = (r: CtxRow) =>

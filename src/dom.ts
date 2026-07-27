@@ -41,5 +41,7 @@ const UA = typeof navigator === "undefined" ? "" : navigator.userAgent;
 export const IS_MAC = UA.includes("Mac");
 export const IS_WIN = UA.includes("Windows");
 export const MOD = IS_MAC ? "⌘" : "Ctrl";
+/** Where "open folder" actually lands, so a row, shortcut or command can name it. */
+export const FILE_MANAGER = IS_WIN ? "Explorer" : IS_MAC ? "Finder" : "file manager";
 /** Inline chord text: "⌘K" on macOS, "Ctrl+K" elsewhere. */
 export const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);

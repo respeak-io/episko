@@ -11,7 +11,7 @@
 // setters, exactly as settings.ts does (PLAN: "a control panel may take one host
 // object instead of N setters").
 
-import { $, chord, MOD } from "./dom";
+import { $, chord, FILE_MANAGER, MOD } from "./dom";
 import { esc, tilde } from "./format";
 import { iconFor } from "./icons";
 import { setEngine } from "./footer";
@@ -32,7 +32,7 @@ import {
   accentFor, availEngines, engineDef, sessions, termEngine,
 } from "./state";
 
-// Everything a palette row can do that this module does not own. Ten callees is
+// Everything a palette row can do that this module does not own. Twelve callees is
 // past the point where per-callee setters read as anything but noise, so this follows
 // settings.ts and takes one host; all default to no-ops so the module stands alone.
 let host: {
@@ -46,11 +46,14 @@ let host: {
   toggleRail: () => void;
   toggleTheme: () => void;
   requestLaunch: (project: string, path: string) => void;
+  revealActiveFolder: () => void;
+  openProjectFolder: (key: string) => void;
 } = {
   setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   toggleTheme: () => {}, requestLaunch: () => {},
+  revealActiveFolder: () => {}, openProjectFolder: () => {},
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -85,6 +88,10 @@ function sessionActions(s: Sess): PalItem[] {
       a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
+  // Not gated on isAgent — every pane kind has a real directory behind it (a task's
+  // run cwd, a shell's launch dir), and unlike ⌘⏎ this names *this* session's
+  // folder rather than whichever one holds the stage.
+  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
     a.push(mk("New session here…", "⑃", () => openWt(s.project, s.colorKey)));
     // Only when this session lives in a worktree (not the repo's main checkout):
     // clean up its worktree (and merged branch) without dropping to a shell.
@@ -96,6 +103,7 @@ function sessionActions(s: Sess): PalItem[] {
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: host.addProject },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: host.openPlainTerminal, sc: [MOD, "T"] },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, sc: [MOD, "⏎"] },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
