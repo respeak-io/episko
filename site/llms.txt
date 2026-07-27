@@ -1,0 +1,38 @@
+# episko
+
+> A free, open-source desktop app for macOS and Windows that runs and supervises many Claude Code sessions at once. Every agent gets its own real terminal; episko streams each one's live status, model, context use, cost, running tool and permission requests into a single view.
+
+episko is built by Respeak GmbH (Karlsruhe, Germany) and released under the MIT licence. It is an independent project — **not affiliated with, endorsed, or sponsored by Anthropic**. Claude and Claude Code are trademarks of Anthropic, PBC.
+
+The name comes from Greek ἐπίσκοπος (*episkopos*), "the one who watches over".
+
+## What it does
+
+- **Runs sessions in parallel.** Each Claude Code session is a separate process in its own PTY. The terminal can be embedded in the app, or an external Ghostty, Terminal.app or iTerm2 window. These are genuine interactive Claude Code terminals — you can type into them.
+- **Shows what every agent is doing.** Per session: phase (idle, thinking, working, done, needs-you, error), model, context-window use, dollar cost, elapsed time, the tool currently running, and a short history of recent tool calls with latencies.
+- **Answers permission prompts.** When Claude Code asks to run a command, episko surfaces the request with a risk assessment and lets you allow it, deny it, or jump into the terminal — without hunting for which window is blocked.
+- **Tracks usage limits.** Reads your 5-hour and weekly Anthropic limits and forecasts your pace, warning from amber to red before you hit a wall. Includes a usage dashboard: daily spend heatmap, tokens by model, token composition, and cost attributed per project.
+- **Launches into git worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a new worktree for a session so parallel agents don't collide in one checkout.
+- **Finds sessions started elsewhere.** Claude Code sessions launched outside episko are discovered and listed read-only, with a jump-to-terminal action on macOS.
+- **Survives restarts.** Sessions are resumed through Claude Code's own transcripts, so conversation state is Claude's, not something episko has to capture.
+- **Runs your project's own tasks.** The task definitions a project already ships — `.episko/tasks.toml`, `.vscode/tasks.json`, `.vscode/launch.json`, `package.json` scripts, a `justfile`, `Taskfile.yml`, `mise.toml`, a `Makefile`, `Cargo.toml` — run in the same panes as the agents, started from a **▶ Run** picker (⌘⇧R) or the command palette. A task run *is* a session: its exit code becomes its status (0 = done, non-zero = error), so it shows up in the sidebar, the attention badge and the tray like anything else. Runs are deliberately un-instrumented (no telemetry, no cost) and go through a login shell so they inherit your PATH and version-manager shims. Task discovery never executes the project: tools whose listing would evaluate the repo sit behind a trust gate, and tasks that can't run (needing an editor, or an attach-type debug config) are listed with the reason rather than hidden.
+- **⌘K command palette** to jump between sessions or launch a project, and a **settings window** (⌘,).
+
+## How it works
+
+episko generates a throwaway Claude Code `--settings` file per launch, containing a `statusLine` command and lifecycle hooks that POST to a localhost HTTP server inside the app. This means no global `~/.claude` mutation and no transcript-file scraping — instrumentation is per-launch and disappears with the temporary file. Everything stays on your machine; nothing is sent to Respeak or any third party.
+
+Built with Tauri v2 — a Rust backend with a vanilla-TypeScript frontend.
+
+## Requirements
+
+- The `claude` CLI (Claude Code) installed and on your PATH, with your own Anthropic access.
+- macOS on Apple silicon, or Windows 10/11. Linux is not yet packaged.
+- On Windows the embedded terminal is supported; the external-terminal engines are macOS-only.
+
+## Links
+
+- [Homepage](https://episko.dev/)
+- [Source code and releases](https://github.com/respeak-io/episko): downloads for macOS (.dmg) and Windows (.msi)
+- [Imprint and privacy](https://episko.dev/impressum)
+- [Claude Code](https://claude.com/claude-code): the Anthropic CLI episko launches

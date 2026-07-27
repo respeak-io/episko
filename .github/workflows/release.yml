@@ -34,10 +34,12 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
 
+      # Same .nvmrc as ci.yml — the artifacts users install must be built on the Node
+      # the test suite actually ran against, not a second pin that drifts from it.
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Set up Rust

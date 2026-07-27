@@ -1,0 +1,23 @@
+{
+  // Marketing site only — nothing to do with the Tauri app in src-tauri/.
+  // Deploy from the repo root:  wrangler deploy      (preview: wrangler dev)
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "episko-site",
+  // must not be newer than the installed wrangler's runtime binary supports, or
+  // `wrangler dev` refuses to boot ("newest date supported by this server binary")
+  "compatibility_date": "2026-07-21",
+  "assets": {
+    "directory": "./site",
+    // serve /impressum as well as /impressum.html, and use our own 404 page
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  // custom_domain makes wrangler create/manage the DNS record on the episko.dev
+  // zone and issue the cert; the worker still stays reachable on workers.dev
+  "routes": [
+    { "pattern": "episko.dev", "custom_domain": true }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

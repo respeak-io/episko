@@ -1,0 +1,1651 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>episko — Claude Code session manager for macOS &amp; Windows</title>
+<meta name="description" content="Run dozens of Claude Code sessions at once — each in its own terminal, with live status, context, cost and permission prompts in one app. Free, open source." />
+<link rel="canonical" href="https://episko.dev/" />
+<meta name="author" content="Respeak GmbH" />
+<meta name="theme-color" content="#100e15" />
+<meta name="color-scheme" content="dark" />
+
+<!-- social cards -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="episko" />
+<meta property="og:url" content="https://episko.dev/" />
+<meta property="og:title" content="episko — Claude Code session manager for macOS &amp; Windows" />
+<meta property="og:description" content="Run dozens of Claude Code sessions at once. Every agent gets its own terminal, with live status, context, cost and permission prompts in one native app." />
+<meta property="og:image" content="https://episko.dev/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="episko — a pixel-art shepherd minding a flock of little Claude agents, above the episko session cockpit." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="episko — Claude Code session manager for macOS &amp; Windows" />
+<meta name="twitter:description" content="Run dozens of Claude Code sessions at once. Every agent gets its own terminal, with live status, context, cost and permission prompts in one native app." />
+<meta name="twitter:image" content="https://episko.dev/og.png" />
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+<!-- Machine-readable product facts. Kept in sync with the copy below by hand;
+     the version is intentionally omitted here since the page fetches it live. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://episko.dev/#app",
+      "name": "episko",
+      "alternateName": "episko for Claude Code",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "AI coding agent session manager",
+      "operatingSystem": "macOS, Windows 10, Windows 11",
+      "url": "https://episko.dev/",
+      "downloadUrl": "https://github.com/respeak-io/episko/releases/latest",
+      "softwareHelp": "https://github.com/respeak-io/episko",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "description": "episko is a native desktop app that runs and supervises many Claude Code sessions at once. Each session gets its own PTY terminal — embedded, or in Ghostty, Terminal.app or iTerm2 — and streams live telemetry back: phase, model, context use, cost, the tool it is running, and permission requests you can answer without leaving the app. It also tracks 5-hour and weekly usage limits and forecasts when you will hit them.",
+      "featureList": [
+        "Run many Claude Code sessions in parallel, each in its own terminal",
+        "Run the project's own tasks in the same panes — VS Code tasks, justfile, package.json scripts, Taskfile, mise, Makefile and Cargo",
+        "Live per-session status: model, context window use, cost and duration",
+        "Answer Claude Code permission prompts in-app (allow, deny, or open a terminal)",
+        "5-hour and weekly usage-limit tracking with pace forecasting",
+        "Command palette (⌘K) to jump between sessions and launch projects",
+        "Git worktree-aware session launching",
+        "Usage analytics: daily spend heatmap, tokens by model, cost per project",
+        "Discovers and surfaces Claude Code sessions started outside the app",
+        "Restores sessions after a restart via Claude Code's own transcripts"
+      ],
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+      "author": { "@id": "https://respeak.io/#org" },
+      "publisher": { "@id": "https://respeak.io/#org" }
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "codeRepository": "https://github.com/respeak-io/episko",
+      "programmingLanguage": ["Rust", "TypeScript"],
+      "runtimePlatform": "Tauri",
+      "license": "https://opensource.org/licenses/MIT",
+      "about": { "@id": "https://episko.dev/#app" }
+    },
+    {
+      "@type": "Organization",
+      "@id": "https://respeak.io/#org",
+      "name": "Respeak GmbH",
+      "url": "https://respeak.io",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "Kaiserstraße 89-93",
+        "postalCode": "76133",
+        "addressLocality": "Karlsruhe",
+        "addressCountry": "DE"
+      }
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://episko.dev/#site",
+      "url": "https://episko.dev/",
+      "name": "episko",
+      "inLanguage": "en",
+      "publisher": { "@id": "https://respeak.io/#org" },
+      "about": { "@id": "https://episko.dev/#app" }
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://episko.dev/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is episko?",
+          "acceptedAnswer": { "@type": "Answer", "text": "episko is a free, open-source desktop app for macOS and Windows that runs and supervises many Claude Code sessions at the same time. Each agent gets its own terminal, and episko shows what every one of them is doing — status, model, context use, cost, and the tool it is running right now — in a single view." }
+        },
+        {
+          "@type": "Question",
+          "name": "How many Claude Code sessions can episko run at once?",
+          "acceptedAnswer": { "@type": "Answer", "text": "There is no fixed limit in episko itself. Each session is a separate Claude Code process in its own PTY, so the practical ceiling is your machine's resources and your Anthropic usage limits. episko tracks both your 5-hour and weekly limits and forecasts when you will run out." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does episko replace Claude Code?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. episko launches and supervises the real Claude Code CLI, which must already be installed and on your PATH. Every session is a genuine, interactive Claude Code terminal you can type into — not a recording or a reimplementation." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can episko run my project's build and test scripts?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. episko runs the task definitions your project already ships \u2014 VS Code tasks and launch configs, a justfile, package.json scripts, Taskfile, mise, a Makefile, Cargo \u2014 in the same terminal panes as the agents, from a Run picker or the command palette. A task run behaves like a session: its exit code becomes its status, so a failed build raises the same attention badge an agent would." }
+        },
+        {
+          "@type": "Question",
+          "name": "Is episko free?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. episko is free and open source under the MIT licence. The source is at github.com/respeak-io/episko. You still need your own Claude Code access from Anthropic." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does episko send my data anywhere?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. episko runs entirely on your machine and stores its state locally. Telemetry from each Claude Code session is posted to a localhost server inside the app; nothing is sent to Respeak or any third party." }
+        },
+        {
+          "@type": "Question",
+          "name": "Which platforms does episko support?",
+          "acceptedAnswer": { "@type": "Answer", "text": "macOS (Apple silicon) and Windows 10 and 11. macOS supports every terminal engine — embedded, Ghostty, Terminal.app and iTerm2 — while Windows currently supports the embedded terminal. Linux is not yet packaged." }
+        },
+        {
+          "@type": "Question",
+          "name": "Is episko made by Anthropic?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. episko is an independent open-source project by Respeak GmbH in Karlsruhe, Germany. It is not affiliated with, endorsed, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC." }
+        }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+/* fonts are self-hosted (no Google Fonts request) — keeps the site free of
+   third-party calls, which also keeps the privacy note short and true */
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/jetbrains-mono-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/jetbrains-mono-greek.woff2) format('woff2');unicode-range:U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/space-grotesk-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+
+/* ===== tokens: lifted from the real app (src/styles.css) ===== */
+:root{
+  --bg:#100e15; --bg-2:#0b0a10; --panel:#16141d; --surface:#1b1824; --surface-2:#221e2d;
+  --hair:rgba(255,255,255,.07); --hair-strong:rgba(255,255,255,.12); --lift:rgba(255,255,255,.05);
+  --text:#efecf5; --muted:#a49eb4; --muted-2:#736d84; --terminal-bg:#0c0b11; --terminal-text:#dcd8e6;
+  --accent:#a78bfa;
+  --accent-wash:color-mix(in srgb, var(--accent) 9%, transparent);
+  --accent-line:color-mix(in srgb, var(--accent) 34%, transparent);
+  --accent-glow:color-mix(in srgb, var(--accent) 24%, transparent);
+  --accent-ink:color-mix(in srgb, var(--accent) 86%, white 14%);
+  --st-working:#e0a44a; --st-done:#37c98b; --st-attention:#fb6f92; --st-idle:#7b8496; --st-error:#f26d6d;
+  --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-bash:#e0a44a; --tool-task:#6ad0b0; --tool-web:#f0a6d0;
+  /* usage analytics: model families, the spend-heatmap ramp, and the token-mix ramp */
+  --m-opus:#8f74ee; --m-sonnet:#c07d1e; --m-haiku:#149a73; --m-other:#8a8394;
+  --u-g0:#191622; --u-g1:#372e57; --u-g2:#544499; --u-g3:#7d63d8; --u-g4:#a78bfa;
+  --u-t1:#2c2740; --u-t2:#4a3d7a; --u-t3:#7159c4; --u-t4:#a78bfa;
+  --radius:11px; --radius-sm:8px; --radius-lg:13px;
+  --font-ui:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --font-display:"Space Grotesk",var(--font-ui);
+  color-scheme:dark;
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font-ui); font-size:16px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+a{color:inherit;text-decoration:none;}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+
+/* atmospheric ground — the app's radial accent wash, extended */
+body::before{
+  content:""; position:fixed; inset:0; z-index:-2; pointer-events:none;
+  background:
+    radial-gradient(1200px 620px at 78% -8%, color-mix(in srgb,var(--accent) 13%,transparent), transparent 62%),
+    radial-gradient(900px 700px at 10% 110%, color-mix(in srgb,#38bdf8 7%,transparent), transparent 60%),
+    var(--bg);
+}
+body::after{ /* faint observation grid */
+  content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.4;
+  background-image:linear-gradient(var(--hair) 1px,transparent 1px),linear-gradient(90deg,var(--hair) 1px,transparent 1px);
+  background-size:64px 64px; mask-image:radial-gradient(120% 100% at 50% 0%,#000 30%,transparent 78%);
+}
+
+/* ===== fixed top bar ===== */
+.nav{
+  position:fixed; top:0; left:0; right:0; z-index:60; height:56px;
+  display:flex; align-items:center; gap:11px;
+  padding:0 clamp(16px,4vw,40px);
+  backdrop-filter:blur(14px);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--bg) 82%,transparent),transparent);
+  border-bottom:1px solid transparent; transition:border-color .3s,background .3s;
+}
+.nav.scrolled{border-bottom-color:var(--hair); background:color-mix(in srgb,var(--bg) 78%,transparent);}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);font-weight:600;letter-spacing:-.01em;font-size:16px;}
+.logo{width:19px;height:19px;border-radius:6px;background:conic-gradient(from 210deg,#a78bfa,#38bdf8,#fb923c,#a78bfa);box-shadow:inset 0 0 0 1px rgba(255,255,255,.2), 0 0 14px -2px var(--accent-glow);}
+/* house mark: episko is one of Respeak's things, said quietly — no badge, no
+   "product" framing; this is open source, not something we're selling */
+.byline{font-family:var(--font-mono);font-size:11px;letter-spacing:.02em;color:var(--muted-2);
+  padding-left:11px;margin-left:2px;border-left:1px solid var(--hair);transition:color .2s;}
+.byline b{color:var(--muted);font-weight:500;transition:color .2s;}
+.byline:hover b{color:var(--text);}
+.nav-right{display:flex;align-items:center;gap:8px;margin-left:auto;}
+@media (max-width:560px){.byline{display:none;}}
+.ghlink{
+  display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px;border-radius:999px;
+  font-size:13px;font-weight:600;color:var(--muted);
+  background:var(--surface);border:1px solid var(--hair);transition:color .2s,border-color .2s,transform .2s;
+}
+.ghlink:hover{color:var(--text);border-color:var(--hair-strong);transform:translateY(-1px);}
+.ghlink svg{width:16px;height:16px;fill:currentColor;}
+
+/* ===== hero ===== */
+.hero{
+  position:relative; min-height:100vh; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; text-align:center;
+  padding:110px clamp(16px,5vw,40px) 60px;
+  overflow:hidden; /* the ascii backdrop is wider than a phone; clip it rather than let it widen the page */
+}
+.eyebrow{
+  font-family:var(--font-mono); font-size:12.5px; letter-spacing:.06em;
+  color:var(--accent-ink); margin-bottom:22px;
+  display:inline-flex; align-items:center; gap:10px;
+}
+.eyebrow .gk{font-style:normal;color:var(--text);}
+.eyebrow::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,transparent,var(--accent-line));}
+.eyebrow::after{content:"";width:26px;height:1px;background:linear-gradient(270deg,transparent,var(--accent-line));}
+.hero h1{
+  font-family:var(--font-display); font-weight:600; letter-spacing:-.035em;
+  font-size:clamp(48px,9vw,116px); line-height:.92; margin:0 0 8px;
+}
+.hero h1 .b{
+  background:linear-gradient(180deg,#fff, color-mix(in srgb,var(--accent) 55%, #fff));
+  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+}
+.hero .sub{display:block;font-family:var(--font-display);font-size:clamp(20px,3.4vw,40px);font-weight:500;color:var(--muted);letter-spacing:-.02em;margin:14px 0 0;}
+.hero p.lede{
+  max-width:640px; margin:26px auto 0; font-size:clamp(15px,1.7vw,18.5px);
+  color:var(--muted); line-height:1.62;
+}
+.hero p.lede b{color:var(--text);font-weight:600;}
+.cta-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-top:38px;}
+.btn{
+  display:inline-flex;align-items:center;gap:10px;height:50px;padding:0 24px;border-radius:12px;
+  font-size:15px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:transform .18s,box-shadow .25s,border-color .2s,background .2s;
+}
+.btn svg{width:18px;height:18px;fill:currentColor;}
+.btn-primary{
+  color:#160f26; background:linear-gradient(180deg,#c4b1ff,var(--accent));
+  box-shadow:0 10px 34px -12px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.4);
+}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 18px 44px -14px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.4);}
+.btn-ghost{color:var(--text);background:var(--surface);border-color:var(--hair-strong);}
+.btn-ghost:hover{transform:translateY(-2px);border-color:var(--accent-line);color:var(--accent-ink);}
+.scrollcue{
+  margin-top:64px;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);
+  display:inline-flex;flex-direction:column;align-items:center;gap:10px;
+}
+.scrollcue .arr{width:16px;height:24px;border:1px solid var(--hair-strong);border-radius:9px;position:relative;}
+.scrollcue .arr::after{content:"";position:absolute;left:50%;top:5px;width:2px;height:5px;border-radius:2px;background:var(--accent);transform:translateX(-50%);animation:cue 1.8s ease-in-out infinite;}
+@keyframes cue{0%,100%{opacity:0;transform:translate(-50%,0);}40%{opacity:1;}80%{opacity:0;transform:translate(-50%,8px);}}
+
+/* "built for Claude Code" badge */
+.cc-badge{display:inline-flex;align-items:center;gap:8px;margin:0 0 18px;padding:5px 13px 5px 9px;border-radius:999px;
+  font:600 12px var(--font-mono);color:var(--muted);background:var(--surface);border:1px solid var(--hair);box-shadow:inset 0 1px 0 var(--lift);}
+.cc-badge b{color:var(--accent-ink);font-weight:700;}
+.cc-ic{width:15px;height:16px;image-rendering:pixelated;filter:drop-shadow(0 1px 1px rgba(0,0,0,.4));}
+
+/* faint ASCII field behind the hero */
+.hero-ascii{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:-1;margin:0;pointer-events:none;
+  font:12px/1.35 var(--font-mono);white-space:pre;color:var(--accent);opacity:.06;letter-spacing:2px;text-align:center;
+  mask-image:radial-gradient(120% 90% at 50% 45%,#000 20%,transparent 75%);-webkit-mask-image:radial-gradient(120% 90% at 50% 45%,#000 20%,transparent 75%);}
+
+/* the pasture: a pixel shepherd and flock of little Claudes */
+.pasture{position:relative;width:min(560px,88vw);height:104px;margin:20px auto 0;}
+.pasture-scene{position:absolute;inset:0;}
+.pasture-scene svg{position:absolute;bottom:18px;image-rendering:pixelated;}
+.pasture-ground{position:absolute;left:0;right:0;bottom:8px;margin:0;overflow:hidden;white-space:nowrap;text-align:center;
+  font:13px var(--font-mono);letter-spacing:3px;color:var(--hair-strong);opacity:.7;}
+@media (prefers-reduced-motion:no-preference){
+  .pasture-scene svg{animation:flock-bob 2.6s ease-in-out infinite;}
+  @keyframes flock-bob{0%,100%{transform:translateY(0);}50%{transform:translateY(-4px);}}
+}
+
+/* ===== explore section (pinned cockpit + step triggers) ===== */
+.explore{position:relative;}
+.stagesticky{position:sticky;top:0;height:100vh;overflow:hidden;display:grid;place-items:center;padding-top:48px;}
+.steps{position:relative;margin-top:-100vh;}
+.step{height:92vh;}
+.step:first-child{height:78vh;}
+.tail{height:60vh;}
+
+.scene{display:grid;place-items:center;transform:scale(var(--fit,1));transition:transform .5s cubic-bezier(.2,.7,.2,1);}
+.scene-inner{perspective:1900px;}
+.cockpit{
+  width:1160px;height:684px; position:relative;
+  transform:rotateX(11deg) rotateZ(-.3deg) translateY(4px);
+  transition:transform .8s cubic-bezier(.2,.7,.2,1);
+  border-radius:16px;
+  background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 40%),var(--bg);
+  box-shadow:0 60px 140px -50px #000, 0 0 0 1px var(--hair);
+}
+/* flatten fully while exploring so the plane you're reading renders pixel-sharp */
+.scene.exploring .cockpit{transform:rotateX(0) rotateZ(0) translateY(0);}
+/* app chrome grid: top / (rail | stage | insp) / foot */
+.ck-grid{
+  position:absolute;inset:0;border-radius:16px;overflow:hidden;
+  display:grid;
+  grid-template-columns:232px minmax(0,1fr) 296px;
+  grid-template-rows:40px minmax(0,1fr) 26px;
+  grid-template-areas:"top top top" "rail stage insp" "foot foot foot";
+  background:radial-gradient(1000px 460px at 80% -10%,var(--accent-wash),transparent 60%),var(--bg);
+  font-size:12.5px;
+}
+.region{transition:transform .6s cubic-bezier(.2,.7,.2,1),filter .5s ease,opacity .5s ease,box-shadow .5s ease;}
+/* dim everything once exploring; the focused region scales up (2D — stays sharp) */
+.scene.exploring .region{filter:blur(3px) brightness(.6) saturate(.85);opacity:.5;transform:scale(.99);}
+.scene.exploring .region.is-focus{
+  filter:none;opacity:1;transform:scale(1.02);z-index:5;
+  box-shadow:0 40px 80px -30px #000, 0 0 0 1px var(--accent-line), 0 0 60px -12px var(--accent-glow);
+  border-radius:10px;
+}
+
+/* ---- top bar ---- */
+.ck-top{grid-area:top;display:flex;align-items:center;gap:11px;padding:0 12px;background:linear-gradient(180deg,var(--lift),transparent 60%),var(--panel);border-bottom:1px solid var(--hair);}
+.ck-top .kbar{margin:0 auto;width:340px;height:26px;border-radius:999px;display:flex;align-items:center;gap:7px;padding:0 8px 0 11px;background:var(--surface);border:1px solid var(--hair);color:var(--muted-2);font-size:11px;}
+.ck-top .kbar .kbd{margin-left:auto;display:flex;gap:3px;}
+kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;font-family:var(--font-mono);font-size:9.5px;border-radius:5px;background:var(--bg-2);border:1px solid var(--hair);color:var(--muted-2);}
+.ck-top .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--hair);}
+.ck-attn{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:11px;font-weight:650;color:var(--st-attention);background:color-mix(in srgb,var(--st-attention) 13%,transparent);border:1px solid color-mix(in srgb,var(--st-attention) 32%,transparent);}
+.ck-attn .d{width:5px;height:5px;border-radius:50%;background:var(--st-attention);}
+.ck-attn .cx{color:color-mix(in srgb,var(--st-attention) 70%,transparent);font-size:8px;margin-left:1px;}
+.ck-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12.5px;letter-spacing:-.01em;}
+.ck-brand .logo{width:16px;height:16px;}
+
+/* ---- rail / fleet ---- */
+.ck-rail{grid-area:rail;background:linear-gradient(180deg,var(--lift),transparent 22%),var(--panel);border-right:1px solid var(--hair);padding:11px 9px;overflow:hidden;display:flex;flex-direction:column;}
+.rail-ver{margin-top:auto;padding-top:12px;display:flex;align-items:center;gap:6px;font:10px var(--font-mono);color:var(--muted-2);}
+.rail-ver .logo{width:12px;height:12px;border-radius:4px;}
+.rail-ver .up{margin-left:auto;color:var(--st-done);}
+.rail-top{display:flex;align-items:center;justify-content:space-between;padding:2px 6px 10px;}
+.label{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;}
+.rail-top .btns{display:flex;gap:6px;}
+.rail-top .btns span{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:11px;color:var(--muted-2);border:1px solid var(--hair);background:var(--surface);}
+.pgroup{margin-bottom:6px;}
+.phead{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:8px;}
+.pdot{width:8px;height:8px;border-radius:3px;flex:none;box-shadow:0 0 7px -1px currentColor;}
+.pname{font-weight:650;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pdirty{width:6px;height:6px;border-radius:50%;background:var(--st-working);box-shadow:0 0 5px color-mix(in srgb,var(--st-working) 70%,transparent);}
+.pcount{margin-left:auto;font:600 10px var(--font-mono);color:var(--muted-2);background:var(--surface-2);padding:1px 6px;border-radius:6px;}
+.psessions{padding:1px 0 4px 8px;margin-left:10px;border-left:1px solid var(--hair);display:flex;flex-direction:column;gap:1px;}
+.srow{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:7px;align-items:center;padding:5px 8px;border-radius:7px;}
+.srow.active{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--hair);}
+.srow.needs{background:color-mix(in srgb,var(--st-attention) 10%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--st-attention) 30%,transparent);}
+.sglyph{font-size:10.5px;text-align:center;line-height:1;}
+.sbranch{min-width:0;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.srow.active .sbranch{color:var(--accent-ink);font-weight:600;}
+.sctx{font:10px var(--font-mono);color:var(--muted-2);}
+.g-work{color:var(--st-working);}.g-attn{color:var(--st-attention);}.g-done{color:var(--st-done);}.g-idle{color:var(--st-idle);}.g-ended{color:var(--muted-2);}
+/* faithful sidebar details: repo favicon, running count, launch +, shell/external rows */
+.rtl{display:flex;align-items:baseline;gap:6px;}
+.rcount{font:9.5px var(--font-mono);color:var(--muted-2);}
+.picon{width:15px;height:15px;border-radius:4px;flex:none;box-shadow:0 0 0 1px var(--hair);}
+.picon.grad{background:conic-gradient(from 210deg,#a78bfa,#38bdf8,#fb923c,#a78bfa);box-shadow:inset 0 0 0 1px rgba(255,255,255,.25);}
+.padd{margin-left:5px;color:var(--muted-2);font-size:12px;line-height:1;}
+.pcount.ext{color:var(--muted-2);background:transparent;border:1px solid var(--hair);}
+.srow.extrow{grid-template-columns:14px minmax(0,1fr) auto auto;}
+.ext-tag{font:600 8px var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted-2);background:var(--surface-2);border:1px solid var(--hair);border-radius:4px;padding:1px 5px;}
+.sjump{color:var(--muted-2);font-size:10px;}
+.srow.extrow .sbranch{font-style:italic;}
+.wthead{display:flex;align-items:center;gap:7px;padding:4px 8px 2px 4px;}
+.wtglyph{font-size:11px;}
+.wtname{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.wtsessions{padding-left:8px;margin-left:6px;border-left:1px solid color-mix(in srgb,var(--wtc,var(--hair)) 45%,transparent);display:flex;flex-direction:column;gap:1px;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+.pulse{animation:pulse 1.5s ease-in-out infinite;}
+
+/* ---- stage / terminal ---- */
+.ck-stage{grid-area:stage;display:flex;flex-direction:column;min-width:0;background:var(--bg);}
+.stage-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--hair);}
+.st-title{display:flex;align-items:center;gap:8px;min-width:0;}
+.st-title .proj{font-weight:650;}
+.st-title .chip{font:600 10px var(--font-mono);color:var(--accent-ink);background:var(--accent-wash);border:1px solid var(--accent-line);padding:1px 7px;border-radius:6px;}
+.st-title .stitle{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.st-title .path{font:10px var(--font-mono);color:var(--muted-2);}
+.st-actions{display:flex;gap:6px;}
+.act{height:26px;padding:0 11px;border-radius:8px;font-size:11.5px;font-weight:600;color:var(--muted);background:var(--surface);border:1px solid var(--hair);display:inline-flex;align-items:center;}
+.act.primary{color:#160f26;background:linear-gradient(180deg,#c4b1ff,var(--accent));border-color:transparent;}
+.act.icon{width:26px;padding:0;justify-content:center;}
+.term{flex:1;min-height:0;overflow:hidden;padding:12px 14px;background:var(--terminal-bg);font-family:var(--font-mono);font-size:11.5px;line-height:1.62;color:var(--terminal-text);position:relative;}
+.term::after{content:"";position:absolute;left:0;right:0;bottom:0;height:60px;background:linear-gradient(180deg,transparent,var(--terminal-bg));}
+.term .prompt{color:var(--accent-ink);}
+.term .u{color:#8fd6ff;}
+.term .dim{color:var(--muted-2);}
+.term .bullet{color:var(--accent);}
+.term .tool{color:var(--tool-read);}
+.term .tool.edit{color:var(--tool-edit);}
+.term .tool.bash{color:var(--tool-bash);}
+.term .tree{color:var(--muted-2);}
+.term .add{color:var(--st-done);}
+.term .del{color:var(--st-error);}
+.term .think{color:var(--muted);font-style:italic;}
+.term .run{color:var(--st-working);}
+.term .cursor{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;animation:blink 1.1s steps(2) infinite;}
+@keyframes blink{50%{opacity:0;}}
+.term .ln{white-space:pre-wrap;}
+
+/* ---- inspector / telemetry ---- */
+.ck-insp{grid-area:insp;background:linear-gradient(180deg,var(--lift),transparent 22%),var(--panel);border-left:1px solid var(--hair);padding:11px;overflow:hidden;display:flex;flex-direction:column;gap:10px;}
+.insp-head{display:flex;align-items:center;justify-content:space-between;}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;padding:2px 9px;border-radius:999px;color:var(--st-working);background:color-mix(in srgb,var(--st-working) 13%,transparent);border:1px solid color-mix(in srgb,var(--st-working) 30%,transparent);}
+.pill .pd{width:5px;height:5px;border-radius:50%;background:currentColor;}
+.vital{display:flex;flex-direction:column;gap:8px;border:1px solid var(--hair);border-radius:var(--radius);padding:11px 12px;background:var(--surface);}
+.vital.st-working{--sc:var(--st-working);}.vital.st-attention{--sc:var(--st-attention);}.vital.st-done{--sc:var(--st-done);}
+.vtop{display:flex;align-items:center;gap:8px;}
+.heart{width:8px;height:8px;border-radius:50%;background:var(--sc,var(--st-working));flex:none;}
+.vstate{font-weight:680;font-size:13px;letter-spacing:-.01em;color:var(--sc,var(--st-working));}
+.vstate.t-edit{color:var(--tool-edit);}.vstate.t-read{color:var(--tool-read);}.vstate.t-bash{color:var(--tool-bash);}
+.dwell{margin-left:auto;font:11px var(--font-mono);color:var(--muted);}
+.doing{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);min-width:0;}
+.tk{font:600 11px var(--font-mono);flex:none;color:var(--tool-edit);}
+.doing code{font:11px var(--font-mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.vmeta{display:flex;gap:6px;flex-wrap:wrap;}
+.chip-s{font:600 9.5px var(--font-mono);color:var(--muted);background:var(--surface-2);border:1px solid var(--hair);padding:1px 7px;border-radius:5px;}
+.gauges{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.gauge{border:1px solid var(--hair);border-radius:var(--radius);padding:10px;background:var(--surface);display:flex;flex-direction:column;gap:7px;}
+.grow{display:flex;align-items:center;gap:9px;min-height:34px;}
+.mini-ring{width:34px;height:34px;flex:none;transform:rotate(-90deg);filter:drop-shadow(0 0 4px var(--accent-glow));}
+.mini-ring .trk{fill:none;stroke:var(--hair-strong);stroke-width:4;}
+.mini-ring .fil{fill:none;stroke:var(--accent-ink);stroke-width:4.2;stroke-linecap:round;}
+.gnum{font:700 17px var(--font-mono);letter-spacing:-.02em;}
+.glab{font:9.5px var(--font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--muted-2);margin-top:1px;}
+.gspark{line-height:0;height:16px;}
+.gspark svg{width:100%;height:16px;}
+.lab{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;margin-bottom:6px;}
+.wset{border:1px solid var(--hair);border-radius:var(--radius);padding:11px 12px;background:var(--surface);display:flex;flex-direction:column;gap:8px;}
+.wpeek{display:flex;flex-direction:column;gap:8px;}
+.wtop{display:flex;align-items:center;gap:10px;font:12px var(--font-mono);}
+.wtop .add{color:var(--st-done);font-weight:700;}.wtop .del{color:var(--st-attention);font-weight:700;}.wtop .files{color:var(--muted);margin-left:auto;}
+.wpeek-cue{color:var(--muted-2);font-size:12px;}
+.stackbar{height:6px;border-radius:3px;overflow:hidden;display:flex;background:var(--hair-strong);}
+.stackbar .sa{background:var(--st-done);}.stackbar .sd{background:var(--st-attention);}
+.branch{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);}
+.branch .b{font-family:var(--font-mono);color:var(--accent-ink);}
+.branch .sync{display:inline-flex;align-items:center;gap:5px;margin-left:7px;font:10px var(--font-mono);}
+.branch .sync .ah{color:var(--st-done);}.branch .sync .bh{color:var(--st-working);}
+.tl2{display:flex;flex-direction:column;}
+.tl2 .row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--hair);}
+.tl2 .row:last-child{border-bottom:0;}
+.tl2 .row.t-read{color:var(--tool-read);}.tl2 .row.t-edit{color:var(--tool-edit);}.tl2 .row.t-bash{color:var(--tool-bash);}
+.tl2 .dot{width:8px;height:8px;border-radius:2px;flex:none;background:currentColor;}
+.tl2 .nm{font:11px var(--font-mono);width:66px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tl2 .arg{flex:1;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.tl2 .lat{width:46px;flex:none;display:flex;flex-direction:column;gap:2px;align-items:flex-end;}
+.tl2 .latbar{height:3px;border-radius:2px;background:var(--accent);opacity:.5;align-self:stretch;}
+.tl2 .latbar.run{background:var(--st-working);opacity:.8;}
+.tl2 .ms{font:9.5px var(--font-mono);color:var(--muted-2);}
+.res{margin-top:auto;border:1px solid var(--hair);border-radius:10px;padding:10px;background:var(--surface);display:flex;flex-direction:column;gap:8px;}
+.res-row{display:grid;grid-template-columns:30px 1fr auto;gap:9px;align-items:center;font:10px var(--font-mono);color:var(--muted-2);}
+.res-bar{height:5px;border-radius:3px;background:var(--surface-2);overflow:hidden;}
+.res-bar i{display:block;height:100%;background:var(--st-done);border-radius:3px;}
+.res-v{color:var(--muted);}
+
+/* ---- footer ---- */
+.ck-foot{grid-area:foot;display:flex;align-items:center;gap:9px;padding:0 11px;font:11px var(--font-mono);color:var(--muted);background:linear-gradient(180deg,var(--lift),transparent 60%),var(--panel);border-top:1px solid var(--hair);}
+.ck-foot .frepo{color:var(--muted);}
+.ck-foot .fver{color:var(--muted-2);}
+.ck-foot .fseg{display:inline-flex;align-items:center;gap:5px;}
+.ck-foot .fseg b{color:var(--text);}
+.ck-foot .fclick{cursor:pointer;}
+.ck-foot .fclick:hover{color:var(--text);}
+.ck-foot .fdiv{width:1px;height:12px;background:var(--hair);}
+.ck-foot .spacer{margin-left:auto;}
+.ck-foot .flabel{color:var(--muted-2);}
+.ck-foot .fsub{color:var(--muted-2);margin-left:-2px;}
+.ck-foot .freset{color:var(--muted-2);font-size:10px;}
+.ck-foot .fmid{color:var(--muted-2);margin:0 1px;}
+.ck-foot .fcaret{color:var(--muted-2);font-size:8px;}
+.ck-foot b.s-warn{color:var(--st-working);}
+.ck-foot b.s-ok{color:var(--st-done);}
+.ck-foot .fkbd{min-width:15px;height:15px;padding:0 3px;font-size:9px;}
+.ck-foot .dbg{font-size:12px;opacity:.85;position:relative;}
+.ck-foot .dbg .b{position:absolute;top:-3px;right:-5px;min-width:12px;height:12px;padding:0 2px;border-radius:6px;background:var(--st-attention);color:#2a0f18;font:700 8px var(--font-mono);display:grid;place-items:center;}
+
+/* attention / permission card overlay on the stage */
+/* permission request — the .attn card at the TOP of the inspector (as it renders) */
+.attn{display:none;flex-direction:column;gap:9px;border-radius:var(--radius);padding:11px;background:linear-gradient(180deg,color-mix(in srgb,var(--st-attention) 15%,transparent),color-mix(in srgb,var(--st-attention) 6%,transparent));border:1px solid color-mix(in srgb,var(--st-attention) 32%,transparent);}
+.scene.show-perm .ck-insp .attn{display:flex;animation:attn-in .4s ease;}
+.scene.show-perm .ck-insp .res{display:none;}
+@keyframes attn-in{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
+.attn-h{display:flex;align-items:center;gap:7px;font-weight:700;color:var(--st-attention);font-size:12px;}
+.attn-h .risk{margin-left:auto;font:9px var(--font-mono);letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:5px;}
+.attn-h .risk.med{color:var(--st-working);background:color-mix(in srgb,var(--st-working) 16%,transparent);}
+.attn code{font-family:var(--font-mono);font-size:10.5px;background:rgba(0,0,0,.32);color:var(--terminal-text);padding:7px 9px;border-radius:7px;display:block;word-break:break-all;}
+.attn-btns{display:flex;gap:6px;}
+.attn-btns button{flex:1;height:28px;border-radius:7px;cursor:pointer;font:700 11px var(--font-ui);border:1px solid var(--hair-strong);background:var(--surface);color:var(--text);}
+.attn-btns .allow{background:linear-gradient(180deg,color-mix(in srgb,var(--st-done) 86%,white),var(--st-done));color:#07281a;border-color:transparent;}
+
+/* usage popup overlay near footer */
+.usage-pop{
+  position:absolute; left:14px; bottom:38px; width:290px; opacity:0; pointer-events:none;
+  background:color-mix(in srgb,var(--panel) 97%,transparent); backdrop-filter:blur(12px);
+  border:1px solid var(--hair-strong); border-radius:12px; padding:12px;
+  box-shadow:0 30px 70px -20px #000; transition:opacity .5s ease,transform .5s cubic-bezier(.2,.7,.2,1);
+  transform:translateY(8px); z-index:9;
+}
+.scene.show-usage .usage-pop{opacity:1;transform:translateY(0);}
+.up-h{font-size:11px;font-weight:700;letter-spacing:.02em;margin-bottom:10px;}
+.up-row{margin-bottom:11px;}
+.up-top{display:flex;align-items:baseline;gap:7px;font:11px var(--font-mono);}
+.up-top .up-sub{color:var(--muted-2);font-size:9.5px;}
+.up-top .up-pct{margin-left:auto;font-weight:700;}
+.up-pct.s-warn{color:var(--st-working);}.up-pct.s-ok{color:var(--st-done);}.up-pct.s-bad{color:var(--st-error);}
+.up-bar{position:relative;height:7px;border-radius:4px;background:var(--surface-2);margin:6px 0 5px;overflow:hidden;}
+.up-fill{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--st-working);}
+.up-bar.s-ok .up-fill{background:var(--st-done);}
+.up-ghost{position:absolute;top:0;bottom:0;background-image:repeating-linear-gradient(45deg,color-mix(in srgb,var(--st-working) 55%,transparent) 0 3px,transparent 3px 6px);}
+.up-fore{display:flex;align-items:center;gap:6px;font:10px var(--font-mono);color:var(--muted);}
+.vchip{font:600 9px var(--font-mono);padding:1px 6px;border-radius:5px;}
+.vchip.s-warn{color:var(--st-working);background:color-mix(in srgb,var(--st-working) 14%,transparent);}
+.vchip.s-ok{color:var(--st-done);background:color-mix(in srgb,var(--st-done) 14%,transparent);}
+.up-reset{font:9.5px var(--font-mono);color:var(--muted-2);margin-top:3px;}
+
+/* ===== full-cover modal overlays (palette, new-session, usage) ===== */
+.ov{position:absolute;inset:0;z-index:12;display:grid;opacity:0;pointer-events:none;transition:opacity .5s ease;}
+.ov .ov-box{transition:transform .5s cubic-bezier(.2,.7,.2,1);transform:scale(.965);}
+.scene.show-pal .pal-overlay,.scene.show-wt .wt-overlay,.scene.show-usageview .usage-overlay,.scene.show-run .run-overlay{opacity:1;}
+.scene.show-pal .pal-overlay .ov-box,.scene.show-wt .wt-overlay .ov-box,.scene.show-usageview .usage-overlay .ov-box,.scene.show-run .run-overlay .ov-box{transform:scale(1);}
+.ov-box{background:color-mix(in srgb,var(--panel) 98%,transparent);backdrop-filter:blur(16px);border:1px solid var(--hair-strong);border-radius:14px;box-shadow:0 40px 90px -28px #000;overflow:hidden;}
+
+/* command palette (⌘K) */
+.pal-overlay{place-items:start center;padding-top:58px;}
+.pal-box{width:560px;max-width:92%;}
+/* ▶ Run picker — same shell as the palette, grouped by where the task came from */
+.run-overlay{place-items:start center;padding-top:58px;}
+.run-box{width:560px;max-width:92%;}
+.pal-gh .src{font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted-2);opacity:.75;}
+.pal-ic.t-run{color:var(--st-done);}
+.pal-item.off{opacity:.5;}
+.pal-item.off .pm{color:var(--muted);}
+.pal-item .pm em{font-style:normal;color:var(--accent-ink);opacity:.8;}
+.pal-item .ps b{color:var(--muted);font-weight:500;font-family:var(--font-mono);}
+.pal-input{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--hair);}
+.pal-input .cr{color:var(--muted-2);font-size:14px;}
+.pal-input input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:var(--text);font:13.5px var(--font-ui);}
+.pal-input input::placeholder{color:var(--muted-2);}
+.pal-input .esc{font:10px var(--font-mono);color:var(--muted-2);border:1px solid var(--hair);border-radius:5px;padding:2px 6px;}
+.pal-list{padding:6px;}
+.pal-gh{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;padding:8px 8px 4px;}
+.pal-item{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:9px;align-items:center;padding:7px 9px;border-radius:8px;}
+.pal-item.on{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-line);}
+.pal-ic{text-align:center;font-size:11px;color:var(--muted-2);}
+.pal-main{min-width:0;}
+.pal-main .pm{display:block;font-size:12.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pal-item.on .pm{color:var(--accent-ink);}
+.pal-main .ps{display:block;font:10px var(--font-mono);color:var(--muted-2);}
+.pal-sc{display:flex;gap:3px;}
+
+/* new-session dialog */
+.wt-overlay{place-items:center;}
+.wt-box{width:764px;max-width:94%;display:flex;flex-direction:column;}
+.wtb-head{display:flex;align-items:center;justify-content:space-between;padding:13px 15px 10px;}
+.wtb-title{display:flex;align-items:baseline;gap:9px;}
+.wtb-title b{font-size:14px;}
+.wtb-proj{font:11px var(--font-mono);color:var(--accent-ink);}
+.wtb-sub{display:flex;align-items:center;gap:9px;font:10.5px var(--font-mono);color:var(--muted-2);}
+.wtb-eng{color:var(--muted);}
+.wtb-chip{border:1px solid var(--hair);border-radius:6px;padding:2px 7px;}
+.wtb-q{display:flex;align-items:center;gap:9px;padding:9px 15px;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);}
+.wtb-caret{color:var(--accent-ink);}
+.wtb-q input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:var(--text);font:12.5px var(--font-mono);}
+.wtb-q input::placeholder{color:var(--muted-2);}
+.wtb-count{font:10px var(--font-mono);color:var(--muted-2);}
+.wtb-body{display:grid;grid-template-columns:1fr 1fr;min-height:266px;}
+.wtb-list{padding:8px;border-right:1px solid var(--hair);}
+.wtb-gh{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);font-weight:700;padding:9px 6px 4px;}
+.wtb-gh .rule{flex:1;height:1px;background:var(--hair);}
+.wtb-item{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:9px;align-items:center;padding:7px 8px;border-radius:8px;width:100%;text-align:left;}
+.wtb-item.on{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-line);}
+.wtb-ic{text-align:center;color:var(--muted-2);}
+.wtb-br{display:block;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.wtb-item.on .wtb-br{color:var(--accent-ink);}
+.wtb-sub2{display:block;font:9.5px var(--font-mono);color:var(--muted-2);}
+.wtb-tag{font:600 9px var(--font-mono);padding:1px 6px;border-radius:5px;color:var(--muted-2);background:var(--surface-2);border:1px solid var(--hair);}
+.wtb-tag.warn{color:var(--st-working);border-color:color-mix(in srgb,var(--st-working) 34%,transparent);background:color-mix(in srgb,var(--st-working) 12%,transparent);}
+.wtb-tag.good{color:var(--st-done);border-color:color-mix(in srgb,var(--st-done) 30%,transparent);background:color-mix(in srgb,var(--st-done) 12%,transparent);}
+.wtb-item.create .wtb-ic,.wtb-item.create .wtb-br{color:var(--accent-ink);}
+.wtb-detail{padding:14px 15px;}
+.wtb-dkind{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);font-weight:700;}
+.wtb-dname{display:block;font:12.5px var(--font-mono);margin-top:3px;}
+.wtb-dname .dim{color:var(--muted-2);}.wtb-dname .em{color:var(--text);}
+.wtb-facts{display:grid;grid-template-columns:auto 1fr;gap:7px 12px;margin:14px 0;}
+.wtb-facts dt{color:var(--muted-2);font:9.5px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;padding-top:1px;}
+.wtb-facts dd{margin:0;font:11px var(--font-mono);color:var(--muted);}
+.wtb-facts .em{color:var(--text);}
+.wtb-facts .warn{color:var(--st-working);}
+.wtb-facts .subj{display:block;color:var(--muted-2);margin-top:2px;}
+.wtb-sess{display:inline-flex;align-items:center;gap:6px;color:var(--text);}
+.wtb-sess i{width:7px;height:7px;border-radius:50%;}
+.wtb-acts{display:flex;gap:8px;margin-top:4px;}
+.wtb-go{flex:1;height:32px;border-radius:8px;border:0;font:600 12px var(--font-ui);color:#160f26;background:linear-gradient(180deg,#c4b1ff,var(--accent));cursor:pointer;}
+.wtb-rm{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--hair-strong);background:var(--surface);color:var(--muted);font:600 11.5px var(--font-ui);cursor:pointer;}
+.wtb-foot{display:flex;align-items:center;gap:16px;padding:9px 15px;border-top:1px solid var(--hair);font:10px var(--font-mono);color:var(--muted-2);}
+.wtb-foot .sp{flex:1;}
+.wtb-foot kbd{margin-right:2px;}
+
+/* usage overview */
+.usage-overlay{place-items:center;}
+.uv-box{width:844px;max-width:95%;padding:16px 18px;}
+.uv-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:14px;}
+.uv-title{margin:2px 0 0;font-family:var(--font-display);font-weight:600;font-size:20px;letter-spacing:-.01em;}
+.uv-range{display:flex;gap:5px;}
+.uv-range button{height:24px;padding:0 10px;border-radius:7px;border:1px solid var(--hair);background:var(--surface);color:var(--muted-2);font:600 10.5px var(--font-mono);cursor:pointer;}
+.uv-range button.on{color:var(--accent-ink);background:var(--accent-wash);border-color:var(--accent-line);}
+.uv-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;}
+.uv-tile{border:1px solid var(--hair);border-radius:10px;padding:10px 12px;background:var(--surface);}
+.uv-fig{font:700 19px var(--font-mono);letter-spacing:-.02em;margin-top:3px;}
+.uv-tfoot{display:flex;align-items:center;justify-content:space-between;margin-top:5px;}
+.uv-delta{font:10px var(--font-mono);}
+.uv-delta.up{color:var(--st-done);}.uv-delta.down{color:var(--st-error);}
+.uv-tfoot svg{width:52px;height:16px;}
+.uv-cols{display:grid;grid-template-columns:1.55fr 1fr;gap:12px;}
+.uv-card{border:1px solid var(--hair);border-radius:10px;padding:12px;background:var(--surface);}
+.uv-cardh{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:12px;}
+.uv-h{margin:2px 0 0;font-size:13px;font-weight:600;}
+.uv-legend{display:flex;gap:10px;font:9.5px var(--font-mono);color:var(--muted-2);}
+.uv-legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:0;}
+.uv-bars{display:flex;align-items:flex-end;gap:3px;height:104px;}
+.uv-bars i{flex:1;border-radius:2px 2px 0 0;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 35%,transparent));min-height:2px;}
+.uv-byline{color:var(--muted-2);font-weight:400;}
+.uv-share{display:flex;flex-direction:column;gap:11px;margin-top:10px;}
+.uv-stop{display:flex;align-items:center;gap:7px;font-size:11px;}
+.uv-sw{width:9px;height:9px;border-radius:3px;}
+.uv-usd{margin-left:auto;color:var(--muted);font:10.5px var(--font-mono);}
+.uv-strack{height:5px;border-radius:3px;background:var(--surface-2);margin-top:5px;overflow:hidden;}
+.uv-strack i{display:block;height:100%;border-radius:3px;}
+.uv-hint{font:9.5px var(--font-mono);color:var(--muted-2);margin:0;}
+.uv-sub{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);font-weight:700;margin:15px 0 0;}
+.uv-mix{display:flex;height:9px;border-radius:5px;overflow:hidden;margin-top:9px;background:var(--surface-2);}
+.uv-mix i{display:block;height:100%;}
+.uv-mixleg{display:flex;flex-wrap:wrap;gap:9px 12px;margin-top:9px;font:10px var(--font-mono);color:var(--muted);}
+.uv-mixleg span{display:inline-flex;align-items:center;}
+.uv-mixleg i{width:8px;height:8px;border-radius:2px;margin-right:5px;}
+.uv-mixleg b{color:var(--text);margin-left:5px;}
+.uv-insight{margin-top:11px;padding:9px 11px;border-radius:8px;background:var(--accent-wash);border:1px solid var(--accent-line);font-size:11px;color:var(--muted);line-height:1.5;}
+.uv-insight b{color:var(--accent-ink);}
+.uv-proj{margin-top:12px;}
+.uv-tbl{width:100%;border-collapse:collapse;font-size:11px;}
+.uv-tbl th{text-align:left;font:9px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted-2);font-weight:700;padding:0 0 7px;}
+.uv-tbl th.n,.uv-tbl td.n{text-align:right;}
+.uv-tbl td{padding:6px 0;border-top:1px solid var(--hair);}
+.uv-pj{display:inline-flex;align-items:center;gap:7px;}
+.uv-dot{width:8px;height:8px;border-radius:3px;}
+.uv-pjbar{display:inline-block;width:96px;height:5px;border-radius:3px;background:var(--surface-2);overflow:hidden;vertical-align:middle;}
+.uv-pjbar i{display:block;height:100%;background:var(--accent);border-radius:3px;}
+.uv-tbl .m{font-family:var(--font-mono);color:var(--muted);}
+/* "Daily spend" contribution heatmap (git-style grid, 12 months) */
+.uv-scale{display:flex;align-items:center;gap:5px;font:9.5px var(--font-mono);color:var(--muted-2);}
+.uv-scale i{width:11px;height:11px;border-radius:3px;}
+.uv-calwrap{display:flex;gap:8px;margin-top:10px;overflow:hidden;}
+.uv-wd{display:grid;grid-template-rows:repeat(7,11px);gap:3px;margin-top:17px;flex:none;}
+.uv-wd span{font:9px var(--font-mono);color:var(--muted-2);height:11px;line-height:11px;}
+.uv-months{display:grid;grid-auto-flow:column;grid-auto-columns:14px;height:14px;margin-bottom:3px;}
+.uv-months span{font:9.5px var(--font-mono);color:var(--muted-2);white-space:nowrap;}
+.uv-grid{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;grid-auto-columns:11px;gap:3px;}
+.uv-cell{width:11px;height:11px;border-radius:3px;background:var(--u-g0);box-shadow:inset 0 0 0 1px rgba(255,255,255,.03);}
+.uv-cell.l1{background:var(--u-g1);}.uv-cell.l2{background:var(--u-g2);}.uv-cell.l3{background:var(--u-g3);}.uv-cell.l4{background:var(--u-g4);}
+.uv-calfoot{display:flex;justify-content:space-between;align-items:center;margin-top:11px;font:10.5px var(--font-mono);color:var(--muted-2);}
+.uv-calfoot b{color:var(--text);}
+
+/* ===== the keeper: a pixel guide + speech bubble that hops to each part ===== */
+.callout{
+  position:absolute; left:50%; top:50%; z-index:30; width:224px; pointer-events:none;
+  opacity:0; transform:translate(-50%,-50%);
+  transition:transform .72s cubic-bezier(.5,.05,.15,1), opacity .4s ease;
+}
+.callout.on{opacity:1;}
+/* JS sets the exact transform (into the left or right margin); the tail class picks
+   which edge the little pointer sits on so it always aims back at the cockpit. */
+
+.bubble{
+  position:relative; background:color-mix(in srgb,var(--panel) 96%,transparent); backdrop-filter:blur(10px);
+  border:1px solid var(--hair-strong); border-radius:14px; padding:14px 16px 12px;
+  box-shadow:0 24px 60px -26px #000, inset 0 1px 0 rgba(255,255,255,.05); min-height:118px;
+}
+.bubble::before{content:"";position:absolute;width:11px;height:11px;background:var(--panel);border:1px solid var(--hair-strong);transform:rotate(45deg);top:auto;bottom:20px;}
+.push-right .bubble::before{right:-6px;border-left:0;border-bottom:0;}
+.push-left  .bubble::before{left:-6px;border-right:0;border-top:0;}
+
+.cap-eyebrow{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.05em;color:var(--accent-ink);text-transform:lowercase;}
+.cap-title{font-family:var(--font-display);font-weight:600;letter-spacing:-.01em;font-size:18px;line-height:1.12;margin:6px 0 7px;}
+.cap-body{color:var(--muted);font-size:13px;line-height:1.5;margin:0;}
+.brief-slide{position:absolute;left:16px;right:16px;top:14px;opacity:0;transform:translateY(7px);transition:opacity .38s ease,transform .38s ease;pointer-events:none;}
+.brief-slide.on{position:relative;left:0;right:0;top:0;opacity:1;transform:none;}
+.dots{display:flex;gap:5px;margin-top:11px;}
+.dots i{width:5px;height:5px;border-radius:50%;background:var(--hair-strong);transition:background .3s,transform .3s;}
+.dots i.on{background:var(--accent);transform:scale(1.5);}
+/* the keeper — a little pixel Claude standing beside the bubble, hands pushing it,
+   flipped to face whichever way it's shoving the dialog */
+.guide{position:absolute;bottom:-4px;width:64px;height:55px;image-rendering:pixelated;filter:drop-shadow(0 3px 5px rgba(0,0,0,.55));}
+.push-right .guide{left:-52px;right:auto;}          /* stands left, hands push right */
+.push-left  .guide{right:-52px;left:auto;transform:scaleX(-1);}  /* mirrored: stands right, hands push left */
+@media (prefers-reduced-motion:no-preference){
+  .push-right .guide{animation:g-bob 2.6s ease-in-out infinite;}
+  .push-left  .guide{animation:g-bobflip 2.6s ease-in-out infinite;}
+}
+@keyframes g-bob{0%,100%{transform:translateY(0);}55%{transform:translate(2px,-2px);}}
+@keyframes g-bobflip{0%,100%{transform:scaleX(-1) translateY(0);}55%{transform:scaleX(-1) translate(2px,-2px);}}
+
+/* ===== download finale ===== */
+.download{position:relative;padding:clamp(90px,14vh,150px) clamp(16px,5vw,40px) 60px;text-align:center;}
+.download .eyebrow{margin-bottom:20px;}
+.download h2{font-family:var(--font-display);font-weight:600;letter-spacing:-.03em;font-size:clamp(38px,6.5vw,72px);line-height:.98;margin:0;}
+.download h2 .b{background:linear-gradient(180deg,#fff,color-mix(in srgb,var(--accent) 55%,#fff));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+.download p{color:var(--muted);max-width:520px;margin:20px auto 0;font-size:16px;}
+.dl-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-top:44px;}
+.dl-btn{
+  display:flex;align-items:center;gap:14px;text-align:left;min-width:250px;
+  padding:16px 22px;border-radius:14px;background:var(--surface);border:1px solid var(--hair-strong);
+  transition:transform .2s,border-color .2s,box-shadow .25s;cursor:pointer;
+}
+.dl-btn:hover{transform:translateY(-3px);border-color:var(--accent-line);box-shadow:0 20px 50px -22px var(--accent-glow);}
+.dl-btn svg{width:30px;height:30px;fill:var(--text);flex:none;}
+.dl-btn .t{font-family:var(--font-display);font-weight:600;font-size:17px;}
+.dl-btn .s{font:11px var(--font-mono);color:var(--muted-2);margin-top:1px;}
+.dl-meta{margin-top:34px;font:12px var(--font-mono);color:var(--muted-2);}
+.dl-meta a{color:var(--accent-ink);border-bottom:1px solid var(--accent-line);}
+
+.pagefoot{border-top:1px solid var(--hair);padding:26px clamp(16px,5vw,40px);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;color:var(--muted-2);font-size:13px;}
+.pagefoot .gk{font-family:var(--font-mono);}
+.pagefoot a:hover{color:var(--text);}
+.pf-l{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.pf-mark{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);font-weight:600;color:var(--text);font-size:14px;}
+.pf-links{display:flex;align-items:center;gap:18px;flex-wrap:wrap;font-size:12.5px;}
+.pf-legal{flex-basis:100%;margin:2px 0 0;font-size:11px;line-height:1.6;color:var(--muted-2);opacity:.85;}
+.pf-legal a{border-bottom:1px solid var(--hair-strong);}
+.pf-by{border-bottom:0 !important;}
+.pf-by b{color:var(--muted);font-weight:600;}
+.pf-by:hover b{color:var(--text);}
+
+/* ===== responsive =====
+   Below 900px there's no room to put a cockpit and a speech bubble side by side —
+   but the scroll-tour itself survives. The cockpit stops being one 1160x684 plane
+   and becomes a stack of real, readable panels; the sticky stage then acts as a
+   window onto that stack, panning to whichever part the current chapter is about
+   and dimming the rest. The bubble stops floating and sits under the window. */
+@media (max-width:900px){
+  .stagesticky{
+    position:sticky;top:0;height:100dvh;overflow:hidden;
+    display:grid;grid-template-rows:minmax(0,1fr) auto;place-items:stretch;
+    padding:50px clamp(10px,3vw,20px) 12px;gap:10px;
+  }
+  /* keep the trigger overlap in the same unit as the stage height, or the mobile
+     URL bar (vh != dvh) desyncs the two by the height of the bar */
+  .steps{margin-top:-100dvh;}
+  .step{height:92dvh;}
+  /* The first trigger must be at least a full viewport tall: its centre is what
+     activates chapter one, and mobile only engages once the stage has actually
+     pinned (top <= 0). At 78vh the centre arrived while the stage was still
+     sliding up, so chapter one was skipped entirely. */
+  .step:first-child{height:112dvh;}
+  .tail{height:60dvh;}
+  .scene{transform:none;display:block;overflow:hidden;min-height:0;position:relative;}
+  .scene-inner{perspective:none;height:100%;}
+  .mobile-cap{display:block;}
+
+  .cockpit{
+    width:100%;max-width:620px;height:auto;aspect-ratio:auto;
+    margin:0 auto;border-radius:14px;overflow:hidden;
+    box-shadow:0 24px 60px -34px #000, 0 0 0 1px var(--hair);
+    /* JS sets --panY so the focused panel sits in view: the mobile equivalent of
+       the desktop spotlight fly-over */
+    transform:translate3d(0,var(--panY,0px),0) !important;
+    transition:transform .7s cubic-bezier(.4,.02,.15,1);
+  }
+  /* dim everything but the part being explained — overlays are focusable here too,
+     since on mobile they live in the stack rather than floating above it */
+  .scene.exploring .region,.scene.exploring .ov{
+    filter:blur(2.5px) brightness(.5) saturate(.8);opacity:.42;
+    transition:filter .45s ease,opacity .45s ease;
+  }
+  .scene.exploring .region.is-focus,.scene.exploring .ov.is-focus{
+    filter:none;opacity:1;
+  }
+
+  /* the bubble leaves the floating layer and becomes a caption bar under the window */
+  .callout{
+    position:relative;left:auto;top:auto;width:auto;max-width:620px;z-index:30;
+    margin:0 auto;transform:none !important;transition:opacity .4s ease;pointer-events:auto;
+  }
+  .bubble{min-height:0;padding:12px 15px 10px;}
+  .bubble::before{display:none;}
+  .cap-title{font-size:17px;margin:5px 0 6px;}
+  .cap-body{font-size:13px;}
+  /* the keeper perches on the card's top corner, still facing what it explains */
+  .guide{width:42px;height:36px;bottom:auto;top:-28px;}
+  .push-right .guide{left:13px;right:auto;}
+  .push-left .guide{right:13px;left:auto;}
+  .dots{margin-top:8px;}
+  /* the stack. minmax(0,1fr) is the load-bearing bit: a bare 1fr resolves its min
+     track to min-content, so the rail's session titles blew the grid out to 745px
+     inside a 560px shell and everything got clipped by body{overflow-x:hidden}. */
+  .ck-grid{
+    position:relative;inset:auto;height:auto;border-radius:0;
+    grid-template-columns:minmax(0,1fr);
+    grid-template-rows:auto;
+    grid-template-areas:"top" "rail" "stage" "insp" "foot";
+  }
+  .ck-grid > *{min-width:0;}
+  /* the desktop spotlight also scales the focused region; at full width that just
+     clips against the window, so here the highlight is dim + glow only */
+  .region,.ov{transform:none !important;}
+  .scene.exploring .region.is-focus{box-shadow:0 0 0 1px var(--accent-line),0 0 50px -14px var(--accent-glow);}
+  .ck-rail{border-right:none;border-bottom:1px solid var(--hair);padding:12px 11px;}
+  .ck-insp{border-left:none;border-top:1px solid var(--hair);padding:12px 11px;overflow:visible;}
+  .ck-stage{min-height:0;}
+  /* session header: title claims a full line, the actions drop underneath it
+     instead of colliding with the path */
+  .stage-head{flex-wrap:wrap;gap:9px;padding:10px 11px;}
+  .st-title{flex:1 1 100%;}
+  .st-title .stitle{flex:1;min-width:0;}
+  .st-title .chip,.st-title .proj{flex:none;}
+  .st-title .path{display:none;}
+  .st-actions{margin-left:auto;}
+  .term{min-height:230px;max-height:340px;overflow-y:auto;font-size:11px;padding:12px;}
+  .term::after{display:none;}
+
+  /* top bar: the ⌘K field should take the room it's given, not a fixed 340px */
+  .ck-top{padding:0 10px;gap:8px;}
+  .ck-top .kbar{width:auto;flex:1;min-width:0;}
+  .ck-top .kbar span:not(.kbd){overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  /* status bar: one line of segments becomes a wrapped block */
+  .ck-foot{height:auto;flex-wrap:wrap;padding:9px 11px;gap:7px 9px;line-height:1.5;}
+  .ck-foot .spacer{margin-left:0;}
+  .ck-foot .fdiv{display:none;}
+
+  /* overlays leave the absolute layer and become sections of the stack */
+  .usage-pop{display:none;}
+  .ov{position:relative;inset:auto;display:block;pointer-events:auto;border-top:1px solid var(--hair);
+      place-items:stretch;padding:0 !important;opacity:1;}
+  /* the desktop reveal (show-pal / show-wt / show-usageview) is a no-op here —
+     the overlays are permanent sections of the stack that the tour pans to */
+  .scene.exploring .ov.is-focus .ov-box{transform:none !important;}
+  .ov::before{
+    content:attr(data-label);display:block;
+    font:10.5px var(--font-mono);letter-spacing:.09em;text-transform:uppercase;color:var(--muted-2);
+    padding:11px 13px 9px;background:var(--bg-2);border-bottom:1px solid var(--hair);
+  }
+  .ov .ov-box{
+    transform:none !important;border:0;border-radius:0;box-shadow:none;backdrop-filter:none;
+    background:var(--panel);width:100% !important;max-width:100% !important;margin:0 !important;
+    justify-self:stretch;
+  }
+  /* The 53-week spend heatmap can't shrink — a week is 11px and there are 53 of
+     them. .uv-calwrap clips with overflow:hidden on desktop (where it fits), so on
+     a phone swap that for a pan; otherwise two-thirds of the year is just gone.
+     The weekday labels stay put while the grid slides. */
+  .uv-box{overflow-x:hidden;}
+  .uv-calwrap{overflow:visible;}
+  .uv-calwrap > div:last-child{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;padding-bottom:6px;}
+  .uv-calfoot{flex-wrap:wrap;gap:2px 10px;}
+
+  /* new-session dialog: the pick-a-branch / worktree-detail split can't sit side
+     by side on a phone — stack it, list on top, detail below */
+  .wtb-body{grid-template-columns:minmax(0,1fr);min-height:0;}
+  .wtb-list{border-right:0;border-bottom:1px solid var(--hair);}
+  .wtb-head{flex-wrap:wrap;gap:6px;}
+  .wtb-sub{flex-wrap:wrap;}
+
+  /* usage dashboard: 4 KPI tiles and a 1.55fr/1fr split are desktop shapes */
+  .uv-tiles{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .uv-cols{grid-template-columns:minmax(0,1fr);}
+  .uv-head{flex-wrap:wrap;gap:10px;}
+  .uv-cardh{flex-wrap:wrap;gap:4px;}
+}
+
+/* phones proper: tighten the densest panels so they stay legible rather than pretty */
+@media (max-width:560px){
+  .stagesticky{padding-left:10px;padding-right:10px;}
+  .ck-grid{font-size:12px;}
+  .term{font-size:10.5px;min-height:200px;}
+  .ck-top .ic:nth-of-type(n+3){display:none;}
+  .ck-foot{font-size:10.5px;}
+}
+
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto;}
+  *{animation:none !important;}
+  .cockpit{transform:rotateX(6deg) !important;}
+  .scene.exploring .region{filter:none;opacity:1;transform:none;}
+  .scene.exploring .region.is-focus{transform:none;box-shadow:0 0 0 1px var(--accent-line);}
+  .scope{display:none;}
+}
+</style>
+</head>
+<body>
+
+<!-- ===== fixed nav ===== -->
+<nav class="nav" id="nav">
+  <a class="brand" href="#top"><span class="logo"></span>episko</a>
+  <a class="byline" href="https://respeak.io" target="_blank" rel="noopener">by <b>Respeak</b></a>
+  <div class="nav-right">
+    <a class="ghlink" href="https://github.com/respeak-io/episko" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ===== hero ===== -->
+<header class="hero" id="top">
+  <pre class="hero-ascii" id="heroAscii" aria-hidden="true"></pre>
+  <div class="cc-badge"><svg class="cc-ic" id="ccIc" aria-hidden="true"></svg>Built for <b>Claude&nbsp;Code</b></div>
+  <div class="eyebrow"><span class="gk">ἐπίσκοπος</span> — the one who watches over</div>
+  <h1><span class="b">Keep the flock in view.</span></h1>
+  <p class="sub">Every Claude Code agent, in one calm place.</p>
+  <p class="lede">episko gives every Claude Code session its own terminal, watches what each one is doing, and gathers them into a single view — so a <b>whole flock of agents</b> is as easy to mind as one chat.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="#download">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.36 12.9c-.02-2.02 1.65-2.99 1.72-3.04-0.94-1.37-2.4-1.56-2.92-1.58-1.24-.13-2.42.73-3.05.73-.63 0-1.6-.71-2.63-.69-1.35.02-2.6.79-3.29 2-1.4 2.43-.36 6.02 1.01 7.99.67.96 1.47 2.04 2.51 2 1.01-.04 1.39-.65 2.62-.65 1.22 0 1.57.65 2.63.63 1.09-.02 1.78-.98 2.44-1.95.77-1.12 1.09-2.2 1.11-2.26-.02-.01-2.13-.82-2.15-3.26M14.38 6.98c.56-.68.94-1.62.83-2.56-.81.03-1.79.54-2.37 1.21-.52.6-.97 1.56-.85 2.48.9.07 1.83-.46 2.39-1.13"/></svg>
+      Download for macOS
+    </a>
+    <a class="btn btn-ghost" href="https://github.com/respeak-io/episko" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+  <div class="pasture" id="pasture" aria-hidden="true">
+    <div class="pasture-scene" id="pastureScene"></div>
+    <pre class="pasture-ground" id="pastureGround"></pre>
+  </div>
+  <div class="scrollcue">scroll to meet the flock<span class="arr"></span></div>
+</header>
+
+<!-- ===== explore: pinned cockpit + step triggers ===== -->
+<section class="explore">
+  <div class="stagesticky">
+    <div class="scene" id="scene">
+      <div class="scene-inner">
+        <div class="cockpit" role="img" aria-label="A mock of the episko window: a sidebar listing projects and their Claude Code sessions with status glyphs, a live terminal in the middle, an inspector showing the model, context use, cost and recent tool calls, and a status bar with usage limits.">
+          <div class="ck-grid">
+
+            <!-- top bar -->
+            <div class="ck-top region region--top">
+              <div class="ck-brand"><span class="logo"></span>episko</div>
+              <div class="kbar"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+              <div class="ck-attn"><span class="d pulse"></span>1 needs you<span class="cx">▾</span></div>
+              <div class="ic">◐</div><div class="ic">⚙</div>
+            </div>
+
+            <!-- fleet / rail -->
+            <div class="ck-rail region region--fleet" data-region="fleet">
+              <div class="rail-top"><div class="rtl"><span class="label">Projects</span><span class="rcount">7 running</span></div><div class="btns"><span title="Sort order">≡</span><span title="Add a project folder">＋</span><span title="Collapse sidebar">«</span></div></div>
+
+              <div class="pgroup">
+                <div class="phead"><span class="picon grad"></span><span class="pname">episko</span><span class="pdirty"></span><span class="pcount">3</span><span class="padd">＋</span></div>
+                <div class="psessions">
+                  <div class="srow active"><span class="sglyph g-work pulse">●</span><span class="sbranch">add attention shortcut</span><span class="sctx">41%</span></div>
+                  <div class="srow"><span class="sglyph g-done">✓</span><span class="sbranch">usage forecast colours</span><span class="sctx">78%</span></div>
+                  <div class="srow"><span class="sglyph g-attn pulse">◆</span><span class="sbranch">windows path fix</span><span class="sctx">12%</span></div>
+                </div>
+              </div>
+
+              <div class="pgroup">
+                <div class="phead"><span class="pdot" style="background:#7cc7ff;color:#7cc7ff"></span><span class="pname">respeak-api</span><span class="pdirty"></span><span class="pcount">2</span><span class="padd">＋</span></div>
+                <div class="psessions">
+                  <div class="srow"><span class="sglyph g-work pulse">●</span><span class="sbranch">migrate auth to sessions</span><span class="sctx">63%</span></div>
+                  <div class="srow"><span class="sglyph g-idle">❯</span><span class="sbranch">shell</span><span class="sctx"></span></div>
+                </div>
+              </div>
+
+              <div class="pgroup">
+                <div class="phead"><span class="pdot" style="background:#37c98b;color:#37c98b"></span><span class="pname">docs-site</span><span class="pcount">1</span><span class="padd">＋</span></div>
+                <div class="psessions">
+                  <div class="srow"><span class="sglyph g-done">✓</span><span class="sbranch">rewrite the README</span><span class="sctx">45%</span></div>
+                </div>
+              </div>
+
+              <div class="pgroup">
+                <div class="phead"><span class="pdot" style="background:#c3b0ff;color:#c3b0ff"></span><span class="pname">respeak-web</span><span class="pcount ext">1 ext</span></div>
+                <div class="psessions">
+                  <div class="srow extrow"><span class="sglyph g-idle">○</span><span class="sbranch">document-export</span><span class="ext-tag">ext</span><span class="sjump">↗</span></div>
+                </div>
+              </div>
+
+              <div class="rail-ver"><span class="logo"></span>episko <span data-ver>v0.11.0</span><span class="up">● up to date</span></div>
+            </div>
+
+            <!-- stage / live session -->
+            <div class="ck-stage region region--stage" data-region="stage">
+              <div class="stage-head">
+                <div class="st-title"><span class="proj">episko</span><span class="chip">⑃ feat/attn-jump</span><span class="stitle">add attention shortcut</span><span class="path">~/dev/episko</span></div>
+                <div class="st-actions"><span class="act">❯ Terminal</span><span class="act primary">＋ Session</span><span class="act icon">◨</span></div>
+              </div>
+              <div class="term" aria-label="Live Claude Code session">
+<div class="ln"><span class="prompt">❯</span> <span class="u">add a shortcut that jumps to the next session that needs me</span></div>
+<div class="ln">&nbsp;</div>
+<div class="ln"><span class="bullet">⏺</span> I'll bind <span class="dim">⌘⇧A</span> to jump to the next session with a pending</div>
+<div class="ln">&nbsp;&nbsp;permission or error, reusing the urgency ranking you already have.</div>
+<div class="ln">&nbsp;</div>
+<div class="ln"><span class="bullet">⏺</span> <span class="tool">Read</span>(src/main.ts)</div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;⎿&nbsp;</span><span class="dim">read 4640 lines · found urgencyRank() at 1260</span></div>
+<div class="ln">&nbsp;</div>
+<div class="ln"><span class="bullet">⏺</span> <span class="tool edit">Update</span>(src/main.ts)</div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;⎿&nbsp;</span><span class="dim">18 additions</span></div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="add">+ // ⌘⇧A — jump to the next session that needs you</span></div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="add">+ if (mod &amp;&amp; e.shiftKey &amp;&amp; e.key === "a") {</span></div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="add">+&nbsp;&nbsp;e.preventDefault(); jumpToAttention();</span></div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="add">+ }</span></div>
+<div class="ln">&nbsp;</div>
+<div class="ln"><span class="bullet">⏺</span> <span class="tool bash">Bash</span>(pnpm exec tsc --noEmit)</div>
+<div class="ln"><span class="tree">&nbsp;&nbsp;⎿&nbsp;</span><span class="run">running…</span> <span class="cursor"></span></div>
+              </div>
+            </div>
+
+            <!-- inspector / telemetry -->
+            <div class="ck-insp region region--insp" data-region="insp">
+              <div class="insp-head"><span class="label">Session</span><span class="pill"><span class="pd"></span>working…</span></div>
+
+              <div class="attn">
+                <div class="attn-h">🔔 permission: Bash<span class="risk med">review</span></div>
+                <code>rm -rf node_modules &amp;&amp; pnpm install</code>
+                <div class="attn-btns"><button class="allow">Allow</button><button>Deny</button><button>In terminal</button></div>
+              </div>
+
+              <div class="vital st-working">
+                <div class="vtop"><span class="heart"></span><span class="vstate t-edit">Editing</span><span class="dwell">0:42 in state</span></div>
+                <div class="doing"><span class="tk">Edit</span><code>src/main.ts</code></div>
+                <div class="vmeta"><span class="chip-s">opus-4.8</span><span class="chip-s">1 subagent</span></div>
+              </div>
+
+              <div class="gauges">
+                <div class="gauge">
+                  <div class="grow">
+                    <svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="41 100"></circle></svg>
+                    <div><div class="gnum">41%</div><div class="glab">78k tokens</div></div>
+                  </div>
+                  <div class="gspark"><svg viewBox="0 0 100 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--accent)" stroke-width="1.4" points="0,14 14,13 28,11 42,11 56,9 70,7 84,6 100,5"/></svg></div>
+                </div>
+                <div class="gauge">
+                  <div class="grow"><div><div class="gnum">$1.24</div><div class="glab">6m 12s</div></div></div>
+                  <div class="gspark"><svg viewBox="0 0 100 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--st-done)" stroke-width="1.4" points="0,15 20,14 40,12 60,10 80,7 100,4"/></svg></div>
+                </div>
+              </div>
+
+              <div class="wset">
+                <div class="wpeek">
+                  <div class="wtop"><span class="add">+34</span><span class="del">−6</span><span class="files">3 files</span><span class="wpeek-cue">⤢</span></div>
+                  <div class="stackbar"><span class="sa" style="width:85%"></span><span class="sd" style="width:15%"></span></div>
+                </div>
+                <div class="branch"><span>⑃ <span class="b">feat/attn-jump</span><span class="sync"><span class="ah">↑2</span></span></span></div>
+              </div>
+
+              <div>
+                <div class="lab">Activity · by tool</div>
+                <div class="tl2">
+                  <div class="row t-bash"><span class="dot"></span><span class="nm">Bash</span><span class="arg">tsc --noEmit</span><span class="lat"><span class="latbar run" style="width:100%"></span><span class="ms">···</span></span></div>
+                  <div class="row t-edit"><span class="dot"></span><span class="nm">Update</span><span class="arg">main.ts</span><span class="lat"><span class="latbar" style="width:64%"></span><span class="ms">1.2s</span></span></div>
+                  <div class="row t-read"><span class="dot"></span><span class="nm">Read</span><span class="arg">main.ts</span><span class="lat"><span class="latbar" style="width:38%"></span><span class="ms">0.4s</span></span></div>
+                  <div class="row t-read"><span class="dot"></span><span class="nm">Grep</span><span class="arg">urgencyRank</span><span class="lat"><span class="latbar" style="width:22%"></span><span class="ms">0.2s</span></span></div>
+                </div>
+              </div>
+
+              <div class="res">
+                <div class="res-row"><span>CPU</span><span class="res-bar"><i style="width:18%"></i></span><span class="res-v">18%</span></div>
+                <div class="res-row"><span>MEM</span><span class="res-bar"><i style="width:26%"></i></span><span class="res-v">412 MB</span></div>
+              </div>
+            </div>
+
+            <!-- footer -->
+            <div class="ck-foot region region--foot" data-region="foot">
+              <span class="frepo">respeak-io/episko ↗</span>
+              <span class="fver" data-ver>v0.11.0</span>
+              <span class="fseg"><b>7</b> sessions</span>
+              <span class="fdiv"></span>
+              <span class="fseg">today <b>$12.40</b></span>
+              <span class="fdiv"></span>
+              <span class="fseg fclick usage"><span class="flabel">limits</span><b class="s-warn">62%</b><span class="fsub">5h</span><span class="freset">↻ 2h 12m</span><span class="fmid">·</span><b class="s-ok">38%</b><span class="fsub">7d</span><span class="freset">↻ 4d 6h</span><span class="fcaret">▴</span></span>
+              <span class="fdiv"></span>
+              <span class="fseg fclick">new in <b>embedded</b><span class="fcaret">▴</span></span>
+              <span class="spacer"></span>
+              <span class="fseg fclick"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>
+              <span class="dbg">🐞<span class="b">1</span></span>
+            </div>
+
+            <!-- usage forecast popup overlay -->
+            <div class="usage-pop" aria-hidden="true">
+              <div class="up-h">Claude usage limits</div>
+              <div class="up-row">
+                <div class="up-top"><span>Session</span><span class="up-sub">5-hour window</span><span class="up-pct s-warn">62%</span></div>
+                <div class="up-bar"><i class="up-fill" style="width:62%"></i><i class="up-ghost" style="left:62%;width:24%"></i></div>
+                <div class="up-fore"><span>at this pace → ~86% by reset</span><span class="vchip s-warn">tight</span></div>
+                <div class="up-reset">resets 17:40 · in 2h 12m</div>
+              </div>
+              <div class="up-row">
+                <div class="up-top"><span>Weekly</span><span class="up-sub">7-day window</span><span class="up-pct s-ok">38%</span></div>
+                <div class="up-bar s-ok"><i class="up-fill" style="width:38%"></i><i class="up-ghost" style="left:38%;width:9%"></i></div>
+                <div class="up-fore"><span>at this pace → ~47% by reset</span><span class="vchip s-ok">clear</span></div>
+                <div class="up-reset">resets Mon 09:00 · in 4d 6h</div>
+              </div>
+            </div>
+
+            <!-- command palette (⌘K) -->
+            <!-- ▶ Run: the project's own tasks, in the same panes -->
+            <div class="ov run-overlay" data-label="▶ Run — the project's own tasks" aria-hidden="true">
+              <div class="ov-box run-box">
+                <div class="pal-input"><span class="cr">▶</span><input disabled aria-hidden="true" tabindex="-1" name="mock-run" placeholder="Run a task…"><span class="esc">⌘⇧R</span></div>
+                <div class="pal-list">
+                  <div class="pal-gh">package.json <span class="src">scripts</span></div>
+                  <div class="pal-item on"><span class="pal-ic t-run">▶</span><span class="pal-main"><span class="pm">dev</span><span class="ps">vite --port 1420</span></span><span class="pal-sc"><kbd>↵</kbd></span></div>
+                  <div class="pal-item"><span class="pal-ic t-run">▶</span><span class="pal-main"><span class="pm">test</span><span class="ps">vitest run</span></span></div>
+                  <div class="pal-gh">justfile</div>
+                  <div class="pal-item"><span class="pal-ic t-run">▶</span><span class="pal-main"><span class="pm">release <em>version</em></span><span class="ps">asks for 1 input</span></span></div>
+                  <div class="pal-gh">.vscode/tasks.json</div>
+                  <div class="pal-item"><span class="pal-ic t-run">▶</span><span class="pal-main"><span class="pm">cargo check</span><span class="ps">depends on: fmt</span></span></div>
+                  <div class="pal-item off"><span class="pal-ic">⊘</span><span class="pal-main"><span class="pm">Lint current file</span><span class="ps">needs an editor — <b>${file}</b></span></span></div>
+                  <div class="pal-gh">Makefile</div>
+                  <div class="pal-item off"><span class="pal-ic">⊘</span><span class="pal-main"><span class="pm">justfile · Taskfile · mise</span><span class="ps">blocked — listing these runs the project</span></span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="ov pal-overlay" data-label="⌘K — jump to any session" aria-hidden="true">
+              <div class="ov-box pal-box">
+                <div class="pal-input"><span class="cr">⌕</span><input disabled aria-hidden="true" tabindex="-1" name="mock-palette" placeholder="Search sessions, run a command…   ⟩ @ /"><span class="esc">esc</span></div>
+                <div class="pal-list">
+                  <div class="pal-gh">Needs you</div>
+                  <div class="pal-item"><span class="pal-ic g-attn">◆</span><span class="pal-main"><span class="pm">episko · windows path fix</span><span class="ps">waiting · permission</span></span><span class="pal-sc"><kbd>⌘</kbd><kbd>3</kbd></span></div>
+                  <div class="pal-gh">Sessions</div>
+                  <div class="pal-item on"><span class="pal-ic g-work">●</span><span class="pal-main"><span class="pm">episko · add attention shortcut</span><span class="ps">working · 41% ctx · $1.24</span></span><span class="pal-sc"><kbd>⌘</kbd><kbd>1</kbd></span></div>
+                  <div class="pal-item"><span class="pal-ic g-work">●</span><span class="pal-main"><span class="pm">respeak-api · migrate auth to sessions</span><span class="ps">working · 63% ctx</span></span><span class="pal-sc"><kbd>⌘</kbd><kbd>2</kbd></span></div>
+                  <div class="pal-item"><span class="pal-ic g-done">✓</span><span class="pal-main"><span class="pm">docs-site · rewrite the README</span><span class="ps">your turn</span></span><span class="pal-sc"><kbd>⌘</kbd><kbd>4</kbd></span></div>
+                  <div class="pal-gh">Launch</div>
+                  <div class="pal-item"><span class="pal-ic">＋</span><span class="pal-main"><span class="pm">Launch respeak-web</span><span class="ps">~/dev/respeak-web</span></span></div>
+                  <div class="pal-gh">Commands</div>
+                  <div class="pal-item"><span class="pal-ic">◨</span><span class="pal-main"><span class="pm">Toggle inspector</span><span class="ps">command</span></span><span class="pal-sc"><kbd>⌘</kbd><kbd>I</kbd></span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- new-session dialog (worktrees + branches) -->
+            <div class="ov wt-overlay" data-label="New session — worktrees &amp; resume" aria-hidden="true">
+              <div class="ov-box wt-box">
+                <div class="wtb-head">
+                  <div class="wtb-title"><b>New session</b><span class="wtb-proj">episko</span></div>
+                  <div class="wtb-sub"><span>~/dev/episko</span><span class="wtb-eng">↳ embedded</span><span class="wtb-chip">⟳ now</span></div>
+                </div>
+                <div class="wtb-q"><span class="wtb-caret">❯</span><input disabled aria-hidden="true" tabindex="-1" name="mock-branch-filter" placeholder="Filter, or type a new branch name…"><span class="wtb-count">6 destinations</span></div>
+                <div class="wtb-body">
+                  <div class="wtb-list">
+                    <div class="wtb-gh">This repo<span class="rule"></span></div>
+                    <div class="wtb-item"><span class="wtb-ic">▢</span><span class="wtb-main"><span class="wtb-br">episko</span><span class="wtb-sub2">the repo itself · main</span></span><span class="wtb-tag good">clean</span></div>
+                    <div class="wtb-gh">Worktrees<span class="rule"></span></div>
+                    <div class="wtb-item on"><span class="wtb-ic">⑃</span><span class="wtb-main"><span class="wtb-br">feat/attn-jump</span><span class="wtb-sub2">worktree · 1 session</span></span><span class="wtb-tag warn">3 dirty</span></div>
+                    <div class="wtb-item"><span class="wtb-ic">⑃</span><span class="wtb-main"><span class="wtb-br">feat/session-auth</span><span class="wtb-sub2">worktree</span></span><span class="wtb-tag good">clean</span></div>
+                    <div class="wtb-gh">Branches<span class="rule"></span></div>
+                    <div class="wtb-item"><span class="wtb-ic">⎇</span><span class="wtb-main"><span class="wtb-br">release/0.9</span><span class="wtb-sub2">new worktree from branch</span></span></div>
+                    <div class="wtb-item create"><span class="wtb-ic">＋</span><span class="wtb-main"><span class="wtb-br">Create “hotfix/…”</span><span class="wtb-sub2">new branch from main</span></span></div>
+                  </div>
+                  <div class="wtb-detail">
+                    <div class="wtb-dkind">Worktree</div>
+                    <div class="wtb-dname"><span class="dim">~/dev/</span><span class="em">episko-attn-jump</span></div>
+                    <dl class="wtb-facts">
+                      <dt>Branch</dt><dd><span class="em">feat/attn-jump</span></dd>
+                      <dt>HEAD</dt><dd><span class="em">a1c9f04</span> · Tim · 2h ago<span class="subj">wire up jumpToAttention()</span></dd>
+                      <dt>Working tree</dt><dd><span class="warn">3 files uncommitted</span></dd>
+                      <dt>Sessions</dt><dd><span class="wtb-sess"><i style="background:var(--st-working)"></i>add attention shortcut</span></dd>
+                    </dl>
+                    <div class="wtb-acts"><button class="wtb-go">Start session here</button><button class="wtb-rm">Remove worktree…</button></div>
+                  </div>
+                </div>
+                <div class="wtb-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>⏎</kbd> start session</span><span class="sp"></span><span><kbd>esc</kbd> close</span></div>
+              </div>
+            </div>
+
+            <!-- usage overview (analytics) -->
+            <div class="ov usage-overlay" data-label="Usage — spend, tokens, limits" aria-hidden="true">
+              <div class="ov-box uv-box">
+                <div class="uv-head">
+                  <div><div class="label">Analytics</div><div class="uv-title">Usage &amp; spend</div></div>
+                  <div class="uv-range"><button>7D</button><button class="on">30D</button><button>90D</button><button>12M</button></div>
+                </div>
+                <div class="uv-tiles">
+                  <div class="uv-tile"><div class="label">Total spend</div><div class="uv-fig">$142.60</div><div class="uv-tfoot"><span class="uv-delta up">▲ 18%</span><svg viewBox="0 0 52 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--st-done)" stroke-width="1.4" points="0,13 10,12 20,10 30,11 42,7 52,4"/></svg></div></div>
+                  <div class="uv-tile"><div class="label">Tokens processed</div><div class="uv-fig">48.2M</div><div class="uv-tfoot"><span class="uv-delta up">▲ 22%</span><svg viewBox="0 0 52 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--accent)" stroke-width="1.4" points="0,14 12,12 24,11 34,8 44,6 52,3"/></svg></div></div>
+                  <div class="uv-tile"><div class="label">Sessions</div><div class="uv-fig">213</div><div class="uv-tfoot"><span class="uv-delta up">▲ 9%</span><svg viewBox="0 0 52 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--accent)" stroke-width="1.4" points="0,11 12,12 24,9 34,10 44,7 52,6"/></svg></div></div>
+                  <div class="uv-tile"><div class="label">Avg / session</div><div class="uv-fig">226k</div><div class="uv-tfoot"><span class="uv-delta down">▼ 4%</span><svg viewBox="0 0 52 16" preserveAspectRatio="none"><polyline fill="none" stroke="var(--st-error)" stroke-width="1.4" points="0,6 12,7 24,8 34,7 44,9 52,10"/></svg></div></div>
+                </div>
+                <div class="uv-card">
+                  <div class="uv-cardh"><div><div class="label">Daily spend</div><div class="uv-h">Last 12 months</div></div><div class="uv-scale">less<i style="background:var(--u-g0)"></i><i style="background:var(--u-g1)"></i><i style="background:var(--u-g2)"></i><i style="background:var(--u-g3)"></i><i style="background:var(--u-g4)"></i>more</div></div>
+                  <div class="uv-calwrap"><div class="uv-wd"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div style="min-width:0"><div class="uv-months" id="uvMonths"></div><div class="uv-grid" id="uvGrid"></div></div></div>
+                  <div class="uv-calfoot"><span>Busiest day <b>Nov 14 · $18.40</b></span><span><b>308</b> active days recorded</span></div>
+                </div>
+                <div class="uv-cols">
+                  <div class="uv-card">
+                    <div class="label">Model mix <span class="uv-byline">· by tokens</span></div>
+                    <div class="uv-share">
+                      <div class="uv-srow"><div class="uv-stop"><span class="uv-sw" style="background:var(--m-opus)"></span><span>Opus</span><span class="uv-usd">31.4M</span></div><div class="uv-strack"><i style="width:65%;background:var(--m-opus)"></i></div></div>
+                      <div class="uv-srow"><div class="uv-stop"><span class="uv-sw" style="background:var(--m-sonnet)"></span><span>Sonnet</span><span class="uv-usd">13.1M</span></div><div class="uv-strack"><i style="width:27%;background:var(--m-sonnet)"></i></div></div>
+                      <div class="uv-srow"><div class="uv-stop"><span class="uv-sw" style="background:var(--m-haiku)"></span><span>Haiku</span><span class="uv-usd">3.7M</span></div><div class="uv-strack"><i style="width:8%;background:var(--m-haiku)"></i></div></div>
+                    </div>
+                    <div class="uv-sub">Token composition</div>
+                    <div class="uv-mix"><i style="width:72%;background:var(--u-t4)"></i><i style="width:7%;background:var(--u-t3)"></i><i style="width:12%;background:var(--u-t2)"></i><i style="width:9%;background:var(--u-t1)"></i></div>
+                    <div class="uv-mixleg"><span><i style="background:var(--u-t4)"></i>Cache read<b>72%</b></span><span><i style="background:var(--u-t2)"></i>Input<b>12%</b></span><span><i style="background:var(--u-t1)"></i>Output<b>9%</b></span><span><i style="background:var(--u-t3)"></i>Cache write<b>7%</b></span></div>
+                    <div class="uv-insight"><b>~72% of tokens are cache reads</b> — most context is reused, not re-billed. Big token counts, cheap dollars.</div>
+                  </div>
+                  <div class="uv-card uv-proj">
+                  <div class="uv-cardh"><div><div class="label">Attribution</div><div class="uv-h">Top projects</div></div><p class="uv-hint">by tokens · working directory</p></div>
+                  <table class="uv-tbl">
+                    <thead><tr><th>Project</th><th class="n">Share</th><th class="n">Tokens</th></tr></thead>
+                    <tbody>
+                      <tr><td><span class="uv-pj"><span class="uv-dot" style="background:#a78bfa"></span>episko</span></td><td class="n"><span class="uv-pjbar"><i style="width:100%"></i></span></td><td class="n m">24.1M</td></tr>
+                      <tr><td><span class="uv-pj"><span class="uv-dot" style="background:#7cc7ff"></span>respeak-api</span></td><td class="n"><span class="uv-pjbar"><i style="width:53%"></i></span></td><td class="n m">12.8M</td></tr>
+                      <tr><td><span class="uv-pj"><span class="uv-dot" style="background:#37c98b"></span>docs-site</span></td><td class="n"><span class="uv-pjbar"><i style="width:26%"></i></span></td><td class="n m">6.2M</td></tr>
+                      <tr><td><span class="uv-pj"><span class="uv-dot" style="background:#c3b0ff"></span>respeak-web</span></td><td class="n"><span class="uv-pjbar"><i style="width:13%"></i></span></td><td class="n m">3.1M</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                </div>
+              </div>
+            </div>
+
+          </div><!-- /ck-grid -->
+        </div><!-- /cockpit -->
+      </div>
+    </div><!-- /scene -->
+
+    <!-- the keeper: a pixel guide + speech bubble that moves to each part -->
+    <div class="callout" id="callout">
+      <svg class="guide" id="guide" viewBox="0 0 23 26" aria-hidden="true"></svg>
+      <div class="bubble">
+        <div class="brief-slide" data-focus="fleet">
+          <div class="cap-eyebrow">the flock</div>
+          <h2 class="cap-title">Every agent, at a glance.</h2>
+          <p class="cap-body">Each session is one little Claude, coloured by what it's up to — amber is busy, green is done and waiting on you, pink needs a decision.</p>
+        </div>
+        <div class="brief-slide" data-focus="stage">
+          <div class="cap-eyebrow">a single agent</div>
+          <h2 class="cap-title">A real terminal, not a recording.</h2>
+          <p class="cap-body">Every Claude runs in its own live terminal — here, or in Ghostty, Terminal, or iTerm. Type to it, watch it think. It's the real process, not a replay.</p>
+        </div>
+        <div class="brief-slide" data-focus="insp">
+          <div class="cap-eyebrow">what it's up to</div>
+          <h2 class="cap-title">Followed down to the token.</h2>
+          <p class="cap-body">Model, context, cost, and the exact tool it's running right now — read live from each session, with a little history of what it touched.</p>
+        </div>
+        <div class="brief-slide" data-focus="perm">
+          <div class="cap-eyebrow">when it needs you</div>
+          <h2 class="cap-title">A tap, and you're back to it.</h2>
+          <p class="cap-body">When an agent needs a yes or no, episko brings the question to you — the command, and how risky it looks. Allow, deny, or hop into the terminal.</p>
+        </div>
+        <div class="brief-slide" data-focus="palette">
+          <div class="cap-eyebrow">find anyone fast</div>
+          <h2 class="cap-title">Everyone's a keystroke away.</h2>
+          <p class="cap-body">⌘K opens one little search over everything — jump to any Claude, start a new one, or run a command. Whoever needs you floats to the top.</p>
+        </div>
+        <div class="brief-slide" data-focus="newsession">
+          <div class="cap-eyebrow">send one out</div>
+          <h2 class="cap-title">Into any branch or worktree.</h2>
+          <p class="cap-body">Point a new Claude at the repo, one of its worktrees, a branch, or a fresh branch you name — and see where it'll land before you send it.</p>
+        </div>
+        <div class="brief-slide" data-focus="run">
+          <div class="cap-eyebrow">not just agents</div>
+          <h2 class="cap-title">Your own tasks, same pen.</h2>
+          <p class="cap-body">The scripts your project already ships — package.json, a justfile, VS Code tasks, a Makefile — run in these panes too. A run is just another session: its exit code is its status.</p>
+        </div>
+        <div class="brief-slide" data-focus="forecast">
+          <div class="cap-eyebrow">pace yourself</div>
+          <h2 class="cap-title">See the limit coming.</h2>
+          <p class="cap-body">episko keeps an eye on your 5-hour and weekly limits and reads the pace. The footer warms from amber to red well before you'd hit a wall.</p>
+        </div>
+        <div class="brief-slide" data-focus="usage">
+          <div class="cap-eyebrow">where the time went</div>
+          <h2 class="cap-title">The whole story, kept at home.</h2>
+          <p class="cap-body">A full history of spend, tokens by model, cost per session, and busiest days — all on your machine, nothing sent anywhere.</p>
+        </div>
+        <div class="dots" id="dots"></div>
+      </div>
+    </div>
+  </div><!-- /stagesticky -->
+
+  <!-- invisible scroll triggers -->
+  <div class="steps" id="steps">
+    <div class="step" data-focus="fleet"></div>
+    <div class="step" data-focus="stage"></div>
+    <div class="step" data-focus="insp"></div>
+    <div class="step" data-focus="perm"></div>
+    <div class="step" data-focus="palette"></div>
+    <div class="step" data-focus="newsession"></div>
+    <div class="step" data-focus="run"></div>
+    <div class="step" data-focus="forecast"></div>
+    <div class="step" data-focus="usage"></div>
+    <div class="tail" aria-hidden="true"></div>
+  </div>
+</section>
+
+<!-- ===== mobile feature notes (desktop hides these; the scroll-tour covers it) ===== -->
+<!-- the per-chapter copy lives in the callout (.brief-slide) — the scroll
+     tour now runs at every width, so there is no separate mobile notes list -->
+
+<!-- ===== download ===== -->
+<section class="download" id="download">
+  <div class="eyebrow"><span class="gk">ποιμήν</span> — the shepherd</div>
+  <h2><span class="b">Gather your flock.</span></h2>
+  <p>episko is a small native app. Point it at your repos and mind as many Claudes as your limits allow.</p>
+  <div class="dl-row">
+    <a class="dl-btn" id="dlMac" href="https://github.com/respeak-io/episko/releases/latest" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.36 12.9c-.02-2.02 1.65-2.99 1.72-3.04-.94-1.37-2.4-1.56-2.92-1.58-1.24-.13-2.42.73-3.05.73-.63 0-1.6-.71-2.63-.69-1.35.02-2.6.79-3.29 2-1.4 2.43-.36 6.02 1.01 7.99.67.96 1.47 2.04 2.51 2 1.01-.04 1.39-.65 2.62-.65 1.22 0 1.57.65 2.63.63 1.09-.02 1.78-.98 2.44-1.95.77-1.12 1.09-2.2 1.11-2.26-.02-.01-2.13-.82-2.15-3.26M14.38 6.98c.56-.68.94-1.62.83-2.56-.81.03-1.79.54-2.37 1.21-.52.6-.97 1.56-.85 2.48.9.07 1.83-.46 2.39-1.13"/></svg>
+      <span><span class="t">Download for macOS</span><span class="s" id="dlMacSub">.dmg · Apple silicon</span></span>
+    </a>
+    <a class="dl-btn" id="dlWin" href="https://github.com/respeak-io/episko/releases/latest" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.4 10.5 4.3v7.2H3V5.4M3 12.5h7.5v7.2L3 18.6v-6.1M11.5 4.15 21 3v8.5h-9.5V4.15M11.5 12.5H21V21l-9.5-1.35V12.5Z"/></svg>
+      <span><span class="t">Download for Windows</span><span class="s" id="dlWinSub">.msi · Windows 10 &amp; 11</span></span>
+    </a>
+  </div>
+  <div class="dl-meta"><span data-ver>v0.11.0</span> · free &amp; open source · requires <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> on your PATH</div>
+</section>
+
+</main>
+
+<footer class="pagefoot">
+  <div class="pf-l">
+    <span class="pf-mark"><span class="logo"></span>episko</span>
+    <span><span class="gk">ἐπίσκοπος</span>, the one who watches over · built on Tauri + Claude Code</span>
+  </div>
+  <nav class="pf-links">
+    <a href="https://github.com/respeak-io/episko" target="_blank" rel="noopener">respeak-io/episko ↗</a>
+    <a href="https://github.com/respeak-io/episko/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+    <a href="/impressum">Imprint</a>
+    <a href="/impressum#privacy">Privacy</a>
+  </nav>
+  <p class="pf-legal">
+    Free and open source under the MIT licence, built by
+    <a class="pf-by" href="https://respeak.io" target="_blank" rel="noopener"><b>Respeak</b></a> in Karlsruhe.
+    <br />
+    episko is an independent project — not affiliated with, endorsed, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
+  </p>
+</footer>
+
+<script>
+(function(){
+  // nav shadow on scroll
+  var nav = document.getElementById('nav');
+  addEventListener('scroll', function(){ nav.classList.toggle('scrolled', scrollY > 20); }, {passive:true});
+
+  var scene = document.getElementById('scene');
+  var callout = document.getElementById('callout');
+  var dotsWrap = document.getElementById('dots');
+  var steps = Array.prototype.slice.call(document.querySelectorAll('.step'));
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.brief-slide'));
+  var order = ['fleet','stage','insp','perm','palette','newsession','run','forecast','usage'];
+
+  // which cockpit region a chapter spotlights (if any), any overlay it reveals, and
+  // where the keeper's bubble hops to (a screen edge beside the part it explains).
+  // anchor = a point inside the cockpit (ax,ay as fractions) the keeper's bubble sits
+  // beside; push = which way it shoves the bubble (toward the part it explains).
+  // `m` is the mobile pan target: below 900px the overlays are sections of the
+  // stack rather than floating layers, so a chapter aims at a real element.
+  var MAP = {
+    fleet:      { region: 'fleet', m:'.region--fleet', anchor: {ax:.40, ay:.42, push:'L'} },
+    stage:      { region: 'stage', m:'.region--stage', anchor: {ax:.72, ay:.36, push:'L'} },
+    insp:       { region: 'insp',  m:'.region--insp',  anchor: {ax:.60, ay:.44, push:'R'} },
+    perm:       { region: 'insp',  show: 'perm', m:'.region--insp', anchor: {ax:.58, ay:.24, push:'R'} },
+    palette:    { show: 'pal',      m:'.pal-overlay',   anchor: {ax:.86, ay:.34, push:'L'} }, // beside the palette, not over it
+    newsession: { show: 'wt',       m:'.wt-overlay',    anchor: {ax:.05, ay:.50, push:'R'} }, // beside the dialog, not over it
+    run:        { show: 'run',       m:'.run-overlay',   anchor: {ax:.86, ay:.36, push:'L'} }, // beside the picker
+    forecast:   { region: 'foot',   show: 'usage', m:'.region--foot', anchor: {ax:.42, ay:.58, push:'L'} },
+    usage:      { show: 'usageview', m:'.usage-overlay', anchor: {ax:.82, ay:.42, push:'L'} }
+  };
+  var SHOWS = ['show-perm','show-usage','show-pal','show-wt','show-usageview','show-run'];
+
+  // build progress dots
+  order.forEach(function(k, i){
+    var d = document.createElement('i'); d.dataset.i = i; dotsWrap.appendChild(d);
+  });
+  var dots = Array.prototype.slice.call(dotsWrap.children);
+
+  // draw the keeper — a little pixel Claude with an arm out, pushing the bubble
+  (function drawGuide(){
+    var g = document.getElementById('guide'); if (!g) return;
+    var rows = ["....s.........","..bbbbb.......",".bbbbbbb......",".bbbbbbbb.....",".bbbbbbbb.....",
+                ".bbddbddbb....",".bbddbddbbaaHH",".bbbbbbbbbaaHH",".bbbbbbbb.....",".bbbbbbb......","..bbbbb.......","..bb.bb......."];
+    var pal = {b:'#a78bfa', d:'#171320', s:'#c4b1ff', a:'#8f74ee', H:'#e6d3b3'};
+    var svg = '';
+    for (var y=0;y<rows.length;y++) for (var x=0;x<rows[y].length;x++){
+      var c = rows[y][x]; if (c === '.') continue;
+      svg += '<rect x="'+x+'" y="'+y+'" width="1" height="1" fill="'+pal[c]+'"/>';
+    }
+    g.setAttribute('viewBox','0 0 14 12'); g.setAttribute('shape-rendering','crispEdges'); g.innerHTML = svg;
+  })();
+
+  function regionEl(name){ return scene.querySelector('.region--' + name); }
+  var allRegions = Array.prototype.slice.call(scene.querySelectorAll('.region'));
+  // on mobile the overlays are spotlightable too, so clear/set focus across both
+  var allFocusable = allRegions.concat(Array.prototype.slice.call(scene.querySelectorAll('.ov')));
+  var isNarrow = function(){ return matchMedia('(max-width:900px)').matches; };
+
+  // Mobile: the stage is a fixed-height window onto the tall panel stack, so
+  // "spotlight this part" means sliding the stack until that part is in view.
+  // Tall panels align near the top (you read them downward); short ones centre.
+  var cockpitEl = scene.querySelector('.cockpit');
+  function panTo(el){
+    if (!cockpitEl || !el) return;
+    var viewH = scene.clientHeight;
+    if (!viewH) return;
+    // measure against the cockpit itself — both move together under the pan
+    // transform, so the difference is the untranslated offset either way
+    var cr = cockpitEl.getBoundingClientRect(), er = el.getBoundingClientRect();
+    var top = er.top - cr.top, h = er.height;
+    var y = (h > viewH - 24) ? top - 12 : top - (viewH - h) / 2;
+    var max = Math.max(0, cockpitEl.offsetHeight - viewH);
+    cockpitEl.style.setProperty('--panY', (-Math.max(0, Math.min(y, max))) + 'px');
+  }
+
+  // put the keeper's bubble right beside the part it explains (a point inside the
+  // cockpit); push:'L'/'R' is which way the keeper shoves it (toward that part).
+  function placeCallout(a){
+    var fit = parseFloat(getComputedStyle(scene).getPropertyValue('--fit')) || 1;
+    var cw = 1160 * fit, ch = 684 * fit;
+    var bx = (innerWidth - cw) / 2 + a.ax * cw;
+    var by = (innerHeight - ch) / 2 + 24 + a.ay * ch;   // +24: nav padding shifts cockpit down
+    var dx = Math.round(bx - innerWidth / 2), dy = Math.round(by - innerHeight / 2);
+    callout.style.transform = 'translate(calc(-50% + ' + dx + 'px), calc(-50% + ' + dy + 'px))';
+    callout.classList.remove('push-left','push-right');
+    callout.classList.add(a.push === 'L' ? 'push-left' : 'push-right');
+  }
+
+  var current = null, exploring = false;
+  function activate(key){
+    if (!exploring){ exploring = true; scene.classList.add('exploring'); callout.classList.add('on'); }
+    if (key === current) return;
+    current = key;
+    var m = MAP[key];
+    // spotlight the part this chapter is about (some desktop chapters have no
+    // region — there the whole cockpit dims behind an overlay)
+    allFocusable.forEach(function(r){ r.classList.remove('is-focus'); });
+    var target = isNarrow()
+      ? scene.querySelector(m.m)
+      : (m.region ? regionEl(m.region) : null);
+    if (target) target.classList.add('is-focus');
+    // overlays — clear all, then show this chapter's (if any). On mobile these
+    // classes are inert: the overlays are always-present sections we pan to.
+    SHOWS.forEach(function(c){ scene.classList.remove(c); });
+    if (m.show) scene.classList.add('show-' + m.show);
+    // move the keeper's bubble: beside the part on desktop, under the window on
+    // mobile (where only the push class matters, for which way the keeper faces)
+    if (isNarrow()){
+      callout.classList.remove('push-left','push-right');
+      callout.classList.add(m.anchor.push === 'L' ? 'push-left' : 'push-right');
+      panTo(target);
+    } else {
+      placeCallout(m.anchor);
+    }
+    // caption
+    slides.forEach(function(s){ s.classList.toggle('on', s.dataset.focus === key); });
+    // dots
+    var idx = order.indexOf(key);
+    dots.forEach(function(d,i){ d.classList.toggle('on', i === idx); });
+  }
+  function leaveExplore(){
+    if (!exploring) return;
+    exploring = false; current = null;
+    scene.classList.remove('exploring');
+    SHOWS.forEach(function(c){ scene.classList.remove(c); });
+    callout.classList.remove('on');
+    allFocusable.forEach(function(r){ r.classList.remove('is-focus'); });
+    if (cockpitEl) cockpitEl.style.setProperty('--panY', '0px');   // back to the top
+  }
+
+  // fit the fixed-width cockpit into the viewport
+  var COCK_W = 1160, COCK_H = 684;
+  function fit(){
+    if (matchMedia('(max-width:900px)').matches){ scene.style.setProperty('--fit', 1); return; }
+    // small breathing margin; the keeper's bubble now overlays the cockpit, not the
+    // margin, so the cockpit can be larger again. never upscale past 1× (blurs).
+    var availW = Math.min(innerWidth - 150, 1160);
+    var availH = innerHeight - 116;
+    var s = Math.min(availW / COCK_W, availH / COCK_H, 1);
+    scene.style.setProperty('--fit', s.toFixed(3));
+  }
+  addEventListener('resize', function(){
+    fit();
+    if (exploring && current){
+      if (isNarrow()) panTo(scene.querySelector(MAP[current].m));
+      else { cockpitEl.style.setProperty('--panY','0px'); placeCallout(MAP[current].anchor); }
+    }
+    update();
+  });
+  // debug hook: force a chapter without scrolling (harmless in production)
+  window.__epGo = function(k){ if (!exploring){ exploring = true; scene.classList.add('exploring'); callout.classList.add('on'); } current = null; activate(k); };
+  fit();
+
+  // deterministic scroll driver: the sticky stage is "engaged" while the explore
+  // section is pinned; pick the step whose center is nearest the viewport center.
+  var sec = document.querySelector('.explore');
+  function update(){
+    var r = sec.getBoundingClientRect();
+    var vh = innerHeight;
+    // Desktop tolerates engaging slightly before the stage pins — the bubble floats
+    // over the cockpit, so nothing is cut off. On mobile the caption is a row under
+    // the window, so engage only once the stage is genuinely pinned, or the card
+    // would sit below the fold for the whole first chapter.
+    var engaged = isNarrow()
+      ? (r.top <= 0 && r.bottom >= vh * 0.9)
+      : (r.top <= vh * 0.25 && r.bottom >= vh * 0.75);
+    if (!engaged){ leaveExplore(); return; }
+    var best = null, bestD = Infinity;
+    steps.forEach(function(s){
+      var sr = s.getBoundingClientRect();
+      var d = Math.abs((sr.top + sr.height / 2) - vh / 2);
+      if (d < bestD){ bestD = d; best = s; }
+    });
+    if (best) activate(best.dataset.focus);
+  }
+  var ticking = false;
+  addEventListener('scroll', function(){
+    if (ticking) return; ticking = true;
+    requestAnimationFrame(function(){ update(); ticking = false; });
+  }, { passive: true });
+  update();
+
+  // "Daily spend" contribution heatmap — 53 weeks of git-style cells + month labels
+  var grid = document.getElementById('uvGrid'), months = document.getElementById('uvMonths');
+  if (grid && months){
+    var MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var today = new Date(); today.setHours(0,0,0,0);
+    var end = new Date(today); end.setDate(end.getDate() + (6 - today.getDay())); // Sat of this week
+    var WEEKS = 53, start = new Date(end); start.setDate(start.getDate() - (WEEKS*7 - 1));
+    var lastM = -1;
+    for (var w = 0; w < WEEKS; w++){
+      var d0 = new Date(start); d0.setDate(d0.getDate() + w*7);
+      var m = d0.getMonth(), sp = document.createElement('span');
+      sp.textContent = (m !== lastM) ? MO[m] : ''; if (m !== lastM) lastM = m;
+      months.appendChild(sp);
+    }
+    for (var w2 = 0; w2 < WEEKS; w2++) for (var r = 0; r < 7; r++){
+      var t = new Date(start); t.setDate(t.getDate() + w2*7 + r);
+      var cell = document.createElement('i'); cell.className = 'uv-cell';
+      if (t > today){ cell.style.visibility = 'hidden'; grid.appendChild(cell); continue; }
+      var dow = t.getDay(), ramp = w2 / WEEKS;                 // heavier spend over the year
+      var base = (dow === 0 || dow === 6) ? 1.1 : 2.4;         // busy weekdays, quieter weekends
+      var v = base + Math.sin(w2*0.7 + r*1.3) * 1.1 + ramp * 1.5;
+      var lvl = v <= 0.5 ? 0 : v <= 1.5 ? 1 : v <= 2.5 ? 2 : v <= 3.4 ? 3 : 4;
+      if (lvl > 0) cell.className = 'uv-cell l' + lvl;
+      grid.appendChild(cell);
+    }
+  }
+
+  // ---- hero: faint ASCII field + a pixel shepherd & flock of little Claudes ----
+  (function heroScene(){
+    var ha = document.getElementById('heroAscii');
+    if (ha){
+      var COLS = 54, ROWS = 13, gl = ['·','·','+','·','*','·'], out = [];
+      for (var y = 0; y < ROWS; y++){ var line = '';
+        for (var x = 0; x < COLS; x++){ line += ((x*9281 + y*613) % 31) < 3 ? gl[(x+y) % gl.length] : ' '; }
+        out.push(line);
+      }
+      ha.textContent = out.join('\n');
+    }
+    var stage = document.getElementById('pastureScene'); if (!stage) return;
+    function sprite(rows, pal, style){
+      var w = rows[0].length, h = rows.length, r = '';
+      for (var y = 0; y < h; y++) for (var x = 0; x < rows[y].length; x++){
+        var c = rows[y][x]; if (c === '.') continue; var col = pal[c]; if (!col) continue;
+        r += '<rect x="'+x+'" y="'+y+'" width="1" height="1" fill="'+col+'"/>';
+      }
+      return '<svg viewBox="0 0 '+w+' '+h+'" shape-rendering="crispEdges" style="'+style+'">'+r+'</svg>';
+    }
+    var CLAUDE = [".....s.....","...bbbbb...","..bbbbbbb..",".bbbbbbbbb.",".bbbbbbbbb.",
+                  ".bbddbddbb.",".bbddbddbb.",".bbbbbbbbb.",".bbbbbbbbb.","..bbbbbbb..","..bbbbbbb..","...bb.bb..."];
+    var SHEP = ["..........kk.",".........k..k",".........k...","...hhhhh.k...","..hhhhhhhk...",
+                "...sssss.k...","...sssss.k...","..rrrrrrrk...","..rrrrrrr.k..",".rrrrrrrrr.k.",
+                ".rrrrrrrrr...","rrrrrrrrrrr..","rrrrrrrrrrr..",".rrrrrrrrr...",".rrrrrrrrr...","..rr...rr...."];
+    var html = sprite(SHEP, {h:'#5a4a7a', s:'#e6d3b3', r:'#7c5cf0', k:'#b08d57'}, 'left:2%;bottom:15px;width:40px;animation:none;');
+    // [colour, left%, bottom-lift, bob-delay]
+    var flock = [['#a78bfa',31,2,0],['#e0a44a',44,8,.5],['#37c98b',55,0,1.1],['#fb6f92',66,9,.3],['#7cc7ff',77,4,.8],['#a78bfa',88,7,1.5]];
+    flock.forEach(function(f){
+      html += sprite(CLAUDE, {b:f[0], d:'#171320', s:'#f0ecf8'}, 'left:'+f[1]+'%;bottom:'+(14+f[2])+'px;width:24px;animation-delay:'+f[3]+'s;');
+    });
+    stage.innerHTML = html;
+    var g = document.getElementById('pastureGround');
+    if (g){ g.textContent = "▁▁▂▁▁▁▂▁▃▁▂▁▁▂▁▁▁▂▁▁▃▁▂▁▁▂▁▁▁▂▁▁▂▁▃▁▂▁▁▂▁▁▁▂▁▁▂▁▃▁▂▁"; }
+    // tiny pixel Claude in the "Built for Claude Code" badge
+    var ic = document.getElementById('ccIc');
+    if (ic){
+      var icPal = {b:'#a78bfa', d:'#171320', s:'#c4b1ff'}, s2 = '';
+      for (var yy=0;yy<CLAUDE.length;yy++) for (var xx=0;xx<CLAUDE[yy].length;xx++){
+        var cc = CLAUDE[yy][xx]; if (cc === '.' || !icPal[cc]) continue;
+        s2 += '<rect x="'+xx+'" y="'+yy+'" width="1" height="1" fill="'+icPal[cc]+'"/>';
+      }
+      ic.setAttribute('viewBox','0 0 11 12'); ic.setAttribute('shape-rendering','crispEdges'); ic.innerHTML = s2;
+    }
+  })();
+
+  /* ---- live version + download links, from the GitHub releases API ----
+     The markup ships with the version that was current at build time, so the page
+     is correct with JS off or if the API is unreachable/rate-limited (60 req/h per
+     IP unauthenticated). On success we rewrite the three version labels and point
+     each button straight at its installer instead of the releases index. */
+  (function(){
+    var REPO = 'respeak-io/episko';
+    var FALLBACK = 'https://github.com/' + REPO + '/releases/latest';
+
+    function paint(tag, assets){
+      var ver = /^v/.test(tag) ? tag : 'v' + tag;
+      [].forEach.call(document.querySelectorAll('[data-ver]'), function(el){ el.textContent = ver; });
+
+      // pick by extension; the Tauri bundle names carry the bare version (0.10.1)
+      var find = function(re){ for (var i=0;i<assets.length;i++) if (re.test(assets[i].name)) return assets[i].browser_download_url; return null; };
+      var mac = find(/\.dmg$/i);
+      var win = find(/\.msi$/i) || find(/-setup\.exe$/i);
+
+      var a;
+      if (mac && (a = document.getElementById('dlMac'))) a.href = mac;
+      if (win && (a = document.getElementById('dlWin'))) {
+        a.href = win;
+        var sub = document.getElementById('dlWinSub');
+        if (sub && /\.exe$/i.test(win)) sub.textContent = '.exe · Windows 10 & 11';
+      }
+    }
+
+    try {
+      fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' }
+      })
+      .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(d){ if (d && d.tag_name) paint(d.tag_name, d.assets || []); })
+      .catch(function(){ /* keep the baked-in version and the /releases/latest links */ });
+    } catch (e) {}
+  })();
+})();
+</script>
+</body>
+</html>
