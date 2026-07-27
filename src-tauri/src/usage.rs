@@ -11,8 +11,11 @@
 //   writes none. `read_transcript` mirrors one read-only, decoding the cwd -> <enc>
 //   path scheme.
 // - **The token ledger.** `scan_usage` folds every project's `.jsonl` into per-day
-//   totals by model family, deduplicating on message id so a resumed transcript
-//   isn't counted twice.
+//   totals by model family. It does **not** deduplicate messages — every line with a
+//   `message.usage` record is summed once, which is correct because `--resume`
+//   appends to the *same* transcript rather than replaying it. What is deduplicated
+//   is the *session count*: `file_days` counts one file once per day it touched,
+//   however many messages it holds.
 //
 // **Every reader here takes its base directory as an argument.** `~/.claude` is
 // resolved once, by `claude_dir()`, and only the three `#[tauri::command]` wrappers
