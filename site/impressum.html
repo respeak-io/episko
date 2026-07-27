@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>episko — imprint &amp; privacy</title>
+<meta name="description" content="Legal notice (Impressum) and privacy information for episko, an open-source project by Respeak GmbH." />
+<meta name="robots" content="index, follow" />
+<link rel="canonical" href="https://episko.dev/impressum" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta name="theme-color" content="#100e15" />
+<meta property="og:title" content="episko — imprint &amp; privacy" />
+<meta property="og:description" content="Legal notice (Impressum) and privacy information for episko, an open-source project by Respeak GmbH." />
+<meta property="og:url" content="https://episko.dev/impressum" />
+<meta property="og:image" content="https://episko.dev/og.png" />
+<style>
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/jetbrains-mono-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/jetbrains-mono-greek.woff2) format('woff2');unicode-range:U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:400 700;font-display:swap;src:url(fonts/space-grotesk-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+
+:root{
+  --bg:#100e15; --panel:#16141d; --surface:#1b1824;
+  --hair:rgba(255,255,255,.07); --hair-strong:rgba(255,255,255,.12);
+  --text:#efecf5; --muted:#a49eb4; --muted-2:#736d84;
+  --accent:#a78bfa;
+  --accent-line:color-mix(in srgb, var(--accent) 34%, transparent);
+  --accent-glow:color-mix(in srgb, var(--accent) 24%, transparent);
+  --accent-ink:color-mix(in srgb, var(--accent) 86%, white 14%);
+  --font-ui:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --font-display:"Space Grotesk",var(--font-ui);
+  color-scheme:dark;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+a{color:inherit;text-decoration:none;}
+a.lnk{color:var(--accent-ink);border-bottom:1px solid var(--accent-line);}
+a.lnk:hover{border-bottom-color:var(--accent);}
+
+.nav{position:sticky;top:0;z-index:20;height:56px;display:flex;align-items:center;gap:11px;
+  padding:0 clamp(16px,4vw,40px);backdrop-filter:blur(14px);
+  background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--hair);}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);font-weight:600;letter-spacing:-.01em;font-size:16px;}
+.logo{width:19px;height:19px;border-radius:6px;background:conic-gradient(from 210deg,#a78bfa,#38bdf8,#fb923c,#a78bfa);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.2), 0 0 14px -2px var(--accent-glow);}
+.byline{font-family:var(--font-mono);font-size:11px;color:var(--muted-2);padding-left:11px;margin-left:2px;border-left:1px solid var(--hair);}
+.byline b{color:var(--muted);font-weight:500;}
+.byline:hover b{color:var(--text);}
+.back{margin-left:auto;font-size:13px;color:var(--muted);}
+.back:hover{color:var(--text);}
+
+main{max-width:760px;margin:0 auto;padding:clamp(44px,8vh,84px) clamp(16px,5vw,40px) 90px;}
+h1{font-family:var(--font-display);font-weight:600;letter-spacing:-.03em;font-size:clamp(32px,5.5vw,48px);line-height:1.05;margin:0 0 10px;}
+.eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:14px;}
+.sub{color:var(--muted);margin:0 0 46px;font-size:16.5px;}
+h2{font-family:var(--font-display);font-weight:600;letter-spacing:-.015em;font-size:24px;margin:44px 0 4px;scroll-margin-top:76px;}
+h2 .de{font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-2);letter-spacing:0;margin-left:9px;text-transform:none;}
+h3{font-family:var(--font-display);font-weight:600;font-size:15px;margin:26px 0 6px;color:var(--text);}
+p{margin:12px 0;color:var(--muted);}
+p.tight{margin:4px 0;}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:20px 22px;margin:18px 0;}
+.card .k{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-2);margin-bottom:3px;}
+.card address{font-style:normal;color:var(--text);line-height:1.65;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:22px;}
+.mono{font-family:var(--font-mono);font-size:13px;color:var(--text);}
+ul{margin:12px 0;padding-left:20px;color:var(--muted);}
+li{margin:7px 0;}
+li b{color:var(--text);font-weight:600;}
+.note{border-left:2px solid var(--accent-line);padding:2px 0 2px 16px;margin:22px 0;color:var(--muted);font-size:14.5px;}
+.rule{height:1px;background:var(--hair);border:0;margin:52px 0 0;}
+footer{max-width:760px;margin:0 auto;padding:24px clamp(16px,5vw,40px) 60px;color:var(--muted-2);font-size:11.5px;line-height:1.6;}
+footer a{border-bottom:1px solid var(--hair-strong);}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="brand" href="/"><span class="logo"></span>episko</a>
+  <a class="byline" href="https://respeak.io" target="_blank" rel="noopener">by <b>Respeak</b></a>
+  <a class="back" href="/">← back to episko</a>
+</nav>
+
+<main>
+  <div class="eyebrow">Legal</div>
+  <h1>Imprint &amp; privacy</h1>
+  <p class="sub">episko is an open-source project published by Respeak GmbH. This page carries the information German law requires (§ 5 DDG) and explains what this website does with data — which is close to nothing.</p>
+
+  <h2 id="imprint">Impressum <span class="de">Legal notice · Angaben gemäß § 5 DDG</span></h2>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <div class="k">Anbieter / Provider</div>
+        <address>
+          Respeak GmbH<br />
+          Kaiserstraße 89–93<br />
+          76133 Karlsruhe<br />
+          Germany
+        </address>
+      </div>
+      <div>
+        <div class="k">Kontakt / Contact</div>
+        <p class="tight mono"><a class="lnk" href="mailto:info@respeak.io">info@respeak.io</a></p>
+        <p class="tight mono"><a class="lnk" href="https://respeak.io" target="_blank" rel="noopener">respeak.io</a></p>
+      </div>
+      <div>
+        <div class="k">Vertreten durch / Represented by</div>
+        <p class="tight mono">Geschäftsführer: Dr. Tim Rietz</p>
+      </div>
+      <div>
+        <div class="k">Registereintrag / Companies register</div>
+        <p class="tight mono">Amtsgericht Mannheim, HRB 741830</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV</h3>
+  <p class="mono">Dr. Tim Rietz · Respeak GmbH · Kaiserstraße 89–93 · 76133 Karlsruhe</p>
+
+  <h3>EU-Streitschlichtung / EU dispute resolution</h3>
+  <p>Wir sind nicht bereit und nicht verpflichtet, an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teilzunehmen. <span class="mono">·</span> We are neither willing nor obliged to take part in dispute resolution proceedings before a consumer arbitration board.</p>
+
+  <hr class="rule" />
+
+  <h2 id="privacy">Privacy <span class="de">Datenschutz · Art. 13 GDPR</span></h2>
+
+  <p>This website is a static page. It sets <b style="color:var(--text)">no cookies</b>, runs <b style="color:var(--text)">no analytics</b>, embeds <b style="color:var(--text)">no trackers</b>, and loads <b style="color:var(--text)">no third-party resources</b> — the fonts are served from this domain rather than from Google Fonts, so visiting it sends your data to no one but the host.</p>
+
+  <h3>Hosting and server logs</h3>
+  <p>The site is hosted on <a class="lnk" href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">Cloudflare</a>. As with any web server, delivering a page necessarily processes your IP address, and the host keeps short-lived connection logs to serve the page and to defend against abuse. The legal basis is our legitimate interest in operating a secure, functioning website (Art. 6(1)(f) GDPR). We do not build profiles from it and we do not combine it with anything else.</p>
+
+  <h3>Links that leave this site</h3>
+  <p>Downloads and source links point to <b style="color:var(--text)">GitHub</b>. Once you follow one, GitHub's own privacy policy applies — we have no control over and no insight into what happens there.</p>
+
+  <h3>The episko app itself</h3>
+  <p>The desktop app is a different matter from this website, and the short version is that it keeps to itself: it runs locally, stores its state on your machine, and talks to Claude Code on your own computer. It sends no telemetry to Respeak — there is no server of ours for it to send anything to. Everything it knows about your sessions stays on your disk.</p>
+
+  <h3>Your rights</h3>
+  <p>Under the GDPR you may request access, rectification, erasure, restriction, data portability, and you may object to processing (Art. 15–21 GDPR). Write to <a class="lnk" href="mailto:info@respeak.io">info@respeak.io</a>. You also have the right to lodge a complaint with a supervisory authority — for us that is the <a class="lnk" href="https://www.baden-wuerttemberg.datenschutz.de/" target="_blank" rel="noopener">Landesbeauftragter für den Datenschutz Baden-Württemberg</a>.</p>
+
+  <hr class="rule" />
+
+  <h2 id="licence">Licence &amp; trademarks</h2>
+  <p>episko is free and open-source software, released under the <a class="lnk" href="https://github.com/respeak-io/episko/blob/main/LICENSE" target="_blank" rel="noopener">MIT licence</a>. The source lives at <a class="lnk" href="https://github.com/respeak-io/episko" target="_blank" rel="noopener">github.com/respeak-io/episko</a>. It is provided as-is, without warranty of any kind.</p>
+  <div class="note">episko is an independent project. It is <b style="color:var(--text)">not affiliated with, endorsed, or sponsored by Anthropic</b>. Claude and Claude Code are trademarks of Anthropic, PBC, used here only to describe what episko works with. The pixel illustrations on this site are original artwork and are not Anthropic's marks or mascots.</div>
+</main>
+
+<footer>
+  <a href="/">episko</a> · free and open source under the MIT licence · © 2026 <a href="https://respeak.io" target="_blank" rel="noopener">Respeak GmbH</a>, Karlsruhe
+</footer>
+
+</body>
+</html>
