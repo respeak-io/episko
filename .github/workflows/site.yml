@@ -1,0 +1,103 @@
+name: site
+
+# Deploys the episko.dev marketing site (site/ -> the episko-site Worker) and keeps
+# its baked-in version label in sync with the latest release. Three ways in:
+#
+#   release published  -> stamp the release tag, deploy      (the automated path)
+#   push to main       -> stamp package.json's version, deploy  (site/ content edits)
+#   manual dispatch    -> optional version input, else package.json
+#
+# Always checks out `main`, never the tag: a release deploys whatever the site says
+# *now*, and the commit-back below needs a branch to push to. The app bundles are a
+# separate concern — see release.yml, which this deliberately does not touch.
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "wrangler.jsonc"
+      - "scripts/stamp-site-version.mjs"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.12.0). Blank = use package.json."
+        required: false
+        type: string
+
+# Never two deploys at once; queue rather than cancel, so a release deploy can't be
+# dropped by a content push that lands a second later.
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: write # to commit the stamped site/index.html back to main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      # pnpm has to exist even though this job installs no project dependencies:
+      # wrangler-action detects the package manager from pnpm-lock.yaml and shells
+      # out to it to install wrangler. Version comes from `packageManager` in
+      # package.json, same as ci.yml and release.yml.
+      - uses: pnpm/action-setup@v6
+
+      # Node 22, not the 20 that ci.yml and release.yml build with: wrangler v4
+      # refuses to run on anything older. No cache — nothing here runs
+      # `pnpm install`; the stamp script is node built-ins only, and wrangler is
+      # installed fresh by the action below.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      # No arg on push/dispatch-without-input -> the script falls back to
+      # package.json, which main already carries at the released version.
+      - name: Stamp the version into site/index.html
+        run: node scripts/stamp-site-version.mjs "${{ github.event.release.tag_name || inputs.version }}"
+
+      # Keeps the repo honest: what's deployed is what's committed. [skip ci] stops
+      # this push from re-triggering the workflow through the paths filter above.
+      - name: Commit the stamp if it changed anything
+        run: |
+          if git diff --quiet -- site/index.html; then
+            echo "no change to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "site: stamp the version label [skip ci]" -- site/index.html
+          git push origin main
+
+      # Opt-in, exactly like the Azure signing gate in release.yml: until the token
+      # secret exists this workflow stamps and stops, rather than failing red on
+      # every push. Create one at Cloudflare ▸ My Profile ▸ API Tokens with the
+      # "Edit Cloudflare Workers" template, then add it as CLOUDFLARE_API_TOKEN.
+      - name: Detect the Cloudflare token
+        id: cf
+        run: |
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set — skipping the deploy. The version stamp above was still committed."
+          fi
+
+      # packageManager is stated rather than inferred, and wrangler is major-pinned:
+      # v3 of this action would otherwise be free to install a wrangler old enough to
+      # predate the Workers static-assets config this site is built on.
+      - name: Deploy to Cloudflare
+        if: steps.cf.outputs.enabled == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          packageManager: pnpm
+          wranglerVersion: "4"

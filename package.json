@@ -13,7 +13,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "site:stamp": "node scripts/stamp-site-version.mjs",
+    "site:deploy": "node scripts/stamp-site-version.mjs && wrangler deploy"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
