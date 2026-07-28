@@ -684,7 +684,14 @@ mod tests {
         let claude = resolve_claude();
         // A throwaway directory, and emphatically NOT a real session's: `--session-id`
         // on an existing conversation appends to its transcript.
-        let cwd = scratch_dir();
+        //
+        // Canonicalized, because on macOS `$TMPDIR` is under `/var/folders`, itself a
+        // symlink to `/private/var/folders`. Claude records the *resolved* cwd and
+        // derives the project dir from that, so encoding the symlinked spelling looks
+        // for a directory that will never exist. Resolving it here keeps assertion 4 a
+        // check of Claude's encoding rather than of macOS's symlinks — and matches what
+        // the app passes, since a workdir comes from a real folder the user picked.
+        let cwd = std::fs::canonicalize(scratch_dir()).expect("resolve the scratch dir");
         let sid = throwaway_uuid();
 
         let (app, port) = mock_telemetry_app();
@@ -809,13 +816,18 @@ mod tests {
                 Ok(v) => v,
                 Err(_) => continue, // a record we don't read; not our contract
             };
-            assert!(
-                v.get("timestamp").and_then(|t| t.as_str()).is_some_and(|t| t.len() >= 10),
-                "a transcript record lost its ISO `timestamp`; the daily rollup keys \
-                 every total off `timestamp[..10]`: {line}"
-            );
+            // Only the records the ledger actually buckets are our contract. Claude
+            // also writes bookkeeping rows with no timestamp at all (`last-prompt`,
+            // `ai-title` — which `list_past_sessions` reads for labels, never for a
+            // day), and `parse_usage_line` filters on `"usage"` before it looks for
+            // one, so asserting a timestamp on every line tests Claude's file, not ours.
             let Some(usage) = v.get("message").and_then(|m| m.get("usage")) else { continue };
             saw_usage = true;
+            assert!(
+                v.get("timestamp").and_then(|t| t.as_str()).is_some_and(|t| t.len() >= 10),
+                "a usage record lost its ISO `timestamp`; the daily rollup keys every \
+                 total off `timestamp[..10]`, and drops a record without one: {line}"
+            );
             for field in ["input_tokens", "output_tokens"] {
                 assert!(
                     usage.get(field).and_then(|x| x.as_u64()).is_some(),
