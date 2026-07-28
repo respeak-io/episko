@@ -16,7 +16,7 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
 - `pnpm test` — 368 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 80 tests on macOS, 78 on
+- `cargo check --locked` and `cargo test --locked` — 82 tests on macOS, 79 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 

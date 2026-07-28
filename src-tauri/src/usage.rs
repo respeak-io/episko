@@ -44,10 +44,44 @@ pub(crate) struct TranscriptMsg {
     text: String,
 }
 
+/// Windows `canonicalize` returns the *verbatim* form — `\\?\C:\Work` — which encodes
+/// to a different directory than the `C:\Work` Claude records, so the prefix has to
+/// come back off. Split out from `physical_cwd` because it is the half that can be
+/// tested on every OS: the other half needs a real symlink on disk.
+fn strip_verbatim(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        p.to_string()
+    }
+}
+
+/// The *physical* spelling of `cwd` — the one Claude will have recorded.
+///
+/// This is not Claude being clever: a process that `chdir`s through a symlink still
+/// reports the resolved path from `getcwd()`, so a session launched in `/tmp/x` (on
+/// macOS a symlink to `/private/tmp/x`) writes its transcript under the
+/// `-private-tmp-x` encoding and under no other. Encoding the spelling the *user*
+/// picked would look in a directory that never exists, and the caller would read that
+/// as "this project has no past sessions" rather than as a failure.
+///
+/// Falls back to the input when the path won't resolve. A workdir that has been
+/// deleted is a real case here (worktrees go away), and a best-effort encoding is
+/// worth more to both callers than an error neither can act on.
+fn physical_cwd(cwd: &str) -> String {
+    match std::fs::canonicalize(cwd) {
+        Ok(p) => strip_verbatim(&p.to_string_lossy()),
+        Err(_) => cwd.to_string(),
+    }
+}
+
 /// Claude stores a project's transcripts under `<base>/projects/<enc>/`, where
-/// `<enc>` is the cwd with every non-ASCII-alphanumeric char replaced by `-`.
+/// `<enc>` is the **physical** cwd with every non-ASCII-alphanumeric char replaced
+/// by `-`.
 fn project_transcript_dir(base: &Path, cwd: &str) -> PathBuf {
-    let enc: String = cwd
+    let enc: String = physical_cwd(cwd)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
@@ -613,6 +647,45 @@ mod tests {
             base.join("projects").join("-a-b--git--ber")
         );
         assert_eq!(project_transcript_dir(base, ""), base.join("projects").join(""));
+    }
+
+    /// The verbatim prefix Windows' `canonicalize` adds, which must not reach the
+    /// encoder. Pure string work, so it is checked on every OS rather than only on the
+    /// leg that can produce one — this is the half of the symlink fix that a macOS
+    /// developer would otherwise never run.
+    #[test]
+    fn verbatim_prefixes_are_stripped_before_encoding() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Work\Respeak"), r"C:\Work\Respeak");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\proj"), r"\\srv\share\proj");
+        // Anything already in its normal form is returned untouched, on either OS.
+        assert_eq!(strip_verbatim(r"C:\Work\Respeak"), r"C:\Work\Respeak");
+        assert_eq!(strip_verbatim("/Users/tim/dev"), "/Users/tim/dev");
+    }
+
+    /// A project reached through a symlink must resolve to the same transcript folder
+    /// as the real path, because that is the only one Claude ever writes: `getcwd()`
+    /// reports the physical path however the process got there. Before this, the list
+    /// of past sessions for such a project was silently empty.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_workdir_finds_the_real_project_dir() {
+        let root = scratch_dir();
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let base = Path::new("/base");
+        let via_link = project_transcript_dir(base, &link.to_string_lossy());
+        assert_eq!(
+            via_link,
+            project_transcript_dir(base, &real.to_string_lossy()),
+            "the two spellings of one directory must encode identically"
+        );
+        // And specifically to the real one — an assertion the line above would still
+        // satisfy if both sides were wrong in the same way.
+        let name = via_link.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with("-real"), "encoded the link's own name: {name}");
     }
 
     /// The restorable-sessions list: newest first, labelled by the fallback chain, and
