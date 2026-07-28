@@ -1,10 +1,13 @@
 name: ci
 
-# Compile gate for every PR and every push to dev or main. There is no runtime test
-# suite (verification is running the app — see CLAUDE.md), so this proves the far
-# cheaper thing: the frontend typechecks and both supported OSes still build. It's
-# what catches "someone broke the Windows build" (or the macOS one) before it merges,
-# since the cfg-gated platform code only compiles on its own OS.
+# Compile-and-test gate for every PR and every push to dev or main. The frontend
+# typechecks, both supported OSes still build, and both test suites run. It's what
+# catches "someone broke the Windows build" (or the macOS one) before it merges,
+# since the cfg-gated platform code only compiles on its own OS — and the suites run
+# on both platforms for the same reason: half the Rust tests are cfg-gated too.
+#
+# The OS edge (PTY, windows, tray) still has no automated net and is verified by
+# running the app — see CLAUDE.md.
 #
 # Work flows dev -> main, so dev is where the churn is and where a break must surface
 # first. main is kept too: it re-gates the dev -> main PR and covers a direct push.
@@ -29,10 +32,14 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
 
+      # Read from .nvmrc so CI and a local `nvm use` cannot drift. That drift is not
+      # hypothetical: this workflow pinned Node 20 while dev machines ran newer, and
+      # `globalThis.navigator` (Node 21+) made two vitest suites pass locally and die
+      # here. One file is now the single source of truth for both.
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Set up Rust
@@ -55,12 +62,28 @@ jobs:
       - name: Build frontend (tsc + vite)
         run: pnpm build
 
+      - name: Frontend tests (vitest)
+        run: pnpm test
+
       - name: Cargo check
         working-directory: ./src-tauri
         run: cargo check --locked
 
-      # Lint signal only — does not fail the build on warnings, so a pre-existing
-      # style nit can't block an unrelated PR.
-      - name: Clippy (non-blocking)
+      # Plain `cargo test` skips `#[ignore]`d tests, which is what we want: those
+      # are reserved for checks that need `claude` on PATH plus auth and tokens, so
+      # they belong to the release checklist (`cargo test -- --ignored`), not a PR gate.
+      - name: Cargo test
         working-directory: ./src-tauri
-        run: cargo clippy --all-targets || true
+        run: cargo test --locked
+
+      # A real gate as of Phase 3 — a linter that can't fail is decoration. Note
+      # `-D warnings` is what does the gating: plain `cargo clippy` exits 0 with
+      # warnings, so dropping the old `|| true` alone would have changed nothing.
+      #
+      # This runs on both legs deliberately. Clippy only lints the arms that compile
+      # for its own target, so the Windows leg never sees the `cfg(not(windows))` /
+      # `cfg(target_os = "macos")` code and vice versa — the same reason the build and
+      # test steps above are a matrix.
+      - name: Clippy
+        working-directory: ./src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings

@@ -1,5 +1,22 @@
 # cc-launcher — Phase-0 spike
 
+> ## ⚠️ Historical document — do not use as a reference
+>
+> **This describes the original Phase-0 spike, not Episko as it exists today.** It
+> is kept unedited as the record of where the project started and what the two
+> risky bets were; everything below was true of a single-session, observe-only
+> prototype called `cc-launcher`, in one `main.ts` and one `lib.rs`.
+>
+> Since then the app has become multi-session, the permission hook is **answerable**
+> rather than observe-only, and both monoliths have been split (34 frontend modules,
+> 10 backend). Tasks, run-on-stop, external and dormant sessions, worktree launches,
+> the tray, self-update and a Windows port are all later than this document and are
+> not in it.
+>
+> **For how Episko works today, read [`CLAUDE.md`](./CLAUDE.md); for what it does,
+> read [`README.md`](./README.md).** Do not update this file to match the code — a
+> corrected spike record is worth nothing, and the drift is the point.
+
 A throwaway spike proving the two risky pieces of a cross-platform desktop
 launcher/manager for multiple Claude Code sessions:
 
