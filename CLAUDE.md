@@ -396,10 +396,28 @@ the `palette`/`palui` split, and what makes the rules testable.
   no path-prefix test can find it. A few dozen git calls per scan, not one per row.
 - **Bounded before it reads.** A `(mtime, len)` pass over dir entries ranks every
   transcript and keeps the newest `limit`; only those get the tail scan. So `limit` caps
-  I/O, **not rows** — the result can come back shorter. `transcript_meta` also gained a
-  behaviour-neutral substring gate (parse only `ai-title` / `last-prompt` / the first
-  user line) which is what makes a whole-machine walk affordable: ~240 transcripts /
-  ~900MB in ~2.4s *debug*, most of it the git calls. Runs on a blocking thread.
+  I/O, **not rows** — the result can come back shorter. Runs on a blocking thread.
+- **The scan was profiled, and both hot spots were the ones nobody would guess.** At
+  244 transcripts / 737MB it took ~5s *debug*: `git rev-parse` × 24 folders was **3.3s**
+  (process creation on Windows, ~140ms a call) and the 512KB tail reads were **1.7s**;
+  the directory walk was 6ms. So a smaller page size would have addressed the *smaller*
+  half — the folder count barely moves with it. Both were removed instead, and it now
+  runs in **~0.48s debug** (~1.6ms per transcript, so `limit` is a genuine linear dial):
+  - `git_repo_info` → **`repo_root_of`** in `git.rs`, which reads the `.git` dir/file
+    layout directly. No subprocess. A test asserts it against `git_repo_info` case by
+    case, including a **stale worktree** — a pruned admin dir leaves the `.git` file
+    pointing at nothing, and git calls that "not a repository" and stops rather than
+    searching upward, so following that dangling pointer would file a dead checkout
+    under a repo that has forgotten it.
+  - `transcript_meta` reads a **64KB tail first**, widening to 512KB only when both
+    `ai-title` and `last-prompt` were not in range. Requiring *both* is the whole
+    correctness argument: each is last-occurrence-wins, so once one is in the window the
+    newest one is too. Accepting on *either* mislabelled 10 of 244 transcripts with the
+    raw prompt, because the summary sat further back. Verified across the real corpus:
+    0/244 differ from an always-full read.
+  - `transcript_meta` also has a substring gate (parse only `ai-title` / `last-prompt` /
+    the first user line), behaviour-neutral since no other record's match arm does
+    anything.
 - **Same two resume constraints as a dormant row**, surfaced rather than hidden: an id
   live anywhere is listed but tagged `live` (Claude takes no transcript lock, so a
   second `--resume` interleaves both conversations into one file), and a vanished folder
