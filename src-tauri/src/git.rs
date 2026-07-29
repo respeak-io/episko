@@ -1030,7 +1030,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::scratch_dir;
+    use crate::testutil::{git, scratch_dir};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -1047,12 +1047,6 @@ mod tests {
             .join(repo.file_name().unwrap())
     }
 
-    /// Run a git command in `dir`, asserting success. Identity/signing are passed via
-    /// `-c` so the test doesn't depend on (or touch) the developer's global gitconfig.
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().expect("failed to spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
-    }
 
     #[test]
     fn git_diff_reports_tracked_and_untracked_changes() {

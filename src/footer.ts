@@ -107,6 +107,7 @@ const SHORTCUTS: { label: string; chords: string[][] }[] = [
   { label: "Command palette", chords: [["⌘", "K"]] },
   { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
   { label: "Open a terminal here", chords: [["⌘", "T"]] },
+  { label: "Session history", chords: [["⌘", "⇧", "H"]] },
   { label: `Reveal this folder in ${FILE_MANAGER}`, chords: [["⌘", "⏎"]] },
   { label: "Toggle sidebar", chords: [["⌘", "B"]] },
   { label: "Toggle inspector", chords: [["⌘", "I"]] },

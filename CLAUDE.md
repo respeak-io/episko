@@ -237,7 +237,7 @@ Four smaller P4 affordances, all in the frontend:
 | `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
 | `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
 | `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 819 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `usage.rs` | 1,247 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
 | `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
 | `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
 | `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
@@ -258,13 +258,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 34 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 36 modules
 
-**No framework, and no longer one file.** ~7,200 lines across 34 modules; `main.ts` is 642 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~7,800 lines across 36 modules; `main.ts` is 668 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 368 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (ten — no DOM, no Tauri, no render imports; these are what the 385 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -277,16 +277,17 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
+| `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `historyui`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 34 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 36 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -364,6 +365,52 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 - **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
+
+## History (`◷ History`, ⌘⇧H, `list_session_history`)
+
+The roster above answers "what was open when Episko quit". History answers "reopen the
+one I closed" — which the roster *can't*, by design: `closeSession` drops an entry (an
+explicit close means done) and it only ever knew Episko's own launches. So History
+reads the store that forgets nothing, walking all of `~/.claude/projects/*/*.jsonl`.
+It is therefore a **superset** of the dormant rows, sessions started in a plain
+terminal or an IDE included. `history.ts` owns the rules, `historyui.ts` the dialog —
+the `palette`/`palui` split, and what makes the rules testable.
+
+- **The cwd comes from inside the file, never the folder name.** `project_transcript_dir`
+  encodes a cwd into `<enc>` by mapping every non-alphanumeric char to `-`, and that is
+  lossy — the inverse does not exist. So `transcript_origin` reads the `cwd` (and
+  `gitBranch`) off the first user record, from a bounded *head* rather than the tail
+  `transcript_meta` needs. A transcript with no `cwd` is **dropped**: `--resume` must
+  run in the original directory, so a row without one could only fail.
+- **Then `norm_path`.** Claude records the path as the user typed it (`e:\proj` and
+  `E:\proj` for one folder) while everything History compares it against —
+  `git_repo_info`'s root, a live session's `workdir` — is normalised. Skipping this made
+  a repo's own checkout unequal to its own `repo_root`, so **135 of 219 rows read as
+  worktrees**; after, 32. Safe for the transcript lookup: identity off Windows, and on
+  Windows only the drive letter and separators, which the case-insensitive filesystem
+  and the `<enc>` scheme both absorb.
+- **Each row carries its `repo_root`** (`git_repo_info`, memoised per unique cwd,
+  skipped for folders that are gone) — the same enrichment `list_external_sessions`
+  does. It is what lets `histProject()` graft a row back onto the sidebar's grouping,
+  and it is load-bearing for the ◧ scope filter: a worktree lives *beside* its repo, so
+  no path-prefix test can find it. A few dozen git calls per scan, not one per row.
+- **Bounded before it reads.** A `(mtime, len)` pass over dir entries ranks every
+  transcript and keeps the newest `limit`; only those get the tail scan. So `limit` caps
+  I/O, **not rows** — the result can come back shorter. `transcript_meta` also gained a
+  behaviour-neutral substring gate (parse only `ai-title` / `last-prompt` / the first
+  user line) which is what makes a whole-machine walk affordable: ~240 transcripts /
+  ~900MB in ~2.4s *debug*, most of it the git calls. Runs on a blocking thread.
+- **Same two resume constraints as a dormant row**, surfaced rather than hidden: an id
+  live anywhere is listed but tagged `live` (Claude takes no transcript lock, so a
+  second `--resume` interleaves both conversations into one file), and a vanished folder
+  is tagged `no folder` instead of dropped — a deleted worktree still reads.
+- **Two doors, one dialog — the difference is only the scope it opens in.** `◷ History`
+  in the stage header opens *scoped*, because everything beside it (❯ Terminal, ▶ Run,
+  ＋ Session) acts on the project on screen; a global button among them would read as
+  one more of those, and `syncStageButtons` greys it with them. The whole-machine view
+  is the `◷` icon in the top bar, with the other app-wide controls.
+- The dialog reuses `#wtDlg`'s `.wt-*` skin wholesale (head / query / list+detail / foot)
+  and the mirror's `.tvmsg` markup for its inline preview.
 
 ## Notes on scope & doc drift
 

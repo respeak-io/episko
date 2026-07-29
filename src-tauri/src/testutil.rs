@@ -8,10 +8,23 @@
 //
 // Compiled only under `cfg(test)`; `lib.rs` declares it as `#[cfg(test)] mod testutil;`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Run a git command in `dir`, asserting success. Identity/signing are passed via
+/// `-c` so the test doesn't depend on (or touch) the developer's global gitconfig.
+///
+/// It lived in `git.rs`'s test mod while that was its only owner. `usage.rs` now needs
+/// a real repo too — a History row's `repo_root` is resolved by `git_repo_info`, and a
+/// fixture that can't be a repo can't exercise it — which makes this exactly the
+/// "shared by more than one module" case this file exists for.
+pub(crate) fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git").current_dir(dir).args(args).output().expect("failed to spawn git");
+    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+}
 
 /// A fresh, empty scratch directory under the OS temp dir. No randomness (pid +
 /// an atomic counter keep it unique even under cargo's parallel test threads).
