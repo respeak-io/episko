@@ -198,3 +198,12 @@ cannot pin a release and "always in the newest one" is the equivalent.
       the one whose failure is silently permanent for everyone already installed.
 - [ ] On Windows, SmartScreen warns but **More info → Run anyway** works. On macOS the
       quarantine steps in the release body clear it.
+- [ ] **episko.dev shows the new version.** `site.yml` deploys it, chained off
+      `release.yml` finishing — *not* off the release being published, because
+      tauri-action creates that with `GITHUB_TOKEN` and GitHub will not start a
+      workflow from an event that token raised. It fired for none of v0.10.0 … v0.11.1
+      for exactly that reason, so if the chain ever goes quiet again, the fallback is
+      `gh workflow run site.yml -f version=<x.y.z>`. The label the page *fetches* comes
+      from the releases API at runtime, so a stale deploy only shows with JS off or
+      when that unauthenticated API rate-limits — check the served HTML, not the
+      rendered page: `curl -s https://episko.dev | grep -o 'data-ver>v[0-9.]*'`.

@@ -1,16 +1,33 @@
 name: site
 
 # Deploys the episko.dev marketing site (site/ -> the episko-site Worker) and keeps
-# its baked-in version label in sync with the latest release. Three ways in:
+# its baked-in version label in sync with the latest release. Four ways in:
 #
-#   release published  -> stamp the release tag, deploy      (the automated path)
-#   push to main       -> stamp package.json's version, deploy  (site/ content edits)
-#   manual dispatch    -> optional version input, else package.json
+#   release.yml finished -> stamp its tag, deploy            (the automated path)
+#   release published    -> stamp the release tag, deploy    (a hand-published one)
+#   push to main         -> stamp package.json's version, deploy  (site/ content edits)
+#   manual dispatch      -> optional version input, else package.json
+#
+# **Why the automated path chains off the workflow instead of the release.** The
+# release is created by tauri-action using GITHUB_TOKEN, and GitHub will not start a
+# workflow run from an event that token raised — so `release: [published]` never
+# fires for our own releases. It fired for none of v0.10.0 … v0.11.1, and v0.11.1
+# had to be deployed by hand. `workflow_run` is the documented exemption: it keys off
+# a *run completing*, whatever token drove it. `release: [published]` stays anyway,
+# for a release published by a human from the UI, which workflow_run would not see.
+# Both firing for one release is harmless — the concurrency group below serialises
+# them, and the second finds nothing to stamp.
+#
+# For a tag push, `workflow_run.head_branch` is the tag name (`v0.11.1`), which is
+# exactly what the stamp script wants; it strips the leading `v` itself.
 #
 # Always checks out `main`, never the tag: a release deploys whatever the site says
 # *now*, and the commit-back below needs a branch to push to. The app bundles are a
 # separate concern — see release.yml, which this deliberately does not touch.
 on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
   release:
     types: [published]
   push:
@@ -23,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to stamp (e.g. 0.12.0). Blank = use package.json."
+        description: "Version to stamp (e.g. 0.11.2). Blank = use package.json."
         required: false
         type: string
 
@@ -39,6 +56,10 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # `workflow_run` fires on *completed*, which includes a failed or cancelled build.
+    # Deploying then would advertise a version whose assets do not exist. Every other
+    # trigger passes straight through.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -59,10 +80,12 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
-      # No arg on push/dispatch-without-input -> the script falls back to
-      # package.json, which main already carries at the released version.
+      # One expression, in trigger order: a hand-published release's tag, then the tag
+      # release.yml built, then a dispatch input. All three are empty on a push (and on
+      # a dispatch with a blank input), leaving the script its package.json fallback —
+      # main already carries the released version by then.
       - name: Stamp the version into site/index.html
-        run: node scripts/stamp-site-version.mjs "${{ github.event.release.tag_name || inputs.version }}"
+        run: node scripts/stamp-site-version.mjs "${{ github.event.release.tag_name || github.event.workflow_run.head_branch || inputs.version }}"
 
       # Keeps the repo honest: what's deployed is what's committed. [skip ci] stops
       # this push from re-triggering the workflow through the paths filter above.
