@@ -27,7 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::repo_root_of;
-use crate::platform::{home_dir, norm_path};
+use crate::platform::{home_dir, norm_path, physical_cwd};
 
 /// The `~/.claude` Episko reads. None when there is no home directory at all, which
 /// every caller reports rather than silently returning nothing.
@@ -43,39 +43,6 @@ fn claude_dir() -> Option<PathBuf> {
 pub(crate) struct TranscriptMsg {
     role: String,
     text: String,
-}
-
-/// Windows `canonicalize` returns the *verbatim* form — `\\?\C:\Work` — which encodes
-/// to a different directory than the `C:\Work` Claude records, so the prefix has to
-/// come back off. Split out from `physical_cwd` because it is the half that can be
-/// tested on every OS: the other half needs a real symlink on disk.
-fn strip_verbatim(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else {
-        p.to_string()
-    }
-}
-
-/// The *physical* spelling of `cwd` — the one Claude will have recorded.
-///
-/// This is not Claude being clever: a process that `chdir`s through a symlink still
-/// reports the resolved path from `getcwd()`, so a session launched in `/tmp/x` (on
-/// macOS a symlink to `/private/tmp/x`) writes its transcript under the
-/// `-private-tmp-x` encoding and under no other. Encoding the spelling the *user*
-/// picked would look in a directory that never exists, and the caller would read that
-/// as "this project has no past sessions" rather than as a failure.
-///
-/// Falls back to the input when the path won't resolve. A workdir that has been
-/// deleted is a real case here (worktrees go away), and a best-effort encoding is
-/// worth more to both callers than an error neither can act on.
-fn physical_cwd(cwd: &str) -> String {
-    match std::fs::canonicalize(cwd) {
-        Ok(p) => strip_verbatim(&p.to_string_lossy()),
-        Err(_) => cwd.to_string(),
-    }
 }
 
 /// Claude stores a project's transcripts under `<base>/projects/<enc>/`, where
@@ -401,7 +368,7 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
         let cwd = norm_path(&cwd);
         let (title, last_prompt) = transcript_meta(&path).unwrap_or_default();
         let project = cwd
-            .rsplit(|c: char| c == '/' || c == '\\')
+            .rsplit(['/', '\\'])
             .find(|s| !s.is_empty())
             .unwrap_or(&cwd)
             .to_string();
@@ -817,23 +784,27 @@ mod tests {
             let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
             f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 - age_secs)).unwrap();
         };
+        // A transcript is newline-delimited JSON, and every brace in these records is a
+        // literal — so the record itself has to be a raw string with `{{`/`}}` escapes,
+        // and the line terminator is appended rather than being part of that string. A
+        // `format!` wrapping a `format!` would read more naturally and is what clippy's
+        // `format_in_format_args` rejects.
         touch(
             "proj-a/newest.jsonl",
-            &format!(
-                "{}\n{}\n",
-                format!(r#"{{"type":"user","cwd":"{live_s}","gitBranch":"dev"}}"#),
-                r#"{"type":"ai-title","aiTitle":"The newest one"}"#
-            ),
+            &(format!(r#"{{"type":"user","cwd":"{live_s}","gitBranch":"dev"}}"#)
+                + "\n"
+                + r#"{"type":"ai-title","aiTitle":"The newest one"}"#
+                + "\n"),
             0,
         );
         touch(
             "proj-b/older.jsonl",
-            &format!("{}\n", format!(r#"{{"type":"user","cwd":"{live_s}","message":{{"content":"an older chat"}}}}"#)),
+            &(format!(r#"{{"type":"user","cwd":"{live_s}","message":{{"content":"an older chat"}}}}"#) + "\n"),
             60,
         );
         touch(
             "proj-a/worktree.jsonl",
-            &format!("{}\n", format!(r#"{{"type":"user","cwd":"{wt_s}","gitBranch":"side"}}"#)),
+            &(format!(r#"{{"type":"user","cwd":"{wt_s}","gitBranch":"side"}}"#) + "\n"),
             90,
         );
         // Deleted worktree: readable, but not resumable — it must still be listed.
@@ -841,7 +812,7 @@ mod tests {
         let missing_s = missing.to_string_lossy().replace('\\', "\\\\");
         touch(
             "proj-a/gone.jsonl",
-            &format!("{}\n", format!(r#"{{"type":"user","cwd":"{missing_s}","gitBranch":"wip"}}"#)),
+            &(format!(r#"{{"type":"user","cwd":"{missing_s}","gitBranch":"wip"}}"#) + "\n"),
             120,
         );
         // Dropped: no cwd to resume into, empty file, and a non-transcript.
@@ -1079,19 +1050,6 @@ mod tests {
             base.join("projects").join("-a-b--git--ber")
         );
         assert_eq!(project_transcript_dir(base, ""), base.join("projects").join(""));
-    }
-
-    /// The verbatim prefix Windows' `canonicalize` adds, which must not reach the
-    /// encoder. Pure string work, so it is checked on every OS rather than only on the
-    /// leg that can produce one — this is the half of the symlink fix that a macOS
-    /// developer would otherwise never run.
-    #[test]
-    fn verbatim_prefixes_are_stripped_before_encoding() {
-        assert_eq!(strip_verbatim(r"\\?\C:\Work\Respeak"), r"C:\Work\Respeak");
-        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\proj"), r"\\srv\share\proj");
-        // Anything already in its normal form is returned untouched, on either OS.
-        assert_eq!(strip_verbatim(r"C:\Work\Respeak"), r"C:\Work\Respeak");
-        assert_eq!(strip_verbatim("/Users/tim/dev"), "/Users/tim/dev");
     }
 
     /// A project reached through a symlink must resolve to the same transcript folder

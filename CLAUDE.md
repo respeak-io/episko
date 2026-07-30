@@ -37,11 +37,22 @@ in the block above before pushing, and match the toolchain CI uses (`stable` for
 **Two verification tricks the platform split makes necessary.** `cargo check` and clippy only compile the arms for *their own* target, so half this code is invisible on any one machine:
 
 - **The cfg flip.** Swap every `cfg(windows)` ↔ `cfg(not(windows))` in `src-tauri/src`, re-run `cargo clippy --all-targets`, then `git checkout -- src-tauri/src` to swap back. This type-checks and lints the other half, and has caught a dead import that was invisible locally and a warning in CI. Two cautions: it does **not** touch `cfg(target_os = …)` or `cfg(unix)`, so `reveal_path`'s unused `exists` is a known false positive; and **commit or stash your real changes first** — the `git checkout` that reverts the flip reverts everything else in that directory too.
-- **The macOS-only arms cannot be linted on Windows at all.** Flipping `target_os` as well fails hard: `rusqlite` is a macOS-only dependency, so the code behind those arms doesn't have its crate. CI's macOS leg is the only check for that code.
+- **The macOS-only arms cannot be linted on Windows at all.** Flipping `target_os` as well fails hard: `rusqlite` is a macOS-only dependency, so the code behind those arms doesn't have its crate. CI's macOS leg is the only check for that code. The same limit applies to the flip in the other direction: run it on macOS and the now-enabled `cfg(windows)` arms want `std::os::windows` and `windows_sys`, which that target doesn't have, so a handful of `E0433`s are the trick reaching its edge rather than a finding.
+
+**A fixture path is not the path the code under test will see.** `env::temp_dir()`
+returns whatever the environment says, and on both CI runners that is a spelling the OS
+itself does not use: macOS `$TMPDIR` is `/var/folders/…`, a symlink to
+`/private/var/folders/…`, and the Windows runner's is the 8.3 short name
+`C:\Users\RUNNER~1\…`. Anything that resolves a path — `git`, which does it before it
+answers, or `physical_cwd`, which exists to match it — then returns the *other* spelling
+and the assertion fails on a difference that has nothing to do with the behaviour under
+test. **`scratch_dir` resolves before it returns** so fixtures compare like with like;
+build a temp path some other way and this is waiting. It is not a CI-only trap — a dev
+Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **368 vitest + cargo (82 on macOS, 79 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **385 vitest + cargo (87 on macOS, 84 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -230,20 +241,20 @@ Four smaller P4 affordances, all in the frontend:
 
 ## Backend (`src-tauri/src/`) — ten modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~7,600. Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 450 lines out of ~8,700. Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
-| `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 1,247 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `lib.rs` | 450 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
+| `git.rs` | 1,683 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
+| `usage.rs` | 1,286 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 743 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
-| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
-| `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `icons.rs` | 184 | project favicon/logo probing |
-| `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
+| `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
 
@@ -362,7 +373,7 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 - **`--resume` and `--session-id` are mutually exclusive** (resume wins), so all three spawners branch either/or on `resume: Option<String>`. `--settings` stays keyed to our launch uuid, so `X-CC-Session` routes telemetry whatever id Claude runs under.
 - **Verified against the real CLI:** resume preserves the id and appends to the *same* transcript; it must run in the **original cwd** (else `No conversation found with session ID: …`); and resuming an **already-live** session silently interleaves both transcripts (Claude takes no lock). Hence `dormantBusy()` gates Resume, and spawners refuse a vanished workdir (deleted worktrees are real).
 - `list_past_sessions(workdir)` supplies labels from Claude's `ai-title` record — **last occurrence wins** — falling back `ai-title` → `last-prompt` → first user message. That layout is internal to Claude Code and documented as unstable across releases, so the chain is load-bearing, not padding. Only the 512KB tail is scanned. Entries with **no transcript are dropped** (a session launched but never prompted writes none).
-- **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one.
+- **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one. Both live in **`platform.rs`**, not here: `repo_root_of` needs the same resolution for the same underlying reason, so the encoder is no longer the only caller.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
 
@@ -408,7 +419,13 @@ the `palette`/`palui` split, and what makes the rules testable.
     case, including a **stale worktree** — a pruned admin dir leaves the `.git` file
     pointing at nothing, and git calls that "not a repository" and stops rather than
     searching upward, so following that dangling pointer would file a dead checkout
-    under a repo that has forgotten it.
+    under a repo that has forgotten it. It walks from the **physical** cwd
+    (`physical_cwd`), and that is load-bearing: `git` resolves symlinks before it
+    answers, so an unresolved walk returns a second spelling of the same root, which
+    then fails the exact string equality the sidebar groups by and stops a repo merging
+    with its own worktrees. Dropping that call also makes the function disagree with
+    *itself* — a linked worktree's root is read out of the `gitdir:` file, which git
+    wrote canonically, so only the `.git`-is-a-directory branches were ever unresolved.
   - `transcript_meta` reads a **64KB tail first**, widening to 512KB only when both
     `ai-title` and `last-prompt` were not in range. Requiring *both* is the whole
     correctness argument: each is last-occurrence-wins, so once one is in the window the

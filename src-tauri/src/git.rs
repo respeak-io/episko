@@ -17,7 +17,7 @@
 
 use tauri::State;
 
-use crate::platform::{augmented_path, norm_path, sys_command};
+use crate::platform::{augmented_path, norm_path, physical_cwd, sys_command};
 use crate::AppState;
 
 /// Create a git worktree with a new (or existing) branch off `repo_dir`.
@@ -663,8 +663,20 @@ pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
 /// - No `.git` at this level → walk up; `None` at the filesystem root.
 ///
 /// `git_repo_info` stays for the callers that also need the branch.
+///
+/// The walk starts from the **physical** `cwd`, and that is load-bearing rather than
+/// tidy. `git` resolves symlinks before it answers (`getcwd()` does it for free), so a
+/// folder reached through one — `/tmp/x` for `/private/tmp/x`, or a Windows 8.3 short
+/// name — makes an unresolved walk return a *different string* for the same repo. The
+/// two spellings then fail the exact string equality the sidebar groups by, and a
+/// repo's main checkout stops merging with its own worktrees. Canonicalising the
+/// starting point fixes every branch below at once, including the one that was already
+/// physical by accident: a linked worktree's answer is read out of the `gitdir:` file,
+/// which `git` wrote canonically, so before this the same function disagreed with
+/// itself depending on which kind of checkout it landed in.
 pub(crate) fn repo_root_of(cwd: &str) -> Option<String> {
-    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(cwd));
+    let phys = physical_cwd(cwd);
+    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
     while let Some(d) = dir {
         let dot = d.join(".git");
         match std::fs::metadata(&dot) {
@@ -1145,6 +1157,52 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(wt_root(&repo));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// One repo reached by two spellings must resolve to ONE root, because the sidebar
+    /// groups projects by exact string equality — two spellings mean a repo that no
+    /// longer merges with its own worktrees.
+    ///
+    /// This is the case the fixtures cannot catch on their own: `scratch_dir` hands back
+    /// a physical path by design, so every other assertion here compares like with like
+    /// and would pass whether or not `repo_root_of` resolves anything. A symlink put
+    /// there on purpose is the only way to hold it to the same answer `git` gives, which
+    /// is what the whole function promises.
+    #[cfg(unix)]
+    #[test]
+    fn repo_root_of_resolves_a_symlinked_path_like_git_does() {
+        let root = scratch_dir();
+        let repo = root.join("real");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        // Committed before anything is asserted: `git_repo_info` asks for the branch in
+        // the same `rev-parse` as the root, and an unborn HEAD fails the whole call, so
+        // a fresh `init` would compare against None rather than against git's answer.
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+
+        let physical = norm_path(&repo.to_string_lossy());
+        assert_eq!(repo_root_of(&link.to_string_lossy()), Some(physical.clone()));
+        assert_eq!(
+            repo_root_of(&link.to_string_lossy()),
+            git_repo_info(&link.to_string_lossy()).0,
+            "still the answer git gives, through a symlink too"
+        );
+        // A subdirectory below the link resolves the same way — the walk starts from the
+        // resolved path, so every level above it is resolved as well.
+        let sub = link.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(repo_root_of(&sub.to_string_lossy()), Some(physical.clone()));
+
+        // The half that was already physical by accident: a linked worktree's root comes
+        // out of the `gitdir:` file, which git wrote canonically. Its answer and the main
+        // checkout's had to become the same string, or a worktree groups on its own.
+        let wt = root.join("side");
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        assert_eq!(repo_root_of(&wt.to_string_lossy()), Some(physical));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
