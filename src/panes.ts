@@ -24,21 +24,25 @@ import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, type DiffStat, type GitActionResult, type Runnable, type Sess,
+  isAgent, type DiffStat, type GitActionResult, type Res, type Runnable, type Sess,
+  type WtHead,
 } from "./types";
+import { gitMutates } from "./gitwatch";
+import { fmtMb, fmtRate } from "./format";
 import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderFoot } from "./footer";
 import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
-import { openWt } from "./worktree";
+import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose } from "./grouping";
 import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
   pastMirrorId, sessions, setActiveId, setDormants, termEngine, termFontSize,
+  worktreesByRepo, wtSig,
 } from "./state";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
@@ -286,22 +290,26 @@ export function setActive(id: string) {
 }
 
 // Poll the inspector's on-demand stats for the active session: the uncommitted
-// working-set diff (git_diffstat) and the claude process's CPU/RAM
+// working-set diff (git_diffstat) and the claude process's disk I/O
 // (session_resources). Both are cheap and only fetched for the visible session.
 export async function refreshSessionStats(s: Sess) {
   if (!isAgent(s) || s.external) return;
   const [git, res] = await Promise.all([
     invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
-    invoke<{ cpu: number; mem_mb: number } | null>("session_resources", { sessionId: s.id }).catch(() => null),
+    invoke<{ read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null>(
+      "session_resources", { sessionId: s.id }).catch(() => null),
   ]);
-  // Only re-render when the *displayed* values change — CPU/RAM jitter every poll,
-  // so comparing rounded values avoids a needless inspector rebuild (which would
+  // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
+  // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
-  const sig = (g: DiffStat | null, r: { cpu: number; memMb: number } | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|" + (r ? `${Math.round(r.cpu)}/${Math.round(r.memMb)}` : "-");
+  const sig = (g: DiffStat | null, r: Res | null) =>
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
+    + (r ? `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}` : "-");
   const before = sig(s.git, s.res);
   s.git = git ?? null;
-  s.res = res ? { cpu: res.cpu, memMb: res.mem_mb } : null;
+  s.res = res
+    ? { readBps: res.read_bps, writeBps: res.write_bps, readMb: res.read_mb, writtenMb: res.written_mb, primed: res.primed }
+    : null;
   if (sig(s.git, s.res) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
@@ -318,13 +326,73 @@ async function refreshBranch(s: Sess): Promise<boolean> {
   s.branch = label;
   return true;
 }
-export async function refreshBranches() {
+async function refreshBranches(): Promise<boolean> {
   const changed = await Promise.all([...sessions.values()].map(refreshBranch));
-  if (changed.some(Boolean)) {
-    renderSidebar();
-    const a = activeId ? sessions.get(activeId) ?? null : null;
-    if (a) renderHeader(a);
-  }
+  return changed.some(Boolean);
+}
+
+// Re-read the set of checkouts for every repo that currently has something running in
+// it. Returns true if any repo's roster moved. Repos with nothing live are pruned: the
+// sidebar is a view of what is in play, and listing the worktrees of a project you
+// aren't working in would be noise rather than information.
+async function refreshWorktrees(): Promise<boolean> {
+  const roots = new Set<string>();
+  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) roots.add(s.colorKey);
+  for (const e of externals) if (e.repo_root) roots.add(e.repo_root);
+  for (const k of [...worktreesByRepo.keys()]) if (!roots.has(k)) worktreesByRepo.delete(k);
+  let changed = false;
+  await Promise.all([...roots].map(async (root) => {
+    const list = await invoke<WtHead[]>("worktree_heads", { dir: root }).catch(() => null);
+    if (!list) return;                                  // not a repo, or it vanished
+    const prev = worktreesByRepo.get(root);
+    if (prev && wtSig(prev) === wtSig(list)) return;    // the common case: nothing moved
+    // Announce only against a roster we already had. The first read of a repo is
+    // entirely "new", and toasting every checkout at launch would be pure noise.
+    if (prev) announceWtDelta(root, prev, list);
+    worktreesByRepo.set(root, list);
+    changed = true;
+  }));
+  return changed;
+}
+
+// Tell the user when a checkout appears or disappears underneath them — the event a
+// terminal would have shown in its scrollback and the sidebar used to swallow.
+function announceWtDelta(root: string, prev: WtHead[], next: WtHead[]) {
+  const was = new Set(prev.filter((w) => w.exists).map((w) => w.path));
+  const now = new Set(next.filter((w) => w.exists).map((w) => w.path));
+  const added = next.filter((w) => w.exists && !was.has(w.path));
+  const gone = prev.filter((w) => w.exists && !now.has(w.path));
+  // One toast, not one per checkout: `git worktree add` in a loop would otherwise fire
+  // a burst where only the last is readable (toast shows a single message at a time),
+  // and an add paired with a removal would hide the add entirely.
+  const parts: string[] = [];
+  if (added.length === 1) parts.push(`⑃ ${added[0].branch} added`);
+  else if (added.length > 1) parts.push(`⑃ ${added.length} worktrees added`);
+  if (gone.length === 1) parts.push(`⑃ ${gone[0].branch} removed`);
+  else if (gone.length > 1) parts.push(`⑃ ${gone.length} worktrees removed`);
+  if (parts.length) toast(`${parts.join(" · ")} — ${basename(root)}`);
+}
+
+// The single place every git-derived label is re-read and repainted. Both the poll and
+// the hook-driven poke land here, so the sidebar, the header's branch chip and the ⑃
+// dialog can never disagree about what is checked out where.
+export async function refreshGitViews() {
+  const [branchMoved, wtMoved] = await Promise.all([refreshBranches(), refreshWorktrees()]);
+  if (!branchMoved && !wtMoved) return;
+  renderAll();                     // sidebar, header, mini-rail, inspector, tray
+  if (wtMoved) void refreshWtDialog();   // …and the ⑃ dialog, if it happens to be open
+}
+
+// A Bash call an agent just made is the earliest warning that HEAD moved or a checkout
+// appeared. `gitMutates` decides only whether it is worth looking; the re-read decides
+// what actually changed. Coalesced, because `git worktree add` immediately followed by
+// a checkout inside it is two hooks describing one change.
+const GIT_POKE_MS = 250;
+let gitPokeT: number | undefined;
+export function noteGitCommand(cmd: unknown) {
+  if (!gitMutates(cmd)) return;
+  clearTimeout(gitPokeT);
+  gitPokeT = window.setTimeout(() => { void refreshGitViews(); }, GIT_POKE_MS);
 }
 
 // A green run shouldn't linger — tasks are far more numerous and shorter-lived

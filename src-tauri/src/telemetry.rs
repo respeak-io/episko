@@ -342,6 +342,7 @@ mod tests {
             port,
             sessions: Mutex::new(HashMap::new()),
             owned_pids: Mutex::new(HashSet::new()),
+            io_samples: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             caffeinate: Mutex::new(None),

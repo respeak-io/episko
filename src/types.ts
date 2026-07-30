@@ -27,6 +27,14 @@ export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number;
 }
+// One checkout of a repo as `worktree_heads` reports it — path, the branch on its
+// HEAD, and whether the directory is still on disk. Read from files rather than from
+// `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
+export interface WtHead { path: string; branch: string; is_main: boolean; exists: boolean }
+// Disk I/O for one session's `claude` process: rates over the gap since the previous
+// sample, plus lifetime totals. `primed` is false on the first reading, when there is
+// nothing to difference against and the rates are 0 by default rather than measured.
+export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
 export interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
@@ -103,7 +111,7 @@ export interface Sess {
   apiErr: ApiErr | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];
-  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: { cpu: number; memMb: number } | null;
+  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: Res | null;
   lastEvent: string; activity: Act[];
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
   // task panes only

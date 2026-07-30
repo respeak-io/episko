@@ -53,6 +53,10 @@ pub(crate) struct AppState {
     /// as "external" — robust to the session id changing under /resume or /clear
     /// (which rewrites `~/.claude/sessions/<pid>.json` with the new id).
     owned_pids: Mutex<HashSet<u32>>,
+    /// Last disk-I/O reading per owned pid: (total_read, total_written, when).
+    /// `session_resources` differences against this to turn the kernel's lifetime byte
+    /// counters into a rate — see there for why sysinfo's own deltas aren't used.
+    io_samples: Mutex<HashMap<u32, (u64, u64, std::time::Instant)>>,
     /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
@@ -239,6 +243,7 @@ pub fn run() {
                 port,
                 sessions: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
+                io_samples: Mutex::new(HashMap::new()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
@@ -398,6 +403,7 @@ pub fn run() {
             platform::set_caffeinate,
             telemetry::resolve_permission,
             git::list_worktrees,
+            git::worktree_heads,
             git::remove_worktree,
             git::git_branch_list,
             git::delete_branch,

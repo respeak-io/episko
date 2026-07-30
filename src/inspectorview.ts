@@ -12,7 +12,7 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { esc, fmtDur, fmtDwell, fmtLatency, sparkline } from "./format";
+import { esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
 import { sessions } from "./state";
@@ -188,10 +188,28 @@ export function timelineHtml(s: Sess): string {
   }).join("");
   return `<div><div class="lab" style="margin-bottom:6px">Activity · by tool</div><div class="tl2">${rows}</div></div>`;
 }
+// Disk I/O for the session's `claude` process. Replaced cpu/mem, which measured the one
+// thing a Claude session is never short of: this is an I/O-bound workload — it reads
+// your tree and writes files — and a runaway agent shows up as sustained throughput
+// long before it shows up as CPU.
+//
+// The bar is log-scaled against a 32 MB/s reference rather than linear: real rates span
+// idle-KB/s to burst-MB/s, and a linear bar would sit at zero for everything short of a
+// pathological write storm, which is precisely the case it needs to show.
+const IO_REF_BPS = 32 * 1024 * 1024;
+function ioPct(bps: number): number {
+  if (bps <= 0) return 0;
+  return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
+}
 export function resHtml(s: Sess): string {
   const r = s.res!;
-  const cpu = Math.min(100, r.cpu), memPct = Math.min(100, (r.memMb / 2048) * 100);
-  return `<div class="res">
-    <div class="rr"><span class="rk">cpu</span><span class="rbar ${mc(cpu)}"><i style="width:${cpu}%"></i></span><span class="rv">${r.cpu.toFixed(0)}%</span></div>
-    <div class="rr"><span class="rk">mem</span><span class="rbar ${mc(memPct)}"><i style="width:${memPct}%"></i></span><span class="rv">${r.memMb.toFixed(0)} MB</span></div></div>`;
+  // Before the second sample there is no window to average over, so the rate is unknown
+  // rather than zero — say so instead of showing a confident "0 B/s".
+  const rd = r.primed ? fmtRate(r.readBps) : "—";
+  const wr = r.primed ? fmtRate(r.writeBps) : "—";
+  const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
+  return `<div class="res" title="Disk I/O for this session's claude process · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written since it started">
+    <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
+    <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
+    <div class="rr rtot"><span class="rk">total</span><span class="rvtot">${fmtMb(r.readMb)} read · ${fmtMb(r.writtenMb)} written</span></div></div>`;
 }

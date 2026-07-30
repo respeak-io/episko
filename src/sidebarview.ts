@@ -11,7 +11,7 @@
 // over ProjGroups and WtClusters already split and sorted, and this only paints
 // them.
 
-import { basename, esc, fmtShort, relTime } from "./format";
+import { basename, esc, fmtShort, relTime, tilde } from "./format";
 import { apiErrText, statusKey, type ExtSession, type Restorable, type Sess } from "./types";
 import {
   accentFor, activeId, externals, extMirrorId, pastMirrorId, sessions, wtGroup,
@@ -61,24 +61,44 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
 export function groupBody(p: ProjGroup): string {
   const flat = () => p.sessions.map((s) => sessionRow(s)).join("") + p.externals.map((e) => extRow(e)).join("");
   if (wtGroup === "subheader") {
-    const cl = clusterByWorktree(p);
+    const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) return cl.map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
-      const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
+      const body = n
+        ? c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("")
+        : wtEmptyRow(p, c);
       return `<div class="wthead"><span class="wtglyph" style="color:${col}">⑃</span>`
         + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n}</span></div>`
+        + `<span class="wtcount">${n || ""}</span></div>`
         + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
     }).join("");
   } else if (wtGroup === "chip") {
-    const cl = clusterByWorktree(p);
+    const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) {
       const byKey = new Map(cl.map((c) => [c.key, c]));
       return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
-        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
+        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("")
+        + cl.filter((c) => !c.sessions.length && !c.externals.length).map((c) => wtEmptyRow(p, c, c)).join("");
     }
   }
   return flat();
+}
+// A checkout that exists on disk with nothing running in it. Rendered rather than
+// dropped for the same reason a blocked task is: a missing row reads as "Episko didn't
+// notice my worktree", which is exactly the gap this path was built to close.
+//
+// Clicking it launches into that checkout while keeping the repo's identity — colorKey
+// stays the repo root, so the new session joins this project group instead of
+// splintering into one of its own. That is why it is `data-wtlaunch` and not the plain
+// `data-launch` a project header uses.
+function wtEmptyRow(p: ProjGroup, c: WtCluster, chip?: WtCluster): string {
+  const chipHtml = chip
+    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+    : "";
+  // `o3` widens the grid for the chip and arms its hover-expand, exactly as sessionRow does.
+  return `<div class="srow wtempty${chip ? " o3" : ""}" data-wtlaunch="${esc(c.key)}" data-key="${esc(p.path)}" data-proj="${esc(p.name)}" data-wtbranch="${esc(c.branch)}" title="No session here yet — start one in ${esc(tilde(c.key))}">
+    <span class="sglyph g-idle">＋</span>
+    <span class="sbranch">no session</span>${chipHtml}</div>`;
 }
 // Dormant rows always sit below the live ones, outside any worktree cluster.
 export function dormantRows(p: ProjGroup): string {

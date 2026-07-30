@@ -23,6 +23,17 @@ import { mergeRl, onRlUpdate, rl } from "./rl";
 let onTurnEnd: (s: Sess) => void = () => {};
 export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
 
+// A tool call settled, or a turn ended: this session may have moved HEAD, added a
+// worktree, or dirtied its working tree — and this is the app's *only* warning that it
+// did. Nothing watches the filesystem, so without a nudge from here the sidebar waits
+// for the next poll to notice a branch switch and never notices a new checkout at all.
+//
+// A seam rather than a direct call for the same reason as `onTurnEnd`: acting on it
+// means git commands, the roster and a repaint, none of which belong in the phase state
+// machine. main.ts wires it; in a test a settled tool is just a settled tool.
+let onSessionTouched: (s: Sess, tool: string, cmd: unknown) => void = () => {};
+export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
+
 // Set the phase and, when it actually changes, stamp phaseSince — the anchor for
 // the inspector's dwell timer ("0:42 in state") and the "your turn" wait clock.
 export function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
@@ -145,11 +156,22 @@ export function applyHook(s: Sess, data: any) {
       if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
-    case "PostToolUse": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "working"); break;
-    case "PostToolUseFailure": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "error"); break;
+    // Failure counts as "touched" too: a compound shell command whose tail failed may
+    // still have run the git half, and a failed Edit may have written before it failed.
+    case "PostToolUse":
+    case "PostToolUseFailure": {
+      const tool = data.tool_name || "";
+      closeActivity(s, data.tool_name);
+      onSessionTouched(s, tool, data.tool_input?.command);
+      if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
+      break;
+    }
     // The turn is over — which is exactly when a project's run-on-stop rule, if it
     // has one, gets to check the agent's work.
     case "Stop": endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
+      // Reconcile the working set even if the last tool looked read-only, so the state
+      // you come back to read is the state after the whole turn.
+      onSessionTouched(s, "Stop", undefined);
       // Only a turn that really ended gets its work checked: an unattended run
       // against a turn the API cut short would be verifying half-written files.
       if (!s.apiErr) onTurnEnd(s);

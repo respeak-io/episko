@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtSession, Restorable, Sess } from "../src/types";
+import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, sessions, setDormants, setExternals, setFavorites,
-  setProjOrder, setSortMode, setWtGroup,
+  setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
 } from "../src/state";
 import {
   allProjects, clusterByWorktree, needsYou, needsYouSessions, nextAfterClose,
@@ -46,6 +46,7 @@ beforeEach(() => {
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
   setSortMode("manual"); setWtGroup("off");
+  worktreesByRepo.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
   taskPrefs.attention = true; // needsYou reads it; restore the shipped default
   store.clear();
@@ -113,6 +114,64 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
   it("takes a cluster's branch from an external when no session carries one", () => {
     const p = grp({ externals: [ext({ cwd: "/w/wt", branch: "feature" })] });
     expect(clusterByWorktree(p)[0].branch).toBe("feature");
+  });
+});
+
+// The roster half: checkouts that exist on disk with nothing running in them. Off
+// unless asked for, because only the sidebar body wants them — see the note on the
+// parameter for why splitByWorktree must not get them.
+describe("clusterByWorktree — session-less checkouts from the worktree roster", () => {
+  const roster = (l: WtHead[]) => { worktreesByRepo.set("/w/epi", l); };
+  const main = (o: Partial<WtHead> = {}): WtHead =>
+    ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
+  const linked = (o: Partial<WtHead> = {}): WtHead =>
+    ({ path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true, ...o });
+
+  it("ignores the roster entirely unless withEmpty is asked for", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi"]);
+  });
+  it("adds a checkout with no session, after the ones that have sessions", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl[1]).toMatchObject({ branch: "feat/x", isMain: false });
+    expect(cl[1].sessions).toEqual([]);
+    expect(cl[1].externals).toEqual([]);
+  });
+  it("does not duplicate a checkout that already has a session", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi" }),
+      sess({ id: "b", workdir: "/w/wt-x", branch: "feat/x" }),
+    ] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(ids(cl[1].sessions)).toEqual(["b"]);
+  });
+  it("prefers the roster's branch over a session's cached one — it read HEAD directly", () => {
+    roster([main(), linked({ branch: "renamed" })]);
+    const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt-x", branch: "stale" })] });
+    expect(clusterByWorktree(p, true).find((c) => c.key === "/w/wt-x")!.branch).toBe("renamed");
+  });
+  it("skips a registered checkout whose folder is gone — that is git bookkeeping", () => {
+    roster([main(), linked({ exists: false })]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
+  });
+  // The guard: a project pinned AT a linked worktree resolves to the same repo, and
+  // folding the roster in there would sprout a row for the main checkout and every
+  // sibling — silently redefining what that group means.
+  it("leaves a group alone when it is not the repo's main checkout", () => {
+    worktreesByRepo.set("/w/wt-x", [main(), linked()]);
+    const p = grp({ path: "/w/wt-x", sessions: [sess({ id: "b", workdir: "/w/wt-x" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/wt-x"]);
+  });
+  it("adds nothing when the repo has no roster yet", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
 });
 
