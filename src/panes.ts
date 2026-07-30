@@ -136,6 +136,16 @@ export function requestLaunch(project: string, path: string) {
   launch(project, path, { colorKey: path });
 }
 
+// The sidebar's per-worktree ＋ (subheader grouping). Unlike requestLaunch this never
+// opens the worktree dialog: the cluster header the button sits on *is* the answer
+// that dialog asks for, so offering it again would only re-ask what was just clicked.
+// `root` is the repo root — the colorKey every session in the project groups by, which
+// a worktree's own path is not (get that wrong and the new session splits off into a
+// project group of its own).
+export function launchWorktree(project: string, root: string, dir: string, branch: string) {
+  launch(project, dir, { colorKey: root, worktree: dir === root ? null : branch, branch });
+}
+
 // A plain login shell in an embedded xterm pane — no Claude, no telemetry.
 // Returns the new session id so a caller can write into the shell (see handToTerminal).
 export async function launchShell(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string> {

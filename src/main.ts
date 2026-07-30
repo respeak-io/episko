@@ -25,8 +25,8 @@ import {
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, openPlainTerminal, refreshBranches, refreshSessionStats, renderHeader,
-  requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
+  launchTask, launchWorktree, openPlainTerminal, refreshBranches, refreshSessionStats,
+  renderHeader, requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
   syncStageButtons,
 } from "./panes";
 import {
@@ -445,7 +445,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
@@ -459,6 +459,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  else if (el.dataset.wtadd) launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || "");
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();

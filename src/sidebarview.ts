@@ -62,9 +62,15 @@ export function groupBody(p: ProjGroup): string {
     if (cl.length >= 2) return cl.map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
       const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
+      // The cluster header already answers the only question the worktree dialog
+      // would ask — which checkout — so its ＋ launches straight into `c.key`.
+      // `data-root` carries the repo root separately: it is the colorKey every
+      // session in this project groups by, and a worktree's own path is not it.
+      const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
       return `<div class="wthead"><span class="wtglyph" style="color:${col}">⑃</span>`
         + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n}</span></div>`
+        + `<span class="wtcount">${n}</span>${add}</div>`
         + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
     }).join("");
   } else if (wtGroup === "chip") {
