@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **392 vitest + cargo (87 on macOS, 84 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **408 vitest + cargo (89 on macOS, 86 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -245,13 +245,13 @@ Four smaller P4 affordances, all in the frontend:
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 450 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `lib.rs` | 456 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
-| `git.rs` | 1,683 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
+| `git.rs` | 1,877 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
 | `usage.rs` | 1,286 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
 | `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | 743 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
-| `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
+| `pty.rs` | 803 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
@@ -263,19 +263,19 @@ Four conventions hold across them:
 - **`platform.rs`'s first half imports nothing from the crate.** That is exactly what lets every other module depend on it; the second half (the OS integrations) may, since `set_caffeinate` takes `State<AppState>`. **Don't let the first half grow a crate dependency.**
 - **A cfg-gated helper with a single consumer module belongs to *that* module**, not to `platform.rs` — `apply_utf8_locale` and `interactive_shell` are `pty.rs`'s (`apply_utf8_locale` takes a `portable_pty::CommandBuilder`, and the leaf layer must not import `portable_pty`), `same_path` is `git.rs`'s.
 
-`AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), the held-open `pending` permission requests, and `caffeinate`.
+`AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), `io_samples` (the previous disk-I/O reading per pid, which is what turns the kernel's lifetime byte counters into the inspector's rate), the held-open `pending` permission requests, and `caffeinate`.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 36 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 37 modules
 
-**No framework, and no longer one file.** ~7,800 lines across 36 modules; `main.ts` is 668 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,100 lines across 37 modules; `main.ts` is 686 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (ten — no DOM, no Tauri, no render imports; these are what the 392 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 408 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -289,6 +289,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
+| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -345,6 +346,48 @@ And the things that hold however the files are arranged:
 - **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
+
+## Noticing that a checkout moved
+
+Nothing in Episko watches the filesystem — deliberately, for the reason the task
+discovery cache gives (no thread, no crate, no per-project lifecycle). So everything
+about "which branch is this on, and what checkouts exist" is either polled or pushed
+from the hook stream, and the split matters.
+
+**The hook stream is the trigger; git is the authority.** `PostToolUse` carries the
+Bash command verbatim, so a settled tool call is the earliest warning that a session
+moved HEAD or added a worktree. `phase.ts` hands it to the `onSessionTouched` seam
+(main.ts wires it, a test leaves it a no-op), which does two things: queues the
+session's workdir for a working-set re-read, and — if `gitMutates` matches — pokes
+`refreshGitViews` on a 250ms debounce. **`gitMutates` never decides what changed**, only
+whether to look, which is what makes it safe to keep loose: a false positive (`git
+checkout -- file.ts`) costs one re-read that renders nothing, and a false negative (an
+alias, a git call inside a script, an MCP git server) costs at most one poll interval.
+Don't tighten it into a shell parser; the poll below is the backstop, and it is the only
+thing that catches a branch switched in your own terminal.
+
+**Two commands, two costs, and they must not be confused.** `list_worktrees` runs a
+`status --porcelain` per checkout plus a `merge-base` per branch — right for the ⑃
+dialog, far too heavy to poll. `worktree_heads` answers "which checkouts exist and what
+is on each HEAD" from `.git/HEAD` and `.git/worktrees/*/{gitdir,HEAD}` with **no git
+process at all**, which is what lets the sidebar hold a roster (`worktreesByRepo`) and
+notice a worktree an agent created *before* anything runs in it. Its result doubles as
+the change stamp: compare, and only then do the expensive thing. Two traps live in it —
+git's bookkeeping name under `worktrees/` need not match the checkout's folder name (so
+the path comes from `gitdir`), and every path goes through `physical_cwd` for the same
+reason `repo_root_of` does, or one checkout renders as two.
+
+**The dirty poll is stale-driven, not blanket.** `refreshDirtyStates` used to re-read
+every open folder every 5s; it now reads only folders `markWorkdirStale` flagged, plus a
+15s sweep for what no hook can see (your editor, a build, an external session). The tool
+allowlist behind it is a list of *readers* — anything not on it marks the folder — so a
+tool added to Claude Code later defaults to wrong-but-cheap rather than to silently
+missing writes. `git_diffstat` itself is one `status --porcelain=v2 --branch` (which
+carries the upstream and ahead/behind that `upstream_state` cost two more processes),
+with the `--numstat` walk skipped entirely on a clean tree.
+
+Everything lands through `refreshGitViews` → `renderAll()`, so the sidebar, the header's
+branch chip and the open ⑃ dialog cannot disagree about what is checked out where.
 
 ## Four launch engines, one telemetry path
 
@@ -450,7 +493,7 @@ the `palette`/`palui` split, and what makes the rules testable.
 
 ## Notes on scope & doc drift
 
-macOS-first assumptions remain in the window/terminal layer: `osascript`, `open -a`, external-terminal engines, per-session CPU/RAM via `ps`, terminal-window focus. Windows has a working embedded-only port (PowerShell/`curl.exe` hook variants behind `#[cfg(windows)]`, cross-platform external-session listing); Linux is unported but the non-`ps` paths are written to be OS-agnostic.
+macOS-first assumptions remain in the window/terminal layer: `osascript`, `open -a`, external-terminal engines, terminal-window focus. Windows has a working embedded-only port (PowerShell/`curl.exe` hook variants behind `#[cfg(windows)]`, cross-platform external-session listing); Linux is unported but the non-`ps` paths are written to be OS-agnostic. Per-session resources are **no longer** one of the macOS-bound bits: `session_resources` reports disk I/O through `sysinfo` (one syscall, every OS) rather than shelling out to `ps`, so `ps_one` is now reached only from the macOS-only terminal-focus path.
 
 **`SPIKE.md` is a historical record and is not maintained.** It describes the Phase-0 spike — single-session, "observe-only" permissions, one file per side — and is kept because it is the record of where this started, not because it is true. It carries a banner saying so. Don't consult it for how the app works today, and don't edit it to match; `README.md` is current.
 

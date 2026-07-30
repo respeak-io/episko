@@ -236,6 +236,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* a checkout with nothing running in it: present, but clearly not a session */
+.srow.wtempty .sbranch { font-style: italic; color: var(--muted-2); }
+.srow.wtempty .sglyph { color: var(--muted-2); }
+.srow.wtempty:hover .sbranch, .srow.wtempty:hover .sglyph { color: var(--accent-ink); }
 /* toplevel mode: the branch suffix on a per-worktree group header */
 .pwt { margin-left: 5px; color: var(--muted-2); font-weight: 550; }
 /* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
@@ -475,7 +479,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .res .rbar { flex: 1; height: 4px; border-radius: 2px; background: var(--hair-strong); overflow: hidden; }
 .res .rbar > i { display: block; height: 100%; border-radius: 2px; background: var(--st-done); }
 .res .rbar.warn > i { background: var(--st-working); } .res .rbar.hot > i { background: var(--st-error); }
-.res .rv { font: 11px var(--font-mono); width: 54px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+/* lifetime totals: context for the rates above, so it reads as a footnote not a third gauge */
+.res .rtot { margin-top: 1px; }
+.res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
 
 /* --- risk badge on the pending-permission block --- */
 .attn-h { justify-content: flex-start; }

@@ -35,7 +35,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(not(windows))]
 use crate::platform::sh_quote;
-use crate::platform::{augmented_path, ps_one, resolve_claude, sys_command};
+use crate::platform::{augmented_path, resolve_claude, sys_command};
 use crate::tasks;
 use crate::telemetry::write_instrument_settings;
 use crate::{AppState, Session};
@@ -646,31 +646,129 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
 
 #[derive(serde::Serialize)]
 pub(crate) struct Resources {
-    /// %CPU as reported by `ps` (a decaying lifetime average on macOS, so it reads
-    /// as a rough gauge, not an instantaneous sample).
-    cpu: f32,
-    /// Resident set size in MiB.
-    mem_mb: f32,
+    /// Bytes/second read from disk, averaged over the gap since the previous sample.
+    read_bps: f64,
+    /// Bytes/second written to disk, same window.
+    write_bps: f64,
+    /// Lifetime totals for this process, in MiB — the "how much has this session
+    /// actually churned" number a rate alone can't tell you.
+    read_mb: f64,
+    written_mb: f64,
+    /// False on the first sample of a process, when there is no previous reading to
+    /// difference against and the rates are therefore 0 rather than measured. Lets the
+    /// UI show "—" instead of a confident, wrong "0 B/s".
+    primed: bool,
 }
 
-/// Per-session CPU/RAM for the embedded-PTY `claude` process, looked up by the
+/// Per-session **disk I/O** for the embedded-PTY `claude` process, looked up by the
 /// session id's stored pid. Measures the `claude` process itself (not its whole
-/// subtree) — enough for the inspector's "what's this costing my machine" readout.
-/// None for external/shell sessions (no owned pid) or a process that has exited.
+/// subtree). None for external/shell sessions (no owned pid) or a process that has
+/// exited.
+///
+/// I/O rather than CPU/RAM because that is the resource a Claude session actually
+/// spends: it reads your tree and writes files, and a runaway agent shows up as
+/// sustained throughput long before it shows up as CPU. Read via `sysinfo` (macOS:
+/// `proc_pid_rusage` → `ri_diskio_*`) rather than a `ps` child, because `ps` cannot
+/// report I/O at all — and refreshing exactly one pid costs a single syscall, less than
+/// the process spawn it replaces.
+///
+/// Rates are computed here from the **lifetime totals** and our own timestamp, not from
+/// sysinfo's per-refresh deltas: those are relative to the last refresh of that
+/// `System`, and we build a fresh one per call. Differencing totals ourselves makes the
+/// window explicit and survives a missed or irregular poll.
 #[tauri::command(async)]
 pub(crate) fn session_resources(state: State<AppState>, session_id: String) -> Option<Resources> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     let pid = state.sessions.lock().unwrap().get(&session_id)?.pid?;
-    let line = ps_one(pid, "%cpu=,rss=")?;
-    let mut it = line.split_whitespace();
-    let cpu: f32 = it.next()?.parse().ok()?;
-    let rss_kb: f32 = it.next()?.parse().ok()?;
-    Some(Resources { cpu, mem_mb: rss_kb / 1024.0 })
+    let spid = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[spid]),
+        true,
+        ProcessRefreshKind::nothing().with_disk_usage(),
+    );
+    let usage = sys.process(spid)?.disk_usage();
+    let (read, written) = (usage.total_read_bytes, usage.total_written_bytes);
+
+    let now = std::time::Instant::now();
+    let mut samples = state.io_samples.lock().unwrap();
+    // Drop readings for processes we no longer own, so a long-lived app doesn't
+    // accumulate an entry per session it has ever run.
+    {
+        let owned = state.owned_pids.lock().unwrap();
+        samples.retain(|p, _| owned.contains(p));
+    }
+    let prev = samples.insert(pid, (read, written, now));
+
+    let (read_bps, write_bps, primed) = match prev {
+        // saturating_sub: the counters are monotonic, but a pid reused after an exit we
+        // missed would otherwise underflow into a nonsense spike.
+        Some((pr, pw, pt)) => {
+            let secs = now.duration_since(pt).as_secs_f64();
+            if secs > 0.0 {
+                (
+                    read.saturating_sub(pr) as f64 / secs,
+                    written.saturating_sub(pw) as f64 / secs,
+                    true,
+                )
+            } else {
+                (0.0, 0.0, false)
+            }
+        }
+        None => (0.0, 0.0, false),
+    };
+    const MIB: f64 = 1024.0 * 1024.0;
+    Some(Resources {
+        read_bps,
+        write_bps,
+        read_mb: read as f64 / MIB,
+        written_mb: written as f64 / MIB,
+        primed,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The inspector's I/O readout is only worth showing if the platform actually
+    /// accounts for it. Per-process disk counters are easy to wire up and get back a
+    /// permanent zero — `proc_pid_rusage` on macOS, `/proc/<pid>/io` on Linux, the IO
+    /// counters on Windows all have their own preconditions — and a silently-zero
+    /// counter renders as a confident, permanently-idle gauge rather than as a bug.
+    /// This asserts the counter moves; the rate arithmetic on top is plain division.
+    #[test]
+    fn process_disk_usage_actually_counts_bytes() {
+        use crate::testutil::scratch_dir;
+        use std::io::Write;
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let me = Pid::from_u32(std::process::id());
+        let sample = || {
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[me]),
+                true,
+                ProcessRefreshKind::nothing().with_disk_usage(),
+            );
+            sys.process(me).map(|p| p.disk_usage().total_written_bytes)
+        };
+        let before = sample().expect("our own process is visible to sysinfo");
+
+        // fsync, so the bytes are charged to real disk I/O rather than sitting in the
+        // page cache where the counter would never see them.
+        let dir = scratch_dir();
+        let mut f = std::fs::File::create(dir.join("blob")).unwrap();
+        f.write_all(&vec![7u8; 8 * 1024 * 1024]).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let after = sample().expect("still visible");
+        assert!(
+            after > before,
+            "written-bytes counter must move after an 8 MiB fsync'd write (before={before}, after={after})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `spawn_task` hands `Exec::Shell` to a *login* shell so a task inherits the
     /// PATH and version-manager shims the user's own terminal has. That argument

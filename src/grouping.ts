@@ -16,6 +16,7 @@ import { basename } from "./format";
 import type { ExtSession, Restorable, Sess } from "./types";
 import {
   accentFor, dormants, externals, FAVORITES, projOrder, sessions, sortMode, wtGroup,
+  worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -29,7 +30,13 @@ export interface ProjGroup { name: string; path: string; accent: string; session
 // attention sort still decides which worktree floats up. The repo-root checkout
 // (worktree === null) is the "main" cluster; its label is the live branch.
 export interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
-export function clusterByWorktree(p: ProjGroup): WtCluster[] {
+// `withEmpty` folds in the roster's session-less checkouts, so a worktree an agent just
+// created is visible before anything runs in it. Off by default because only the
+// sidebar body wants them: `splitByWorktree` must not promote an empty checkout to a
+// top-level project group, which would be a lot of chrome for a folder with nothing in
+// it. Roster clusters land after the session-bearing ones (`order` is append-only),
+// which keeps "running now" above "available".
+export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] {
   const by = new Map<string, WtCluster>();
   const order: WtCluster[] = [];
   const bucket = (key: string, branch: string): WtCluster => {
@@ -40,6 +47,23 @@ export function clusterByWorktree(p: ProjGroup): WtCluster[] {
   };
   for (const s of p.sessions) bucket(s.workdir || p.path, s.branch || s.worktree || "").sessions.push(s);
   for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
+  if (withEmpty) {
+    const roster = worktreesByRepo.get(p.path) ?? [];
+    // Only fold the roster in when this group really is the repo — i.e. the repo's main
+    // checkout IS p.path. A project pinned *at* a linked worktree resolves to the same
+    // repo, and without this guard that group would suddenly sprout a row for the main
+    // checkout and every sibling worktree, silently redefining what the group means.
+    if (roster.some((w) => w.is_main && w.path === p.path)) {
+      for (const w of roster) {
+        // A registered-but-deleted checkout is git bookkeeping, not a place to work —
+        // the ⑃ dialog is where you prune those, so the sidebar stays quiet about them.
+        if (!w.exists) continue;
+        const c = bucket(w.path, w.branch);
+        // The roster read HEAD directly, so it wins over a session's cached label.
+        c.branch = w.branch || c.branch;
+      }
+    }
+  }
   // Label clusters that never carried a branch: the repo-root checkout is "main",
   // any other bare dir falls back to its folder name.
   for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
