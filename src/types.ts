@@ -36,6 +36,13 @@ export type SessKind = "claude" | "shell" | "task";
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
+// How a new claude session treats tool calls at launch (`claude --permission-mode`).
+// Orthogonal to Engine: this decides what the session may do, not where its terminal
+// lives, and it applies to every engine. The spellings are Claude Code's own, because
+// they go on the command line verbatim (bar `default`, which means "pass no flag" —
+// see `permission_mode_arg` in pty.rs). Only the *starting* mode: Claude's own ⇧⇥
+// still switches mode inside a running session, and nothing here tracks that.
+export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";

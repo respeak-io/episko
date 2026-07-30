@@ -21,7 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
-import type { DiffStat, Engine, ExtSession, Restorable, Sess } from "./types";
+import type { DiffStat, Engine, ExtSession, PermMode, Restorable, Sess } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -134,6 +134,29 @@ export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
+// --- how a new session starts (claude --permission-mode) -----------------------
+// A persisted preference like the engine above, and the same split: the type is in
+// ./types (it crosses to the backend), the label table stays in the UI layer.
+// Labels follow Claude Code's own names for these modes, so the picker and the
+// indicator the REPL shows after ⇧⇥ can't read as two different things.
+//
+// Ordered by how much the mode hands over: Manual asks about everything, Bypass
+// about nothing. The last three stop Claude asking, and therefore stop Episko's
+// permission cards too — the hint in Settings › Sessions says so, since a pane that
+// never raises one looks identical to a pane nobody has asked anything.
+export interface PermModeDef { id: PermMode; label: string; sub: string; glyph: string }
+export const ALL_PERM_MODES: PermModeDef[] = [
+  { id: "default",           label: "Manual",       sub: "Asks before anything risky — Episko's permission cards", glyph: "◇" },
+  { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙" },
+  { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎" },
+  { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈" },
+  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts — anything not pre-approved is denied",    glyph: "⊘" },
+  { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠" },
+];
+export function permModeDef(id: PermMode): PermModeDef { return ALL_PERM_MODES.find((m) => m.id === id) || ALL_PERM_MODES[0]; }
+export let permMode: PermMode = (localStorage.getItem("cc-perm-mode") as PermMode) || "default";
+if (!ALL_PERM_MODES.some((m) => m.id === permMode)) permMode = "default";
+export function setPermMode(m: PermMode) { permMode = m; }
 // Uncommitted-changes cache, keyed by folder rather than session, because it feeds
 // the sidebar's per-project dot and the external inspector's diff card as well as
 // the active session: `Sess.git` only stays fresh for the session on stage, so

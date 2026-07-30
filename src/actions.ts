@@ -18,10 +18,12 @@ import { activeCwd } from "./panes";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import {
-  FAVORITES, saveFavorites, sessions, setFavorites, setSortMode, SORT_META,
-  SORT_MODES, sortMode, setWtGroup as setWtGroupState, wtGroup,
+  FAVORITES, permMode, permModeDef, saveFavorites, sessions, setFavorites,
+  setPermMode as setPermModeState, setSortMode, SORT_META, SORT_MODES, sortMode,
+  setWtGroup as setWtGroupState, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import type { PermMode } from "./types";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
@@ -78,6 +80,21 @@ export function setWtGroup(m: WtGroup) {
 }
 // Dev affordance until the settings window ships: episkoWtGroup("chip") in the console.
 (window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
+
+// Which permission mode the NEXT session launches in — the same shape as the sort and
+// the grouping above (state assigns, this persists and announces). Announced rather
+// than silent because it changes what a session may do before you get a chance to see
+// it: a pane started in Bypass or Don't ask never raises a permission card at all, so
+// there is no later moment where the choice becomes visible. Only new launches move;
+// a running session keeps whatever mode it is in (Claude's ⇧⇥ owns that).
+export function setPermMode(m: PermMode) {
+  setPermModeState(m);
+  localStorage.setItem("cc-perm-mode", permMode);
+  toast(permMode === "default"
+    ? "New sessions ask before acting"
+    : `New sessions start in ${permModeDef(permMode).label} mode`);
+  renderSettings(); // keep the settings picker in sync if it's open
+}
 
 export function setSort(m: SortMode, announce = true) {
   setSortMode(m);

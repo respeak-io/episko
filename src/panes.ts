@@ -38,7 +38,8 @@ import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
-  pastMirrorId, sessions, setActiveId, setDormants, termEngine, termFontSize,
+  pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants, termEngine,
+  termFontSize,
 } from "./state";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
@@ -93,12 +94,18 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // sidebar doesn't show the same conversation twice, live and dormant.
   if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
-  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
+  // The permission mode a launch starts in (Settings › Sessions). "default" is
+  // Claude's own ask-me behaviour, which is what passing NO flag means — so it goes
+  // over the wire as null rather than as a spelling of the standard mode. Read here
+  // rather than taken as an opt, exactly like termEngine: it is a preference, and a
+  // restore is as much a new launch as anything else.
+  const mode = permMode === "default" ? null : permMode;
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permModeDef(permMode).label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
   try {
-    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null });
-    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null });
+    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
+    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
   } catch (e) {
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
     toast("launch failed: " + e);

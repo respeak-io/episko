@@ -67,6 +67,40 @@ fn apply_utf8_locale(cmd: &mut CommandBuilder) {
     }
 }
 
+/// The permission mode a session starts in — `claude --permission-mode`, chosen in
+/// Settings › Sessions and passed by every spawner. Two properties are load-bearing:
+///
+/// - **It maps to a `&'static str`; the caller's string never reaches a command
+///   line.** Here that would only be one argv element, but `spawn_external_terminal`
+///   writes its launch into a generated `.command` *shell script*, so the whitelist is
+///   what keeps the one path with a shell in it honest. An unrecognised mode launches
+///   standard rather than not at all — a new mode name in some future frontend must
+///   not be able to make a session refuse to start.
+/// - **The standard mode passes no flag.** Claude's ask-me-each-time behaviour is what
+///   an absent `--permission-mode` already means, and its own `--help` doesn't list
+///   `default` among the choices (only `manual`), so spelling it out would lean on an
+///   undocumented alias to say what silence says.
+fn permission_mode_arg(mode: Option<&str>) -> Option<&'static str> {
+    match mode?.trim() {
+        "plan" => Some("plan"),
+        "acceptEdits" => Some("acceptEdits"),
+        "auto" => Some("auto"),
+        "dontAsk" => Some("dontAsk"),
+        "bypassPermissions" => Some("bypassPermissions"),
+        "" | "default" | "manual" => None,
+        other => {
+            log::warn!("ignoring unknown permission mode {other:?} — launching standard");
+            None
+        }
+    }
+}
+
+// A `#[tauri::command]`'s parameter list *is* its wire format: the frontend calls it by
+// naming each one, and every one here is a distinct fact about the launch. Bundling
+// them into a struct to satisfy the lint would change that contract on both sides (and
+// the round-trip the `Exec` test pins for `spawn_task`) while making the call site say
+// strictly less.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn spawn_claude(
     app: AppHandle,
@@ -76,6 +110,7 @@ pub(crate) fn spawn_claude(
     rows: u16,
     cols: u16,
     resume: Option<String>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
     // A resume must land in the session's ORIGINAL cwd: Claude looks the id up in
@@ -112,6 +147,11 @@ pub(crate) fn spawn_claude(
     }
     cmd.arg("--settings");
     cmd.arg(&settings_path);
+    let perm = permission_mode_arg(mode.as_deref());
+    if let Some(m) = perm {
+        cmd.arg("--permission-mode");
+        cmd.arg(m);
+    }
     cmd.cwd(&workdir);
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
@@ -123,8 +163,9 @@ pub(crate) fn spawn_claude(
     apply_utf8_locale(&mut cmd);
 
     log::info!(
-        "spawn claude · {session_id} · {workdir}{}",
-        resume.as_deref().map(|r| format!(" · resume {r}")).unwrap_or_default()
+        "spawn claude · {session_id} · {workdir}{}{}",
+        resume.as_deref().map(|r| format!(" · resume {r}")).unwrap_or_default(),
+        perm.map(|m| format!(" · {m}")).unwrap_or_default()
     );
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
@@ -402,6 +443,7 @@ pub(crate) fn spawn_ghostty(
     accent: String,
     title: String,
     resume: Option<String>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
@@ -433,6 +475,10 @@ pub(crate) fn spawn_ghostty(
     }
     cmd.arg("--settings");
     cmd.arg(&settings_path);
+    if let Some(m) = permission_mode_arg(mode.as_deref()) {
+        cmd.arg("--permission-mode");
+        cmd.arg(m);
+    }
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
     }
@@ -480,6 +526,7 @@ pub(crate) fn spawn_external_terminal(
     _engine: String,
     _title: String,
     _resume: Option<String>,
+    _mode: Option<String>,
 ) -> Result<(), String> {
     Err("external terminals aren't supported on Windows yet — use the embedded terminal".to_string())
 }
@@ -498,6 +545,7 @@ pub(crate) fn spawn_external_terminal(
     engine: String,
     title: String,
     resume: Option<String>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let port = state.port;
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
@@ -518,8 +566,14 @@ pub(crate) fn spawn_external_terminal(
         Some(prev) => format!("--resume {}", sh_quote(prev)),
         None => format!("--session-id {}", sh_quote(&session_id)),
     };
+    // The one launch path that goes through a shell, so the whitelist in
+    // `permission_mode_arg` is what makes interpolating this safe: it can only ever be
+    // one of six literals, never anything the frontend sent.
+    let mode_args = permission_mode_arg(mode.as_deref())
+        .map(|m| format!(" --permission-mode {m}"))
+        .unwrap_or_default();
     let body = format!(
-        "#!/bin/zsh\n# Episko session: {title}\nexport PATH={path}\ncd {wd} || exit 1\nexec {claude} {id_args} --settings {settings}\n",
+        "#!/bin/zsh\n# Episko session: {title}\nexport PATH={path}\ncd {wd} || exit 1\nexec {claude} {id_args}{mode_args} --settings {settings}\n",
         title = title.replace(['\n', '\r'], " "),
         path = sh_quote(&augmented_path()),
         wd = sh_quote(&workdir),
@@ -702,4 +756,74 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&piped.stdout).trim(), "2");
     }
 
+    /// Every mode Settings offers, and nothing else. The whitelist is the security
+    /// boundary for `spawn_external_terminal`, which interpolates this into a generated
+    /// `.command` script — so what matters is not only that the six known spellings
+    /// survive, but that everything else collapses to "no flag" instead of reaching a
+    /// shell. The standard mode passing no flag is the other half: an absent
+    /// `--permission-mode` is what ask-me-each-time already means.
+    #[test]
+    fn permission_mode_is_whitelisted_and_the_standard_mode_passes_no_flag() {
+        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
+            assert_eq!(permission_mode_arg(Some(m)), Some(m), "{m} should reach the command line");
+        }
+        // The standard mode is spelled by silence, whichever name it arrives under.
+        assert_eq!(permission_mode_arg(None), None);
+        assert_eq!(permission_mode_arg(Some("default")), None);
+        assert_eq!(permission_mode_arg(Some("manual")), None);
+        assert_eq!(permission_mode_arg(Some("")), None);
+        assert_eq!(permission_mode_arg(Some("  ")), None);
+        // Case matters: these are Claude Code's own spellings, and a near-miss must not
+        // be quietly "corrected" into a mode the user didn't pick.
+        assert_eq!(permission_mode_arg(Some("acceptedits")), None);
+        assert_eq!(permission_mode_arg(Some("PLAN")), None);
+        // Nothing that could do something in a shell script gets through.
+        for hostile in ["plan; rm -rf /", "plan --dangerously-skip-permissions", "$(id)", "plan\nrm x"] {
+            assert_eq!(permission_mode_arg(Some(hostile)), None, "{hostile:?} must not reach a command line");
+        }
+    }
+
+    /// The mode names are an external contract, exactly like the hook schema the
+    /// `#[ignore]`d test in telemetry.rs guards: they go on Claude Code's command line
+    /// verbatim, and Claude Code validates them against its own choice list — a mode
+    /// renamed or dropped upstream turns every launch in that mode into an instant
+    /// "option argument is invalid" and a pane that dies before it starts.
+    ///
+    /// Unlike that test this one costs **no tokens and needs no auth**: `--version`
+    /// short-circuits before any API call, while commander still validates the choice
+    /// first. It is `#[ignore]`d only because it needs the real binary, which CI hasn't
+    /// got — so it belongs to the release checklist. It also asserts the negative case,
+    /// because a build that stopped validating modes at all would otherwise pass.
+    #[test]
+    #[ignore = "runs the real `claude` binary (no tokens, no auth) — `cargo test -- --ignored`"]
+    fn claude_cli_still_accepts_every_permission_mode_we_offer() {
+        let claude = resolve_claude();
+        let try_mode = |m: &str| {
+            std::process::Command::new(&claude)
+                .arg("--permission-mode")
+                .arg(m)
+                .arg("--version")
+                .env("PATH", augmented_path())
+                .output()
+                .unwrap_or_else(|e| panic!("could not run `claude` at {claude:?}: {e}\n\
+                     This test needs Claude Code installed and on PATH."))
+        };
+
+        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
+            let out = try_mode(m);
+            assert!(
+                out.status.success(),
+                "`claude --permission-mode {m}` was rejected ({}). Settings offers this \
+                 mode, so every launch in it would fail:\n{}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        // Proof the check above means something: an invalid mode must still be refused.
+        let bogus = try_mode("episko-not-a-mode");
+        assert!(
+            !bogus.status.success(),
+            "claude accepted a nonsense --permission-mode, so the assertions above prove nothing"
+        );
+    }
 }

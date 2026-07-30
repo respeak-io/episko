@@ -41,13 +41,13 @@ in the block above before pushing, and match the toolchain CI uses (`stable` for
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **368 vitest + cargo (82 on macOS, 79 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **368 vitest + cargo (83 on macOS, 80 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
-CLI *mechanics*, though, often can be checked headlessly — drive `claude -p` against a **throwaway** session in a temp dir and inspect the resulting `.jsonl` (never a real session: resuming appends to it). That is what the one `#[ignore]`d test does (`claude_cli_still_honours_our_instrumentation` in `telemetry.rs`): it runs the real binary and asserts Claude Code's hook schema and transcript layout still match what this app reads. It is **not** in CI — it needs auth and spends tokens — and is run via `cargo test -- --ignored` as part of `RELEASE.md`'s checklist.
+CLI *mechanics*, though, often can be checked headlessly — drive `claude -p` against a **throwaway** session in a temp dir and inspect the resulting `.jsonl` (never a real session: resuming appends to it). That is what `claude_cli_still_honours_our_instrumentation` (`telemetry.rs`) does: it runs the real binary and asserts Claude Code's hook schema and transcript layout still match what this app reads. It is **not** in CI — it needs auth and spends tokens — and is run via `cargo test -- --ignored` as part of `RELEASE.md`'s checklist. It is one of **two** `#[ignore]`d tests, and the other one is cheaper than its gating suggests: `claude_cli_still_accepts_every_permission_mode_we_offer` (`pty.rs`) spends no tokens and needs no auth (`--version` short-circuits *after* the CLI has validated the flag), and is `#[ignore]`d purely because CI has no `claude` binary. Both run in the same `--ignored` pass, so the checklist gains nothing to remember.
 
 **`RELEASE.md` holds the manual release procedure** — what CI already guarantees, the click-through for the OS edge, and the tag/verify steps. Anything that can only be checked by running the app belongs there, not here.
 
@@ -230,17 +230,17 @@ Four smaller P4 affordances, all in the frontend:
 
 ## Backend (`src-tauri/src/`) — ten modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~7,600. Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~8,200 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
 | `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
+| `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
 | `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 819 | transcripts + the token ledger — everything read out of `~/.claude` |
-| `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
-| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
-| `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `usage.rs` | 896 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `pty.rs` | 829 | the four launch engines, the permission-mode whitelist, `stream_pty_session`, the PTY lifecycle |
+| `platform.rs` | 690 | OS leaves (top half) + OS integrations (bottom half) |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
@@ -260,7 +260,7 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 34 modules
 
-**No framework, and no longer one file.** ~7,200 lines across 34 modules; `main.ts` is 642 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~7,500 lines across 34 modules; `main.ts` is 660 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
@@ -329,7 +329,7 @@ And the things that hold however the files are arranged:
   *shell* pane's handler; no pane is both, so the two never collide.)
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 
@@ -342,6 +342,38 @@ And the things that hold however the files are arranged:
 - **terminal / iterm** — `spawn_external_terminal` writes an executable `.command` wrapper and hands it to `open -a`.
 
 `available_terminals` reports which are installed so the UI only offers working ones.
+
+## Permission mode — how a session starts (Settings ⌘, → **Sessions**)
+
+Orthogonal to the engine above: `permMode` (`cc-perm-mode`, `ALL_PERM_MODES` in
+`state.ts`) is passed to all three claude spawners as `mode` and becomes
+`claude --permission-mode <m>`. Four things about it are deliberate:
+
+- **The standard mode passes no flag.** `permission_mode_arg` in `pty.rs` maps
+  `"default"` (and Claude's own `manual` spelling) to `None`, because an absent
+  `--permission-mode` is already ask-me-each-time. `--help` doesn't list `default`
+  among its choices, so emitting it would depend on an undocumented alias.
+- **The mode names are a whitelist, not a passthrough.** `permission_mode_arg`
+  returns `&'static str`, so nothing the frontend sends reaches a command line.
+  That matters because `spawn_external_terminal` interpolates the launch into a
+  generated `.command` **shell script** — the one launch path with a shell in it.
+  An unrecognised mode launches standard rather than failing.
+- **It is only the *starting* mode, and nothing tracks it afterwards.** Claude's own
+  ⇧⇥ switches mode inside a live session, so a recorded "this pane's mode" would go
+  stale and lie; no `Sess` field holds one. The new-session dialog shows a chip for
+  a non-default mode (`#wtMode`) because that is the last moment the choice is still
+  true.
+- **Three of the six turn Episko's permission cockpit off**, and silently: `dontAsk`,
+  `bypassPermissions` and (mostly) `auto` mean Claude raises no permission request,
+  so the blocking `PermissionRequest` hook never fires and a pane that would have
+  asked simply doesn't. The picker's hint says so; keep it saying so.
+
+Claude Code validates the mode against its own choice list and exits if it doesn't
+know one, which kills the pane before it starts — the same class of external
+contract as the hook schema. `claude_cli_still_accepts_every_permission_mode_we_offer`
+(`pty.rs`, `#[ignore]`d) checks it against the real binary for **no tokens and no
+auth** (`--version` short-circuits after the choice is validated); it is in
+`RELEASE.md` only because CI hasn't got the binary.
 
 ## External (non-Episko) sessions
 
