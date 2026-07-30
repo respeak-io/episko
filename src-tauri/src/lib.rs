@@ -421,6 +421,7 @@ pub fn run() {
             external::focus_external_session,
             usage::read_transcript,
             usage::list_past_sessions,
+            usage::list_session_history,
             usage::token_usage_by_day,
             icons::find_project_icon,
             icons::read_custom_icon,

@@ -411,13 +411,19 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
 // ⌘⇧R and ⌘T bypass the button entirely.
 export function syncStageButtons() {
   const wd = activeCwd();
-  const set = (id: string, enabled: string) => {
+  const set = (id: string, enabled: string, disabled = "Start a session first — this runs in the active project") => {
     const b = $(id) as HTMLButtonElement;
     b.disabled = !wd;
-    b.title = wd ? enabled : "Start a session first — this runs in the active project";
+    b.title = wd ? enabled : disabled;
   };
   set("btnRun", "Run a task or script from this project");
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
+  // ◷ History belongs to the same set — it opens scoped to the project on screen.
+  // Its disabled reason is different in kind, though: the whole-machine view is
+  // always one click away in the top bar, so say where it went rather than
+  // "start a session".
+  set("btnHist", "Reopen a past session in this project — including ones you closed (⌘⇧H)",
+      "No project selected — the ◷ button up top opens history for every project");
 }
 
 // Which session (if any) has a git action in flight — the buttons grey out while

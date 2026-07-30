@@ -66,6 +66,7 @@ import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
 import { dwellText } from "./inspectorview";
+import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
 } from "./phase";
@@ -492,12 +493,17 @@ $("btnNew").addEventListener("click", () => {
   if (c) requestLaunch(c.project, c.path); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+// Two doors into History: the stage-header button opens it scoped to the project on
+// screen (like ❯ Terminal and ▶ Run beside it), the top-bar icon opens every project.
+$("btnHist").addEventListener("click", () => { void openHistory(true); });
+$("histBtn").addEventListener("click", () => { void openHistory(false); });
+initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
@@ -510,6 +516,8 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === "0") { e.preventDefault(); setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); }
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
+  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }

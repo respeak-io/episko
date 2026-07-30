@@ -37,11 +37,22 @@ in the block above before pushing, and match the toolchain CI uses (`stable` for
 **Two verification tricks the platform split makes necessary.** `cargo check` and clippy only compile the arms for *their own* target, so half this code is invisible on any one machine:
 
 - **The cfg flip.** Swap every `cfg(windows)` ↔ `cfg(not(windows))` in `src-tauri/src`, re-run `cargo clippy --all-targets`, then `git checkout -- src-tauri/src` to swap back. This type-checks and lints the other half, and has caught a dead import that was invisible locally and a warning in CI. Two cautions: it does **not** touch `cfg(target_os = …)` or `cfg(unix)`, so `reveal_path`'s unused `exists` is a known false positive; and **commit or stash your real changes first** — the `git checkout` that reverts the flip reverts everything else in that directory too.
-- **The macOS-only arms cannot be linted on Windows at all.** Flipping `target_os` as well fails hard: `rusqlite` is a macOS-only dependency, so the code behind those arms doesn't have its crate. CI's macOS leg is the only check for that code.
+- **The macOS-only arms cannot be linted on Windows at all.** Flipping `target_os` as well fails hard: `rusqlite` is a macOS-only dependency, so the code behind those arms doesn't have its crate. CI's macOS leg is the only check for that code. The same limit applies to the flip in the other direction: run it on macOS and the now-enabled `cfg(windows)` arms want `std::os::windows` and `windows_sys`, which that target doesn't have, so a handful of `E0433`s are the trick reaching its edge rather than a finding.
+
+**A fixture path is not the path the code under test will see.** `env::temp_dir()`
+returns whatever the environment says, and on both CI runners that is a spelling the OS
+itself does not use: macOS `$TMPDIR` is `/var/folders/…`, a symlink to
+`/private/var/folders/…`, and the Windows runner's is the 8.3 short name
+`C:\Users\RUNNER~1\…`. Anything that resolves a path — `git`, which does it before it
+answers, or `physical_cwd`, which exists to match it — then returns the *other* spelling
+and the assertion fails on a difference that has nothing to do with the behaviour under
+test. **`scratch_dir` resolves before it returns** so fixtures compare like with like;
+build a temp path some other way and this is waiting. It is not a CI-only trap — a dev
+Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **375 vitest + cargo (82 on macOS, 79 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **392 vitest + cargo (87 on macOS, 84 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -230,20 +241,20 @@ Four smaller P4 affordances, all in the frontend:
 
 ## Backend (`src-tauri/src/`) — ten modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~7,600. Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 450 lines out of ~8,700. Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
-| `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 819 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `lib.rs` | 450 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
+| `git.rs` | 1,683 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
+| `usage.rs` | 1,286 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 743 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
-| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
-| `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `icons.rs` | 184 | project favicon/logo probing |
-| `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
+| `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
 
@@ -258,13 +269,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 34 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 36 modules
 
-**No framework, and no longer one file.** ~7,200 lines across 34 modules; `main.ts` is 642 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~7,800 lines across 36 modules; `main.ts` is 668 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 375 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (ten — no DOM, no Tauri, no render imports; these are what the 392 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -277,16 +288,17 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
+| `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `historyui`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 34 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 36 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -362,9 +374,79 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 - **`--resume` and `--session-id` are mutually exclusive** (resume wins), so all three spawners branch either/or on `resume: Option<String>`. `--settings` stays keyed to our launch uuid, so `X-CC-Session` routes telemetry whatever id Claude runs under.
 - **Verified against the real CLI:** resume preserves the id and appends to the *same* transcript; it must run in the **original cwd** (else `No conversation found with session ID: …`); and resuming an **already-live** session silently interleaves both transcripts (Claude takes no lock). Hence `dormantBusy()` gates Resume, and spawners refuse a vanished workdir (deleted worktrees are real).
 - `list_past_sessions(workdir)` supplies labels from Claude's `ai-title` record — **last occurrence wins** — falling back `ai-title` → `last-prompt` → first user message. That layout is internal to Claude Code and documented as unstable across releases, so the chain is load-bearing, not padding. Only the 512KB tail is scanned. Entries with **no transcript are dropped** (a session launched but never prompted writes none).
-- **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one.
+- **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one. Both live in **`platform.rs`**, not here: `repo_root_of` needs the same resolution for the same underlying reason, so the encoder is no longer the only caller.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
+
+## History (`◷ History`, ⌘⇧H, `list_session_history`)
+
+The roster above answers "what was open when Episko quit". History answers "reopen the
+one I closed" — which the roster *can't*, by design: `closeSession` drops an entry (an
+explicit close means done) and it only ever knew Episko's own launches. So History
+reads the store that forgets nothing, walking all of `~/.claude/projects/*/*.jsonl`.
+It is therefore a **superset** of the dormant rows, sessions started in a plain
+terminal or an IDE included. `history.ts` owns the rules, `historyui.ts` the dialog —
+the `palette`/`palui` split, and what makes the rules testable.
+
+- **The cwd comes from inside the file, never the folder name.** `project_transcript_dir`
+  encodes a cwd into `<enc>` by mapping every non-alphanumeric char to `-`, and that is
+  lossy — the inverse does not exist. So `transcript_origin` reads the `cwd` (and
+  `gitBranch`) off the first user record, from a bounded *head* rather than the tail
+  `transcript_meta` needs. A transcript with no `cwd` is **dropped**: `--resume` must
+  run in the original directory, so a row without one could only fail.
+- **Then `norm_path`.** Claude records the path as the user typed it (`e:\proj` and
+  `E:\proj` for one folder) while everything History compares it against —
+  `git_repo_info`'s root, a live session's `workdir` — is normalised. Skipping this made
+  a repo's own checkout unequal to its own `repo_root`, so **135 of 219 rows read as
+  worktrees**; after, 32. Safe for the transcript lookup: identity off Windows, and on
+  Windows only the drive letter and separators, which the case-insensitive filesystem
+  and the `<enc>` scheme both absorb.
+- **Each row carries its `repo_root`** (`git_repo_info`, memoised per unique cwd,
+  skipped for folders that are gone) — the same enrichment `list_external_sessions`
+  does. It is what lets `histProject()` graft a row back onto the sidebar's grouping,
+  and it is load-bearing for the ◧ scope filter: a worktree lives *beside* its repo, so
+  no path-prefix test can find it. A few dozen git calls per scan, not one per row.
+- **Bounded before it reads.** A `(mtime, len)` pass over dir entries ranks every
+  transcript and keeps the newest `limit`; only those get the tail scan. So `limit` caps
+  I/O, **not rows** — the result can come back shorter. Runs on a blocking thread.
+- **The scan was profiled, and both hot spots were the ones nobody would guess.** At
+  244 transcripts / 737MB it took ~5s *debug*: `git rev-parse` × 24 folders was **3.3s**
+  (process creation on Windows, ~140ms a call) and the 512KB tail reads were **1.7s**;
+  the directory walk was 6ms. So a smaller page size would have addressed the *smaller*
+  half — the folder count barely moves with it. Both were removed instead, and it now
+  runs in **~0.48s debug** (~1.6ms per transcript, so `limit` is a genuine linear dial):
+  - `git_repo_info` → **`repo_root_of`** in `git.rs`, which reads the `.git` dir/file
+    layout directly. No subprocess. A test asserts it against `git_repo_info` case by
+    case, including a **stale worktree** — a pruned admin dir leaves the `.git` file
+    pointing at nothing, and git calls that "not a repository" and stops rather than
+    searching upward, so following that dangling pointer would file a dead checkout
+    under a repo that has forgotten it. It walks from the **physical** cwd
+    (`physical_cwd`), and that is load-bearing: `git` resolves symlinks before it
+    answers, so an unresolved walk returns a second spelling of the same root, which
+    then fails the exact string equality the sidebar groups by and stops a repo merging
+    with its own worktrees. Dropping that call also makes the function disagree with
+    *itself* — a linked worktree's root is read out of the `gitdir:` file, which git
+    wrote canonically, so only the `.git`-is-a-directory branches were ever unresolved.
+  - `transcript_meta` reads a **64KB tail first**, widening to 512KB only when both
+    `ai-title` and `last-prompt` were not in range. Requiring *both* is the whole
+    correctness argument: each is last-occurrence-wins, so once one is in the window the
+    newest one is too. Accepting on *either* mislabelled 10 of 244 transcripts with the
+    raw prompt, because the summary sat further back. Verified across the real corpus:
+    0/244 differ from an always-full read.
+  - `transcript_meta` also has a substring gate (parse only `ai-title` / `last-prompt` /
+    the first user line), behaviour-neutral since no other record's match arm does
+    anything.
+- **Same two resume constraints as a dormant row**, surfaced rather than hidden: an id
+  live anywhere is listed but tagged `live` (Claude takes no transcript lock, so a
+  second `--resume` interleaves both conversations into one file), and a vanished folder
+  is tagged `no folder` instead of dropped — a deleted worktree still reads.
+- **Two doors, one dialog — the difference is only the scope it opens in.** `◷ History`
+  in the stage header opens *scoped*, because everything beside it (❯ Terminal, ▶ Run,
+  ＋ Session) acts on the project on screen; a global button among them would read as
+  one more of those, and `syncStageButtons` greys it with them. The whole-machine view
+  is the `◷` icon in the top bar, with the other app-wide controls.
+- The dialog reuses `#wtDlg`'s `.wt-*` skin wholesale (head / query / list+detail / foot)
+  and the mirror's `.tvmsg` markup for its inline preview.
 
 ## Notes on scope & doc drift
 
