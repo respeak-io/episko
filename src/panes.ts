@@ -18,16 +18,19 @@
 // own is the app-wide repaint.
 
 import { invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, type DiffStat, type GitActionResult, type Runnable, type Sess,
+  isAgent, statusKey, taskStateText, type DiffStat, type GitActionResult,
+  type Runnable, type Sess,
 } from "./types";
 import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
+import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderFoot } from "./footer";
@@ -37,8 +40,9 @@ import { nextAfterClose } from "./grouping";
 import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
-  pastMirrorId, sessions, setActiveId, setDormants, termEngine, termFontSize,
+  accentFor, activeId, collapsedRuns, dirtyByFolder, dormants, engineDef, externals,
+  extMirrorId, pastMirrorId, sessions, setActiveId, setDormants, setStageGroup,
+  stageGroup, termEngine, termFontSize,
 } from "./state";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
@@ -196,6 +200,17 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
+  // A caption naming this step, CSS-hidden until the stage tiles a run group — a
+  // tiled chain is unreadable without one, and a single pane already has the header.
+  // Created here rather than at tile time because `term.open(pane)` appends, so the
+  // caption has to exist before it to end up above it.
+  const cap = document.createElement("div");
+  cap.className = "pane-cap";
+  // The ✕ carries `data-close`, which the delegated dispatcher in main.ts already
+  // routes to closeSession — a tiled pane needs no dispatch of its own.
+  cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
+    + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
+  pane.appendChild(cap);
   const term = new Terminal({
     fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: 8000,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
@@ -217,13 +232,29 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [],
     resumeId: id, kind: "task", external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
   };
   sessions.set(id, s);
   // An unfocused pane can't be measured, so it starts at xterm's default 24×80 and
-  // gets a real size the moment you activate it (setActive refits and resizes the
-  // PTY). Only run-on-stop takes that path.
-  if (opts.focus !== false) setActive(id);
+  // gets a real size the moment you activate it (setActive/openRunGroup refit and
+  // resize the PTY). Only run-on-stop takes that path.
+  //
+  // A pane that belongs to a chain puts its **group** on the stage, not itself. One
+  // chord starts a whole stack, so the stack is what you meant to look at; activating
+  // each member as it spawned left the stage on whichever step happened to start last,
+  // and (since a plain activation leaves the tiled view) untiled the group on the way.
+  if (opts.focus !== false) {
+    const gid = opts.groupId;
+    if (!gid) {
+      setActive(id);
+    } else {
+      // Re-tile as later steps appear, but only while the stage is still on this
+      // group. A sequential chain can start step 3 minutes in, and it must not yank
+      // you back from wherever you navigated in the meantime.
+      const first = ![...sessions.values()].some((x) => x.id !== id && x.run?.groupId === gid);
+      if (first || stageGroup === gid) openRunGroup(gid);
+    }
+  }
   dlog("info", `task ${r.id} · ${project} · ${cmd}`);
   term.writeln(`\x1b[90m$ ${cmd}\x1b[0m\r\n`);
   try {
@@ -238,6 +269,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     term.writeln(`\r\n\x1b[31m[task error] ${e}\x1b[0m`);
     s.phase = "error";
     s.run!.exitCode = -1;
+    s.run!.endedAt = Date.now();
   }
   renderAll();
   return id;
@@ -257,25 +289,148 @@ export function closeSession(id: string) {
   s.pane.remove();
   sessions.delete(id);
   flushRoster(); // an explicit close means done — it should not come back on restart
+  // A tiled group that just lost its last-but-one member is no longer a group, and a
+  // tiled stage with nothing left in it would keep #terminals in grid mode showing
+  // empty cells. Drop the pointer *before* the successor is activated, so setActive
+  // paints a normal single-pane stage.
+  if (stageGroup && ![...sessions.values()].some((x) => x.run?.groupId === stageGroup)) {
+    setStageGroup(null);
+    $("terminals").classList.remove("tiled");
+  }
   if (wasActive) {
     setActiveId(null);
     if (next) { setActive(next.id); return; }
+    setStageGroup(null);
+    $("terminals").classList.remove("tiled");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
     ($("empty") as HTMLElement).style.display = "grid";
   }
   renderAll();
 }
 
+/// Close every pane of one run group — the ✕ on its sidebar header.
+///
+/// **Asks first if anything is still running.** One ✕ standing for a dev server, a
+/// database container and four finished installs is a lot of destruction behind a
+/// 12-pixel target, and killing a stack you meant to keep is not undoable — whereas
+/// closing a chain that has already finished is just tidying, so that stays instant.
+///
+/// Snapshot the ids first: `closeSession` mutates the map and can re-enter `setActive`,
+/// so iterating the live values would skip members.
+export async function closeRunGroup(gid: string) {
+  const members = [...sessions.values()].filter((x) => x.run?.groupId === gid);
+  if (!members.length) return;
+  const live = members.filter((m) => m.run?.exitCode == null);
+  if (live.length) {
+    const names = live.slice(0, 6).map((m) => `• ${m.run?.label ?? "task"}`).join("\n");
+    const more = live.length > 6 ? `\n• …and ${live.length - 6} more` : "";
+    const ok = await ask(
+      `${live.length} of ${members.length} ${live.length === 1 ? "task is" : "tasks are"} still running:\n\n${names}${more}\n\nClosing the group stops them.`,
+      { title: `Stop ${members[0].run?.groupLabel ?? "this run"}?`, kind: "warning", okLabel: `Stop ${live.length === 1 ? "it" : "them"}`, cancelLabel: "Keep running" },
+    );
+    if (!ok) return;
+  }
+  for (const id of members.map((x) => x.id)) closeSession(id);
+}
 
-export function setActive(id: string) {
+/// Collapse/expand a run group's step list in the sidebar. Purely presentational, so
+/// it repaints the sidebar and nothing else.
+export function toggleRunGroup(gid: string) {
+  if (collapsedRuns.has(gid)) collapsedRuns.delete(gid);
+  else collapsedRuns.add(gid);
+  renderSidebar();
+}
+
+
+/// Repaint the captions of a tiled group. Called from `renderAll` because panes sit
+/// outside the render-everything sweep, and a caption shows live state.
+export function refreshPaneCaps() {
+  if (!stageGroup) return;
+  for (const s of sessions.values()) if (s.run?.groupId === stageGroup) paintPaneCap(s);
+}
+
+/// Fill in a pane's caption. Only visible in the tiled view (see the CSS), so this
+/// is cheap to keep current rather than tracking whether anyone can see it.
+function paintPaneCap(s: Sess) {
+  const cap = s.pane.querySelector<HTMLElement>(".pane-cap");
+  if (!cap) return;
+  const name = cap.querySelector<HTMLElement>(".pc-name");
+  const state = cap.querySelector<HTMLElement>(".pc-state");
+  if (name) name.textContent = s.run?.label ?? s.title ?? "pane";
+  // A finished run keeps its ✕ on screen: it is done, so dismissing it is the next
+  // thing you want, and hunting for a hover target in a grid of six is not. A running
+  // one still has one, just on hover — closing it means killing it.
+  cap.classList.toggle("done", s.run?.exitCode != null);
+  if (state) {
+    state.textContent = s.kind === "task" ? taskStateText(s) : "";
+    state.className = "pc-state " + (GCLASS[statusKey(s)] || "");
+  }
+}
+
+/// Put a run group's panes on the stage side by side, focused on its most
+/// interesting member.
+///
+/// "Most interesting" is the failure if there is one — a chain is opened to find out
+/// what broke — else the last one to start, which is the step still running or the
+/// one that finished the chain.
+///
+/// Called both from clicking the group's header and, as a chain fans out, from
+/// `launchTask` for each member — so it must be idempotent and safe to call with the
+/// group half-populated. It is: it re-derives the member list every time.
+export function openRunGroup(gid: string) {
+  const members = [...sessions.values()].filter((x) => x.run?.groupId === gid);
+  if (!members.length) return;
+  const focus = members.find((m) => m.phase === "error")
+    ?? members.reduce((a, b) => (b.run!.startedAt > a.run!.startedAt ? b : a));
+  setStageGroup(gid);
+  // `keepGroup` is not optional here: `setActive` clears `stageGroup` by default (a
+  // sidebar row means "show me that one"), so without it this would set the group and
+  // then immediately drop it, and the stage would never tile at all.
+  setActive(focus.id, true);
+}
+
+/// Move the focus *within* a tiled group — what clicking one of the tiles means.
+///
+/// The counterpart to `setActive` untiling: clicking a tile is "I'm reading this one",
+/// not "drop the mosaic". Keeps `stageGroup`, so the layout survives; moves `activeId`,
+/// so the header, inspector and footer follow what you're looking at.
+export function focusInGroup(id: string) {
+  const s = sessions.get(id);
+  if (!s || !stageGroup || s.run?.groupId !== stageGroup || id === activeId) return;
+  setActiveId(id);
+  for (const x of sessions.values()) x.pane.classList.toggle("focused", x.id === id);
+  document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
+  renderAll();
+}
+
+/// Put one pane on the stage. `keepGroup` is for `openRunGroup` alone — see below.
+export function setActive(id: string, keepGroup = false) {
   const s = sessions.get(id);
   if (!s) return;
   closeExternalView();
   setActiveId(id);
+  // Picking a row in the sidebar always means "show me that one", group member or not.
+  // It used to keep the tiled view when the row was inside the tiled group and only
+  // move the focus ring — which read as the click doing nothing at all. The split is
+  // now the obvious one: the group *header* shows all of them, a *row* shows one, and
+  // the header takes you back. Clicking a tile is `focusInGroup`, not this.
+  if (stageGroup && !keepGroup) setStageGroup(null);
+  const gid = stageGroup;
   ($("empty") as HTMLElement).style.display = "none";
-  for (const x of sessions.values()) x.pane.classList.toggle("active", x.id === id);
+  $("terminals").classList.toggle("tiled", !!gid);
+  for (const x of sessions.values()) {
+    const on = gid ? x.run?.groupId === gid : x.id === id;
+    x.pane.classList.toggle("active", on);
+    x.pane.classList.toggle("focused", !!gid && x.id === id);
+    if (on) paintPaneCap(x);
+  }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
-  if (s.term && s.fit) {
+  if (gid) {
+    // Every visible pane needs a real size, not just the focused one — an unfitted
+    // pane sits at xterm's default 24×80 inside its grid cell.
+    for (const x of sessions.values()) if (x.pane.classList.contains("active")) fitSession(x);
+    s.term?.focus();
+  } else if (s.term && s.fit) {
     fitSession(s);
     s.term.focus();
   }

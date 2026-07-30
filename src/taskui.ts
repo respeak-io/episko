@@ -24,7 +24,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
-import { basename, esc, tilde } from "./format";
+import { basename, elidePath, esc, tilde } from "./format";
 import type { Runnable } from "./types";
 import { activeId, externals, extMirrorId, sessions } from "./state";
 import { bumpFrec, frecScore } from "./palette";
@@ -300,7 +300,13 @@ export async function openRunPicker() {
   runList = await discoverTasks(c.workdir, c.colorKey);
   runSel = 0;
   runSource = null;
-  $("runSub").textContent = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · ${tilde(c.workdir)}`;
+  // The middle of the path is what goes, not the end: with worktrees the last
+  // segment is the only thing that says which checkout this will run in. The full
+  // string stays reachable as the tooltip.
+  const where = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · `;
+  const sub = $("runSub");
+  sub.textContent = where + elidePath(tilde(c.workdir));
+  sub.title = where + tilde(c.workdir);
   const pop = $("runPop");
   pop.classList.add("show");
   $("scrim").classList.add("show");
@@ -458,6 +464,42 @@ function pickRun(pin: boolean) {
   const o = { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir };
   if (r.inputs.length) { openInputPrompt(r, ctx.project, o); return; }
   void launchWithDeps(r, ctx.project, o);
+}
+
+/// VS Code's ⌘⇧B / ⌘⇧T — run the project's *default* build (or test) task.
+///
+/// This is the "start the whole stack with one chord" affordance, and it works because
+/// the default build task is usually a **compound**: no command of its own, just a
+/// `dependsOn` list of the servers to bring up. So the chord finds one task and
+/// `launchWithDeps` fans out from there — no separate orchestration.
+///
+/// Resolution follows VS Code: the task marked `"group": {"kind":"build","isDefault":true}`
+/// wins outright. Failing that, an unambiguous single member of the build group is
+/// obviously what was meant. Anything else is genuinely ambiguous, so it opens the
+/// picker rather than guessing — silently running the first build-ish task in the file
+/// is how you end up deploying when you meant to compile.
+export async function runDefaultTask(kind: "build" | "test") {
+  const c = runTargetCtx();
+  if (!c) { toast("No active project"); return; }
+  const all = (await discoverTasks(c.workdir, c.colorKey)).filter((r) => !r.blocked);
+  const marked = all.filter((r) => r.defaultFor === kind);
+  const inGroup = all.filter((r) => r.group === kind);
+  const pick = marked[0] ?? (inGroup.length === 1 ? inGroup[0] : null);
+  if (!pick) {
+    toast(inGroup.length
+      ? `No default ${kind} task — ${inGroup.length} are in the ${kind} group`
+      : `No ${kind} task in ${c.project}`);
+    await openRunPicker();
+    return;
+  }
+  dlog("info", `${kind} task · ${pick.id} · ${c.project}`);
+  bumpFrec("task:" + pick.id);
+  const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
+  // Even the one-chord path stops for an ${input:…}: the alternative is a dialog-less
+  // hang or a command with a literal ${input:x} in it.
+  if (pick.inputs.length) { openInputPrompt(pick, c.project, o); return; }
+  toast(`▶ ${pick.label}`);
+  void launchWithDeps(pick, c.project, o);
 }
 
 // Trusting a folder means Episko may execute code from it to enumerate tasks, so

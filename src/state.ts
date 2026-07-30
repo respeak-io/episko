@@ -106,6 +106,17 @@ export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
+// A run group tiled across the stage (its `run.groupId`), from clicking the group's
+// sidebar header. NOT a fourth owner of the stage: `activeId` still names the one
+// *focused* pane — it is what the header, inspector, footer and keystrokes read — and
+// this only says "also show that pane's group siblings beside it". So the invariant
+// above is unchanged, and every existing activeId consumer keeps working untouched.
+// Mutually exclusive with `mirror` for the obvious reason: a mirror has no group.
+export let stageGroup: string | null = null;
+export function setStageGroup(g: string | null) { stageGroup = g; }
+// Run groups the user has collapsed. Deliberately NOT persisted: the ids are
+// per-launch uuids, so a saved entry could never match anything on a later run.
+export const collapsedRuns = new Set<string>();
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.

@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 368 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 82 tests on macOS, 79 on
+- `pnpm test` — 413 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 84 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -140,6 +140,51 @@ A regression in either is silent.
       non-zero shows `error` and raises attention.
 - [ ] **A run-on-stop rule fires** once per turn, does not steal the stage, and offers
       its output back to the session whose turn triggered it.
+- [ ] **⌘⇧B starts the default build task**, in a project whose `tasks.json` marks one
+      (`"group": {"kind":"build","isDefault":true}`). If that task is a *compound* — no
+      command, only `dependsOn` — the whole stack must come up: every dependency gets a
+      pane, and the chord must NOT hang waiting on the background ones. **Count the
+      panes**: a task named by several dependents must run ONCE — a real stack of 11
+      tasks used to open 27 panes. Then hit the group's ✕ while it is still running and
+      confirm it *asks* before killing anything. The stage must
+      land on the **group** — tiled, with its sidebar header highlighted — not on
+      whichever step happened to start last. Then click another session mid-chain: a
+      later step appearing must NOT yank the stage back. Also confirm
+      plain **⌘B still toggles the sidebar** and **⌘T still opens a terminal**: the
+      shifted bindings sit ahead of them in one if/else chain, so a mistake there
+      silently steals the unshifted chord.
+- [ ] **A `dependsOn` chain folds into ONE sidebar row** (run this repo's `fe-check`, or
+      any VS Code task with `dependsOn`). The fold and the aggregate phase are unit
+      tested; the row, the twisty and the tiling are not, and cannot be — so check:
+      the ▸ twisty expands the steps *without* tiling the stage; clicking the row's
+      label tiles all the panes side by side with the focused one outlined; a resize
+      reflows the grid and every pane stays correctly wrapped (not just the focused
+      one); **nothing scrolls** — no scrollbar beside the tiled panes and the stage
+      header stays put (the grid must fill the stage, never grow it); the steps sit
+      under **one** worktree header, not one each (a task whose `options.cwd` is a
+      subfolder still belongs to its checkout); the header's ✕ closes every pane in the
+      chain; **clicking a step row leaves the mosaic and shows that pane alone** while
+      clicking a *tile* keeps the mosaic and just moves the focus outline; a finished
+      tile keeps a ✕ in its caption (a running one shows it on hover) and it closes only
+      that pane; and a finished step's elapsed time **stops counting** rather than
+      climbing with the clock — check all three readouts, the sidebar column, the
+      tile's caption AND the inspector's "Took" row, which are easy to fix separately; and closing the members
+      one by one returns the stage to a normal single pane rather than leaving an
+      empty grid.
+- [ ] **PATH: launch from Finder/Explorer, not a terminal, then run a task that needs a
+      version manager** — `pnpm …` (or nvm's `node`, or an `asdf`/`mise` shim). A dev
+      build inherits your shell's PATH and cannot see this class of bug at all; the
+      installed app starts from `/usr/bin:/bin:/usr/sbin:/sbin`. The mechanism (the
+      interactive-shell PATH probe) is unit-tested, but only the real app proves the
+      probe ran before the task did.
+- [ ] **PATH: a project with a `justfile` lists its recipes** in the picker, again from
+      a Finder/Explorer launch. If `just` genuinely isn't installed the row must say
+      *"`just` is not on Episko's PATH"* — an empty `just` group is the regression.
+- [ ] **Windows only: a `package.json` script runs.** `npm`/`pnpm`/`yarn` resolve to a
+      `.cmd` shim plus an extensionless bash script, neither of which `CreateProcessW`
+      can start, so these launched not at all before `argv_command`. Only the pure
+      decision half is unit-testable off Windows — the resolution half needs a real
+      Windows PATH, so this checkbox is the only proof it works.
 
 ### Sessions Episko doesn't own
 

@@ -6,6 +6,8 @@
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 
+import { fmtShort } from "./format";
+
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
 export type Risk = "low" | "med" | "high";
@@ -48,6 +50,37 @@ export const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
 // beside it rather than in whichever of them was extracted first.
 export const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…", working: "working…", done: "your turn", error: "error", ended: "ended" };
 
+/// How long a run has taken: wall-clock while it is going, and **frozen at its exit**
+/// once it is over.
+///
+/// The single source for every duration a run shows, and it is one function because it
+/// was three: the sidebar column, the tiled pane's caption and the inspector's "Took"
+/// row each did their own `Date.now() - startedAt`. All three therefore kept counting
+/// after the process had exited — a step that finished in 400ms read "1m 23s" a minute
+/// later, and a whole tiled chain showed the same climbing number. Fixing two of the
+/// three copies is exactly the mistake this consolidation prevents: anything that wants
+/// a run's duration calls here.
+export function runElapsed(r: NonNullable<Sess["run"]>, now = Date.now()): string {
+  // `?? now` only covers a run whose exit predates this field — a pane restored from
+  // an older build.
+  return fmtShort((r.exitCode == null ? now : r.endedAt ?? now) - r.startedAt);
+}
+
+/// A run's trailing readout — the sidebar column, the palette subtitle and a tiled
+/// pane's caption all show this one string. A background run never claims to be
+/// finished, so it reads "bg" for as long as it lives.
+///
+/// It lives here, beside the other discriminants that read the model, because it is
+/// pure — and `now` is a parameter so the elapsed case is testable without faking the
+/// clock.
+export function taskStateText(s: Sess, now = Date.now()): string {
+  const r = s.run;
+  if (!r) return "";
+  if (r.background && r.exitCode == null) return "bg";
+  if (r.exitCode == null) return s.phase === "working" ? runElapsed(r, now) : "";
+  return r.exitCode === 0 ? runElapsed(r, now) : `exit ${r.exitCode}`;
+}
+
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }
 export interface ExecShell { mode: "shell"; line: string }
@@ -65,6 +98,12 @@ export interface Runnable {
   // Labels, not ids — VS Code names dependencies by label.
   dependsOn: string[]; dependsOrder: "parallel" | "sequence";
   blocked: string | null;
+  /// No command of its own — `dependsOn` IS the work (VS Code's compound task).
+  /// Launches no pane; `launchWithDeps` runs the dependencies and stops.
+  compound: boolean;
+  /// "build" | "test" when the source file marks this that group's *default* task,
+  /// which is what ⌘⇧B / ⌘⇧T resolve to.
+  defaultFor: string | null;
 }
 
 export interface Sess {
@@ -85,12 +124,26 @@ export interface Sess {
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
+    /// When the process exited. Without it the elapsed readout is `Date.now() -
+    /// startedAt` forever, so a run that took 400ms reads "1m 23s" a minute later —
+    /// the duration has to be frozen at the exit, not recomputed on every repaint.
+    endedAt?: number;
     /// The directory discovery ran in — where `sourceFile` is rooted, so *reveal
     /// source* can find the file even for a task whose run cwd is a subfolder.
     root: string;
     /// Set when a run-on-stop rule started this — the session whose turn it was
     /// verifying, and therefore the one a failure should be offered back to.
     forSession?: string;
+    /// Every pane of one `dependsOn` chain shares this id, so the sidebar can show
+    /// "build → lint → test" as one collapsible row instead of three loose panes,
+    /// and the stage can tile them together. Minted per *launch*, never per task:
+    /// running `fe-check` twice is two groups, which is what you want to compare.
+    /// Absent on a task launched on its own — a group of one is just a row.
+    groupId?: string;
+    /// The chain's own name (the label of the task that pulled the others in), for
+    /// the group row. Carried rather than derived: the root is not distinguishable
+    /// from its dependencies once they are all just panes.
+    groupLabel?: string;
   };
 }
 

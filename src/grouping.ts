@@ -13,7 +13,7 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import type { ExtSession, Restorable, Sess } from "./types";
+import type { ExtSession, Phase, Restorable, Sess } from "./types";
 import {
   accentFor, dormants, externals, FAVORITES, projOrder, sessions, sortMode, wtGroup,
 } from "./state";
@@ -29,6 +29,20 @@ export interface ProjGroup { name: string; path: string; accent: string; session
 // attention sort still decides which worktree floats up. The repo-root checkout
 // (worktree === null) is the "main" cluster; its label is the live branch.
 export interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
+/// Which *checkout* a pane belongs to — the key worktree clustering groups by.
+///
+/// An agent's `workdir` IS its checkout, but a task's `workdir` is wherever the task
+/// declared it runs: VS Code's `options.cwd` is routinely a subfolder (`01_frontend`,
+/// `02_backend`), which is emphatically not a different worktree. Keying on it split
+/// one chain's panes into a cluster each, every one of them labelled with the same
+/// branch — and, because the run-group fold happens *within* a cluster, stopped the
+/// members of a single launch from ever folding into one row.
+///
+/// `run.root` is the directory discovery ran in, which is exactly the checkout.
+export function checkoutOf(s: Sess, fallback: string): string {
+  return (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+}
+
 export function clusterByWorktree(p: ProjGroup): WtCluster[] {
   const by = new Map<string, WtCluster>();
   const order: WtCluster[] = [];
@@ -38,7 +52,7 @@ export function clusterByWorktree(p: ProjGroup): WtCluster[] {
     else if (!c.branch && branch) c.branch = branch;
     return c;
   };
-  for (const s of p.sessions) bucket(s.workdir || p.path, s.branch || s.worktree || "").sessions.push(s);
+  for (const s of p.sessions) bucket(checkoutOf(s, p.path), s.branch || s.worktree || "").sessions.push(s);
   for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
   // Label clusters that never carried a branch: the repo-root checkout is "main",
   // any other bare dir falls back to its folder name.
@@ -116,6 +130,63 @@ export function projectList(): ProjGroup[] {
   }
   return groups;
 }
+// ---------- run groups ----------
+// A `dependsOn` chain launches one pane per step, which is correct (a run's exit
+// code is its phase, and you cannot get four exit codes out of one PTY) and reads
+// badly: "build → lint → test" arrives as three loose rows interleaved with your
+// agents. Folding is presentational only — the panes, the PTYs and the phase
+// machine are untouched.
+
+/// One sidebar slot: a lone session, or a whole launch's worth of them.
+export type RunItem =
+  | { kind: "one"; s: Sess }
+  | { kind: "group"; id: string; label: string; members: Sess[]; phase: Phase };
+
+/// Collapse the members of each `run.groupId` into a single item, in place.
+///
+/// "In place" is the point: a group takes the position of its *first* member, so
+/// whatever `projectList` already sorted by — activity, urgency, manual order —
+/// still decides where the group sits. Re-sorting here would silently overrule it.
+///
+/// A group of one renders as a plain row. A chain whose dependencies all resolved to
+/// nothing is not a chain, and a header wrapping a single step is pure overhead.
+export function foldRunGroups(list: Sess[]): RunItem[] {
+  const out: RunItem[] = [];
+  const at = new Map<string, number>();   // groupId → index in `out`
+  for (const s of list) {
+    const gid = s.kind === "task" ? s.run?.groupId : undefined;
+    if (!gid) { out.push({ kind: "one", s }); continue; }
+    const i = at.get(gid);
+    if (i === undefined) {
+      at.set(gid, out.length);
+      out.push({ kind: "group", id: gid, label: s.run?.groupLabel || s.run?.label || "run", members: [s], phase: "idle" });
+    } else {
+      (out[i] as { members: Sess[] }).members.push(s);
+    }
+  }
+  return out.map((it) => {
+    if (it.kind !== "group") return it;
+    if (it.members.length === 1) return { kind: "one" as const, s: it.members[0] };
+    return { ...it, phase: groupPhase(it.members) };
+  });
+}
+
+/// The phase a group shows: the worst of its members.
+///
+/// Worst-of, not last-of, because the whole value of one row is that it answers "did
+/// my chain pass?" without expanding it — and a failed build followed by a skipped
+/// test must not read as `done` just because nothing ran after it. `working` beats
+/// `done` for the same reason in the other direction: a chain with a step still
+/// running has not passed yet.
+export function groupPhase(members: Sess[]): Phase {
+  const has = (p: Phase) => members.some((m) => m.phase === p);
+  if (has("error")) return "error";
+  if (has("working") || has("thinking")) return "working";
+  if (has("idle")) return "working";      // queued behind a sequential dependency
+  if (members.every((m) => m.phase === "ended")) return "ended";
+  return "done";
+}
+
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
 export function urgencyRank(s: Sess): number {

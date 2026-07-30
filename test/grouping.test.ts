@@ -6,9 +6,9 @@ import {
   setProjOrder, setSortMode, setWtGroup,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, needsYou, needsYouSessions, nextAfterClose,
-  orderedSessions, projectList, reactorLabel, reactorState, splitByWorktree,
-  urgencyRank, type ProjGroup,
+  allProjects, clusterByWorktree, foldRunGroups, groupPhase, needsYou, needsYouSessions,
+  nextAfterClose, orderedSessions, projectList, reactorLabel, reactorState,
+  splitByWorktree, urgencyRank, type ProjGroup,
 } from "../src/grouping";
 import { taskPrefs } from "../src/tasks";
 
@@ -63,6 +63,29 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     expect(cl.map((c) => c.key)).toEqual(["/w/wt-b", "/w/epi"]); // order follows the sorted session list
     expect(ids(cl[0].sessions)).toEqual(["a", "c"]);
     expect(ids(cl[1].sessions)).toEqual(["b"]);
+  });
+  /// The bug this exists for: a task's `workdir` is where the *task* runs, and VS Code
+  /// tasks routinely declare a subfolder (`options.cwd: 01_frontend`). Keying clusters
+  /// on that gave one chain three "worktree" headers, all with the same branch on them,
+  /// and — because the run-group fold happens inside a cluster — stopped the members of
+  /// one launch from ever folding into a single row.
+  it("clusters a task pane by its checkout, not by the subfolder it runs in", () => {
+    const wt = "/w/wt-feat";
+    const p = grp({ sessions: [
+      sess({ id: "agent", workdir: wt, branch: "feat" }),
+      taskSess("fe", { workdir: wt + "/01_frontend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+      taskSess("be", { workdir: wt + "/02_backend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+    ] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(ids(cl[0].sessions)).toEqual(["agent", "fe", "be"]);
+    // And therefore the two run panes can actually fold into one row.
+    const items = foldRunGroups(cl[0].sessions);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["agent", "GROUP"]);
+  });
+  it("falls back to a task pane's workdir when it has no discovery root", () => {
+    const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
   });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
@@ -599,5 +622,96 @@ describe("reactorState / reactorLabel — the badge's one rollup", () => {
     expect(reactorLabel("error", 2)).toBe("2 errors");
     expect(reactorLabel("done", 1)).toBe("1 your turn");
     expect(reactorLabel("done", 4)).toBe("4 your turn");
+  });
+});
+
+// A task pane, optionally in a run group. `run` carries everything the fold reads.
+function taskSess(id: string, o: Partial<Sess> = {}, run: Partial<NonNullable<Sess["run"]>> = {}): Sess {
+  return sess({
+    id, kind: "task", ...o,
+    run: {
+      id: "npm:" + id, label: id, source: "npm", sourceFile: "package.json",
+      cmd: "npm run " + id, background: false, startedAt: NOW_MS, exitCode: null,
+      tail: [], root: "/w/epi", ...run,
+    },
+  });
+}
+
+describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
+  it("collapses the members of one launch and leaves everything else alone", () => {
+    const items = foldRunGroups([
+      sess({ id: "agent" }),
+      taskSess("typecheck", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("lint", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("test", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("solo"),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? `group:${i.label}` : i.s.id)))
+      .toEqual(["agent", "group:fe-check", "solo"]);
+    const g = items[1];
+    expect(g.kind).toBe("group");
+    if (g.kind === "group") expect(ids(g.members)).toEqual(["typecheck", "lint", "test"]);
+  });
+
+  it("puts the group where its FIRST member sat, so the caller's sort still decides", () => {
+    // If the fold re-sorted, `solo` could not stay ahead of a group whose first
+    // member follows it — which is exactly what projectList already ordered.
+    const items = foldRunGroups([
+      taskSess("solo"),
+      taskSess("build", {}, { groupId: "g1", groupLabel: "ship" }),
+      taskSess("sign", {}, { groupId: "g1", groupLabel: "ship" }),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["solo", "GROUP"]);
+  });
+
+  it("keeps two launches of the same chain apart", () => {
+    // The whole reason groupId is minted per launch: running `fe-check` twice must
+    // give two rows to compare, not one row with six steps.
+    const items = foldRunGroups([
+      taskSess("a1", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("a2", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("b1", {}, { groupId: "g2", groupLabel: "fe-check" }),
+      taskSess("b2", {}, { groupId: "g2", groupLabel: "fe-check" }),
+    ]);
+    expect(items.length).toBe(2);
+    expect(items.every((i) => i.kind === "group")).toBe(true);
+  });
+
+  it("renders a group of one as a plain row — a header over one step is noise", () => {
+    const items = foldRunGroups([taskSess("only", {}, { groupId: "g1", groupLabel: "fe-check" })]);
+    expect(items).toEqual([{ kind: "one", s: expect.objectContaining({ id: "only" }) }]);
+  });
+
+  it("never groups a claude or shell pane, whatever it carries", () => {
+    const items = foldRunGroups([
+      sess({ id: "c", kind: "claude", run: { groupId: "g1" } as never }),
+      sess({ id: "sh", kind: "shell", run: { groupId: "g1" } as never }),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+});
+
+describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () => {
+  const p = (...phases: Sess["phase"][]) => groupPhase(phases.map((ph, i) => taskSess("s" + i, { phase: ph })));
+
+  it("lets a failure outrank anything that came after it", () => {
+    // The case worst-of exists for: a failed build stops the chain, so the steps
+    // behind it never run. Last-of would report `done` on a broken chain.
+    expect(p("error", "done")).toBe("error");
+    expect(p("done", "error", "idle")).toBe("error");
+  });
+  it("is not done while any step is still going", () => {
+    expect(p("done", "working")).toBe("working");
+    expect(p("done", "thinking")).toBe("working");
+  });
+  it("reads a step queued behind a sequential dependency as still working", () => {
+    expect(p("done", "idle")).toBe("working");
+  });
+  it("is done only when every step is", () => {
+    expect(p("done", "done", "done")).toBe("done");
+  });
+  it("is ended only when every step is", () => {
+    expect(p("ended", "ended")).toBe("ended");
+    expect(p("ended", "done")).toBe("done");
   });
 });
