@@ -28,7 +28,7 @@ import {
   isAgent, statusKey, taskStateText, type DiffStat, type GitActionResult,
   type Runnable, type Sess,
 } from "./types";
-import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
+import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, refit, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
@@ -36,7 +36,7 @@ import { renderMini, renderSidebar } from "./sidebar";
 import { renderFoot } from "./footer";
 import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
 import { openWt } from "./worktree";
-import { nextAfterClose } from "./grouping";
+import { nextAfterClose, nextInGroup } from "./grouping";
 import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
@@ -284,6 +284,13 @@ export function closeSession(id: string) {
   // Resolve the successor while the closing session is still in the map, so its
   // sidebar position (same-project neighbour) is known.
   const next = wasActive ? nextAfterClose(s) : null;
+  // Closing one tile of a mosaic stays in the mosaic. `nextAfterClose` answers the
+  // sidebar's question over the whole project, so on its own it handed the stage to
+  // whichever Claude session sat next to the group — and untiled it on the way.
+  const gid = s.run?.groupId;
+  const groupNext = wasActive && gid && stageGroup === gid
+    ? nextInGroup(groupMembers(gid), id)
+    : null;
   invoke("kill_session", { sessionId: id }).catch(() => {});
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
@@ -299,12 +306,18 @@ export function closeSession(id: string) {
   }
   if (wasActive) {
     setActiveId(null);
+    // A surviving group sibling wins over the sidebar neighbour, and keeps the tiling.
+    if (groupNext) { setActive(groupNext.id, true); return; }
     if (next) { setActive(next.id); return; }
     setStageGroup(null);
     $("terminals").classList.remove("tiled");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
     ($("empty") as HTMLElement).style.display = "grid";
   }
+  // Closing a tile that wasn't the focused one still reflows the grid — every
+  // surviving cell changed size. #terminals itself did not, so the ResizeObserver
+  // never fires and nothing would re-measure the terminals inside.
+  if (stageGroup) refit();
   renderAll();
 }
 
@@ -318,7 +331,7 @@ export function closeSession(id: string) {
 /// Snapshot the ids first: `closeSession` mutates the map and can re-enter `setActive`,
 /// so iterating the live values would skip members.
 export async function closeRunGroup(gid: string) {
-  const members = [...sessions.values()].filter((x) => x.run?.groupId === gid);
+  const members = groupMembers(gid);
   if (!members.length) return;
   const live = members.filter((m) => m.run?.exitCode == null);
   if (live.length) {
@@ -341,6 +354,16 @@ export function toggleRunGroup(gid: string) {
   renderSidebar();
 }
 
+
+/// One run group's live panes, **in launch order** — which is the order they were
+/// appended to `#terminals`, and therefore the order the mosaic lays them out in. The
+/// map's own insertion order already matches, but sorting says so out loud: "the next
+/// tile" has to mean the next tile on screen.
+function groupMembers(gid: string): Sess[] {
+  return [...sessions.values()]
+    .filter((x) => x.run?.groupId === gid)
+    .sort((a, b) => (a.run?.startedAt ?? 0) - (b.run?.startedAt ?? 0));
+}
 
 /// Repaint the captions of a tiled group. Called from `renderAll` because panes sit
 /// outside the render-everything sweep, and a caption shows live state.
@@ -378,7 +401,7 @@ function paintPaneCap(s: Sess) {
 /// `launchTask` for each member — so it must be idempotent and safe to call with the
 /// group half-populated. It is: it re-derives the member list every time.
 export function openRunGroup(gid: string) {
-  const members = [...sessions.values()].filter((x) => x.run?.groupId === gid);
+  const members = groupMembers(gid);
   if (!members.length) return;
   const focus = members.find((m) => m.phase === "error")
     ?? members.reduce((a, b) => (b.run!.startedAt > a.run!.startedAt ? b : a));

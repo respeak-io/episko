@@ -171,6 +171,22 @@ export function foldRunGroups(list: Sess[]): RunItem[] {
   });
 }
 
+/// Which member a tiled run group should focus when `closingId` goes away: the next
+/// one in the given order, else the previous, else `null` when it was the last.
+///
+/// Separate from `nextAfterClose`, which answers the *sidebar's* question ("which
+/// session takes the stage") over the whole project — and therefore happily hands the
+/// stage to a Claude session sitting next to the group. Closing one tile of a mosaic
+/// means "show me the rest of this run", not "leave it".
+///
+/// Next-then-previous because the grid reflows into the gap: closing the top-left tile
+/// promotes the one that follows it, so that is the one to look at.
+export function nextInGroup(members: Sess[], closingId: string): Sess | null {
+  const i = members.findIndex((m) => m.id === closingId);
+  if (i < 0) return null;
+  return members[i + 1] ?? members[i - 1] ?? null;
+}
+
 /// The phase a group shows: the worst of its members.
 ///
 /// Worst-of, not last-of, because the whole value of one row is that it answers "did

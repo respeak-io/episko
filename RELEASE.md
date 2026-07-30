@@ -15,7 +15,7 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 413 vitest tests over the logic modules
+- `pnpm test` — 417 vitest tests over the logic modules
 - `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 84 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
@@ -162,7 +162,7 @@ A regression in either is silent.
       one); **nothing scrolls** — no scrollbar beside the tiled panes and the stage
       header stays put (the grid must fill the stage, never grow it); the steps sit
       under **one** worktree header, not one each (a task whose `options.cwd` is a
-      subfolder still belongs to its checkout); the header's ✕ closes every pane in the
+      subfolder still belongs to its checkout); closing ONE tile keeps the mosaic and moves to the next tile (not to a Claude session beside the group), and the survivors re-fit to their new cell sizes; the header's ✕ closes every pane in the
       chain; **clicking a step row leaves the mosaic and shows that pane alone** while
       clicking a *tile* keeps the mosaic and just moves the focus outline; a finished
       tile keeps a ✕ in its caption (a running one shows it on hover) and it closes only

@@ -7,7 +7,7 @@ import {
 } from "../src/state";
 import {
   allProjects, clusterByWorktree, foldRunGroups, groupPhase, needsYou, needsYouSessions,
-  nextAfterClose, orderedSessions, projectList, reactorLabel, reactorState,
+  nextAfterClose, nextInGroup, orderedSessions, projectList, reactorLabel, reactorState,
   splitByWorktree, urgencyRank, type ProjGroup,
 } from "../src/grouping";
 import { taskPrefs } from "../src/tasks";
@@ -713,5 +713,25 @@ describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () 
   it("is ended only when every step is", () => {
     expect(p("ended", "ended")).toBe("ended");
     expect(p("ended", "done")).toBe("done");
+  });
+});
+
+describe("nextInGroup — closing one tile stays in the mosaic", () => {
+  const m = (...ids: string[]) => ids.map((id) => taskSess(id, {}, { groupId: "g1" }));
+  it("promotes the tile that FOLLOWS the one closing", () => {
+    // The grid reflows into the gap, so closing the top-left tile makes the next one
+    // top-left — that is the one to look at.
+    expect(nextInGroup(m("a", "b", "c"), "a")?.id).toBe("b");
+    expect(nextInGroup(m("a", "b", "c"), "b")?.id).toBe("c");
+  });
+  it("falls back to the previous tile when the last one closes", () => {
+    expect(nextInGroup(m("a", "b", "c"), "c")?.id).toBe("b");
+  });
+  it("has nothing to offer when the group had one member", () => {
+    expect(nextInGroup(m("only"), "only")).toBeNull();
+  });
+  it("returns null for a session that isn't in the group at all", () => {
+    // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
+    expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
   });
 });

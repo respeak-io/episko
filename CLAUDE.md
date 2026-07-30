@@ -41,7 +41,7 @@ in the block above before pushing, and match the toolchain CI uses (`stable` for
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **413 vitest + cargo (91 on macOS, 84 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **417 vitest + cargo (91 on macOS, 84 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -165,6 +165,12 @@ which is what makes "outermost wins" true without threading a depth counter.
   group on the way. It re-tiles as later steps appear **only while the stage is still on
   that group**: a sequential chain can start step 3 minutes in, and it must not yank you
   back from wherever you went.
+- **Closing one tile stays in the mosaic** (`nextInGroup`). `nextAfterClose` answers the
+  *sidebar's* question over the whole project, so on its own it handed the stage to
+  whichever Claude session sat beside the group — and untiled it on the way. A surviving
+  group sibling wins, focused next-then-previous because the grid reflows into the gap.
+  Closing a tile also has to `refit()`: every surviving cell changed size, but
+  `#terminals` did not, so the ResizeObserver never fires.
 - **Closing a group asks first if anything is still running** (`closeRunGroup`). One ✕
   can stand for a dev server, a database container and four finished installs, and
   killing a stack you meant to keep is not undoable. A chain that has already finished
@@ -448,7 +454,7 @@ Four conventions hold across them:
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 413 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 417 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -459,7 +465,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join |
 | `phase.ts` | `applyHook` / `applyStatusline` — telemetry → session state. The heart of the display |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
-| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose`, and the run-group fold (`foldRunGroups`, `groupPhase`) |
+| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
