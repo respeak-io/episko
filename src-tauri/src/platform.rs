@@ -198,15 +198,22 @@ pub(crate) fn sh_quote(s: &str) -> String {
 }
 
 /// One `ps -o <fields>=` line for a single pid (trimmed), or None if the process
-/// is gone / no output. Windows has no `ps`; the remaining `ps` consumers
-/// (per-session CPU/RAM, terminal-window focus) are macOS-only for now, so this
-/// is None there. External-session listing does NOT go through here — it uses
-/// the cross-platform `ProcTable` (in `lib.rs`, and `external.rs` once split).
-#[cfg(windows)]
-pub(crate) fn ps_one(_pid: u32, _fields: &str) -> Option<String> {
-    None
-}
-
+/// is gone / no output.
+///
+/// **Not compiled on Windows at all**, and that is now load-bearing rather than tidy.
+/// There used to be a `cfg(windows)` stub returning None, because `session_resources`
+/// called this on every platform for per-session CPU/RAM; that reader now measures disk
+/// I/O through `sysinfo` instead, which leaves `focus_external_session` — itself
+/// macOS-only — as the sole caller. A stub with no callers is `dead_code`, which is a
+/// **CI failure** under `-D warnings`, and one only the Windows leg can see.
+///
+/// The general shape of that trap: removing the last cross-platform caller of a
+/// cfg-gated helper breaks the *other* platform's build, invisibly from this one. The
+/// cfg flip in CLAUDE.md is what catches it; "I added no cfg arms" is not a reason to
+/// skip it, because deleting a call is enough.
+///
+/// External-session *listing* does NOT go through here — it uses the cross-platform
+/// `ProcTable` in `external.rs`.
 #[cfg(not(windows))]
 pub(crate) fn ps_one(pid: u32, fields: &str) -> Option<String> {
     let out = sys_command("ps")
