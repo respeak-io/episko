@@ -707,9 +707,17 @@ mod tests {
         // child runs, so a chatty response could fill the buffer and deadlock.
         let out_path = cwd.join("claude-stdout.txt");
         let err_path = cwd.join("claude-stderr.txt");
+        // The prompt asks for a *tool call*, not just a reply, and that is deliberate:
+        // assertion 5 below checks `tool_input.command`, which only exists on a
+        // PostToolUse hook. The old prompt ("reply with pong") used no tools at all, so
+        // the whole tool-call half of the hook schema went unexercised — including the
+        // field the sidebar's git invalidation now reads. `--allowedTools Bash` is what
+        // lets it run without a UI to answer the permission prompt.
         let mut child = std::process::Command::new(&claude)
             .arg("-p")
-            .arg("Reply with exactly the word pong and nothing else.")
+            .arg("Run the shell command `echo pong` using the Bash tool, then reply with nothing else.")
+            .arg("--allowedTools")
+            .arg("Bash")
             .arg("--session-id")
             .arg(&sid)
             .arg("--settings")
@@ -784,6 +792,34 @@ mod tests {
                 "no {want} hook arrived — got {names:?}"
             );
         }
+
+        // --- 3b. the tool-call fields, which only a hook from a *tool* carries ---
+        // `tool_name` drives the activity timeline and the risk label; `tool_input`
+        // carries the argument each surface shows. `tool_input.command` in particular
+        // is the app's only warning that an agent moved HEAD or added a worktree —
+        // `gitMutates` reads it off PostToolUse, and nothing else watches the
+        // filesystem, so if this field goes away the sidebar silently stops noticing
+        // a branch switch rather than failing. It is asserted here, against the real
+        // binary, because no local test can see Claude Code changing its own schema.
+        let tool_hook = events
+            .iter()
+            .find(|e| e["kind"] == "hook" && e["data"]["hook_event_name"] == "PostToolUse")
+            .unwrap_or_else(|| panic!(
+                "no PostToolUse hook arrived, though the prompt asked for a Bash call. \
+                 Either the hook name changed, or `--allowedTools Bash` no longer \
+                 permits one non-interactively. Got: {names:?}"
+            ));
+        assert_eq!(
+            tool_hook["data"]["tool_name"], "Bash",
+            "PostToolUse arrived without the tool name the timeline reads: {tool_hook}"
+        );
+        assert!(
+            tool_hook["data"]["tool_input"]["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("echo")),
+            "PostToolUse no longer carries `tool_input.command`; the sidebar's git \
+             invalidation reads it to know a checkout may have moved: {tool_hook}"
+        );
 
         // `cwd` is how a hook is correlated with the pane's workdir.
         let hook = events.iter().find(|e| e["kind"] == "hook").expect("a hook event");
