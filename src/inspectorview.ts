@@ -14,7 +14,7 @@
 
 import { esc, fmtDur, fmtDwell, fmtLatency, sparkline } from "./format";
 import type { DiffHunk } from "./diff";
-import { isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
+import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
 import { sessions } from "./state";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
@@ -47,7 +47,7 @@ export function verbFor(s: Sess): string {
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
   if (s.phase === "done") return "Your turn";
-  if (s.phase === "error") return "Error";
+  if (s.phase === "error") return s.apiErr ? apiErrText(s.apiErr) : "Error";
   if (s.phase === "ended") return "Ended";
   return "Idle";
 }
