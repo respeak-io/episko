@@ -15,7 +15,7 @@ import { dlog } from "./debug";
 import { esc, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecast5h, forecast7d, rl, type Forecast } from "./rl";
-import { PILL_TEXT, statusKey, type Engine, type Sess } from "./types";
+import { phaseText, statusKey, type Engine, type Sess } from "./types";
 import { setTokenScanning, tokenScanning, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
 import { renderSettings, setTab, settingsOpen } from "./settings";
@@ -154,7 +154,7 @@ function openAttnPop(list: Sess[]) {
   closeFootMenus("attnPop");
   pop.innerHTML = list.map((s) => {
     const k = statusKey(s);
-    const reason = s.attention || PILL_TEXT[s.phase];
+    const reason = s.attention || phaseText(s);
     return `<button class="ap-item" data-sel="${s.id}"><span class="ap-dot ${GCLASS[k]}">${GLYPH[k]}</span><span class="ap-main"><span class="ap-proj">${esc(s.project)}</span><span class="ap-ttl">${esc(badgeLabel(s))}</span></span><span class="ap-reason ${GCLASS[k]}">${esc(abbr(reason, 42))}</span></button>`;
   }).join("");
   pop.style.right = Math.max(8, window.innerWidth - r.right) + "px";
