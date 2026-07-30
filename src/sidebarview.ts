@@ -12,7 +12,7 @@
 // them.
 
 import { basename, esc, fmtShort, relTime } from "./format";
-import { statusKey, type ExtSession, type Restorable, type Sess } from "./types";
+import { apiErrText, statusKey, type ExtSession, type Restorable, type Sess } from "./types";
 import {
   accentFor, activeId, externals, extMirrorId, pastMirrorId, sessions, wtGroup,
 } from "./state";
@@ -44,9 +44,12 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
   const chipHtml = chip
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
+  // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
+  // and "auth failed" are the same glyph and completely different problems.
+  const tip = s.phase === "error" && s.apiErr ? `${label} — ${apiErrText(s.apiErr)}` : label;
   return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
-    <span class="sbranch" title="${esc(label)}">${esc(label)}</span>${chipHtml}
+    <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${chipHtml}
     <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }

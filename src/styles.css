@@ -315,6 +315,11 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn { border-radius: var(--radius); padding: 11px; display: flex; flex-direction: column; gap: 9px; background: linear-gradient(180deg, color-mix(in srgb, var(--st-attention) 15%, transparent), color-mix(in srgb, var(--st-attention) 6%, transparent)); border: 1px solid color-mix(in srgb, var(--st-attention) 32%, transparent); }
 .attn-h { display: flex; align-items: center; gap: 7px; font-weight: 700; color: var(--st-attention); font-size: 12px; }
 .attn code { font-family: var(--font-mono); font-size: 10.5px; background: rgba(0,0,0,.32); color: var(--terminal-text); padding: 7px 9px; border-radius: 7px; display: block; word-break: break-all; }
+/* Same card, error colours: a turn the API killed is not an ask, so it must not
+   read like one — no bell, no buttons, and the palette the ✕ glyph already uses. */
+.attn.err { background: linear-gradient(180deg, color-mix(in srgb, var(--st-error) 15%, transparent), color-mix(in srgb, var(--st-error) 6%, transparent)); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
+.attn.err .attn-h { color: var(--st-error); }
+.attn-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
 .attn-btns { display: flex; gap: 6px; }
 .attn-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
 .attn-btns .allow { background: linear-gradient(180deg, color-mix(in srgb, var(--st-done) 86%, white), var(--st-done)); color: #07281a; border-color: transparent; }

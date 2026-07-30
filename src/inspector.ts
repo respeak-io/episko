@@ -15,7 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $ } from "./dom";
 import { esc, fmtShort, tilde } from "./format";
-import { isAgent, PILL_TEXT, statusKey, type Sess } from "./types";
+import { apiErrText, isAgent, phaseText, statusKey, type Sess } from "./types";
 import { pinnedIds, togglePin } from "./tasks";
 import { sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
@@ -30,7 +30,7 @@ export function renderInspector(s: Sess | null) {
   if (s?.kind === "task") { renderTaskInspector(s); return; }
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
-  $("iPillTxt").textContent = s ? (s.attention ? s.attention : PILL_TEXT[s.phase]) : "–";
+  $("iPillTxt").textContent = s ? (s.attention ? s.attention : phaseText(s)) : "–";
   if (!s) { $("inspector").innerHTML = `<div class="insp-empty">No session selected.</div>`; return; }
 
   const html: string[] = [];
@@ -41,6 +41,15 @@ export function renderInspector(s: Sess | null) {
       ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
       : "";
     html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
+  } else if (s.phase === "error" && s.apiErr) {
+    // Right behind it: a turn the API killed. Nothing is happening and nothing will,
+    // and the glyph alone can't say whether that means "wait a minute" or "your key
+    // is dead" — so the reason and what to do about it go on the card.
+    const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
+    const note = creds
+      ? "Claude Code can't reach the API with these credentials. Fix them in the terminal, then send the prompt again."
+      : "The turn ended early — the conversation is intact. Send the prompt again to pick it back up.";
+    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
   }
   html.push(vitalHtml(s));                                        // state, dwell, current tool
   html.push(gaugesHtml(s));                                       // TRACK — context + cost

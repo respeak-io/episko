@@ -112,6 +112,20 @@ export function clearPending(s: Sess) {
   s.attention = null; s.pendingPermId = null; s.pendingCmd = "";
 }
 
+// The one place that decides how a turn ended, because two events reach it and only
+// one of them knows anything: `Stop` fires when the turn completed, and Claude Code
+// fires the *same* 60-second idle Notification whether the turn completed or died on
+// an API error. Unguarded, that idle nudge turned the red ✕ a 529 had just earned
+// back into a green "your turn" a minute later — the pane still showing "API Error:
+// 529 Overloaded", the sidebar claiming the agent was waiting on the human. So a
+// known-failed turn (`apiErr`, set by StopFailure and cleared only when the session
+// genuinely starts another one) stays failed until it does.
+function endTurn(s: Sess) { setPhase(s, s.apiErr ? "error" : "done"); }
+// A new turn is under way, so whatever killed the last one is history. Both signals
+// count: a retry the user typed (UserPromptSubmit) and one the model started on its
+// own (PreToolUse) — after `/resume` or a queued message there may be no prompt.
+function newTurn(s: Sess) { s.apiErr = null; }
+
 export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";
   s.lastEvent = ev;
@@ -120,29 +134,43 @@ export function applyHook(s: Sess, data: any) {
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
     // OR directly in the CLI), so reset the pending/attention state either way.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); break;
-    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
+    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); break;
+    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";
       const arg = toolArg(tool, data.tool_input);
       if (tool === "TodoWrite") applyTodos(s, data.tool_input);
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
       else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
-      if (!bg()) { setPhase(s, "working"); clearPending(s); s.curTool = tool; s.curArg = arg; }
+      if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
     case "PostToolUse": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "working"); break;
     case "PostToolUseFailure": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "error"); break;
     // The turn is over — which is exactly when a project's run-on-stop rule, if it
     // has one, gets to check the agent's work.
-    case "Stop": setPhase(s, "done"); clearPending(s); s.curTool = ""; s.curArg = ""; onTurnEnd(s); break;
-    case "StopFailure": setPhase(s, "error"); clearPending(s); break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
+    case "Stop": endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
+      // Only a turn that really ended gets its work checked: an unattended run
+      // against a turn the API cut short would be verifying half-written files.
+      if (!s.apiErr) onTurnEnd(s);
+      break;
+    // "The turn ended because the API failed" — the only hook that says so, and the
+    // only place the reason exists. `error` is an enum (overloaded, rate_limit,
+    // authentication_failed, max_output_tokens…), `error_details` the message the
+    // pane shows; both are worth far more than a bare red glyph, since they are the
+    // difference between "retry in a minute" and "go re-authenticate".
+    case "StopFailure":
+      s.apiErr = { kind: String(data.error ?? "unknown"), detail: abbr(String(data.error_details ?? data.message ?? "")), at: Date.now() };
+      setPhase(s, "error"); clearPending(s); s.curTool = ""; s.curArg = "";
+      break;
+    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "Notification": {
       const nt: string = data.notification_type ?? "";
       const msg: string = typeof data.message === "string" ? data.message : "";
       if (nt.includes("permission") || /permission/i.test(msg)) { s.attention = "permission needed"; if (msg) s.pendingCmd = abbr(msg); }
-      else if (nt === "idle_prompt") { setPhase(s, "done"); clearPending(s); }
+      // The REPL has been sitting at the prompt for a minute. That is the turn being
+      // over, not the turn having succeeded — endTurn is what knows the difference.
+      else if (nt === "idle_prompt") { endTurn(s); clearPending(s); }
       else { s.attention = nt || msg || "notification"; if (msg) s.pendingCmd = abbr(msg); }
       break;
     }
