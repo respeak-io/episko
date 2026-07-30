@@ -887,6 +887,168 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     Some(GitDiff { patch, truncated })
 }
 
+/// One commit, as the project graph panel draws it.
+///
+/// Deliberately flat, small and *underived*: a page of these crosses the IPC
+/// boundary as JSON, so nothing is computed here that the frontend can compute
+/// itself — the lane layout, the ref chips and the absolute date are all derived
+/// in `graph.ts`, where they can be unit-tested without a repo.
+#[derive(serde::Serialize)]
+pub(crate) struct GraphCommit {
+    /// Full sha. Not abbreviable: the parent links are matched on it, and an
+    /// abbreviation is only unique within the repo's current object count.
+    sha: String,
+    /// Abbreviated sha for display, at git's own chosen length (`%h`).
+    short: String,
+    /// Parent shas, first parent first — empty for a root, 2+ for a merge. This is
+    /// the only thing the graph's shape comes from.
+    parents: Vec<String>,
+    subject: String,
+    author: String,
+    /// Author date, epoch seconds — the panel's absolute timestamp.
+    unix: i64,
+    /// Committer date, relative ("3 days ago"), in git's own wording.
+    rel: String,
+    /// Raw decoration (`%D` in `--decorate=full` form): "HEAD -> refs/heads/main,
+    /// refs/remotes/origin/main, tag: refs/tags/v1.0", empty when the commit carries
+    /// no ref. Parsed into typed chips by the frontend (`parseRefs`), which needs the
+    /// full paths — the short forms can't be told apart.
+    refs: String,
+}
+
+/// One page of history.
+///
+/// `more` is what lets the panel offer "load more" without ever having counted the
+/// repo's commits: we ask git for one commit *past* the page and report whether it
+/// was there. A count would mean walking the whole history, which is precisely what
+/// this command exists not to do.
+#[derive(serde::Serialize)]
+pub(crate) struct GraphPage {
+    commits: Vec<GraphCommit>,
+    more: bool,
+}
+
+/// A page of commit history for a project's graph panel.
+///
+/// **The panel must never read a whole history**, so this command can't either: it
+/// is `git log --skip=<skip> -n <limit+1>` and nothing else. A big monorepo has
+/// hundreds of thousands of commits; the panel opens on the first ~60 and asks for
+/// the next page only when the user scrolls to the end of what it has. Everything
+/// else in the design follows from that:
+///
+/// - **`--date-order`, not `--topo-order`.** Both keep a child ahead of its parents,
+///   which is all the lane layout needs. But paging by recency means page 1 has to be
+///   the genuinely most recent commits *across* refs, and topo-order will pull a stale
+///   branch's whole chain forward to keep it contiguous — making the first page look
+///   like history from a month ago.
+/// - **`\x1e` records, NUL fields.** A subject may contain any printable character,
+///   tabs included, so neither delimiter may be something that can appear inside a
+///   field. (`git log -z` is not an option: it would collide with the NULs.)
+/// - **`scope`** is `"head"` for the checked-out branch alone, anything else for every
+///   ref (`--all`, which is refs/heads + refs/remotes + tags, never the stash). A graph
+///   with one lane isn't a graph, so the panel defaults to all refs and offers "this
+///   branch" as the narrowing.
+///
+/// Errs with git's own first line when the folder isn't a git repo. A repo with **no
+/// commits yet** is an empty page rather than an error, because that is the truthful
+/// answer and the panel can say it — note git itself disagrees with itself here:
+/// `log --all` on an unborn HEAD exits 0 with no output (no refs matched), while a
+/// bare `log` calls it fatal.
+#[tauri::command(async)]
+pub(crate) fn git_graph(workdir: String, skip: u32, limit: u32, scope: String) -> Result<GraphPage, String> {
+    /// Ceiling on one page, whatever the caller asks for — a runaway `limit` would
+    /// undo the entire point of the command.
+    const MAX_PAGE: u32 = 400;
+
+    if !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("not a directory: {workdir}"));
+    }
+    let limit = limit.clamp(1, MAX_PAGE);
+    let n = format!("-{}", limit as u64 + 1); // one past the page — see GraphPage::more
+    let sk = format!("--skip={skip}");
+    let mut args = vec![
+        "--no-optional-locks", "log", "--date-order", "--no-color",
+        // FULL ref paths in %D. Short ones can't be told apart — a local `feat/x` and a
+        // remote `origin/x` are the same shape — so the chips would be guesses.
+        "--decorate=full",
+        sk.as_str(), n.as_str(),
+        "--format=%x1e%H%x00%h%x00%P%x00%an%x00%at%x00%cr%x00%D%x00%s",
+    ];
+    if scope != "head" {
+        args.push("--all");
+    }
+    // 20s is generous for a bounded log; the timeout exists because git_run's does,
+    // and a repo mid-`gc` can block on the object store.
+    let out = git_run(git_cmd(&workdir, &args), 20)?;
+    if !out.status.success() {
+        // "not a git repository", a bad `scope`, an unreadable object store — git's own
+        // first line names which, so pass it through rather than inventing wording.
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git log failed").to_string());
+    }
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut commits = Vec::new();
+    // The split's first slice is the empty string ahead of the first record; each
+    // record carries the newline git writes after it.
+    for rec in text.split('\u{1e}').skip(1) {
+        let mut f = rec.trim_matches('\n').split('\0');
+        let sha = f.next().unwrap_or("").trim().to_string();
+        if sha.is_empty() {
+            continue;
+        }
+        // These field expressions are read in the order they are *written*, which must
+        // stay the order of the format string above — not the struct's declaration order.
+        commits.push(GraphCommit {
+            sha,
+            short: f.next().unwrap_or("").to_string(),
+            parents: f.next().unwrap_or("").split_whitespace().map(str::to_string).collect(),
+            author: f.next().unwrap_or("").to_string(),
+            unix: f.next().unwrap_or("").trim().parse().unwrap_or(0),
+            rel: f.next().unwrap_or("").to_string(),
+            refs: f.next().unwrap_or("").to_string(),
+            subject: f.next().unwrap_or("").to_string(),
+        });
+    }
+    let more = commits.len() > limit as usize;
+    commits.truncate(limit as usize);
+    Ok(GraphPage { commits, more })
+}
+
+/// One commit's whole message (`%B` — subject and body), for the graph panel's commit
+/// overlay.
+///
+/// **Deliberately not part of `git_graph`'s page.** Bodies were once a field on every
+/// commit in the page, which meant a length cap so 60 of them wouldn't cross IPC as
+/// half a megabyte of JSON — and that cap then truncated the one message somebody was
+/// actually reading. Only ever one commit is open, so this fetches only that one, and
+/// the cap can be high enough never to matter in practice.
+///
+/// `sha` must be a hex object name: it goes to git as a revision argument, and anything
+/// else (a `--flag`, a `refname@{…}` expression) is refused rather than passed through.
+#[tauri::command(async)]
+pub(crate) fn git_commit_message(workdir: String, sha: String) -> Result<String, String> {
+    /// ~200KB of one commit message. Reached only by a machine-generated commit; a marker
+    /// is appended so a truncated message can never read as complete.
+    const CAP: usize = 200_000;
+
+    if sha.len() < 4 || sha.len() > 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("not an object name: {sha}"));
+    }
+    let out = git_run(git_cmd(&workdir, &["--no-optional-locks", "show", "-s", "--format=%B", &sha]), 15)?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git show failed").to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let msg = text.trim_end();
+    if msg.len() > CAP {
+        let cut = msg.char_indices().map(|(i, _)| i).take_while(|i| *i <= CAP).last().unwrap_or(0);
+        return Ok(format!("{}\n\n[… message truncated at {CAP} characters]", &msg[..cut]));
+    }
+    Ok(msg.to_string())
+}
+
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct GitActionResult {
     ok: bool,
@@ -1235,6 +1397,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The graph panel's contract with git, and the reason the command exists: it
+    /// pages. `more` must be an observation (one commit past the page was there), the
+    /// page must actually stop at `limit`, and `skip` must land on the next commit —
+    /// because the alternative is reading a monorepo's whole history to draw 60 rows.
+    #[test]
+    fn git_graph_pages_history_instead_of_reading_all_of_it() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+
+        // Not a repo is an Err (the panel says so). A repo with no commits is an empty
+        // page — the truthful answer, and the one thing git is inconsistent about:
+        // `log --all` exits 0 on an unborn HEAD, a bare `log` calls it fatal.
+        assert!(git_graph(format!("{path}/gone"), 0, 10, "all".into()).is_err(), "missing dir");
+        let empty = git_graph(path.clone(), 0, 10, "all".into()).expect("unborn HEAD is an empty page");
+        assert!(empty.commits.is_empty() && !empty.more);
+        assert!(git_graph(path.clone(), 0, 10, "head".into()).is_err(), "git calls a bare log fatal here");
+
+        for i in 1..=5 {
+            commit(&dir, &format!("c{i}"));
+        }
+
+        let p = git_graph(path.clone(), 0, 2, "all".into()).unwrap();
+        assert_eq!(p.commits.len(), 2, "a page is `limit` commits, not limit+1");
+        assert!(p.more, "3 commits are still behind this page");
+        assert_eq!(p.commits[0].subject, "c5", "newest first");
+        assert_eq!(p.commits[1].subject, "c4");
+
+        // The next page starts exactly where the last one stopped.
+        let p2 = git_graph(path.clone(), 2, 2, "all".into()).unwrap();
+        assert_eq!(p2.commits[0].subject, "c3");
+        assert!(p2.more);
+
+        // The last page reports there is nothing behind it, so the panel can stop
+        // offering to load more.
+        let last = git_graph(path.clone(), 4, 2, "all".into()).unwrap();
+        assert_eq!(last.commits.len(), 1);
+        assert!(!last.more, "c1 is the root — nothing behind it");
+        assert!(last.commits[0].parents.is_empty(), "a root commit has no parents");
+
+        // Past the end: an empty page, not an error.
+        let past = git_graph(path.clone(), 99, 2, "all".into()).unwrap();
+        assert!(past.commits.is_empty() && !past.more);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two fields the drawing is made of — `parents` (the graph's whole shape)
+    /// and `refs` (the chips) — plus the delimiter choice: a subject containing a tab
+    /// must survive, which is why records are \x1e-separated and fields NUL-separated
+    /// rather than the tab-separated format the branch list can afford.
+    #[test]
+    fn git_graph_carries_merge_parents_refs_and_awkward_subjects() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "base");
+        git(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "side\twork with\ttabs");
+        git(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "main work");
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false",
+                    "merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        git(&dir, &["tag", "v1"]);
+
+        let p = git_graph(path.clone(), 0, 10, "all".into()).unwrap();
+        let merge = &p.commits[0];
+        assert_eq!(merge.subject, "merge side");
+        assert_eq!(merge.parents.len(), 2, "a merge is the only thing that forks a lane");
+        // Full paths, not the short forms the frontend can't classify.
+        assert!(merge.refs.contains("HEAD -> refs/heads/main"), "{}", merge.refs);
+        assert!(merge.refs.contains("tag: refs/tags/v1"), "{}", merge.refs);
+        assert_eq!(merge.author, "T");
+        assert!(merge.unix > 0 && !merge.rel.is_empty());
+        assert_eq!(merge.short, merge.sha[..merge.short.len()], "%h abbreviates %H");
+
+        // Every parent of a loaded commit is either loaded too or past the frontier —
+        // the layout matches on full shas, so an abbreviation here would break lanes.
+        let tabbed = p.commits.iter().find(|c| c.subject.contains('\t')).expect("tab subject survived");
+        assert_eq!(tabbed.subject, "side\twork with\ttabs");
+
+        // The page carries no bodies at all — see git_commit_message, and the test below.
+        let p2 = git_graph(path.clone(), 0, 5, "all".into()).unwrap();
+        assert!(!p2.commits.is_empty());
+        assert!(merge.parents.iter().all(|sha| sha.len() == merge.sha.len()));
+
+        // `scope: "head"` is the narrowing: side's commit is not on main's first-parent
+        // history... it IS reachable through the merge, so use a repo state where the
+        // difference shows — an unmerged branch.
+        git(&dir, &["checkout", "-q", "-b", "unmerged"]);
+        commit(&dir, "only on unmerged");
+        git(&dir, &["checkout", "-q", "main"]);
+        let all = git_graph(path.clone(), 0, 20, "all".into()).unwrap();
+        let head = git_graph(path.clone(), 0, 20, "head".into()).unwrap();
+        assert!(all.commits.iter().any(|c| c.subject == "only on unmerged"), "--all sees every ref");
+        assert!(!head.commits.iter().any(|c| c.subject == "only on unmerged"), "head scope is the checkout alone");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The overlay's message, fetched one commit at a time. The multi-line body is the
+    /// whole point: it is why this is a separate command rather than a field on every
+    /// commit in a page, where it had to be length-capped and duly truncated the one
+    /// message a reader had opened.
+    #[test]
+    fn git_commit_message_returns_the_whole_thing_for_one_commit() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let long = "para one, which is long enough to have mattered under the old cap.\n\n\
+                    - a bullet\n- another bullet\n\nCo-Authored-By: T <t@example.com>";
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false",
+                    "commit", "-q", "--allow-empty", "-m", "subject line", "-m", long]);
+        let head = git_cmd(&path, &["rev-parse", "HEAD"]).output().unwrap();
+        let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+        let msg = git_commit_message(path.clone(), sha.clone()).unwrap();
+        assert!(msg.starts_with("subject line\n\n"), "subject then body:\n{msg}");
+        assert!(msg.contains("- a bullet\n- another bullet"), "structure survives:\n{msg}");
+        assert!(msg.ends_with("Co-Authored-By: T <t@example.com>"), "trailing newlines trimmed:\n{msg}");
+        // An abbreviation is a valid object name too.
+        assert_eq!(git_commit_message(path.clone(), sha[..8].to_string()).unwrap(), msg);
+
+        // Not an object name: refused here rather than handed to git as a revision
+        // argument, where a leading dash would be read as an option.
+        for bad in ["--help", "HEAD", "main@{0}", "", "zzzz"] {
+            assert!(git_commit_message(path.clone(), bad.to_string()).is_err(), "{bad} should be refused");
+        }
+        // Well-formed but unknown: git's own error, not a panic or an empty string.
+        assert!(git_commit_message(path.clone(), "0".repeat(40)).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The picker leans on these flags to decide what's pickable: it hides `current`

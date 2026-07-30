@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 368 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 82 tests on macOS, 79 on
+- `pnpm test` — 405 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 85 tests on macOS, 82 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -140,6 +140,40 @@ A regression in either is silent.
       non-zero shows `error` and raises attention.
 - [ ] **A run-on-stop rule fires** once per turn, does not steal the stage, and offers
       its output back to the session whose turn triggered it.
+
+### Reading the repo
+
+- [ ] **The commit graph draws a real history.** Right-click a project → `Commit
+      graph…` on a repo that has merges. The lanes must be unbroken from row to row
+      (a break means `.grow`'s height and `ROW_H` disagree), a merge must fork and
+      converge, and HEAD/branch/remote/tag chips must land on the right commits.
+      Then **scroll to the bottom**: the next page appends and the lanes continue
+      across the seam — the panel must never load a whole history, so a big repo is
+      the interesting case here. `This branch` narrows it; ⟳ re-reads it.
+- [ ] **The chips stay legible on a branchy repo.** On one with local branches, their
+      remote twins and a tag on a release commit: a branch and its remote must be ONE
+      chip (`main ⇡`, hover says "also on origin"), `origin/HEAD` must not appear, HEAD
+      must be the leftmost chip, and a commit carrying many refs must fold into `+N`
+      rather than slicing a name mid-word. Every subject in the panel starts at the same
+      x, while the chips hug the graph's own width row by row. A truncated chip keeps
+      its `⇡`, and hovering it names the branch.
+- [ ] **A whole commit message is readable — all of it.** Pick the longest commit message
+      in the repo (`git log --format='%H %b' | …`, or just a big merge write-up) and press ⏎
+      (or `⤢`, or double-click): the overlay shows the full message, ↑/↓ still move
+      through commits with it open, and **Esc closes the overlay first and the panel
+      second**. Both closes work — the header's ✕ and the
+      `✕ Close` at the bottom right, which must sit on **exactly** the pixels the
+      `⤢ Full message` button occupied, so opening and closing a message needs no mouse
+      movement at all. Check that by clicking one and then the other without moving. A truncated subject in a row is readable by hovering it.
+- [ ] **The table collapses in the right order.** Narrow the window: the date shortens
+      (`2d`), then the sha column goes, then the author — and the *subject* keeps a
+      usable width throughout, never squeezed to nothing.
+- [ ] **The lanes say what they are.** Hover a node, and select one: the tooltip and the
+      detail strip must name the branch that lane leads up to, and a merge must name what
+      it took in. Check a commit *below* a branch tip on a busy line — the label is the
+      nearest ref above it, so a stale side branch further up must not claim it, and a
+      release tag must not name a stretch of history at all. This wording is a claim
+      about ancestry; if it reads wrong, it is wrong.
 
 ### Sessions Episko doesn't own
 

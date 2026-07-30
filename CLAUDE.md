@@ -17,8 +17,8 @@ pnpm coverage           # the same suites with v8 coverage
 ```
 
 Coverage is a **yardstick, not a target** — there is deliberately no gate, because the
-render and DOM-owning modules are untested by design. Current: **85.8%** statements
-over the modules the suites load, **17.4%** over all of `src/`, and **72.3%** Rust
+render and DOM-owning modules are untested by design. Current: **88.0%** statements
+over the modules the suites load, **19.4%** over all of `src/`, and **71.0%** Rust
 lines (`cargo llvm-cov --summary-only` from `src-tauri/`). Both gaps are the OS edge,
 which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any file at
 100% in all four columns**, so a fully-covered module looks absent; use
@@ -41,9 +41,9 @@ in the block above before pushing, and match the toolchain CI uses (`stable` for
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **368 vitest + cargo (82 on macOS, 79 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **405 vitest + cargo (85 on macOS, 82 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which ten those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -228,19 +228,140 @@ Four smaller P4 affordances, all in the frontend:
   button and the picker's ⌘⇧R both route through it. The escape hatch for the one
   thing the stamp can't see: a file an introspector imports itself.
 
+## Project history — the commit graph panel (`git_graph`, `graph.ts`, `graphview.ts`)
+
+A project's lanes, refs and recent commits, opened from the **project right-click menu**
+(`Commit graph…`) and from nowhere else. That placement is the design, not a shortcut:
+history answers a question you go looking for, so it earns a menu row rather than
+header space, and the row is dropped when the folder isn't a repo (one `git_head` probe
+already answers that for the worktree row beside it).
+
+**The invariant is "never read a whole history", and it holds at both ends.** Nothing in
+either module runs until that row is clicked, so app start and `renderAll()` are
+untouched. The panel then reads ONE page — `git log --skip=<n> -n <PAGE+1>` — and asks
+for the next only when the reader scrolls near the end of what it has, so a 300k-commit
+monorepo costs the same first paint as a week-old repo. Four consequences worth keeping:
+
+- **`more` is an observation, not a count.** The command asks for one commit past the
+  page and reports whether it was there; counting commits would mean the walk this
+  command exists to avoid.
+- **`--date-order`, not `--topo-order`.** Both keep a child ahead of its parents, which
+  is all the layout needs — but paging by recency means page 1 must be the newest
+  commits *across* refs, and topo-order pulls a stale branch's whole chain forward to
+  keep it contiguous.
+- **`--decorate=full`.** Short ref names can't be classified (`feat/x` and `origin/x`
+  are the same shape), so `parseRefs` reads `refs/heads/…` / `refs/remotes/…` /
+  `refs/tags/…` instead of guessing.
+- **Not a repo → `Err`; a repo with no commits → an empty page.** git is inconsistent
+  here (`log --all` exits 0 on an unborn HEAD, a bare `log` calls it fatal), and the
+  panel has to tell the two apart.
+
+The split is diff.ts/diffview.ts again: **`graph.ts` is pure and tested** (lane
+assignment, lane naming, ref chips, geometry, the row SVG — `sparkline`'s shape),
+**`graphview.ts` owns the dialog**, the IPC and the scroll. `layoutGraph` runs over the
+whole accumulated list after each page rather than incrementally: it is cheap, and it is
+what keeps the lanes consistent across a page boundary without mutable state living
+between fetches.
+
+**Naming the lanes is where the subtle wrongness lives**, and all three rules below were
+observed being wrong on this repo's own history before they were rules. Eight coloured
+lines are unreadable without them, so each row carries `label` (what line it is on) and
+`merged` (what it took in), surfaced as the node's tooltip and a line in the detail strip:
+
+- **A row's label is the nearest ref *above* it on its own line, not the line's first.**
+  When a feature branch's tip is simply the newest commit, the top of `dev`'s line
+  carries that feature's ref — "first ref on the line" then labels half of dev's history
+  with a branch cut from it.
+- **A tag never names a line.** A label propagates down every commit below it, so
+  accepting `v0.11.1` would read as a lineage that never existed. Tags stay chips.
+- **What a merge took in is read from a ref *below* it** (its commits are older than the
+  merge), falling back to the merge subject — which is the last place a merged-and-deleted
+  branch's name survives, and is therefore marked `from: "merge"` and attributed in the
+  wording. `mergeBranchName` matches only git's and GitHub's own phrasings; prose names
+  nothing, and a guessed lane name is worse than a blank one.
+
+**The chips are reduced, not just listed** (`refChips`), because a branchy repo puts
+four or five refs on one commit and the raw list was wider than everything else on the
+row: a local branch **absorbs its remote twins** (`main` + `origin/main` is one `main ⇡`
+chip, where the glyph means "also pushed"), a remote with no local counterpart keeps its
+`origin/` prefix because that prefix *is* the difference, **`origin/HEAD` is dropped** as
+a symref that always duplicates a sibling, the order is fixed **HEAD → local → remote →
+tag** (git's own order is not stable across repos, and the leftmost chip is the one that
+survives a narrow column), and the tail folds into a **`+N`** chip. Chips never shrink —
+flex would turn a 3-character `dev` into `dev…` to buy a long neighbour pixels it can't
+use — so each has its own ceiling with an ellipsis, and the column *fades* its overflow
+rather than slicing a name mid-word. Inside a chip, **only the name truncates**: the `⇡`
+sits in its own non-shrinking span, because a long branch losing the marker loses the one
+thing the collapse added.
+
+Three layout couplings to respect. **`.grow`'s CSS height must equal `ROW_H`** — lanes
+are drawn edge-to-edge per row, so any disagreement shows as a break at every boundary,
+which is also why nothing may add to a row's box (the selection is a background and an
+inset shadow, never a border). **The trailing columns are fixed-width on purpose**: each
+row is its own grid, so `auto` would let every row size to its own author name and the
+sha/date columns would stagger. And **the graph and the chips are ONE measured cell**
+(`sizeLeftColumn`): each row's SVG is drawn to its own `span` — the lanes *that row*
+touches, pass-throughs included — so the chips land against the graph's real silhouette,
+and only the block as a whole is pinned to a common width. Sizing the two separately is
+what put ~100px of empty column between a 2-lane row and its label in a 12-lane repo,
+and it is why the labels sit beside the lanes at all: a label belongs to the *line*, and
+inside the message column it reads as clutter attached to the wrong thing.
+
+**A row shows a subject; a commit message is prose.** So the strip below the list is a
+two-line *summary* — the commit (chips, subject, `⤢`) then its metadata (lane, author,
+date, a short sha that *is* the copy button, parents) — and the whole commit opens in an
+overlay *inside* the dialog (`⤢`, ⏎, or a double-click).
+
+**The message is fetched per commit (`git_commit_message`), not carried by the page.** It
+was a `%b` field on every commit once, which forced a length cap so 60 bodies wouldn't
+cross IPC as half a megabyte of JSON — and the cap then truncated the one message somebody
+had opened to read, which is the only message that was ever going to be read. One commit
+is open at a time, so one `git show -s --format=%B` answers it, cached by sha so ↑/↓ and
+back doesn't re-ask. The command refuses anything that isn't a hex object name: the sha
+goes to git as a revision argument, where a leading dash would be read as an option. It covers the list rather than
+being a second modal, so the graph stays behind it, ↑/↓ still walk commits with it open,
+and **Esc steps out one layer at a time** — which is why main.ts calls `graphEscape` and
+not `closeGraph`. Closing it takes no mouse travel **by construction**: the
+strip's `⤢ Full message` and the overlay's `✕ Close` share one footprint (`.gswap` — same
+width, same height, both hard right on the last line of their bar, and `.graph-detail`'s
+64px height is what makes the two land on the same pixels), so the button that closes a
+message appears exactly where the pointer already is. The header keeps a compact ✕ too,
+and Esc does the same thing. A body wrapped into a 40px box inside the footer was the version before
+this, and it left half the width empty while still being unreadable; a full 40-character
+sha on its own line was the loudest thing in the panel, and it also went.
+
+**One naming trap, since it cost a visible bug:** `gc-*` is the *ref-chip kind* prefix
+(`gc-head`, `gc-branch`, …), so the commit overlay's own classes are `gco-*`. Calling its
+header `.gc-head` gave every HEAD chip in the panel a header's `padding: 9px 13px` — a
+chip you could see was wrong but not say why.
+
+**What a narrow panel gives up, it gives up in order.** The collapse is CSS container
+queries on the dialog (not viewport media queries — the panel's own width is what the
+table lives in): the relative date shortens first (`2 days ago` → `2d`, both forms
+rendered, CSS picks), then the sha column goes, then the author and the header path. The
+subject is never the column that yields, which it *was* — an `fr` track gives up space
+before any fixed one, so a rigid left block made the message vanish first in a narrow
+window. It is now `minmax(0, var(--gleft-w))` with a floor under the subject, and the
+measured cap is also bounded by a share of the panel width, which is the one rung of the
+ladder that lives in JS (`sizeLeftColumn`, re-run on resize).
+
+Lane colours are `--gl-0…7`, re-stepped for the light theme like every other palette in
+`styles.css`. Scope (`all refs` / `this branch`) resets on each open and is deliberately
+**not** persisted — all-refs is the answer the panel exists to give.
+
 ## Backend (`src-tauri/src/`) — ten modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 449 lines out of ~7,600. Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 450 lines out of ~8,300. Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 449 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `tasks.rs` | 2,394 | runnable discovery — see Runnables above |
-| `git.rs` | 1,532 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 819 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `lib.rs` | 450 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
+| `git.rs` | 1,756 | worktrees, branches, the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `usage.rs` | 896 | transcripts + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `pty.rs` | 705 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
-| `platform.rs` | 683 | OS leaves (top half) + OS integrations (bottom half) |
-| `telemetry.rs` | 469 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 690 | OS leaves (top half) + OS integrations (bottom half) |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 24 | `scratch_dir`, `cfg(test)` only |
@@ -258,13 +379,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 34 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 36 modules
 
-**No framework, and no longer one file.** ~7,200 lines across 34 modules; `main.ts` is 642 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,300 lines across 36 modules; `main.ts` is 665 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (nine — no DOM, no Tauri, no render imports; these are what the 368 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (ten — no DOM, no Tauri, no render imports; these are what the 405 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -277,16 +398,17 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
+| `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 34 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 36 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.

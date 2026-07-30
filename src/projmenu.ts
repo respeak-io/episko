@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import { closeFootMenus } from "./footer";
+import { openGraph } from "./graphview";
 import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
 import { openWt } from "./worktree";
 import { isAgent } from "./types";
@@ -137,6 +138,9 @@ function openCtxMenu(key: string, x: number, y: number) {
     { act: "worktree", ic: "⑃", label: "New worktree session…", sub: "on a branch of its own" },
     { act: "terminal", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
     null,
+    // Dropped below unless the probe says this folder is a repo — a graph row on a
+    // plain directory would open a panel with nothing but an error in it.
+    { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
     { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
@@ -157,17 +161,18 @@ function openCtxMenu(key: string, x: number, y: number) {
     + `<span class="mp-hmain"><span class="mp-hname">${esc(projName(key))}</span><span class="mp-hpath">${esc(tilde(key))}</span></span></div>`
     + rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
   placePop(menu, x, y);
-  // A worktree only means something in a git repo. Ask *after* opening — the menu
-  // must feel instant — then either name the branch it would fork from or drop the
-  // row entirely. (A detached HEAD also answers None and loses the row; forking a
-  // worktree from one is a corner case not worth a second probe.)
-  invoke<string | null>("git_branch", { workdir: key }).then((b) => {
+  // Two rows only mean something in a git repo. Ask *after* opening — the menu must
+  // feel instant — then drop what doesn't apply and re-place the (now shorter) menu.
+  // One probe answers both: `git_head` returns None for anything that isn't a repo
+  // with a commit, and a null `branch` inside it means a detached HEAD, which still
+  // has a history to graph but no branch to fork a worktree from.
+  invoke<{ branch: string | null; short: string } | null>("git_head", { workdir: key }).then((h) => {
     if (ctxKey !== key) return; // menu closed or moved to another project meanwhile
-    const row = menu.querySelector<HTMLElement>('[data-ctx="worktree"]');
-    if (!row) return;
-    if (!b) { row.remove(); placePop(menu, x, y); return; }
-    const sub = row.querySelector(".mp-s");
-    if (sub) sub.textContent = `branch off ${b}`;
+    const drop = (act: string) => menu.querySelector<HTMLElement>(`[data-ctx="${act}"]`)?.remove();
+    if (!h) { drop("worktree"); drop("graph"); placePop(menu, x, y); return; }
+    if (!h.branch) { drop("worktree"); placePop(menu, x, y); return; }
+    const sub = menu.querySelector('[data-ctx="worktree"] .mp-s');
+    if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
 export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = null; }
@@ -214,6 +219,7 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "launch": host.requestLaunch(name, key); break;
     case "worktree": openWt(name, key); break;
     case "terminal": openTerminalIn(name, key); break;
+    case "graph": void openGraph(key, name); break;
     case "folder": host.openProjectFolder(key); break;
     case "copypath": copyPath(key); break;
     case "addproj": host.addProjectPath(key); break;

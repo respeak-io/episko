@@ -392,6 +392,8 @@ pub fn run() {
             git::git_head,
             git::git_diffstat,
             git::git_diff,
+            git::git_graph,
+            git::git_commit_message,
             git::git_action,
             pty::session_resources,
             git::create_worktree,
