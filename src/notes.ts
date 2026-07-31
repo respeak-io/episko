@@ -28,6 +28,10 @@ export interface Note {
   created: number;
 }
 
+/// One note as the project's committed `.episko/notes.toml` carries it. Mirrors the
+/// Rust struct. Read-only from here: a colleague's note is theirs.
+export interface SharedNote { id: string; text: string; who: string; at: string }
+
 const KEY = "cc-notes";
 
 /// Ids only have to be unique within one machine's `localStorage`, so this is a

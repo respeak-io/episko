@@ -7,9 +7,11 @@
 
 import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
 import type { Pulse, ProjectFacts, ProjectTier } from "./dash";
-import type { Note } from "./notes";
+import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { WtHead } from "./types";
+import type { ClaimAllow, ClaimPolicy } from "./claim";
+import type { GhThread, Holder, KeptIssue } from "./ghwork";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -277,16 +279,202 @@ export function checkoutsOverlay(
     `Creating a worktree, pruning a stale one and every warning about a locked or detached checkout stay in the <b>⑃ dialog</b>, which already does all of that. This is a status board.`);
 }
 
-export function notesOverlay(notes: Note[], shared: boolean): string {
-  const body = notes.length
+export function notesOverlay(
+  notes: Note[], shared: SharedNote[], sharedIds: Set<string>, canShare: boolean,
+): string {
+  const mine = notes.length
     ? `<div class="ncol">${notes.map((n) => `<div class="ncard" data-dashnote="${esc(n.id)}">
         <span class="tx">${esc(n.text)}</span>
         <span class="mt"><span>${esc(relTime(n.created))}</span></span>
         <span class="bar"><button class="act" data-dashdispatch="${esc(n.id)}">▶ Start an agent</button>
-          <button class="act" data-dashdrop="${esc(n.id)}">✕</button></span></div>`).join("")}</div>`
+          <button class="act" data-dashdrop="${esc(n.id)}">✕</button>
+          ${canShare ? `<span class="sw${sharedIds.has(n.id) ? " on" : ""}" data-dashshare="${esc(n.id)}"
+            title="Write this into .episko/notes.toml so the team can read it"><i></i>shared</span>` : ""}
+        </span></div>`).join("")}</div>`
     : `<div class="ac-empty">Nothing queued yet.</div>`;
-  return overlayHtml("Notes", `${notes.length} on this project`, body,
-    shared
-      ? `Notes are yours alone. The committed half of <code>.episko/</code> is the work log; sharing a note is a separate switch and is not in this build yet.`
+  // A colleague's note is theirs: dispatchable, but not editable or deletable from
+  // here — this is a read of their file, not a shared mutable list.
+  const theirs = shared.length
+    ? `<div class="bk"><div class="bk-h"><span class="t">From the repo</span><span class="n">${shared.length}</span></div>
+        <div class="ncol">${shared.map((n) => `<div class="ncard">
+          <span class="tx">${esc(n.text)}</span>
+          <span class="mt"><span class="clm">◍ ${esc(n.who || "someone")}</span><span>${esc(n.at)}</span></span>
+          <span class="bar"><button class="act" data-dashdispatchtext="${esc(n.text)}">▶ Start an agent</button></span>
+        </div>`).join("")}</div></div>`
+    : "";
+  const body = `<div class="bk"><div class="bk-h"><span class="t">Yours</span><span class="n">${notes.length}</span></div>${mine}</div>${theirs}`;
+  return overlayHtml("Notes", `${notes.length} yours · ${shared.length} from the repo`, body,
+    canShare
+      ? `A note is yours alone until you flip <b>shared</b>, which writes it to <code>.episko/notes.toml</code> — committable, and readable by a colleague who never opens Episko. Flipping it back removes it from the file.`
       : `Notes stay on this machine — there is no repository to commit them into.`);
+}
+
+// ---------- the GitHub half ----------
+// Issues and pull requests in one list: they were competing for the same four rows,
+// the enlarged view already showed them together, and a kind chip separates them more
+// cheaply than a heading does.
+
+const KIND = (t: GhThread) => (t.kind === "pr" ? "pr" : "iss");
+
+/// A claimed row turns its ▶ into a green ◍ **in the same slot**. Putting the name in
+/// the row is what made this column ragged: the compact card says *that* it is taken,
+/// the enlarged view says who and for how long.
+function workRow(t: GhThread, h: Holder | null): string {
+  const act = h
+    ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
+        title="${esc(`${h.who}${h.mine ? " (you)" : ""} — ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
+    : `<button class="go" data-dashwork="${t.number}" title="Start an agent on this">▶</button>`;
+  return `<div class="cr${h ? " claimed" : ""}" data-dashurl="${esc(t.url)}" title="${esc(t.title)}">
+    <span class="k ${KIND(t)}">${KIND(t)}</span>
+    <span class="ti">${esc(t.title)}</span>
+    <span class="rt"><span class="age">${esc(shortAge(t.updated_at))}</span>${act}</span></div>`;
+}
+
+/// Compact ages, tabular so the column lines up: 2h, 3d, 5w.
+function shortAge(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "—";
+  const m = Math.max(0, Date.now() - t) / 60_000;
+  if (m < 60) return `${Math.round(m)}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  const d = Math.round(m / 1440);
+  return d < 14 ? `${d}d` : `${Math.round(d / 7)}w`;
+}
+
+export function workCard(rows: GhThread[], total: number, prs: number, holder: (t: GhThread) => Holder | null): string {
+  if (!rows.length) return "";
+  return `<div class="ac"><div class="ac-h"><span class="t">Open work</span>
+      <span class="n">${total - prs} · ${prs} PR</span>
+      <button class="xb" data-dashopen-view="work" title="See all issues and pull requests">⤢</button></div>
+    <div class="ac-b">${rows.map((t) => workRow(t, holder(t))).join("")}</div></div>`;
+}
+
+/// gh missing, logged out, or pointed at a non-GitHub folder. One quiet row, never an
+/// error dialog — the same stance a blocked runnable takes.
+export function ghUnavailable(reason: string): string {
+  return `<div class="miss"><span class="t">GitHub</span><p>${esc(reason)}.</p>
+    <p>Everything else on this dashboard still works.</p></div>`;
+}
+
+// ---------- the enlarged views ----------
+// One fixed column geometry per view, declared once in CSS and inherited by every row:
+// an `auto` trailing track lets each row size to its own button label and the columns
+// stagger, which is the trap the commit graph's row grid documents.
+
+const BUCKET_LABEL: Record<string, string> = { today: "Today", week: "This week", older: "Older" };
+
+function workBigRow(t: GhThread, h: Holder | null): string {
+  const labels = t.labels.slice(0, 3).map((l) =>
+    `<span class="lbl" style="--lc:${labelHue(l)}">${esc(l)}</span>`).join("");
+  const claim = h
+    ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
+  const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
+  return `<div class="br" data-dashurl="${esc(t.url)}">
+    <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
+    <span class="num">${t.number}</span>
+    <span class="mid"><span class="ti">${esc(t.title)}</span>
+      ${labels || claim ? `<span class="sub">${labels}${claim}</span>` : ""}</span>
+    <span class="age">${esc(shortAge(t.updated_at))}</span>
+    <span class="go-slot"><button class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
+  </div>`;
+}
+
+/// A stable hue per label name. GitHub's own colour is not in the payload we ask for,
+/// and asking for it would cost a wider query for decoration.
+function labelHue(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 62% 68%)`;
+}
+
+export function workOverlay(
+  groups: { bucket: string; rows: GhThread[] }[], slug: string, total: number,
+  holder: (t: GhThread) => Holder | null,
+): string {
+  const body = `<div class="lst-hd"><span>Kind</span><span class="r">#</span><span>Title</span>
+      <span class="r">Age</span><span class="r">Action</span></div>`
+    + groups.map((g) => `<div class="bk">
+        <div class="bk-h"><span class="t">${esc(BUCKET_LABEL[g.bucket] ?? g.bucket)}</span><span class="n">${g.rows.length}</span></div>
+        ${g.rows.map((t) => workBigRow(t, holder(t))).join("")}</div>`).join("");
+  return overlayHtml("Open work", `${esc(slug)} · ${total} open`, body,
+    `<b>◍</b> is a claim — somebody dispatched an agent at it. A hint, never a lock: you can always start anyway, and a claim older than 30 minutes reads as stale.`);
+}
+
+// ---------- triage ----------
+
+export function triageCard(rows: { t: GhThread; why: string }[], total: number): string {
+  if (!rows.length) return "";
+  const body = rows.map(({ t, why }) => `<div class="tr" data-dashurl="${esc(t.url)}">
+    <span class="mid"><span class="ti">${esc(t.title)}</span>
+      <span class="sub">#${t.number} · ${esc(why)}</span></span>
+    <span class="tr-b">
+      <button class="tb yes" data-dashclose="${t.number}" title="Close it on GitHub, with a comment">✓</button>
+      <button class="tb no" data-dashkeep="${t.number}" title="Keep it — nobody on the team is asked again">✕</button>
+    </span></div>`).join("");
+  return `<div class="ac"><div class="ac-h"><span class="t">Still needed?</span>
+      <span class="n">${rows.length} of ${total}</span>
+      <button class="xb" data-dashopen-view="triage" title="Review every quiet issue">⤢</button></div>
+    <div class="ac-b">${body}</div></div>`;
+}
+
+export function triageOverlay(
+  rows: { t: GhThread; why: string }[], kept: KeptIssue[], canWrite: boolean,
+): string {
+  const body = `<div class="lst-hd"><span class="r">#</span><span>Title &amp; why it's suggested</span><span class="r">Decide</span></div>`
+    + `<div class="bk"><div class="bk-h"><span class="t">Suggested for closing</span><span class="n">${rows.length}</span></div>`
+    + (rows.length ? rows.map(({ t, why }) => `<div class="tg" data-dashurl="${esc(t.url)}">
+        <span class="num">${t.number}</span>
+        <span class="mid"><span class="ti">${esc(t.title)}</span><span class="sub"><span>${esc(why)}</span></span></span>
+        <span class="tg-b"><button class="act go-close" data-dashclose="${t.number}">✓ Close</button>
+          <button class="act go-keep" data-dashkeep="${t.number}">✕ Keep</button></span></div>`).join("")
+        : `<div class="ac-empty">Nothing has gone quiet. Triage has nothing to ask about.</div>`)
+    + `</div>`
+    // The keep list is committed, so it has to be reviewable: a decision nobody can
+    // see is worse than no decision.
+    + (kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept — never suggested again</span>
+        <span class="n">${kept.length}</span></div>`
+      + kept.map((k) => `<div class="kept"><span class="num">${k.number}</span>
+          <span class="ti">kept by ${esc(k.who || "someone")}</span>
+          <span class="who">${esc(k.at)} <a href="#" data-dashunkeep="${k.number}">undo</a></span></div>`).join("")
+      + `</div>` : "");
+  return overlayHtml("Still needed?", `${rows.length} quiet · ${kept.length} kept`, body,
+    canWrite
+      ? `The keep list lives in <code>.episko/episko.toml</code> and is <b>committed</b>, so a colleague is never asked about an issue you both already decided to keep. That is also why it is reviewable and undoable here.`
+      : `Keeping an issue needs a repository to commit the decision into.`);
+}
+
+// ---------- the confirm sheets ----------
+// Closing an issue and claiming one are both public writes, one click from a dashboard
+// you open constantly. Neither happens without showing exactly what will be written.
+
+export function closeSheet(t: GhThread, comment: string, slug: string): string {
+  return `<h4>Close #${t.number} on GitHub?</h4>
+    <div class="body">
+      <p>This posts a comment and closes the issue in <b>${esc(slug)}</b>. Everyone watching the repo sees it.</p>
+      <p class="sheet-ti">${esc(t.title)}</p>
+      <textarea id="dashCloseText" rows="4">${esc(comment)}</textarea>
+    </div>
+    <div class="foot"><button class="act" data-dashsheet="cancel">Cancel</button><span class="sp"></span>
+      <button class="act primary" data-dashsheet="close">✓ Comment &amp; close</button></div>`;
+}
+
+export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null): string {
+  const sw = (k: string, on: boolean, permitted: boolean, label: string) =>
+    `<span class="sw${on && permitted ? " on" : ""}${permitted ? "" : " off"}" data-dashclaim="${k}"
+      ${permitted ? "" : `title="This project's .episko/episko.toml switches it off for everyone"`}><i></i>${label}</span>`;
+  return `<h4>Start an agent on #${t.number}</h4>
+    <div class="body">
+      <p class="sheet-ti">${esc(t.title)}</p>
+      ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago — probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is a hint, not a lock.</p>` : ""}
+      <p>A new worktree, a session in it, and <b>the prompt is sent</b> — the agent starts working without waiting for you.</p>
+      <div class="opts">
+        ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
+        ${sw("comment", p.comment, allow.comment, "comment that my agent is on it")}
+        ${sw("label", !!p.label, allow.label, `label <code>${esc(p.label || "agent: running")}</code>`)}
+        ${sw("pushBranch", p.pushBranch, allow.pushBranch, "push the branch now")}
+      </div>
+      <p class="dim-line">Permission mode: <b>${esc(mode)}</b>. Anything that doesn't ask before acting will act unattended.</p>
+    </div>
+    <div class="foot"><button class="act" data-dashsheet="cancel">Cancel</button><span class="sp"></span>
+      <button class="act primary" data-dashsheet="dispatch">▶ Claim &amp; start</button></div>`;
 }

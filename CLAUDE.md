@@ -17,8 +17,8 @@ pnpm coverage           # the same suites with v8 coverage
 ```
 
 Coverage is a **yardstick, not a target** — there is deliberately no gate, because the
-render and DOM-owning modules are untested by design. Current: **89.5%** statements
-over the modules the suites load, **20.55%** over all of `src/`, and **71.0%** Rust
+render and DOM-owning modules are untested by design. Current: **90.05%** statements
+over the modules the suites load, **20.9%** over all of `src/`, and **71.0%** Rust
 lines (`cargo llvm-cov --summary-only` from `src-tauri/`). Both gaps are the OS edge,
 which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any file at
 100% in all four columns**, so a fully-covered module looks absent; use
@@ -52,9 +52,9 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **519 vitest + cargo (118 on macOS, 115 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **558 vitest + cargo (140 on macOS, 137 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which fifteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which seventeen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -288,6 +288,48 @@ Three things that are easy to get wrong:
   live in the inspector — so hiding the panel outright would hide real verbs. On a
   session ⌘I still hides it completely.
 
+### The GitHub half
+
+`ghwork.ts` owns the rules and is tested; `claim.ts` owns what a dispatch writes.
+`gh_threads` is two `gh` calls per repo, cached 60s, and **degrades rather than
+failing**: gh missing, logged out or pointed at a non-GitHub folder is `available:
+false` plus a reason, shown as one quiet row like a blocked runnable.
+
+- **A claim is a hint, never a lock.** Nothing refuses a dispatch; someone else's claim
+  is shown, warned about once, and then you proceed — two people may well both want a
+  go at a hard bug. Claims expire (`CLAIM_STALE_MS`), because a laptop that slept must
+  not block a colleague forever, and a `pty-exit` releases whatever that session took.
+- **Two levels decide what gets written, and the project is a ceiling**: your
+  preference, ANDed with `.episko/episko.toml`'s `[claim]`. A switch the project turned
+  off renders greyed rather than hidden — "why can't I assign?" needs an answer.
+- **`holderOf` reads three signals in one order and it is not arbitrary**: our own
+  ledger first (it knows a dispatch nothing has been pushed for yet), then the assignee
+  (the explicit human signal), then an `agent:` label (a machine, which cannot say
+  whose).
+- **Triage never offers a pull request**, never offers an assigned issue, and never
+  offers one on the project's keep list. A quiet PR needs review or a rebase, not
+  closing; the rest is a bot second-guessing a human, which is what makes a team switch
+  triage off.
+- **`gh_close_issue` is the only destructive write**, and it comments *before* it
+  closes: if the close then fails the issue carries a note explaining what was
+  attempted, which is recoverable, where the other order leaves it closed with no
+  explanation.
+- **Dispatch sends the prompt**, which breaks the app's usual "Episko prefills, the
+  human presses Enter" rule — deliberately, and only here: that rule exists so nothing
+  is sent you did not read, and a dispatch confirmed in a sheet *is* the reading. A
+  colleague's shared note is still prefilled-not-sent: that is somebody else's sentence.
+- **The viewer is cached for the process, not per repo.** `gh api user` returns the
+  same login whichever folder it runs in, so keying it by root spent a process per
+  project for an answer already in hand.
+
+**Three committed files, one rule.** `.episko/digest.md` (the work log),
+`.episko/episko.toml` (`[triage] keep`, beside `[claim]`) and `.episko/notes.toml` (a
+promoted note) are all **project facts** — decided once, by anyone, and true for the
+team. All three go through `toml_edit`/read-modify-write so a hand-written comment
+survives, all three refuse to create themselves without an explicit yes, and all three
+need **git, not GitHub**: they are files, and a file only means anything to a team if
+it can be committed.
+
 **The work log is the one thing Episko generates and then commits.** `summarize_day`
 spends money (one `claude -p` per day, Haiku), so it is cached, opt-in, and **read
 before it is generated**: `read_digest` parses `.episko/digest.md` first, which means
@@ -419,9 +461,9 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 `styles.css`. Scope (`all refs` / `this branch`) resets on each open and is deliberately
 **not** persisted — all-refs is the answer the panel exists to give.
 
-## Backend (`src-tauri/src/`) — eleven modules
+## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~11,020 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12025 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
@@ -433,6 +475,8 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 | `telemetry.rs` | 926 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | 750 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `github.rs` | 816 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
+| `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | 446 | `summarize_day` (Haiku via `claude -p`) + the committed `.episko/digest.md` |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
@@ -450,13 +494,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 44 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 46 modules
 
-**No framework, and no longer one file.** ~11,180 lines across 44 modules; `main.ts` is 766 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~11953 lines across 46 modules; `main.ts` is 766 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (fifteen — no DOM, no Tauri, no render imports; these are what the 519 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (seventeen — no DOM, no Tauri, no render imports; these are what the 558 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -475,6 +519,8 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
+| `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
+| `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -484,7 +530,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 44 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 46 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.

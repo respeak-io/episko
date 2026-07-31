@@ -16,6 +16,7 @@
 // would tax every session in the app for a view most ticks never show.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import {
@@ -23,17 +24,26 @@ import {
   projectCost, projectTier, type ProjectFacts, type ProjectTier,
 } from "./dash";
 import {
-  checkoutsCard, checkoutsOverlay, dashInspector, dashStrip, dayHtml, missingCard,
-  notesCard, notesOverlay, pulseHtml,
+  checkoutsCard, checkoutsOverlay, closeSheet, dashInspector, dashStrip, dayHtml,
+  dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay, pulseHtml,
+  triageCard, triageOverlay, workCard, workOverlay,
 } from "./dashview";
+import {
+  ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
+  resolveClaim, type ClaimAllow, type ClaimPolicy,
+} from "./claim";
+import {
+  bucketed, cardRows, closeComment, holderOf, isoDay, quietFor, staleCandidates,
+  type GhResult, type GhThread, type KeptIssue,
+} from "./ghwork";
 import type { HistEntry } from "./history";
-import { addNote, noteList, removeNote } from "./notes";
+import { addNote, noteList, removeNote, type SharedNote } from "./notes";
 import { GLYPH, GCLASS } from "./sidebarview";
 import { deterministicHeadline, dayFacts, dayIsClosed, type TrailCommit, type TrailDay } from "./trail";
 import { statusKey, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, dashMirror, folderDirty, sessions, setActiveId, setMirror,
+  accentFor, dashMirror, folderDirty, permMode, sessions, setActiveId, setMirror,
 } from "./state";
 
 // What this pane does but does not own. Same host-object shape as ./settings and
@@ -90,6 +100,19 @@ let days: TrailDay[] = [];
 let heads: WtHead[] = [];
 let hasDigest = false;
 let loading = false;
+/// The GitHub half. `gh` is allowed to be missing, logged out, or pointed at a folder
+/// that is not a GitHub repo — every one of those is `available: false` and a reason,
+/// shown as one quiet row rather than as breakage.
+let gh: GhResult = { available: false, reason: null, threads: [], viewer: null };
+let kept: KeptIssue[] = [];
+let allow: ClaimAllow = ALLOW_ALL;
+/// The project's committed notes, and which of ours are in it.
+let shared: SharedNote[] = [];
+/// The confirm sheet currently up, if any. Both writes here are public, so neither
+/// happens without showing exactly what will be written.
+let sheet: { kind: "close" | "dispatch"; t: GhThread } | null = null;
+/// What this dispatch would write, editable in the sheet before it is sent.
+let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: running" };
 /// Generated summaries for the open project, keyed by day. Separate from `days` so a
 /// reload doesn't drop sentences already paid for in this session.
 const summaries = new Map<string, string>();
@@ -97,7 +120,7 @@ const summaries = new Map<string, string>();
 /// by element — the pane rebuilds its innerHTML on every repaint.
 const openDays = new Set<string>();
 /// Which enlarge overlay is up, if any.
-let openView: "checkouts" | "notes" | null = null;
+let openView: "checkouts" | "notes" | "work" | "triage" | null = null;
 
 const root = () => dashMirror()?.root ?? "";
 const name = () => dashMirror()?.name ?? "";
@@ -115,7 +138,7 @@ async function loadDash(): Promise<void> {
     facts = await invoke<ProjectFacts>("project_facts", { dir: r }).catch(() => null);
     tier = projectTier(facts);
     const wantGit = tier !== "none";
-    const [hist, commits, wt, digest] = await Promise.all([
+    const [hist, commits, wt, digest, sn] = await Promise.all([
       invoke<HistEntry[]>("list_session_history", { limit: 400 }).catch((e) => {
         dlog("warn", `dash: history scan failed — ${e}`);
         return [] as HistEntry[];
@@ -128,8 +151,20 @@ async function loadDash(): Promise<void> {
       // to open a week pays nothing for it.
       wantGit ? invoke<Record<string, string>>("read_digest", { root: r }).catch(() => ({}))
               : Promise.resolve({} as Record<string, string>),
+      wantGit ? invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => [] as SharedNote[])
+              : Promise.resolve([] as SharedNote[]),
     ]);
+    shared = sn;
     heads = wt.filter((w) => w.exists);
+    // The GitHub half, only for a repo that has a GitHub remote. Fired after the
+    // cheap local reads rather than alongside them: `gh` is a process per call and
+    // the timeline should paint without waiting for the network.
+    if (tier === "github") {
+      void loadGh(r);
+    } else {
+      gh = { available: false, reason: null, threads: [], viewer: null };
+      kept = [];
+    }
     for (const [k, v] of Object.entries(digest)) if (v) summaries.set(k, v);
     hasDigest = Object.keys(digest).length > 0
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
@@ -139,6 +174,21 @@ async function loadDash(): Promise<void> {
   }
   renderDash();
   if (dashSummaries) void runSummaryQueue();
+}
+
+/// Issues, PRs, the project's keep list and its claim ceiling. Separate from
+/// `loadDash` so a slow or absent `gh` never delays the timeline.
+async function loadGh(r: string, force = false): Promise<void> {
+  const [res, k, a] = await Promise.all([
+    invoke<GhResult>("gh_threads", { root: r, force }).catch((e) => ({
+      available: false, reason: String(e), threads: [], viewer: null,
+    } as GhResult)),
+    invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => [] as KeptIssue[]),
+    invoke<ClaimAllow>("claim_policy", { root: r }).catch(() => ALLOW_ALL),
+  ]);
+  if (root() !== r) return;   // the user moved on while this was in flight
+  gh = res; kept = k; allow = a;
+  renderDash();
 }
 
 /**
@@ -205,15 +255,39 @@ export function renderDash(): void {
       dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key))).join("");
   }
 
+  const now = Date.now();
+  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
+  const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
+  const prs = gh.threads.filter((t) => t.kind === "pr").length;
+
   $("dashAside").innerHTML =
-    checkoutsCard(heads, liveIn, folderDirty)
+    (gh.available ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder) : "")
+    + (gh.available ? triageCard(stale, gh.threads.filter((t) => t.kind === "issue").length) : "")
+    + checkoutsCard(heads, liveIn, folderDirty)
     + notesCard(noteList(root()))
+    + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
     + missingCard(tier, facts);
 
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
+  ovl.dataset.view = openView ?? "";
   if (openView === "checkouts") ovl.innerHTML = checkoutsOverlay(heads, liveIn, folderDirty);
-  else if (openView === "notes") ovl.innerHTML = notesOverlay(noteList(root()), canShare(tier));
+  else if (openView === "notes") {
+    const mineShared = new Set(shared.map((n) => n.id));
+    // A colleague's note is theirs; ours are the ones we can promote or withdraw.
+    const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
+    ovl.innerHTML = notesOverlay(noteList(root()), theirs, mineShared, canShare(tier));
+  }
+  else if (openView === "work") ovl.innerHTML = workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder);
+  else if (openView === "triage") ovl.innerHTML = triageOverlay(stale, kept, canShare(tier));
+
+  const sh = $("dashSheet");
+  sh.classList.toggle("show", sheet !== null);
+  $("dashScrim").classList.toggle("show", sheet !== null);
+  if (sheet?.kind === "close") sh.innerHTML = closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name());
+  else if (sheet?.kind === "dispatch") {
+    sh.innerHTML = dispatchSheet(sheet.t, policy, allow, permMode, holder(sheet.t));
+  }
 }
 
 /// Header for the dashboard. Name and location only — no branch chip and no session
@@ -275,6 +349,7 @@ export function closeDashboard(): void {
 /// than closeDashboard.
 export function dashEscape(): boolean {
   if (!dashMirror()) return false;
+  if (sheet) { sheet = null; renderDash(); return true; }
   if (openView) { openView = null; renderDash(); return true; }
   closeDashboard();
   host.renderAll();
@@ -311,7 +386,47 @@ export function wireDashboard(): void {
     if (wtadd) { void host.launch(name(), wtadd.dataset.dashwtadd!, { colorKey: root() }); return; }
     const wtterm = t.closest<HTMLElement>("[data-dashwtterm]");
     if (wtterm) { host.openTerminal(wtterm.dataset.dashwtterm!); return; }
+
+    // ---- the GitHub half ----
+    const work = t.closest<HTMLElement>("[data-dashwork]");
+    if (work) {
+      const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
+      // Never straight to a dispatch: it sends a prompt AND writes to a public repo.
+      if (th) { sheet = { kind: "dispatch", t: th }; renderDash(); }
+      return;
+    }
+    const close = t.closest<HTMLElement>("[data-dashclose]");
+    if (close) {
+      const th = gh.threads.find((x) => x.number === +close.dataset.dashclose!);
+      if (th) { sheet = { kind: "close", t: th }; renderDash(); }
+      return;
+    }
+    const keep = t.closest<HTMLElement>("[data-dashkeep]");
+    if (keep) { void setKept(+keep.dataset.dashkeep!, true); return; }
+    const unkeep = t.closest<HTMLElement>("[data-dashunkeep]");
+    if (unkeep) { void setKept(+unkeep.dataset.dashunkeep!, false); return; }
+    const share = t.closest<HTMLElement>("[data-dashshare]");
+    if (share) { void toggleShare(share.dataset.dashshare!); return; }
+    const dtext = t.closest<HTMLElement>("[data-dashdispatchtext]");
+    if (dtext) { void dispatchText(dtext.dataset.dashdispatchtext!); return; }
+    const claimSw = t.closest<HTMLElement>("[data-dashclaim]");
+    if (claimSw) { togglePolicy(claimSw.dataset.dashclaim!); return; }
+    // A row's title opens it on GitHub — Episko mirrors a little of it, never all.
+    const url = t.closest<HTMLElement>("[data-dashurl]");
+    if (url?.dataset.dashurl) { void openUrl(url.dataset.dashurl).catch(() => {}); return; }
   });
+
+  // The sheets live outside #dashPane (they sit over the whole stage), so they get
+  // their own delegated handler.
+  $("dashSheet").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-dashsheet]");
+    if (!b) return;
+    const act = b.dataset.dashsheet!;
+    if (act === "cancel") { sheet = null; renderDash(); return; }
+    if (act === "close") { void doClose(); return; }
+    if (act === "dispatch") { void doDispatch(); return; }
+  });
+  $("dashScrim").addEventListener("click", () => { sheet = null; renderDash(); });
 
   ($("dashJotHost") as HTMLElement).addEventListener("submit", (e) => {
     const form = (e.target as HTMLElement).closest("#dashJot");
@@ -358,6 +473,133 @@ async function dispatchNote(id: string): Promise<void> {
   // harmless: the session is open and the note text is in the toast.
   setTimeout(() => {
     void invoke("write_pty", { sessionId: sid, data: n.text.replace(/\n/g, " ") }).catch(() => {});
+  }, 1400);
+  toast("Dispatched — prefilled, press Enter to send");
+}
+
+/// One switch in the dispatch sheet. The project's ceiling wins: a switch the project
+/// has turned off is shown greyed and does nothing, rather than being hidden — "why
+/// can't I assign?" needs an answer, and an absent control gives none.
+function togglePolicy(k: string): void {
+  const r = resolveClaim(policy, allow);
+  if (k === "assign" && r.assign.source !== "project") policy = { ...policy, assign: !policy.assign };
+  else if (k === "comment" && r.comment.source !== "project") policy = { ...policy, comment: !policy.comment };
+  else if (k === "pushBranch" && r.pushBranch.source !== "project") policy = { ...policy, pushBranch: !policy.pushBranch };
+  else if (k === "label" && r.label.source !== "project") {
+    policy = { ...policy, label: policy.label ? "" : "agent: running" };
+  }
+  renderDash();
+}
+
+/// Close an issue: comment, then close. **The only destructive write Episko makes to
+/// GitHub**, which is why it has a permanent confirm sheet and an editable comment —
+/// a stale-close with no reason is the bot behaviour that gets a feature switched off.
+async function doClose(): Promise<void> {
+  if (sheet?.kind !== "close") return;
+  const t = sheet.t, r = root();
+  const comment = ($("dashCloseText") as HTMLTextAreaElement | null)?.value ?? "";
+  sheet = null;
+  renderDash();
+  try {
+    await invoke("gh_close_issue", { root: r, number: t.number, comment });
+    toast(`#${t.number} closed`);
+    await loadGh(r, true);
+  } catch (e) {
+    toast(`Could not close #${t.number}: ${e}`);
+  }
+}
+
+/// Keep an issue, or take it back off the list. Committed, so it needs the same
+/// create-gate as the digest — and it is reviewable and undoable in the ⤢ view because
+/// a committed decision nobody can see is worse than no decision.
+async function setKept(number: number, keep: boolean): Promise<void> {
+  const r = root();
+  const who = gh.viewer || "someone";
+  try {
+    await invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create: true });
+    kept = await invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => kept);
+    toast(keep ? `#${number} kept — nobody on the team is asked again` : `#${number} back in triage`);
+    renderDash();
+  } catch (e) {
+    toast(`Could not write .episko/episko.toml: ${e}`);
+  }
+}
+
+/// Start an agent on a thread, and say so where colleagues can see it.
+///
+/// **The prompt is sent**, which breaks the app's usual "Episko prefills, the human
+/// presses Enter" rule — deliberately, and only here: that rule exists so nothing is
+/// sent you did not read, and a dispatch you confirmed in a sheet *is* the reading.
+///
+/// The claim is written after the session exists, never before: a claim for an agent
+/// that failed to start is worse than no claim, because it stops a colleague picking
+/// the work up.
+async function doDispatch(): Promise<void> {
+  if (sheet?.kind !== "dispatch") return;
+  const t = sheet.t, r = root(), n = name();
+  sheet = null;
+  renderDash();
+  const sid = await host.launch(n, r, { colorKey: r });
+  if (typeof sid !== "string") { toast("Could not start a session"); return; }
+
+  const eff = resolveClaim(policy, allow);
+  if (eff.assign.value || eff.comment.value || eff.label.value || eff.pushBranch.value) {
+    void invoke("gh_claim", {
+      root: r, number: t.number, kind: t.kind === "pr" ? "pr" : "issue",
+      assign: eff.assign.value, comment: eff.comment.value,
+      label: eff.label.value, pushBranch: eff.pushBranch.value,
+    }).then(() => {
+      recordClaim({ threadId: `${r}#${t.number}`, root: r, number: t.number,
+        kind: t.kind === "pr" ? "pr" : "issue", sessionId: sid, at: Date.now() });
+      void loadGh(r, true);
+    }).catch((e) => { dlog("warn", `claim #${t.number} failed — ${e}`); });
+  }
+
+  // Sent, not prefilled — see the note above.
+  setTimeout(() => {
+    const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
+    void invoke("write_pty", { sessionId: sid, data: prompt.replace(/\n/g, " ") + "\r" }).catch(() => {});
+  }, 1400);
+  toast(`Started on #${t.number}`);
+}
+
+/// A session that took a claim has ended — hand the work back, so a colleague is not
+/// looking at a claim for an agent that stopped hours ago.
+export function releaseClaimFor(sessionId: string): void {
+  const rec = claimForSession(sessionId);
+  if (!rec) return;
+  dropClaim(rec.threadId);
+  void invoke("gh_release", { root: rec.root, number: rec.number, kind: rec.kind }).catch(() => {});
+}
+
+/// Promote a note into the project, or take it back out. Sharing needs *git*, not
+/// GitHub — this is a file, and a file only means anything to a team if it can be
+/// committed.
+async function toggleShare(id: string): Promise<void> {
+  const r = root();
+  const n = noteList(r).find((x) => x.id === id);
+  if (!n) return;
+  const on = shared.some((x) => x.id === id);
+  try {
+    await invoke("set_shared_note", {
+      root: r, id, text: n.text, who: gh.viewer || "someone",
+      at: isoDay(Date.now()), share: !on, create: true,
+    });
+    shared = await invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => shared);
+    toast(on ? "Note is yours again" : "Shared — commit .episko/notes.toml to send it");
+    renderDash();
+  } catch (e) {
+    toast(`Could not write .episko/notes.toml: ${e}`);
+  }
+}
+
+/// Start an agent on a colleague's shared note. Prefilled, NOT sent — this is somebody
+/// else's sentence, so the person dispatching it reads it before it goes.
+async function dispatchText(text: string): Promise<void> {
+  const sid = await host.launch(name(), root(), { colorKey: root() });
+  if (typeof sid !== "string") return;
+  setTimeout(() => {
+    void invoke("write_pty", { sessionId: sid, data: text.replace(/\n/g, " ") }).catch(() => {});
   }, 1400);
   toast("Dispatched — prefilled, press Enter to send");
 }

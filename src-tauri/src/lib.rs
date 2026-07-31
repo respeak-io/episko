@@ -9,7 +9,9 @@
 
 mod external;
 mod git;
+mod github;
 mod icons;
+mod notes;
 mod platform;
 mod pty;
 mod summarize;
@@ -466,6 +468,17 @@ pub fn run() {
             git::git_commit_info,
             git::git_log_days,
             git::project_facts,
+            github::gh_threads,
+            github::gh_invalidate,
+            github::gh_claim,
+            github::gh_release,
+            github::gh_close_issue,
+            github::gh_day_activity,
+            github::claim_policy,
+            github::list_kept,
+            github::set_kept,
+            notes::list_shared_notes,
+            notes::set_shared_note,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,
