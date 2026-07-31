@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { gitMutates } from "../src/gitwatch";
+import { driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
+import type { Drift } from "../src/types";
 
 describe("gitMutates", () => {
   it("catches every ordinary way an agent moves HEAD", () => {
@@ -63,5 +64,135 @@ describe("gitMutates", () => {
     // what stops this reading as a branch change.
     const far = "git status && " + "echo padding ".repeat(20) + "&& npm run reset";
     expect(gitMutates(far)).toBe(false);
+  });
+});
+
+describe("driftTarget", () => {
+  // The shape the roster reports, and the shape of the real case this was written for:
+  // a session launched in exp-overview whose agent created ../overview and moved there.
+  const WT = "/Users/t/w/cc-launcher-spike";
+  const roster = [
+    { path: "/Users/t/repos/cc-launcher-spike", branch: "main", exists: true, is_main: true },
+    { path: `${WT}/exp-overview`, branch: "exp/overview", exists: true, is_main: false },
+    { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
+    { path: `${WT}/gone`, branch: "dead/branch", exists: false, is_main: false },
+  ];
+  const launched = `${WT}/exp-overview`;
+
+  it("names the checkout a write landed in when it isn't the session's own", () => {
+    expect(driftTarget(launched, "Write", `${WT}/overview/src/usage.ts`, roster))
+      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview" });
+    expect(driftTarget(launched, "Edit", `${WT}/overview/src-tauri/src/usage.rs`, roster))
+      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview" });
+    // Drifting into the repo's own main checkout counts exactly the same.
+    expect(driftTarget(launched, "Write", "/Users/t/repos/cc-launcher-spike/README.md", roster))
+      .toEqual({ dir: "/Users/t/repos/cc-launcher-spike", branch: "main" });
+  });
+
+  it("stays silent while the agent works where it was launched", () => {
+    expect(driftTarget(launched, "Write", `${launched}/src/phase.ts`, roster)).toBeNull();
+    expect(driftTarget(launched, "Edit", `${launched}/deep/nested/file.ts`, roster)).toBeNull();
+  });
+
+  it("only writes count — a read lands anywhere and would make this flap", () => {
+    // Every one of these is an ordinary thing for an agent to do from exp-overview.
+    expect(driftTarget(launched, "Read", `${WT}/overview/src/usage.ts`, roster)).toBeNull();
+    expect(driftTarget(launched, "Bash", `${WT}/overview/src/usage.ts`, roster)).toBeNull();
+    expect(driftTarget(launched, "Grep", `${WT}/overview/src/usage.ts`, roster)).toBeNull();
+  });
+
+  it("ignores writes outside the repo entirely", () => {
+    // A scratch file, a global config, another project: none of these are a move, and
+    // treating them as one would offer to relocate a live session into $TMPDIR.
+    expect(driftTarget(launched, "Write", "/tmp/scratch/notes.md", roster)).toBeNull();
+    expect(driftTarget(launched, "Write", "/Users/t/.claude/settings.json", roster)).toBeNull();
+    expect(driftTarget(launched, "Write", "/Users/t/repos/other-project/src/a.ts", roster)).toBeNull();
+  });
+
+  it("ignores a checkout git still lists but that is gone from disk", () => {
+    expect(driftTarget(launched, "Write", `${WT}/gone/src/a.ts`, roster)).toBeNull();
+  });
+
+  it("picks the innermost checkout when one worktree sits inside another", () => {
+    // A worktree created *inside* its own repo: the repo root contains it, so a
+    // longest-match is the only thing that names the right branch.
+    const nested = [
+      { path: "/r", branch: "main", exists: true, is_main: true },
+      { path: "/r/wt/feature", branch: "feat/x", exists: true, is_main: false },
+    ];
+    expect(driftTarget("/r", "Write", "/r/wt/feature/a.ts", nested))
+      .toEqual({ dir: "/r/wt/feature", branch: "feat/x" });
+    // …and from inside that worktree, writing back up into the repo is drift too.
+    expect(driftTarget("/r/wt/feature", "Write", "/r/src/a.ts", nested))
+      .toEqual({ dir: "/r", branch: "main" });
+  });
+
+  it("does not mistake a sibling with a shared name prefix for a match", () => {
+    // `/w/overview-old` starts with `/w/overview` as a *string*; only a path-boundary
+    // test keeps them apart.
+    const sib = [
+      { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
+      { path: `${WT}/overview-old`, branch: "old/overview", exists: true, is_main: false },
+    ];
+    expect(driftTarget(launched, "Write", `${WT}/overview-old/a.ts`, sib))
+      .toEqual({ dir: `${WT}/overview-old`, branch: "old/overview" });
+  });
+
+  it("treats a session launched in a subfolder of a checkout as being in it", () => {
+    // Launching in `overview/src-tauri` and writing to `overview/src` is not a move.
+    expect(driftTarget(`${WT}/overview/src-tauri`, "Write", `${WT}/overview/src/a.ts`, roster)).toBeNull();
+  });
+
+  it("handles Windows separators and a trailing slash on the roster path", () => {
+    const win = [{ path: "C:\\r\\main\\", branch: "main", exists: true, is_main: true },
+                 { path: "C:\\r\\feat", branch: "feat/x", exists: true, is_main: false }];
+    expect(driftTarget("C:\\r\\main", "Edit", "C:\\r\\feat\\src\\a.ts", win))
+      .toEqual({ dir: "C:\\r\\feat", branch: "feat/x" });
+    expect(driftTarget("C:\\r\\main", "Edit", "C:\\r\\main\\src\\a.ts", win)).toBeNull();
+  });
+
+  it("rejects a payload with no usable file_path", () => {
+    expect(driftTarget(launched, "Write", undefined, roster)).toBeNull();
+    expect(driftTarget(launched, "Write", "", roster)).toBeNull();
+    expect(driftTarget(launched, "Write", "   ", roster)).toBeNull();
+    expect(driftTarget(launched, "Write", 42, roster)).toBeNull();
+    expect(driftTarget(launched, "Write", `${WT}/overview/a.ts`, [])).toBeNull();
+  });
+
+  describe("driftUpdate — the latch", () => {
+    const moved = { dir: `${WT}/overview`, branch: "feat/overview" };
+    const upd = (prev: Drift | null, tool: string, fp: unknown) =>
+      driftUpdate(prev, launched, tool, fp, roster);
+
+    it("latches on the first write into another checkout", () => {
+      expect(upd(null, "Write", `${WT}/overview/src/a.ts`)).toEqual(moved);
+    });
+
+    it("holds through everything that isn't a write home", () => {
+      // This is the whole point of latching, and it is the common case: an agent that
+      // moved to a new checkout goes on reading the one it came from, constantly.
+      expect(upd(moved, "Read", `${launched}/src/phase.ts`)).toEqual(moved);
+      expect(upd(moved, "Grep", `${launched}/src`)).toEqual(moved);
+      expect(upd(moved, "Bash", undefined)).toEqual(moved);
+      // A write to somewhere that is no checkout of this repo says nothing either way.
+      expect(upd(moved, "Write", "/tmp/scratch/notes.md")).toEqual(moved);
+      expect(upd(moved, "Write", undefined)).toEqual(moved);
+    });
+
+    it("clears only when the agent writes home again", () => {
+      expect(upd(moved, "Write", `${launched}/src/phase.ts`)).toBeNull();
+      expect(upd(moved, "Edit", `${launched}/deep/a.ts`)).toBeNull();
+    });
+
+    it("re-targets straight from one drifted checkout to another", () => {
+      expect(upd(moved, "Write", "/Users/t/repos/cc-launcher-spike/README.md"))
+        .toEqual({ dir: "/Users/t/repos/cc-launcher-spike", branch: "main" });
+    });
+
+    it("is a no-op on a session that never drifted", () => {
+      expect(upd(null, "Read", `${WT}/overview/src/a.ts`)).toBeNull();
+      expect(upd(null, "Write", `${launched}/src/a.ts`)).toBeNull();
+      expect(upd(null, "Bash", undefined)).toBeNull();
+    });
   });
 });

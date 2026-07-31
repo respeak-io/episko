@@ -12,7 +12,7 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline } from "./format";
+import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
 import { sessions } from "./state";
@@ -117,6 +117,24 @@ export function planHtml(s: Sess): string {
   }).join("");
   const more = total > 5 ? `<div class="todo-more">+${total - 5} more</div>` : "";
   return `<div class="plan"><div class="ph"><span class="lab">Plan</span><span class="frac">${done} / ${total}</span></div><div class="pbar"><i style="width:${pct}%"></i></div>${rows}${more}</div>`;
+}
+// "This agent is writing somewhere else." Sits at the top of the inspector because it
+// reframes every figure below it: the working set, the branch and the fetch/pull/push
+// buttons all read the *launch* folder, and while a drift is showing, that is not where
+// the work is going.
+//
+// The offer is the clean thing a user would otherwise do by hand — except that by hand
+// it does not work: `--resume` finds a conversation only in the directory it was started
+// in, so relocating a session means moving its transcript, which is what the button does
+// and a terminal cannot. Hence the explicit wording; this is not a view toggle.
+export function driftHtml(s: Sess): string {
+  const d = s.drift!;
+  return `<div class="drift">
+    <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
+    <div class="drift-path" title="${esc(d.dir)}">${esc(tilde(d.dir))}</div>
+    <div class="drift-note">This session was launched in <span class="b">${esc(s.branch || basename(s.workdir))}</span>, so its branch, working set and git buttons still read that checkout.</div>
+    <div class="drift-btns"><button data-driftmove="${esc(s.id)}">Move session here</button></div>
+  </div>`;
 }
 export function wsetHtml(s: Sess): string {
   const g = s.git!;

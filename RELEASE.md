@@ -133,6 +133,26 @@ A regression in either is silent.
       from the roster. It must resume the *same* conversation — that is `resumeId`, not
       the launch id, doing its job.
 
+### Drift — an agent that changes checkout
+
+Nothing here can be checked headlessly: the detection is unit-tested and the CLI
+contract is pinned by the `--ignored` test above, but every surface below is DOM.
+
+- [ ] **The drift is noticed.** In a session launched in one checkout, have the agent
+      `git worktree add` a new one and **write a file in it**. Within a couple of tool
+      calls the sidebar row gains `⤳ <branch>`, the header chip reads `old ⤳ ⑃ new`, and
+      the inspector shows the *Working in* card **above** the vital.
+- [ ] **The row does not move** — it stays under the checkout the session was launched
+      in, and does not hop back and forth as the agent reads its old files. (A read must
+      never clear the marker; only a *write* back home does.)
+- [ ] **Move session here** ends the session, moves the conversation and resumes it in
+      the new checkout — with its history intact (ask it about something from before the
+      move). Afterwards the marker is gone, the branch chip is the new branch alone, and
+      `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
+- [ ] **A refused move is harmless.** Deny it once at the confirm dialog: nothing
+      changes. (The failure path — relaunch in the original folder — is worth forcing
+      once by pre-creating a file at the destination transcript path.)
+
 ### Panes that aren't agents
 
 - [ ] **`❯ Terminal`** opens a working shell pane.

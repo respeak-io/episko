@@ -24,14 +24,19 @@ let onTurnEnd: (s: Sess) => void = () => {};
 export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
 
 // A tool call settled, or a turn ended: this session may have moved HEAD, added a
-// worktree, or dirtied its working tree — and this is the app's *only* warning that it
-// did. Nothing watches the filesystem, so without a nudge from here the sidebar waits
-// for the next poll to notice a branch switch and never notices a new checkout at all.
+// worktree, dirtied its working tree, or written into a checkout it wasn't launched in
+// — and this is the app's *only* warning that it did. Nothing watches the filesystem,
+// so without a nudge from here the sidebar waits for the next poll to notice a branch
+// switch and never notices a new checkout at all.
+//
+// The whole `tool_input` travels, not just `.command`: the git half reads the command,
+// and the drift half reads `file_path`, which is the only field that can say the agent
+// moved to another checkout (Claude Code's `cwd` provably cannot — see ./gitwatch).
 //
 // A seam rather than a direct call for the same reason as `onTurnEnd`: acting on it
 // means git commands, the roster and a repaint, none of which belong in the phase state
 // machine. main.ts wires it; in a test a settled tool is just a settled tool.
-let onSessionTouched: (s: Sess, tool: string, cmd: unknown) => void = () => {};
+let onSessionTouched: (s: Sess, tool: string, input: any) => void = () => {};
 export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
 
 // Set the phase and, when it actually changes, stamp phaseSince — the anchor for
@@ -162,7 +167,7 @@ export function applyHook(s: Sess, data: any) {
     case "PostToolUseFailure": {
       const tool = data.tool_name || "";
       closeActivity(s, data.tool_name);
-      onSessionTouched(s, tool, data.tool_input?.command);
+      onSessionTouched(s, tool, data.tool_input);
       if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
       break;
     }

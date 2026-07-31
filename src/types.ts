@@ -31,6 +31,10 @@ export interface DiffStat {
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
 export interface WtHead { path: string; branch: string; is_main: boolean; exists: boolean }
+// A checkout of a session's own repo that isn't the one it was launched in, as
+// `driftTarget` (./gitwatch) reads it off the agent's writes. What the inspector's
+// "working in" card offers to move the session to.
+export interface Drift { dir: string; branch: string }
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
@@ -109,6 +113,11 @@ export interface Sess {
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
   apiErr: ApiErr | null;
+  // Set when the agent's writes land in a *different* checkout of this repo than the
+  // one the session was launched in — see driftTarget in ./gitwatch for why writes are
+  // the only signal that can say so. Display-only: `workdir` stays the folder Claude
+  // actually runs in (and that `--resume` needs) until the user moves the session.
+  drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: Res | null;

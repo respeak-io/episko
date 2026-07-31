@@ -664,10 +664,194 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
     Ok(msgs)
 }
 
+/// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`.
+///
+/// This is the **only** thing Episko ever writes inside `~/.claude`, and it exists
+/// because the alternative does not work: `--resume` takes a session id, never a path
+/// (verified against 2.1.220 — there is no path-based resume flag), and it looks the
+/// conversation up in `<projects>/<enc(cwd)>/`. So a session whose agent moved to
+/// another checkout cannot be resumed there by any incantation a user could type; the
+/// transcript has to move with it.
+///
+/// Three things make that safe rather than reckless, and all three are load-bearing:
+///
+/// - **Rename, never copy.** Two files with one id in two project dirs would list the
+///   same conversation twice in History (which walks `projects/*/*.jsonl`) and leave
+///   `--resume` ambiguous about which one it appends to.
+/// - **The sidecar travels too.** Claude keeps tool results in a `<session_id>/`
+///   directory beside the `.jsonl`; leaving it behind orphans the artifacts an older
+///   turn refers to. It is optional — plenty of sessions never make one.
+/// - **Never clobber.** An existing transcript at the destination is a different
+///   conversation with the same id (or this move already happened); either way it is
+///   refused, not overwritten.
+///
+/// The caller must have stopped the session first. Nothing here can tell whether a
+/// `claude` process still holds the source open, and on a live one the rename would
+/// leave it appending to a path that no longer resolves where anyone will look.
+#[tauri::command(async)]
+pub(crate) fn move_session_transcript(
+    session_id: String,
+    from_workdir: String,
+    to_workdir: String,
+) -> Result<String, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    move_session_transcript_in(&base, &session_id, &from_workdir, &to_workdir)
+}
+
+fn move_session_transcript_in(
+    base: &Path,
+    session_id: &str,
+    from_workdir: &str,
+    to_workdir: &str,
+) -> Result<String, String> {
+    // A session id reaches us from the frontend and is pasted into a filename. Anything
+    // that isn't the uuid shape it should be would let `..` or a separator escape the
+    // projects tree, so it is rejected outright rather than sanitised.
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(format!("not a valid session id: {session_id}"));
+    }
+    let from_dir = project_transcript_dir(base, from_workdir);
+    let to_dir = project_transcript_dir(base, to_workdir);
+    if from_dir == to_dir {
+        return Err("that session is already in this folder".to_string());
+    }
+    let src = from_dir.join(format!("{session_id}.jsonl"));
+    if !src.is_file() {
+        return Err(format!(
+            "no transcript for this session in {}",
+            from_dir.display()
+        ));
+    }
+    let dst = to_dir.join(format!("{session_id}.jsonl"));
+    if dst.exists() {
+        return Err("a transcript with this id is already in the target folder".to_string());
+    }
+    std::fs::create_dir_all(&to_dir).map_err(|e| format!("could not create {}: {e}", to_dir.display()))?;
+    std::fs::rename(&src, &dst).map_err(|e| format!("could not move the transcript: {e}"))?;
+
+    // The tool-results sidecar, if this session made one. A failure here is reported
+    // but must not fail the move: the transcript is already across, and the sidecar
+    // only holds artifacts from earlier turns.
+    let side_src = from_dir.join(session_id);
+    if side_src.is_dir() {
+        let side_dst = to_dir.join(session_id);
+        if !side_dst.exists() {
+            if let Err(e) = std::fs::rename(&side_src, &side_dst) {
+                log::warn!("moved transcript but not its tool-results sidecar: {e}");
+            }
+        }
+    }
+    Ok(dst.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    /// Fixture: a transcript (and optionally its tool-results sidecar) where Claude
+    /// would have written it for `workdir`.
+    fn seed_transcript(base: &Path, workdir: &Path, id: &str, body: &str, sidecar: bool) -> PathBuf {
+        let dir = project_transcript_dir(base, &workdir.to_string_lossy());
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&f, body).unwrap();
+        if sidecar {
+            let s = dir.join(id).join("tool-results");
+            std::fs::create_dir_all(&s).unwrap();
+            std::fs::write(s.join("artifact.html"), "<p>kept</p>").unwrap();
+        }
+        f
+    }
+
+    /// The move is what makes "resume in the checkout the agent moved to" possible at
+    /// all — `--resume` looks a conversation up by `<enc(cwd)>/<id>.jsonl` and takes no
+    /// path — so this asserts the shape that lookup depends on, from both ends.
+    #[test]
+    fn move_session_transcript_rehomes_the_conversation_and_its_sidecar() {
+        let root = scratch_dir();
+        let base = root.join("claude");
+        let (from, to) = (root.join("exp-overview"), root.join("overview"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let id = "acdc250f-a7af-4655-bb87-8ee83731b586";
+        let body = "{\"type\":\"user\",\"cwd\":\"/somewhere\"}\n";
+        let src = seed_transcript(&base, &from, id, body, true);
+
+        let dst = move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &to.to_string_lossy(),
+        )
+        .expect("the move should succeed");
+
+        // Where `--resume` will look, once the session is relaunched in `to`.
+        let want = project_transcript_dir(&base, &to.to_string_lossy()).join(format!("{id}.jsonl"));
+        assert_eq!(PathBuf::from(&dst), want);
+        assert_eq!(std::fs::read_to_string(&want).unwrap(), body, "content travels intact");
+
+        // A rename, not a copy: one id must not name two conversations. History walks
+        // `projects/*/*.jsonl`, so a leftover would list this session twice, under two
+        // different projects.
+        assert!(!src.exists(), "the source transcript must not be left behind");
+
+        // The sidecar carries the tool results older turns refer to.
+        let side = project_transcript_dir(&base, &to.to_string_lossy())
+            .join(id).join("tool-results").join("artifact.html");
+        assert_eq!(std::fs::read_to_string(&side).unwrap(), "<p>kept</p>");
+        assert!(
+            !project_transcript_dir(&base, &from.to_string_lossy()).join(id).exists(),
+            "the sidecar must move rather than be duplicated",
+        );
+    }
+
+    #[test]
+    fn move_session_transcript_refuses_what_it_cannot_do_safely() {
+        let root = scratch_dir();
+        let base = root.join("claude");
+        let (from, to) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let id = "acdc250f-a7af-4655-bb87-8ee83731b586";
+        seed_transcript(&base, &from, id, "{}\n", false);
+
+        // Same folder: nothing to do, and the rename would be onto itself.
+        assert!(move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &from.to_string_lossy(),
+        ).is_err());
+
+        // No such transcript — a session launched but never prompted writes none.
+        assert!(move_session_transcript_in(
+            &base, "11111111-2222-3333-4444-555555555555",
+            &from.to_string_lossy(), &to.to_string_lossy(),
+        ).is_err());
+
+        // An id that is not the uuid shape gets nowhere near a filename: `..` here
+        // would otherwise walk straight out of the projects tree.
+        for bad in ["../../etc/passwd", "a/b", "", "id with space"] {
+            assert!(
+                move_session_transcript_in(
+                    &base, bad, &from.to_string_lossy(), &to.to_string_lossy(),
+                ).is_err(),
+                "must reject session id {bad:?}",
+            );
+        }
+
+        // A different conversation already at the destination is never overwritten.
+        seed_transcript(&base, &to, id, "{\"other\":true}\n", false);
+        assert!(move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &to.to_string_lossy(),
+        ).is_err());
+        assert_eq!(
+            std::fs::read_to_string(
+                project_transcript_dir(&base, &to.to_string_lossy()).join(format!("{id}.jsonl"))
+            ).unwrap(),
+            "{\"other\":true}\n",
+            "the destination must be left exactly as it was",
+        );
+    }
 
     /// The two-step tail read must never change an answer, only the cost of getting it.
     ///

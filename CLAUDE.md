@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **408 vitest + cargo (89 on macOS, 86 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **423 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -202,7 +202,8 @@ opens Episko.
 ## Project tasks panel (`openTaskManager`)
 
 Pin / hide / create / edit / delete / **override**, reached from ⌘K.
-**`.episko/tasks.toml` is the only file Episko writes** — a discovered VS Code task
+**`.episko/tasks.toml` is the only file Episko writes** (in a user's repo — the one
+other place it writes is `~/.claude`, and only when you press *Move session*; see Drift) — a discovered VS Code task
 or justfile belongs to another tool, so editing one writes an `[override."<id>"]`
 into `tasks.toml` keyed by its discovered id, **never** a mutation of
 `.vscode/tasks.json`. Writes go through `toml_edit`, not a serialize-the-whole-struct
@@ -248,8 +249,8 @@ Four smaller P4 affordances, all in the frontend:
 | `lib.rs` | 456 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
 | `git.rs` | 1,877 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 1,286 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
-| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `usage.rs` | 1,470 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 926 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | 743 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `pty.rs` | 803 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
@@ -271,11 +272,11 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 37 modules
 
-**No framework, and no longer one file.** ~8,100 lines across 37 modules; `main.ts` is 686 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,300 lines across 37 modules; `main.ts` is 689 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 408 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 423 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -289,7 +290,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for |
+| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its *writes* are landing in |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -388,6 +389,64 @@ with the `--numstat` walk skipped entirely on a clean tree.
 
 Everything lands through `refreshGitViews` → `renderAll()`, so the sidebar, the header's
 branch chip and the open ⑃ dialog cannot disagree about what is checked out where.
+
+## Drift — the agent left the checkout it was launched in
+
+The above answers "what is checked out where". This answers the other half, which it
+cannot: **which checkout is this agent's work actually landing in?** An agent that runs
+`git worktree add … -b feat/x` and moves into the new checkout leaves the session pinned
+to the folder it started in, and every surface goes on naming that folder — correctly,
+and uselessly. The worktree roster notices the new checkout (the toast fires, the row
+appears); it is the *session → checkout* link that goes stale.
+
+**`cwd` cannot tell us, and that is a property of Claude Code, not an oversight.**
+Verified against 2.1.220: a `cd` *inside* the session's directory persists and the hook's
+`cwd` follows it, but a `cd` *outside* it is undone — the tool result literally says
+`Shell cwd was reset to …` — and `cwd` never moves. The session that prompted this had 42
+such resets and 622 transcript records all naming the folder it had already left. So any
+design that watches `cwd`, `workspace.current_dir` or the transcript is watching a field
+that is pinned by construction for exactly the case that matters.
+
+**What does name the new checkout is `tool_input.file_path`**, absolute on every
+Write/Edit payload (asserted against the real binary in the `#[ignore]`d contract test —
+if it ever goes relative, drift silently stops working rather than failing). Hence:
+
+- **Only writes count.** A `Read` lands anywhere — a sibling repo, `~/.claude`, `$TMPDIR`
+  — and reading is how an agent that moved *ports work across*. Counting reads would make
+  the flag flicker on every glance back at the old checkout.
+- **Both sides resolve to a checkout before being compared** (`driftTarget`), never the
+  file against `workdir` directly. That is what keeps a session launched in a *subfolder*
+  of a checkout (not drift) apart from one launched in a *nested worktree* (drift the
+  moment it writes to the enclosing repo). Longest match wins, for the same reason.
+- **The target must be a checkout the roster already knows.** Unlike `gitMutates`, a
+  false positive here is not a wasted re-read — it puts a wrong branch on screen and
+  offers to relocate a live session into `$TMPDIR`. Unknown folder → no drift.
+- **Latched, not sampled** (`driftUpdate`). Once seen, a drift holds until the agent
+  *writes home* again, which is the only act that means it came back.
+
+Display-only: `Sess.workdir` stays the folder Claude runs in and `--resume` needs. The
+row **does not move** — it stays under the checkout that owns its identity — and instead
+carries a `⤳ branch` marker, the header chip shows `old ⤳ ⑃ new`, and the inspector gets
+a card at the top, above the working set and git buttons it contradicts.
+
+**`moveSessionToDrift` is the one action that writes inside `~/.claude`**, and the second
+exception to "Episko only writes `.episko/tasks.toml`". It has to be an action rather
+than something a user could do by hand: `claude --resume` takes a session id and **no
+path** (there is no path-based resume flag), and looks the conversation up under
+`<enc(cwd)>/<id>.jsonl` — so *no sequence of commands* resumes a session in a folder
+other than the one it started in. The order is the safety argument: **kill, then move,
+then relaunch**. `closeSession` fires `kill_session` without awaiting it, so the await is
+what makes this a move of a *dead* session — a live one would keep the file open (Windows
+refuses the rename outright; POSIX would succeed and leave it writing into the moved
+file). `move_session_transcript` renames rather than copies (two files with one id would
+double-list in History and leave `--resume` ambiguous), carries the `<id>/tool-results`
+sidecar with it, refuses to overwrite, and rejects any id that isn't uuid-shaped before it
+reaches a filename. A failed move still relaunches — in the *original* folder, same
+conversation — so the cost is a restarted pane and nothing else.
+
+Known wart: the moved transcript's first user record still names the old cwd, so
+`transcript_origin` grafts its History row onto the old project. Defensible (the
+conversation did start there) and not worth rewriting records to fix.
 
 ## Four launch engines, one telemetry path
 

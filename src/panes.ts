@@ -27,7 +27,7 @@ import {
   isAgent, type DiffStat, type GitActionResult, type Res, type Runnable, type Sess,
   type WtHead,
 } from "./types";
-import { gitMutates } from "./gitwatch";
+import { driftUpdate, gitMutates } from "./gitwatch";
 import { fmtMb, fmtRate } from "./format";
 import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
@@ -82,7 +82,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
@@ -164,7 +164,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [],
@@ -216,7 +216,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
     lastEvent: "", activity: [],
@@ -395,6 +395,23 @@ export function noteGitCommand(cmd: unknown) {
   gitPokeT = window.setTimeout(() => { void refreshGitViews(); }, GIT_POKE_MS);
 }
 
+// The other half of the same hook: a write tells us *where* the agent is working, which
+// is the one thing a branch re-read can never discover — `refreshBranch` reads HEAD in
+// the session's own folder, so a session whose agent moved to a sibling checkout goes on
+// reporting the branch it left, forever and correctly.
+//
+// `driftUpdate` owns the rule (including why it latches); this owns only the repaint.
+export function noteDrift(s: Sess, tool: string, input: any) {
+  if (!isAgent(s) || !s.workdir) return;
+  const roster = worktreesByRepo.get(s.colorKey);
+  if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
+  const next = driftUpdate(s.drift, s.workdir, tool, input?.file_path, roster);
+  if (next?.dir === s.drift?.dir) return;
+  s.drift = next;
+  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch}` : `drift cleared ${s.id.slice(0, 8)}`);
+  renderAll();
+}
+
 // A green run shouldn't linger — tasks are far more numerous and shorter-lived
 // than sessions, and without this the rail silently fills with ticks. A pane you
 // are actually looking at is never yanked away, and a failure never auto-closes.
@@ -413,10 +430,20 @@ export function renderHeader(s: Sess | null) {
   const hb = $("hBranch"); hb.classList.remove("ext-chip");
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
+  hb.classList.remove("drifted");
   if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
-  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
+  // A drifted session gets BOTH branches, in the order they happened: the chip is the
+  // only thing on screen that says which checkout the work is landing in, and showing
+  // just the new one would trade a stale label for a lie about where `--resume` goes.
+  else if (s.drift) {
+    hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
+    hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
+    hb.hidden = false; hb.classList.add("drifted");
+  }
+  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.title = ""; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
-  $("hPath").textContent = tilde(s.workdir);
+  // The path follows the work for the same reason — it is the answer to "where am I?".
+  $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }
 
 // The active project context is either an Episko session or an external one.

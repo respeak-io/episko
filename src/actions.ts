@@ -9,12 +9,12 @@
 // the repaint are this layer's, exactly as PLAN's `setX`-per-variable decision says.
 
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { $, toast } from "./dom";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";
-import { activeCwd } from "./panes";
+import { activeCwd, closeSession, launch } from "./panes";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import {
@@ -104,3 +104,60 @@ export function setTheme(t: "dark" | "light") {
   renderSettings(); // keep the settings picker in sync if it's open
 }
 export function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
+
+// ---------- moving a session to the checkout its agent moved to ----------
+//
+// The one action in Episko that writes inside `~/.claude`, and the reason it has to:
+// `claude --resume <id>` finds a conversation only under `<enc(cwd)>/<id>.jsonl` and
+// takes no path, so *no sequence of commands a user could type* resumes a session in a
+// folder other than the one it started in. Doing it by hand means exiting, moving a
+// file out of Claude Code's private store, and relaunching with the right flags. This
+// is that, in one click, in the right order.
+//
+// The order is the safety argument. The session is killed **first**, so nothing is
+// appending to the transcript while it is renamed; the move happens on a dead session,
+// and only then is a new one launched in the new folder against the same conversation.
+// If the move fails, the relaunch still happens — in the original folder, resuming the
+// same id — so a failed move costs a restarted pane and nothing else.
+export async function moveSessionToDrift(id: string) {
+  const s = sessions.get(id);
+  if (!s?.drift) return;
+  const { dir, branch } = s.drift;
+  const ok = await ask(
+    `Move this session to ${branch}?\n\n`
+    + `Episko will end the session, move its conversation to ${dir}, and resume it there.\n\n`
+    + `The conversation is kept. Anything the agent is doing right now is interrupted.`,
+    { title: "Move session", kind: "warning", okLabel: "Move & resume", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+
+  // Captured before the close, because the fallback path has to be able to rebuild the
+  // session exactly as it was — same labels, not the drift's.
+  const { project, colorKey, workdir, resumeId, worktree: wasWt, branch: wasBranch } = s;
+  // Kill before close: `closeSession` fires kill_session without awaiting it, and the
+  // rename must not race a process that still has the file open (Windows refuses one
+  // outright; a POSIX rename would succeed and leave the dying session writing into the
+  // moved file). Awaiting the kill is what makes the move a move of a dead session.
+  await invoke("kill_session", { sessionId: id }).catch(() => {});
+  closeSession(id);
+
+  let moved = true;
+  try {
+    await invoke("move_session_transcript", { sessionId: resumeId, fromWorkdir: workdir, toWorkdir: dir });
+  } catch (e) {
+    // Nothing was moved — say so and put the session back exactly where it was, rather
+    // than relaunching it in a folder its conversation isn't in.
+    moved = false;
+    toast("Couldn't move the session: " + e);
+  }
+  await launch(project, moved ? dir : workdir, {
+    colorKey,
+    // An agent can drift into the repo's *main* checkout as easily as into a sibling
+    // worktree, and that one is not a worktree — labelling it as one would put a ⑃ on
+    // the repo itself. `colorKey` is the repo root, so the comparison is free.
+    worktree: moved ? (dir === colorKey ? null : branch) : wasWt,
+    branch: moved ? branch : wasBranch,
+    resume: resumeId,
+  });
+  if (moved) toast(`Session moved to ${branch}`);
+}
