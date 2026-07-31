@@ -241,17 +241,20 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .wtglyph { flex: none; width: 13px; text-align: center; font-size: 11px; line-height: 1; }
 .wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
-/* Per-cluster ＋ — a session straight into that checkout, no dialog. Dimmed until the
-   header is hovered so a repo with five worktrees isn't five loud plus signs. */
-.wtadd { flex: none; margin-left: 5px; padding: 0 2px; font-size: 12px; line-height: 1; color: var(--muted-2); opacity: .4; cursor: pointer; border-radius: 5px; transition: opacity .12s, color .12s; }
+/* Per-cluster ＋ — a session straight into that checkout, no dialog. Hidden until the
+   header is hovered, the same way .plaunch is: a repo with five worktrees is five
+   headers, and a standing ＋ on each turns the list into a column of plus signs.
+   Opacity, not display — the count sits on `margin-left: auto`, so removing the ＋
+   from flow would slide it right every time the pointer left the row. */
+.wtadd { flex: none; margin-left: 5px; padding: 0 2px; font-size: 12px; line-height: 1; color: var(--muted-2); opacity: 0; cursor: pointer; border-radius: 5px; transition: opacity .12s, color .12s; }
 .wthead:hover .wtadd { opacity: 1; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
 /* A cluster with nothing running in it. The header is the whole row — it renders with
-   or without sessions, so an idle checkout costs one line instead of two, and its ＋
-   stays legible unhovered because it is the only thing there is to do here. */
+   or without sessions, so an idle checkout costs one line instead of two. Dimmed, but
+   still hover-to-＋ like every other header: it is one of a list, and the one thing it
+   must do unprompted is say the checkout is there. */
 .wthead.wtvacant .wtglyph, .wthead.wtvacant .wtname { opacity: .55; }
-.wthead.wtvacant .wtadd { opacity: .75; }
 /* chip mode has no cluster headers, so an idle checkout still needs a row of its own:
    present, but clearly not a session */
 .srow.wtempty .sbranch { font-style: italic; color: var(--muted-2); }
