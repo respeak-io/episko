@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { isAgent } from "./types";
-import { $, chord, IS_MAC, toast } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
   closeAttnPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
@@ -20,14 +21,15 @@ import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
-  removeFavorite, resolvePermission, revealActiveFolder, setActionsRenderAll,
-  setPermMode, setSort, setTheme, setWtGroup, toggleInsp, toggleRail, toggleTheme,
+  followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
+  setActionsRenderAll, setPermMode, setSort, setTheme, setWtGroup, toggleInsp,
+  toggleRail, toggleTheme,
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, openPlainTerminal, refreshBranches, refreshSessionStats, renderHeader,
-  requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
-  syncStageButtons,
+  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal,
+  refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -47,8 +49,8 @@ import {
   setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession,
-  setWtHandToTerminal, setWtLaunch, setWtRenderAll, setWtSetActive,
+  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal, setWtLaunch,
+  setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
@@ -66,13 +68,15 @@ import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
 import { dwellText } from "./inspectorview";
+import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
-  applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
+  applyHook, applyStatusline, permCmd, riskLevel, setOnSessionTouched, setOnTurnEnd,
+  setPhase,
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
-  mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine, setTermFontSize,
-  sortMode, termEngine,
+  markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
+  setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
 import {
@@ -109,6 +113,17 @@ void (async () => {
   }
 })();
 
+// The app header IS the title bar — there is no native one behind it (see the
+// window block in lib.rs) — but which half of that the CSS has to draw is a
+// platform fact it cannot read. Stamp it here, at module scope, so the first
+// paint already has it: macOS leaves room for its real traffic lights, Windows
+// shows the controls wired below, and an unported Linux keeps its native frame
+// and needs neither. **Nothing is stamped in a browser** — this same HTML opens
+// on vite's port in dev, where there is no window behind it, so an unqualified
+// `IS_WIN` (a user-agent read) would hand a Chrome tab three buttons that can
+// only throw.
+if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "win" : "linux");
+
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
 // platforms (everything rendered from TS goes through MOD/chord instead, which now
 // live in ./dom beside `$` — the sidebar, the palette and the footer all label
@@ -143,6 +158,13 @@ homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // All default to a no-op, so the modules stand alone in a test.
 setRlLogger(dlog);
 setOnTurnEnd((s) => { void maybeRunOnStop(s); });
+// A settled tool call (or a finished turn) is the app's only warning that a session
+// changed its checkout — nothing watches the filesystem. Two consequences, both cheap:
+// the folder is queued for a working-set re-read, and a git command that could have
+// moved HEAD or added a worktree pokes the git views straight away.
+setOnSessionTouched((s, tool, data) => {
+  markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
+});
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -165,11 +187,11 @@ setPaletteHost({
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder,
 });
-// Same reasoning, six callees: a context-menu row starts panes and edits the project
+// Same reasoning, seven callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
 setProjMenuHost({
-  renderAll, requestLaunch, launchShell, openProjectFolder, addProjectPath,
-  removeFavorite,
+  renderAll, requestLaunch, launchWorktree, launchShell, openProjectFolder,
+  addProjectPath, removeFavorite,
 });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
 setTaskRunSetActive(setActive);
@@ -206,6 +228,8 @@ setWtCloseSession(closeSession);
 setWtSetActive(setActive);
 setWtRenderAll(renderAll);
 setWtHandToTerminal(handToTerminal);
+// …and removing one changes what checkouts exist, which only a git re-read notices.
+setWtRefreshGit(refreshGitViews);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -445,9 +469,10 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
+  else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
   else if (el.dataset.close) closeSession(el.dataset.close);
@@ -459,6 +484,10 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  // A launch into one specific checkout. Unlike data-launch this keeps colorKey pinned
+  // to the repo root (data-root), so the new session joins the project it belongs to
+  // rather than becoming a project of its own — the same contract the ⑃ dialog uses.
+  else if (el.dataset.wtadd) launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || "");
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
@@ -478,6 +507,30 @@ document.addEventListener("click", (e) => {
 
 $("kbar").addEventListener("click", openPalette);
 $("themeBtn").addEventListener("click", toggleTheme);
+
+// Window controls — the other half of "the header is the title bar". Windows
+// only: macOS's traffic lights are the real ones, and its green button zooms or
+// goes fullscreen depending on how you hold it, which no <button> reproduces.
+// Close goes through the OS close request, so it lands in the same
+// `quit-requested` confirm below as Ctrl+Q rather than stepping around it.
+// Maximize is only *asked* for here — the answer comes back through onResized,
+// which is also how Win+↑, a snap and the drag region's own double-click get the
+// glyph right; on macOS the same listener catches entering fullscreen, where the
+// OS reclaims the traffic lights and the room the header leaves for them.
+if (IS_TAURI && (IS_MAC || IS_WIN)) {
+  const win = getCurrentWindow();
+  const syncWin = async () => {
+    if (IS_WIN) $("winCtl").classList.toggle("maxed", await win.isMaximized());
+    else document.documentElement.classList.toggle("fs", await win.isFullscreen());
+  };
+  if (IS_WIN) {
+    $("winMin").addEventListener("click", () => { void win.minimize(); });
+    $("winMax").addEventListener("click", () => { void win.toggleMaximize(); });
+    $("winClose").addEventListener("click", () => { void win.close(); });
+  }
+  void win.onResized(() => { void syncWin(); });
+  void syncWin();
+}
 $("railCollapse").addEventListener("click", toggleRail);
 $("railSort").addEventListener("click", cycleSort);
 $("inspBtn").addEventListener("click", toggleInsp);
@@ -492,12 +545,17 @@ $("btnNew").addEventListener("click", () => {
   if (c) requestLaunch(c.project, c.path); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+// Two doors into History: the stage-header button opens it scoped to the project on
+// screen (like ❯ Terminal and ▶ Run beside it), the top-bar icon opens every project.
+$("btnHist").addEventListener("click", () => { void openHistory(true); });
+$("histBtn").addEventListener("click", () => { void openHistory(false); });
+initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
@@ -510,6 +568,8 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === "0") { e.preventDefault(); setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); }
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
+  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
@@ -641,14 +701,18 @@ void loadDormants();
 window.addEventListener("beforeunload", flushRoster);
 
 // keep the sidebar's "uncommitted changes" dot (and the external diff card) honest
-// for every project at once — s.git alone only covers the active session.
-refreshDirtyStates();
+// for every project at once — s.git alone only covers the active session. The tick
+// stays at 5s, but the work behind it is now driven by which folders an agent actually
+// touched (see setOnSessionTouched below); the sweep inside is the backstop.
+refreshDirtyStates(true);
 setInterval(refreshDirtyStates, 5000);
 
-// keep each session's branch label honest — re-read the real HEAD so switching
-// branches inside a session (or a worktree) is reflected instead of the stale
-// creation-time name.
-setInterval(refreshBranches, 4000);
+// Keep every git-derived label honest: each session's real HEAD, plus the set of
+// checkouts each repo has. The hook stream pokes the same function the moment an agent
+// runs a git command, so this interval is the backstop that catches changes made
+// outside Claude — your own terminal, an editor, an MCP tool.
+setInterval(refreshGitViews, 4000);
+void refreshGitViews(); // seed the roster so the first paint isn't a checkout short
 
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();

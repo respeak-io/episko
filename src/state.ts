@@ -21,7 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
-import type { DiffStat, Engine, ExtSession, PermMode, Restorable, Sess } from "./types";
+import type { DiffStat, Engine, ExtSession, PermMode, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -164,3 +164,28 @@ export function setPermMode(m: PermMode) { permMode = m; }
 export const dirtyByFolder = new Map<string, DiffStat | null>();
 export const isDirty = (g?: DiffStat | null): boolean => !!g && (g.files > 0 || g.untracked > 0);
 export const folderDirty = (f: string): boolean => isDirty(dirtyByFolder.get(f));
+// Folders whose working tree an agent has just touched, so the dirty poll knows which
+// are worth re-reading instead of sweeping every open checkout on a timer. Drained by
+// `refreshDirtyStates`; filled by `markWorkdirStale` off the hook stream.
+export const dirtyStale = new Set<string>();
+// Tools that cannot change a working tree. An allowlist of *readers* rather than a
+// list of writers, deliberately: a tool added to Claude Code later should default to
+// "re-read the folder" and be wrong-but-cheap, not silently miss its writes.
+const READONLY_TOOLS = new Set(["Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "ExitPlanMode", "BashOutput", "AskUserQuestion"]);
+export function markWorkdirStale(s: Sess, tool: string) {
+  if (!s.workdir || READONLY_TOOLS.has(tool)) return;
+  dirtyStale.add(s.workdir);
+}
+
+// The worktree roster: every checkout of a repo, whether or not a session lives in
+// one. Keyed by the repo root the sidebar already groups by (`Sess.colorKey`), and
+// filled by `refreshWorktrees` from the spawn-free `worktree_heads` command.
+//
+// Without this the sidebar can only show worktrees it has a session in, because
+// clusters are derived from sessions — so an agent running `git worktree add` produced
+// no visible change at all until you launched something into the new checkout.
+export const worktreesByRepo = new Map<string, WtHead[]>();
+// Cheap change stamp, compared per repo so a poll that finds nothing new costs a few
+// file reads and zero renders. That is what lets the roster ride the same tick as the
+// branch poll without adding a cost anyone can feel.
+export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.exists ? 1 : 0}`).join("");

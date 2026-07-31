@@ -24,6 +24,7 @@ import { taskStateText } from "./sidebarview";
 import { isAgent, type Runnable, type Sess } from "./types";
 import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
+import { openHistory } from "./historyui";
 import {
   askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
 } from "./taskui";
@@ -106,6 +107,8 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, sc: [MOD, "⏎"] },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
+  { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, sc: [MOD, "⇧", "H"] },
+  { key: "cmd:histall", label: "Session history — every project…", glyph: "◷", run: () => { void openHistory(false); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },
