@@ -150,13 +150,18 @@ function dayGutter(d: TrailDay): string {
   </div>`;
 }
 
-// The two kinds of thing a day contains are labelled rather than left to a glyph.
-// "What does the check mean versus the fork?" is the question the glyphs alone
-// produced, and a four-letter word answers it permanently.
+// The two kinds of thing a day contains, named in the app's OWN vocabulary.
+//
+// This is the second attempt. Glyphs (✓ / ⎇) produced "what does the check mean versus
+// the fork?"; replacing them with `chat` and `code` produced "what is the difference
+// between chat and code?" — shorter, and still a word the rest of Episko never uses.
+// "Session" and "commit" are what the sidebar, History and git already call these, so
+// there is nothing left to learn.
 function sessionRow(s: TrailDay["sessions"][number]): string {
   const live = sessions.has(s.id);
   return `<div class="td-item" data-sess="${esc(s.id)}" data-cwd="${esc(s.cwd)}">
-    <span class="td-kind sess">${live ? "live" : "chat"}</span>
+    <span class="td-kind sess${live ? " on" : ""}"
+      title="${live ? "A Claude session — still running" : "A Claude session"}">session</span>
     <span class="td-t">${esc(s.title)}</span>
     <span class="td-r">${s.branch ? esc(s.branch) : ""}</span>
   </div>`;
@@ -174,7 +179,7 @@ function commitRow(c: TrailCommit, evByNumber: Map<number, TrailEvent>): string 
       : `<span class="td-ev">#${n}</span>`;
   }).join("");
   return `<div class="td-item">
-    <span class="td-kind commit">code</span>
+    <span class="td-kind commit" title="A git commit">commit</span>
     <span class="td-t">${esc(c.subject)}</span>
     ${chips ? `<span class="td-evs-inline">${chips}</span>` : ""}
     <span class="td-r">${esc(c.author)}</span>

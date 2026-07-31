@@ -1497,8 +1497,11 @@ select.in-ctl { cursor: pointer; }
 .ov-sel:hover { color: var(--text); border-color: var(--hair-strong); }
 .ov-sel:focus { outline: none; border-color: var(--accent-line); color: var(--accent-ink); }
 /* Say what a row IS. A check versus a fork glyph left people guessing; a word doesn't. */
-.td-kind { flex: none; width: 30px; text-align: center; padding: 1px 0; border-radius: 4px; font: 8.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); }
+.td-kind { flex: none; min-width: 54px; text-align: center; padding: 1px 0; border-radius: 4px; font: 8.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); }
 .td-kind.sess { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 26%, transparent); }
 .td-kind.commit { color: #c3b0ff; border-color: color-mix(in srgb, #c3b0ff 26%, transparent); }
+/* Still running: the label stays "session" — liveness is a state of the same
+ * thing, not a third kind of thing needing a third word. */
+.td-kind.sess.on { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 34%, transparent); background: color-mix(in srgb, var(--st-working) 12%, transparent); }
 .td-evs-inline { display: inline-flex; gap: 4px; flex: none; margin-left: 6px; }
 .trail-left { padding-top: 10px; }
