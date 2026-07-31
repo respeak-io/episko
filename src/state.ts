@@ -115,6 +115,7 @@ export let mirror:
   | { kind: "trail" }
   | { kind: "threads"; project: string | null }
   | { kind: "board"; project: string }
+  | { kind: "orbit" }
   | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
@@ -125,6 +126,7 @@ export const threadsOpen = (): boolean => mirror?.kind === "threads";
 export const threadsProject = (): string | null => (mirror?.kind === "threads" ? mirror.project : null);
 export const boardOpen = (): boolean => mirror?.kind === "board";
 export const boardProject = (): string | null => (mirror?.kind === "board" ? mirror.project : null);
+export const orbitOpen = (): boolean => mirror?.kind === "orbit";
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.

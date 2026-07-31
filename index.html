@@ -82,6 +82,23 @@
             </div>
             <div class="th-scroll"><table class="th-tbl" id="threadsTbl"></table></div>
           </div>
+          <!-- The Orbit: the ambient one. Radius is PRESSURE (a state sets the
+               floor, waiting raises it), so the picture keeps changing while
+               nothing changes — which is the only reason a glance is worth it. -->
+          <div class="orbit-view" id="orbitPane" hidden>
+            <div class="orbit-wrap" id="orbitWrap">
+              <canvas id="orbitCanvas"></canvas>
+              <div class="orbit-legend">
+                <span class="olg"><i style="background:#fb6f92"></i>needs you</span>
+                <span class="olg"><i style="background:#f26d6d"></i>error</span>
+                <span class="olg"><i style="background:#37c98b"></i>your move</span>
+                <span class="olg"><i style="background:#e0a44a"></i>working</span>
+                <span class="olg"><i style="background:#7b8496"></i>unclaimed</span>
+              </div>
+              <div class="orbit-tip" id="orbitTip"></div>
+            </div>
+            <div class="orbit-foot" id="orbitFoot"></div>
+          </div>
           <!-- The board: RFC #24's committable cards. Its own pane because the
                middle columns hold live panes, not summaries of them. -->
           <div class="board-view" id="boardPane" hidden>
