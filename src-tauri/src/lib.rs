@@ -216,6 +216,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Terminal copy/paste (Ctrl+Shift+C / Ctrl+Shift+V) reads and writes the
+        // clipboard from here rather than through `navigator.clipboard`: reading it
+        // in the WebView needs the `clipboard-read` permission, which wry only
+        // auto-grants when the webview was built with `enable_clipboard_access()`
+        // (Tauri leaves it off), so WebView2 would raise its own permission prompt
+        // and WKWebView its paste-confirmation button. See `clipboardKeys`.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // Windows analog of the macOS Cmd+Q catcher in `setup` below: Windows gets
         // no app menu (see there), so quitting means closing the window. Intercept
         // the close and run the same frontend confirm flow — only `confirm_quit`
@@ -464,6 +471,7 @@ pub fn run() {
             external::list_external_sessions,
             external::focus_external_session,
             usage::read_transcript,
+            usage::move_session_transcript,
             usage::list_past_sessions,
             usage::list_session_history,
             usage::token_usage_by_day,
