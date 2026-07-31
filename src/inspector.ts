@@ -62,7 +62,7 @@ export function renderInspector(s: Sess | null) {
   // see, and it's the only place the fetch/pull/push buttons live.
   if (s.git) html.push(wsetHtml(s));
   html.push(timelineHtml(s));                                     // activity, by tool
-  if (s.res) html.push(resHtml(s));                              // REFERENCE — cpu/mem, pinned to the bottom
+  html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
   $("inspector").innerHTML = html.join("");
 }
 

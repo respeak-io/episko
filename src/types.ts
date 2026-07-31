@@ -140,7 +140,7 @@ export interface Sess {
   drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];
-  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: Res | null;
+  ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
   // task panes only

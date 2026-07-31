@@ -16,7 +16,7 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
 - `pnpm test` — 468 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 96 tests on macOS, 93 on
+- `cargo check --locked` and `cargo test --locked` — 99 tests on macOS, 96 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -127,6 +127,22 @@ A regression in either is silent.
       `innerHTML` write when the markup is byte-identical, so watch that a phase
       change, an arriving permission, a new session, and closing one *all* still move
       the sidebar — and that a drag-reorder leaves it correct.
+
+### The two surfaces with no automated cover at all
+
+Both are CSS/markup, so `tsc` and the suites say nothing about either.
+
+- [ ] **The inspector's I/O block is app-wide.** Run two agents, give one of them
+      something that churns the disk, and read the block on the *other* one: it must
+      show the same figures, headed `all sessions · N running`. The rate is the sum,
+      so it must exceed what either agent alone is doing. Then close a pane — the
+      **total must not fall** (`io_retired` is what keeps it monotonic), while the
+      running count drops. With nothing running the rates read `—`, not `0 B/s`.
+- [ ] **Settings toggles sit beside their label, not under it.** Settings ⌘, →
+      **Tasks**: "Let trusted projects introspect themselves" and "Raise attention
+      when a run fails" must each be a row — text left, switch right — not a centred
+      stack. This is a cascade order that has broken once (`.set-inline` has to stay
+      after `.set-group`), and it fails silently and only visually.
 
 ### The blocking path
 

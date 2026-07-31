@@ -15,7 +15,7 @@
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { sessions } from "./state";
+import { ioAll, sessions } from "./state";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
 // disabled while one is.
@@ -225,14 +225,19 @@ function ioPct(bps: number): number {
   if (bps <= 0) return 0;
   return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
 }
-export function resHtml(s: Sess): string {
-  const r = s.res!;
+// App-wide, not per-session: `ioAll` sums every claude process Episko owns, so this
+// block reads the same on whichever pane you happen to have open — like the rate
+// limits, and labelled so nobody mistakes it for the session in front of them.
+export function resHtml(): string {
+  const r = ioAll;
   // Before the second sample there is no window to average over, so the rate is unknown
   // rather than zero — say so instead of showing a confident "0 B/s".
   const rd = r.primed ? fmtRate(r.readBps) : "—";
   const wr = r.primed ? fmtRate(r.writeBps) : "—";
   const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
-  return `<div class="res" title="Disk I/O for this session's claude process · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written since it started">
+  const n = [...sessions.values()].filter((x) => isAgent(x) && !x.external).length;
+  return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
+    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
     <div class="rr rtot"><span class="rk">total</span><span class="rvtot">${fmtMb(r.readMb)} read · ${fmtMb(r.writtenMb)} written</span></div></div>`;

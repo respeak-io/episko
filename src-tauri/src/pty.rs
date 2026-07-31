@@ -26,6 +26,7 @@
 // `portable_pty::CommandBuilder`, which the leaf layer must not import),
 // `interactive_shell`, `task_shell`, `find_ghostty`.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 use base64::engine::general_purpose::STANDARD;
@@ -704,86 +705,229 @@ pub(crate) struct Resources {
     read_bps: f64,
     /// Bytes/second written to disk, same window.
     write_bps: f64,
-    /// Lifetime totals for this process, in MiB — the "how much has this session
-    /// actually churned" number a rate alone can't tell you.
+    /// Lifetime totals across every owned session, in MiB, including ones that have
+    /// since exited — the "how much has Episko actually churned" number a rate alone
+    /// can't tell you.
     read_mb: f64,
     written_mb: f64,
-    /// False on the first sample of a process, when there is no previous reading to
-    /// difference against and the rates are therefore 0 rather than measured. Lets the
-    /// UI show "—" instead of a confident, wrong "0 B/s".
+    /// False until some process has a previous reading to difference against, when the
+    /// rates are 0 rather than measured. Lets the UI show "—" instead of a confident,
+    /// wrong "0 B/s".
     primed: bool,
 }
 
-/// Per-session **disk I/O** for the embedded-PTY `claude` process, looked up by the
-/// session id's stored pid. Measures the `claude` process itself (not its whole
-/// subtree). None for external/shell sessions (no owned pid) or a process that has
-/// exited.
+/// App-wide **disk I/O**: every embedded-PTY `claude` process Episko owns, summed into
+/// one reading. Measures the `claude` processes themselves (not their subtrees), and
+/// ignores external/shell/task sessions, which have no owned pid.
+///
+/// **Deliberately not per-session.** What a reader wants from this panel is "how hard is
+/// Episko working the disk right now", and with several agents running, a figure for
+/// whichever pane happens to be on screen answers a question nobody asked — worse, it
+/// reads as the whole when it is a part. So it is account-wide in the same sense the
+/// rate limits are: one number, shown identically on every session.
 ///
 /// I/O rather than CPU/RAM because that is the resource a Claude session actually
 /// spends: it reads your tree and writes files, and a runaway agent shows up as
 /// sustained throughput long before it shows up as CPU. Read via `sysinfo` (macOS:
 /// `proc_pid_rusage` → `ri_diskio_*`) rather than a `ps` child, because `ps` cannot
-/// report I/O at all — and refreshing exactly one pid costs a single syscall, less than
-/// the process spawn it replaces.
+/// report I/O at all — and one refresh covering N pids is still a single call.
 ///
 /// Rates are computed here from the **lifetime totals** and our own timestamp, not from
 /// sysinfo's per-refresh deltas: those are relative to the last refresh of that
 /// `System`, and we build a fresh one per call. Differencing totals ourselves makes the
 /// window explicit and survives a missed or irregular poll.
+///
+/// Two things the summing makes subtle, and both are why this differences **per pid and
+/// then adds the rates**, rather than differencing one summed total:
+///
+/// - A session that exits between polls shrinks the sum. Differencing the sum would read
+///   that fall as a window with no I/O in it (`saturating_sub` → 0) and blank the rate
+///   for every *other* running agent. Per-pid, its contribution simply stops.
+/// - A session that *starts* between polls has no previous sample, so it contributes its
+///   whole lifetime total as one window's worth. It therefore contributes 0 to the rate
+///   until its second reading, exactly as a single session did before.
+///
+/// `primed` is true once at least one pid has a previous sample to difference against —
+/// with nothing running, or on the very first poll, the rate is unknown rather than zero
+/// and the UI says so.
+///
+/// The **totals** carry `io_retired`, the bytes of sessions that have since exited, so
+/// closing a pane doesn't make the run's churn appear to go backwards.
 #[tauri::command(async)]
-pub(crate) fn session_resources(state: State<AppState>, session_id: String) -> Option<Resources> {
+pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let pid = state.sessions.lock().unwrap().get(&session_id)?.pid?;
-    let spid = Pid::from_u32(pid);
+    let pids: Vec<u32> = state
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .filter_map(|s| s.pid)
+        .collect();
+    let spids: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
+
     let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[spid]),
-        true,
-        ProcessRefreshKind::nothing().with_disk_usage(),
-    );
-    let usage = sys.process(spid)?.disk_usage();
-    let (read, written) = (usage.total_read_bytes, usage.total_written_bytes);
+    if !spids.is_empty() {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&spids),
+            true,
+            ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+    }
+
+    let readings: Vec<(u32, u64, u64)> = pids
+        .iter()
+        .zip(spids.iter())
+        .filter_map(|(pid, spid)| {
+            let usage = sys.process(*spid)?.disk_usage();
+            Some((*pid, usage.total_read_bytes, usage.total_written_bytes))
+        })
+        .collect();
 
     let now = std::time::Instant::now();
     let mut samples = state.io_samples.lock().unwrap();
-    // Drop readings for processes we no longer own, so a long-lived app doesn't
-    // accumulate an entry per session it has ever run.
-    {
-        let owned = state.owned_pids.lock().unwrap();
-        samples.retain(|p, _| owned.contains(p));
-    }
-    let prev = samples.insert(pid, (read, written, now));
+    let mut retired = state.io_retired.lock().unwrap();
+    retire_missing(
+        &mut samples,
+        &state.owned_pids.lock().unwrap(),
+        &mut retired,
+    );
+    let folded = fold_io(&readings, &mut samples, now);
 
-    let (read_bps, write_bps, primed) = match prev {
+    const MIB: f64 = 1024.0 * 1024.0;
+    Resources {
+        read_bps: folded.read_bps,
+        write_bps: folded.write_bps,
+        read_mb: folded.read.saturating_add(retired.0) as f64 / MIB,
+        written_mb: folded.written.saturating_add(retired.1) as f64 / MIB,
+        primed: folded.primed,
+    }
+}
+
+/// Move the bytes of pids we no longer own out of `samples` and into `retired`.
+///
+/// Both halves matter: dropping the entries stops a long-lived app accumulating one per
+/// session it has ever run, and banking their bytes first is what stops the app-wide
+/// total falling when a pane closes.
+fn retire_missing(
+    samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
+    owned: &HashSet<u32>,
+    retired: &mut (u64, u64),
+) {
+    samples.retain(|p, (r, w, _)| {
+        let keep = owned.contains(p);
+        if !keep {
+            retired.0 = retired.0.saturating_add(*r);
+            retired.1 = retired.1.saturating_add(*w);
+        }
+        keep
+    });
+}
+
+struct Folded {
+    read_bps: f64,
+    write_bps: f64,
+    read: u64,
+    written: u64,
+    primed: bool,
+}
+
+/// The arithmetic half of `all_sessions_resources`, split out because it is the part
+/// with the decisions in it and the only part testable without a running app.
+///
+/// Differences **per pid and then sums the rates**, rather than differencing one summed
+/// total, so that a session exiting between polls simply stops contributing instead of
+/// making the sum fall — which, differenced, would read as a window with no I/O in it
+/// and blank the rate for every other running agent.
+fn fold_io(
+    readings: &[(u32, u64, u64)],
+    samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
+    now: std::time::Instant,
+) -> Folded {
+    let mut f = Folded { read_bps: 0.0, write_bps: 0.0, read: 0, written: 0, primed: false };
+    for &(pid, r, w) in readings {
+        f.read = f.read.saturating_add(r);
+        f.written = f.written.saturating_add(w);
         // saturating_sub: the counters are monotonic, but a pid reused after an exit we
         // missed would otherwise underflow into a nonsense spike.
-        Some((pr, pw, pt)) => {
+        if let Some((pr, pw, pt)) = samples.insert(pid, (r, w, now)) {
             let secs = now.duration_since(pt).as_secs_f64();
             if secs > 0.0 {
-                (
-                    read.saturating_sub(pr) as f64 / secs,
-                    written.saturating_sub(pw) as f64 / secs,
-                    true,
-                )
-            } else {
-                (0.0, 0.0, false)
+                f.read_bps += r.saturating_sub(pr) as f64 / secs;
+                f.write_bps += w.saturating_sub(pw) as f64 / secs;
+                f.primed = true;
             }
         }
-        None => (0.0, 0.0, false),
-    };
-    const MIB: f64 = 1024.0 * 1024.0;
-    Some(Resources {
-        read_bps,
-        write_bps,
-        read_mb: read as f64 / MIB,
-        written_mb: written as f64 / MIB,
-        primed,
-    })
+    }
+    f
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole reason `fold_io` differences per pid instead of over one summed total.
+    ///
+    /// Two agents are running; between polls one exits. Its lifetime bytes leave the
+    /// sum, so a summed-total difference would `saturating_sub` to zero and report "no
+    /// I/O at all" for the window — blanking the rate of the agent that is still
+    /// working. Per pid, the survivor's own 1 MiB/s is unaffected.
+    #[test]
+    fn a_session_exiting_does_not_zero_the_rate_of_the_ones_still_running() {
+        let t0 = std::time::Instant::now();
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        let mut samples = HashMap::new();
+        // First poll: both agents seen, nothing to difference against yet.
+        let first = fold_io(&[(10, 50_000_000, 0), (11, 1_000, 0)], &mut samples, t0);
+        assert!(!first.primed, "no previous reading, so the rate is unknown, not zero");
+        assert_eq!(first.read_bps, 0.0);
+
+        // Second poll: pid 11 is gone; pid 10 read another MiB in one second.
+        let second = fold_io(&[(10, 50_000_000 + 1024 * 1024, 0)], &mut samples, t1);
+        assert!(second.primed);
+        assert!(
+            (second.read_bps - 1024.0 * 1024.0).abs() < 1.0,
+            "the surviving agent's rate must be its own, not diluted by the one that left \
+             (got {})",
+            second.read_bps
+        );
+    }
+
+    /// Rates add across concurrent agents — the figure is "what is Episko doing to the
+    /// disk", so two agents reading 1 MiB/s each is 2 MiB/s, not an average.
+    #[test]
+    fn concurrent_sessions_sum_their_rates_and_totals() {
+        let t0 = std::time::Instant::now();
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        let mut samples = HashMap::new();
+        fold_io(&[(1, 0, 0), (2, 0, 0)], &mut samples, t0);
+        let f = fold_io(&[(1, 1024 * 1024, 512), (2, 1024 * 1024, 512)], &mut samples, t1);
+        assert!((f.read_bps - 2.0 * 1024.0 * 1024.0).abs() < 1.0, "got {}", f.read_bps);
+        assert_eq!(f.read, 2 * 1024 * 1024, "lifetime totals add too");
+        assert_eq!(f.written, 1024);
+    }
+
+    /// Closing a pane must not walk the run's churn backwards. The pid leaves
+    /// `io_samples`, and its bytes have to land in `io_retired` on the way out or the
+    /// app-wide total visibly drops.
+    #[test]
+    fn retiring_a_pid_banks_its_bytes_instead_of_losing_them() {
+        let now = std::time::Instant::now();
+        let mut samples = HashMap::from([
+            (7u32, (900u64, 100u64, now)),
+            (8u32, (5u64, 6u64, now)),
+        ]);
+        let owned = HashSet::from([8u32]);
+        let mut retired = (0u64, 0u64);
+        retire_missing(&mut samples, &owned, &mut retired);
+
+        assert_eq!(retired, (900, 100), "the departed pid's bytes are kept");
+        assert!(!samples.contains_key(&7), "but its sample entry is dropped");
+        assert!(samples.contains_key(&8), "a still-owned pid is untouched");
+
+        // And a second sweep must not double-count what it already banked.
+        retire_missing(&mut samples, &owned, &mut retired);
+        assert_eq!(retired, (900, 100), "already-retired bytes are not banked twice");
+    }
 
     /// The inspector's I/O readout is only worth showing if the platform actually
     /// accounts for it. Per-process disk counters are easy to wire up and get back a

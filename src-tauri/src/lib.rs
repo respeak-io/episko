@@ -54,9 +54,15 @@ pub(crate) struct AppState {
     /// (which rewrites `~/.claude/sessions/<pid>.json` with the new id).
     owned_pids: Mutex<HashSet<u32>>,
     /// Last disk-I/O reading per owned pid: (total_read, total_written, when).
-    /// `session_resources` differences against this to turn the kernel's lifetime byte
-    /// counters into a rate — see there for why sysinfo's own deltas aren't used.
+    /// `all_sessions_resources` differences against this to turn the kernel's lifetime
+    /// byte counters into a rate — see there for why sysinfo's own deltas aren't used,
+    /// and why the differencing is per pid rather than over the summed total.
     io_samples: Mutex<HashMap<u32, (u64, u64, std::time::Instant)>>,
+    /// (read, written) bytes belonging to sessions that have since exited. Their pids
+    /// leave `io_samples` when they stop being owned, and without this their bytes would
+    /// leave the app-wide total with them — so closing a pane would walk the run's churn
+    /// backwards.
+    io_retired: Mutex<(u64, u64)>,
     /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
@@ -251,6 +257,7 @@ pub fn run() {
                 sessions: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
                 io_samples: Mutex::new(HashMap::new()),
+                io_retired: Mutex::new((0, 0)),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
@@ -445,7 +452,7 @@ pub fn run() {
             git::git_graph,
             git::git_commit_message,
             git::git_action,
-            pty::session_resources,
+            pty::all_sessions_resources,
             git::create_worktree,
             platform::set_caffeinate,
             telemetry::resolve_permission,

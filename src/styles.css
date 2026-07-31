@@ -712,6 +712,12 @@ html.win .wctl { display: flex; }
 /* lifetime totals: context for the rates above, so it reads as a footnote not a third gauge */
 .res .rtot { margin-top: 1px; }
 .res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+/* These figures are app-wide, not the session on screen — this row is what says so,
+   and the only one allowed out of the 30px key column, because "all sessions" has to
+   read as a heading rather than as another metric label. */
+.res .rall { padding-bottom: 8px; border-bottom: 1px solid var(--hair); }
+.res .rall .rk { width: auto; flex: 1; color: var(--muted); }
+.res .rvall { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
 
 /* --- risk badge on the pending-permission block --- */
 .attn-h { justify-content: flex-start; }
@@ -844,11 +850,9 @@ select.in-ctl { cursor: pointer; }
 /* Settings rows for the Tasks page. The window itself (rail, tabs, pane) is
    upstream's — these are just the row primitives its task settings need. */
 /* Chip picker + inline switch — the two control kinds the Tasks tab adds to the
-   settings window. `seg` picks one of N; these cover "toggle several" and "on/off". */
-.set-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
-.set-itxt { flex: 1; min-width: 0; }
-.set-inline .set-hint { margin-bottom: 0; }
-.set-inline > .sw { flex: none; }
+   settings window. `seg` picks one of N; these cover "toggle several" and "on/off".
+   The `.set-inline` half lives further down, immediately after `.set-group`, because
+   it has to out-cascade it — see the note there. */
 .chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip-opt { display: inline-flex; align-items: center; gap: 5px; font: 11px var(--font-ui); border: 1px solid var(--hair-strong); border-radius: 7px; padding: 4px 9px; color: var(--muted); background: var(--surface); cursor: pointer; }
 .chip-opt:hover { color: var(--text); border-color: var(--accent-line); }
@@ -1084,6 +1088,15 @@ select.in-ctl { cursor: pointer; }
 .set-group { display: flex; flex-direction: column; }
 .set-glabel { font-size: 12.5px; font-weight: 650; }
 .set-hint { font-size: 11px; color: var(--muted); margin: 3px 0 10px; max-width: 40ch; }
+/* A toggle row is `.set-group.set-inline`, and both are one class deep — so this
+   MUST stay after `.set-group` or its `flex-direction: column` wins on source order
+   alone and the row lays out as a column. That is not hypothetical: it shipped that
+   way, with the label and the switch stacked and centred, because `align-items:
+   center` below still applied and centres cross-axis in a column. Keep them adjacent. */
+.set-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+.set-itxt { flex: 1; min-width: 0; }
+.set-inline .set-hint { margin-bottom: 0; }
+.set-inline > .sw { flex: none; }
 .seg { display: flex; flex-direction: column; gap: 5px; }
 .seg-opt { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 11px; border-radius: 9px; cursor: pointer; text-align: left; border: 1px solid var(--hair); background: var(--surface); color: var(--text); }
 .seg-opt:hover { border-color: var(--hair-strong); background: var(--surface-2); }

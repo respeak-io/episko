@@ -41,8 +41,8 @@ import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
-  pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants, termEngine,
-  termFontSize, worktreesByRepo, wtSig,
+  ioAll, pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants,
+  termEngine, termFontSize, worktreesByRepo, wtSig,
 } from "./state";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
@@ -84,7 +84,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
   };
   sessions.set(id, s);
@@ -183,7 +183,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
     kind: "shell", external: false, term, fit, pane,
   };
@@ -237,7 +237,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
     resumeId: id, kind: "task", external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession },
@@ -308,28 +308,33 @@ export function setActive(id: string) {
   void refreshSessionStats(s); // working-set diff + CPU/RAM for the inspector
 }
 
-// Poll the inspector's on-demand stats for the active session: the uncommitted
-// working-set diff (git_diffstat) and the claude process's disk I/O
-// (session_resources). Both are cheap and only fetched for the visible session.
+// Poll the inspector's on-demand stats: the visible session's uncommitted working-set
+// diff (git_diffstat), and Episko's disk I/O across *every* owned claude session
+// (all_sessions_resources). The two have different scopes on purpose — a working set
+// belongs to one checkout, while the I/O bars answer "how hard is Episko working the
+// disk", which is not a per-pane question. See `ioAll` in state.ts.
 export async function refreshSessionStats(s: Sess) {
   if (!isAgent(s) || s.external) return;
   const [git, res] = await Promise.all([
     invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
     invoke<{ read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null>(
-      "session_resources", { sessionId: s.id }).catch(() => null),
+      "all_sessions_resources").catch(() => null),
   ]);
   // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
   // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
-  const sig = (g: DiffStat | null, r: Res | null) =>
+  const sig = (g: DiffStat | null, r: Res) =>
     (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
-    + (r ? `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}` : "-");
-  const before = sig(s.git, s.res);
+    + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
+  const before = sig(s.git, ioAll);
   s.git = git ?? null;
-  s.res = res
-    ? { readBps: res.read_bps, writeBps: res.write_bps, readMb: res.read_mb, writtenMb: res.written_mb, primed: res.primed }
-    : null;
-  if (sig(s.git, s.res) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
+  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
+  if (res) {
+    ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
+    ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
+    ioAll.primed = res.primed;
+  }
+  if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
 // Re-derive a session's branch label from its live git HEAD, so it reflects the

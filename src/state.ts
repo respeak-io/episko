@@ -21,7 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
-import type { DiffStat, Engine, ExtSession, PermMode, Restorable, Sess, WtHead } from "./types";
+import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -189,3 +189,15 @@ export const worktreesByRepo = new Map<string, WtHead[]>();
 // file reads and zero renders. That is what lets the roster ride the same tick as the
 // branch poll without adding a cost anyone can feel.
 export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.exists ? 1 : 0}`).join("");
+
+// App-wide disk I/O, summed across every embedded claude session Episko owns — not a
+// per-session figure. With several agents running, the question the inspector's I/O
+// bars answer is "how hard is Episko working the disk", and a number for whichever
+// pane happens to be on screen answers a different one while looking like that one.
+// So it is shown identically on every session, exactly as the account-wide rate
+// limits in `rl.ts` are, and for the same reason.
+//
+// Mutated in place by `refreshSessionStats` (a live binding, read as a bare
+// identifier); `all_sessions_resources` in pty.rs does the summing and the per-pid
+// rate differencing, because that is where the previous readings live.
+export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, primed: false };
