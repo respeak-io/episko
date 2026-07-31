@@ -1505,3 +1505,6 @@ select.in-ctl { cursor: pointer; }
 .td-kind.sess.on { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 34%, transparent); background: color-mix(in srgb, var(--st-working) 12%, transparent); }
 .td-evs-inline { display: inline-flex; gap: 4px; flex: none; margin-left: 6px; }
 .trail-left { padding-top: 10px; }
+/* The day is ordered by time now, so each row says when — otherwise the ordering is
+ * information the user has to take on trust. */
+.td-at { margin-left: 8px; font: 9.5px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }

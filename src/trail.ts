@@ -180,6 +180,37 @@ export function dayByProject(d: TrailDay, nameOf: (colorKey: string) => string):
   });
 }
 
+/// One line in a project's day, whatever kind of thing it is.
+export type DayItem =
+  | { kind: "session"; when: number; session: TrailSession }
+  | { kind: "commit"; when: number; commit: TrailCommit };
+
+/**
+ * A project's day as ONE time-ordered list, newest first.
+ *
+ * Not sessions-then-commits. A session at 09:00 and the commit it produced at 09:05
+ * are a cause and its effect; listing all the causes and then all the effects breaks
+ * the only ordering that explains the day. The kind stays visible on each row, so
+ * nothing is lost by mixing them.
+ *
+ * The two sources speak different units — `TrailSession.when` is already ms, while
+ * `TrailCommit.when` is UNIX **seconds**, straight from git. Converting here is the
+ * whole reason this is one function rather than a spread at the call site: sorted
+ * together unconverted, every commit sorts as 1970 and sinks below everything.
+ */
+export function dayItems(g: DayProject): DayItem[] {
+  const items: DayItem[] = [
+    ...g.sessions.map((session) => ({ kind: "session" as const, when: session.when, session })),
+    ...g.commits.map((commit) => ({ kind: "commit" as const, when: ms(commit.when), commit })),
+  ];
+  // Ties broken by kind then id, so a repaint of unchanged state never reorders.
+  return items.sort((a, b) =>
+    b.when - a.when ||
+    a.kind.localeCompare(b.kind) ||
+    (a.kind === "session" ? a.session.id : a.commit.sha).localeCompare(
+      b.kind === "session" ? b.session.id : b.commit.sha));
+}
+
 /// Events are tagged with their repo root when fetched; ./trailui stamps it on so this
 /// module needn't know how the fetch was keyed.
 const eventRoot = (e: TrailEvent & { root?: string }) => e.root ?? "";

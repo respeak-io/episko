@@ -20,7 +20,7 @@ import { addNote, noteList, removeNote, setNoteProject, type Note } from "./note
 import { activeProjectCtx, launch } from "./panes";
 import { accentFor, FAVORITES, sessions, setActiveId, setMirror, trailOpen, trailProject } from "./state";
 import {
-  dayByProject, dayFacts, dayIsClosed, deterministicHeadline, trailDays,
+  dayByProject, dayFacts, dayIsClosed, dayItems, deterministicHeadline, trailDays,
   type DayProject, type TrailCommit, type TrailDay, type TrailEvent,
 } from "./trail";
 import { usageWindow } from "./usage";
@@ -163,7 +163,7 @@ function sessionRow(s: TrailDay["sessions"][number]): string {
     <span class="td-kind sess${live ? " on" : ""}"
       title="${live ? "A Claude session — still running" : "A Claude session"}">session</span>
     <span class="td-t">${esc(s.title)}</span>
-    <span class="td-r">${s.branch ? esc(s.branch) : ""}</span>
+    <span class="td-r">${s.branch ? esc(s.branch) : ""}<span class="td-at">${clock(s.when)}</span></span>
   </div>`;
 }
 
@@ -182,9 +182,14 @@ function commitRow(c: TrailCommit, evByNumber: Map<number, TrailEvent>): string 
     <span class="td-kind commit" title="A git commit">commit</span>
     <span class="td-t">${esc(c.subject)}</span>
     ${chips ? `<span class="td-evs-inline">${chips}</span>` : ""}
-    <span class="td-r">${esc(c.author)}</span>
+    <span class="td-r">${esc(c.author)}<span class="td-at">${clock(c.when * 1000)}</span></span>
   </div>`;
 }
+
+/// Wall-clock, because the list is now ordered by time and an unreadable ordering is
+/// just a shuffle. Local, like every other time in this view.
+const clock = (msWhen: number) =>
+  new Date(msWhen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 /// What landed. A chip rather than a row: these are the outcomes of a day, and they
 /// want to be countable at a glance rather than read one by one.
@@ -217,8 +222,7 @@ function projectBlock(g: DayProject): string {
       ${g.events.length ? `<span class="td-evs">${g.events.map(eventChip).join("")}</span>` : ""}
     </div>
     <div class="td-items">
-      ${g.sessions.map(sessionRow).join("")}
-      ${g.commits.map((c) => commitRow(c, evIndex(g.events))).join("")}
+      ${dayItems(g).map((i) => i.kind === "session" ? sessionRow(i.session) : commitRow(i.commit, evIndex(g.events))).join("")}
     </div>
   </div>`;
 }

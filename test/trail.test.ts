@@ -3,7 +3,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import type { HistEntry } from "../src/history";
 import { usage, usageWindow, type UDay } from "../src/usage";
 import {
-  dayByProject, dayFacts, dayIsClosed, dayKeyOf, deterministicHeadline, dominantProject,
+  dayByProject, dayFacts, dayIsClosed, dayItems, dayKeyOf, deterministicHeadline, dominantProject,
   trailDays, trailSession, type TrailCommit, type TrailDay,
 } from "../src/trail";
 
@@ -221,5 +221,42 @@ describe("what a day closed", () => {
   it("hands the model what landed, not only what ran", () => {
     const facts = dayFacts(day([{ number: 46, kind: "pr", event: "merged", title: "notice drift", url: "u", at: "" }]));
     expect(facts).toContain("merged pr #46: notice drift");
+  });
+});
+
+describe("a day reads as one story, not two lists", () => {
+  const names = (k: string) => k.split("/").pop() || k;
+  const sess = (id: string, whenMs: number) =>
+    ({ id, title: id, project: "e", colorKey: "/w/e", branch: "", cwd: "/w", when: whenMs, exists: true });
+  const cmt = (sha: string, whenSecs: number): TrailCommit =>
+    ({ sha, author: "T", when: whenSecs, subject: sha, root: "/w/e" });
+
+  it("interleaves sessions and commits by time — a session is the cause of the commit", () => {
+    const t = (h: number) => at(2027, 3, 13, h).getTime();
+    const g = { colorKey: "/w/e", project: "e",
+      sessions: [sess("morning", t(9)), sess("evening", t(18))],
+      commits: [cmt("noon", Math.floor(t(12) / 1000)), cmt("late", Math.floor(t(20) / 1000))],
+      events: [] };
+    expect(dayItems(g).map((i) => (i.kind === "session" ? i.session.id : i.commit.sha)))
+      .toEqual(["late", "evening", "noon", "morning"]);
+  });
+
+  it("converts commit seconds to ms, or every commit sinks to 1970", () => {
+    // The units trap again: sorted unconverted, a 2027 commit compares as ~1970 and
+    // lands below every session no matter when it actually happened.
+    const t = at(2027, 3, 13, 12).getTime();
+    const g = { colorKey: "/w/e", project: "e",
+      sessions: [sess("s", t - 3600e3)], commits: [cmt("c", Math.floor(t / 1000))], events: [] };
+    const first = dayItems(g)[0];
+    expect(first.kind).toBe("commit");
+    expect(new Date(first.when).getFullYear()).toBe(2027);
+  });
+
+  it("is stable across repaints when timestamps tie", () => {
+    const g = { colorKey: "/w/e", project: "e",
+      sessions: [sess("b", 5000), sess("a", 5000)], commits: [cmt("z", 5)], events: [] };
+    expect(dayItems(g).map((i) => i.when)).toEqual(dayItems(g).map((i) => i.when));
+    expect(dayItems(g).map((i) => (i.kind === "session" ? i.session.id : i.commit.sha)))
+      .toEqual(dayItems(g).map((i) => (i.kind === "session" ? i.session.id : i.commit.sha)));
   });
 });
