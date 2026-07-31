@@ -285,16 +285,41 @@ html.win .wctl { display: flex; }
 .wthead:hover .wtadd { opacity: 1; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
-/* A cluster with nothing running in it. The header is the whole row — it renders with
-   or without sessions, so an idle checkout costs one line instead of two. Dimmed, but
-   still hover-to-＋ like every other header: it is one of a list, and the one thing it
-   must do unprompted is say the checkout is there. */
-.wthead.wtvacant .wtglyph, .wthead.wtvacant .wtname { opacity: .55; }
-/* chip mode has no cluster headers, so an idle checkout still needs a row of its own:
-   present, but clearly not a session */
-.srow.wtempty .sbranch { font-style: italic; color: var(--muted-2); }
-.srow.wtempty .sglyph { color: var(--muted-2); }
-.srow.wtempty:hover .sbranch, .srow.wtempty:hover .sglyph { color: var(--accent-ink); }
+/* ---------- peek: the checkouts nothing is running in ----------------------------
+   Collapsed until the pointer rests on the project group (./peek owns the timing,
+   ./sidebar drives it, ./sidebarview renders the rows). Always in the DOM — hover
+   must never change the markup, or renderSidebar's byte-identical cache is busted on
+   every mouse move.
+
+   `grid-template-rows: 0fr → 1fr` is what animates an unknown height without one
+   being measured; the inner element carries `overflow:hidden` and `min-height:0`,
+   which is what makes the 0fr row actually clip rather than overflow. */
+.pgpeek { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .26s cubic-bezier(.32,.72,0,1); }
+.pgroup.peek .pgpeek, .pgpeek.open { grid-template-rows: 1fr; }
+.pgpeek-in { overflow: hidden; min-height: 0; padding-left: 8px; margin-left: 10px; border-left: 1px solid var(--hair); }
+/* The rows fade and settle a beat behind the box opening — the box is the movement,
+   this is what stops it reading as a jump-cut. Staggered so the list arrives in
+   order, and capped at three so a repo with a dozen worktrees still feels instant. */
+.pkrow { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 7px; cursor: pointer;
+  opacity: 0; transform: translateY(-3px); transition: opacity .2s ease, transform .26s cubic-bezier(.32,.72,0,1), background .12s; }
+.pgroup.peek .pkrow, .pgpeek.open .pkrow { opacity: 1; transform: none; }
+.pgroup.peek .pkrow:nth-child(2) { transition-delay: .035s; }
+.pgroup.peek .pkrow:nth-child(3) { transition-delay: .07s; }
+.pgroup.peek .pkrow:nth-child(n+4) { transition-delay: .105s; }
+.pkrow:hover { background: var(--surface); }
+.pkglyph { flex: none; font-size: 10px; line-height: 1; opacity: .8; }
+.pkname { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pkrow:hover .pkname { color: var(--muted); }
+.pkdirty { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--st-working); opacity: .75; }
+/* The ＋ is a hint, not a target — the whole row launches. Visible only on the row
+   you are actually on, so a revealed list of four checkouts isn't four ＋ glyphs. */
+.pkgo { flex: none; font-size: 11px; line-height: 1; color: var(--muted-2); opacity: 0; transition: opacity .12s; }
+.pkrow:hover .pkgo { opacity: 1; color: var(--accent-ink); }
+@media (prefers-reduced-motion: reduce) {
+  .pgpeek, .pkrow { transition: none; }
+  .pkrow { transition-delay: 0s !important; }
+}
 /* toplevel mode: the branch suffix on a per-worktree group header */
 .pwt { margin-left: 5px; color: var(--muted-2); font-weight: 550; }
 /* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
@@ -1259,6 +1284,37 @@ select.in-ctl { cursor: pointer; }
 .p-wtcount { margin-left: auto; font: 600 8px var(--font-mono); color: var(--muted-2); }
 .p-wts { display: flex; flex-direction: column; gap: 1px; padding-left: 6px; margin-left: 5px; border-left: 1px solid color-mix(in srgb, var(--h, var(--hair)) 48%, transparent); }
 @media (prefers-reduced-motion: no-preference) { .p-work { animation: pulse 1.5s ease-in-out infinite; } }
+
+/* ---------- the peek control (Settings › Worktrees) -----------------------------
+   Two steppers and a mini-sidebar you can actually hover. The preview reuses the
+   REAL .pgroup / .pgpeek / .pkrow rules above rather than restating them, which is
+   the whole reason it is trustworthy: a preview of a timing that is styled
+   separately from the thing it previews is just a picture. */
+.peekbox { display: flex; flex-direction: column; gap: 11px; margin-top: 11px; }
+.peekbox.off { opacity: .55; }
+.peekrow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.peekstep { gap: 6px; }
+.peekstep-l { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; margin-right: 2px; }
+.peekstep .set-fbtn { width: 26px; height: 26px; font-size: 14px; }
+.peekstep .set-fval { min-width: 52px; text-align: center; font-size: 11px; }
+.peekbox .set-fbtn[disabled] { opacity: .35; cursor: default; }
+.peekbox .set-fbtn[disabled]:hover { border-color: var(--hair-strong); background: var(--surface); }
+.peekbox .set-freset[disabled] { opacity: .35; cursor: default; }
+.peekbox .set-freset[disabled]:hover { color: var(--muted); border-color: var(--hair); }
+/* Taller than the grouping cards' preview: this one has to hold two groups with
+   their idle rows revealed, and a box that resizes as you hover would itself be the
+   most distracting thing on the page. */
+.peekdemo { margin: 0; min-height: 210px; cursor: default; }
+.peekdemo .pgroup { padding-bottom: 2px; }
+.peekdemo .p-phead { border-radius: 7px; }
+.peekdemo .pgroup:hover .p-phead { background: var(--surface); }
+/* The demo's rows are preview-scale, so the sidebar's own sizes are stepped down. */
+.peekdemo .pgpeek-in { padding-left: 6px; margin-left: 5px; }
+.peekdemo .pkrow { padding: 3px 5px; }
+.peekdemo .pkname { font-size: 9.5px; }
+.peekdemo .pkglyph { font-size: 9px; }
+.peekdemo .pkgo { font-size: 10px; }
+.peekhint { font-size: 11px; line-height: 1.5; color: var(--muted-2); max-width: 58ch; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

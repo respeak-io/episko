@@ -17,8 +17,8 @@ pnpm coverage           # the same suites with v8 coverage
 ```
 
 Coverage is a **yardstick, not a target** — there is deliberately no gate, because the
-render and DOM-owning modules are untested by design. Current: **89.5%** statements
-over the modules the suites load, **20.55%** over all of `src/`, and **71.0%** Rust
+render and DOM-owning modules are untested by design. Current: **89.6%** statements
+over the modules the suites load, **20.5%** over all of `src/`, and **71.0%** Rust
 lines (`cargo llvm-cov --summary-only` from `src-tauri/`). Both gaps are the OS edge,
 which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any file at
 100% in all four columns**, so a fully-covered module looks absent; use
@@ -52,9 +52,9 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **519 vitest + cargo (118 on macOS, 115 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **541 vitest + cargo (118 on macOS, 115 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which fifteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which sixteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -192,6 +192,14 @@ couldn't express: **`toggle`** (a single switch) and **`multi`** (independently
 toggled values, for "which providers to scan" and the revocable trust list). New
 task settings belong in that tab as control descriptors; `applySetting` dispatches
 them.
+
+Two later kinds are worth knowing about because they set the precedent for anything
+with a *feel* rather than a value: **`wtpreview`** (a pick shown as live mini-sidebars)
+and **`peek`** (steppers over a preview you hover). Both build their preview from the
+app's own CSS and, in `peek`'s case, its own reducer — the rule being that a preview
+which restates the thing it previews will drift from it, and then reassure you about
+behaviour the app no longer has. A setting whose right value can only be *felt* should
+ship with something to feel it on rather than a number in a box.
 
 Task preferences live in `cc-task-prefs`, pins in `cc-task-pins`, hidden tasks in
 `cc-task-hidden`, run-on-stop rules in `cc-task-onstop`, trust in `cc-trusted`. The split is deliberate and worth
@@ -450,13 +458,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 44 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 45 modules
 
-**No framework, and no longer one file.** ~11,180 lines across 44 modules; `main.ts` is 766 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~11,590 lines across 45 modules; `main.ts` is 770 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (fifteen — no DOM, no Tauri, no render imports; these are what the 519 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (sixteen — no DOM, no Tauri, no render imports; these are what the 541 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -472,6 +480,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
+| `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
@@ -484,7 +493,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 44 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 45 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -540,7 +549,7 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the sidebar's `cc-peek`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 
@@ -590,17 +599,45 @@ call `refreshGitViews` on success rather than waiting for the poll — `renderAl
 paints the roster, it never re-reads it, so without this the cluster you just deleted
 stays on screen.
 
-**The ⑃ cluster header is the surface for a checkout** (subheader mode). It renders
-whether or not anything runs beneath it, which is what lets the roster's discovery show:
-a worktree an agent created appears as a dimmed header (`.wtvacant`) rather than as a
-row that says "no session". It carries a `＋` (→ `launchWorktree`, which keys the new
-session's `colorKey` to the **repo root**, or the pane splits off into a project group of
-its own) and a **right-click menu** in `projmenu.ts` — terminal, folder, copy path, the ⑃
-dialog, and remove. That menu shares `#ctxMenu` with the project one: `data-wt` is
-matched *ahead* of `data-key` in the `contextmenu` handler, because a cluster sits inside
-a project group and a combined `closest()` would be decided by tree distance rather than
-by what was clicked. Chip mode has no headers, so the "no session" row survives there
-alone.
+**The ⑃ cluster header is the surface for a checkout** (subheader mode), and it renders
+only for a checkout something is actually running in (`clusterIsLive`). It carries a `＋`
+(→ `launchWorktree`, which keys the new session's `colorKey` to the **repo root**, or the
+pane splits off into a project group of its own) and a **right-click menu** in
+`projmenu.ts` — terminal, folder, copy path, the ⑃ dialog, and remove. That menu shares
+`#ctxMenu` with the project one: `data-wt` is matched *ahead* of `data-key` in the
+`contextmenu` handler, because a cluster sits inside a project group and a combined
+`closest()` would be decided by tree distance rather than by what was clicked.
+
+**The idle checkouts are peek rows** (`peekBody` → `.pgpeek`), collapsed until the
+pointer rests on the project group. They used to be permanent dimmed headers, and a repo
+with four worktrees spent four rows saying "no session" four times: those rows are worth
+*reaching*, not *showing*, and the moment you want one is the moment the pointer is
+already on the project. The whole row launches — there is no ＋ to aim at, because it has
+exactly one thing it can do and a target the width of the sidebar beats a glyph. Four
+things about it are load-bearing:
+
+- **`peek.ts` owns the rules and is pure** — `peekEnter`/`peekLeave`/`peekTick` over an
+  explicit `now`, no timers and no DOM, so what-cancels-what is unit-tested. `sidebar.ts`
+  is a thin driver that schedules **one** timeout to `peekNextDeadline`; an idle sidebar
+  arms nothing.
+- **Hover is not a render input.** `peekBody` emits the rows on every paint and the
+  expansion is one class applied outside the render path. Making it part of the markup
+  would bust `renderSidebar`'s byte-identical cache (84.5% of repaints) on every mouse
+  move — and worse, a telemetry tick would rebuild `#projects` and collapse a group under
+  the pointer. That is also why `PeekState.open` is a **project path**, not an element:
+  `renderSidebar` re-applies it through `applyPeek()` after each DOM write. The listeners
+  are delegated `mouseover`/`mouseout` (which bubble) on the persistent `#projects`, for
+  the same reason — `mouseenter` would need re-binding on every repaint.
+- **Moving between two expanded groups skips the delay.** The delay exists to ignore a
+  pointer passing *over* the rail; one already inside it is not passing over anything.
+- **Off keeps the old behaviour** rather than hiding the rows for good — the wrapper
+  renders already-open, so nothing that used to be reachable stops being so.
+
+Timings live in `cc-peek` and are set in Settings › Worktrees, where the control is a
+pair of steppers over a **live preview built from the real `.pgroup`/`.pgpeek`/`.pkrow`
+CSS and driven by the real reducer**. That is the point of it: "is 1000ms right?" has no
+answer until you have rested a pointer on something for 1000ms, and a preview styled
+separately from the thing it previews is just a picture.
 
 **`openWt` has two modes, and the difference is framing, not machinery.** `launch` is
 the original — "where should this session start?", so every branch in the repo is a row.
