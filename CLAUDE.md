@@ -403,7 +403,17 @@ dialog, and remove. That menu shares `#ctxMenu` with the project one: `data-wt` 
 matched *ahead* of `data-key` in the `contextmenu` handler, because a cluster sits inside
 a project group and a combined `closest()` would be decided by tree distance rather than
 by what was clicked. Chip mode has no headers, so the "no session" row survives there
-alone.
+alone. Opening the ⑃ dialog from that menu passes `openWt`'s `focusDir`, which selects
+the checkout's row *and* retitles the dialog `Worktrees` — headed "New session" it reads
+as the launcher whatever is highlighted in it.
+
+**The main checkout is not a worktree, and says so twice.** `clusterGlyph` gives it `⌂`
+— the glyph the dialog's Repo row and the project menu's "Open project folder" already
+use — and `branchHue` seeds it from its **path** rather than its branch, so it comes out
+wearing the project header's own accent (a hand-picked colour included). Both exist
+because `⑃ develop` above three `feat/*` clusters is four worktrees to anyone who
+doesn't already know which branch name meant "the original". Every chip and header goes
+through those two helpers, so subheader and chip mode cannot disagree.
 
 **Removal is keyed by path, not by session** (`removeWorktreeAt`) — a cluster can hold
 none, one or several, and an empty one is exactly the checkout you most want to prune.
