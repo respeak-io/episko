@@ -109,6 +109,12 @@ A regression in either is silent.
       In a **shell** pane the same keystroke must still kill the process outright.
 - [ ] **Windows only: Ctrl+V pastes an image** into a claude pane (copy a screenshot
       first). Plain text paste must still work in the same pane.
+- [ ] **Ctrl+Shift+C / Ctrl+Shift+V copy and paste** in a **shell** pane and in a
+      **task** pane. Select output with the mouse, Ctrl+Shift+C (a "Copied" toast, and
+      it must land in another app's clipboard), then Ctrl+Shift+V into a prompt and see
+      the text arrive intact. Neither chord may raise an OS clipboard-permission
+      prompt — one means the WebView served it rather than the plugin. Plain Ctrl+C in
+      those panes must still interrupt, and on macOS ⌘C/⌘V must still work.
 - [ ] **The sidebar still repaints when it should.** `renderSidebar` now skips the
       `innerHTML` write when the markup is byte-identical, so watch that a phase
       change, an arriving permission, a new session, and closing one *all* still move

@@ -338,8 +338,20 @@ And the things that hold however the files are arranged:
   handled separately in `winClaudePaste`, alongside it, via
   `attachCustomKeyEventHandler` — note xterm keeps only **one** such handler, so a
   new key rule belongs in that function or in `claudeInput`, never in a second
-  `attachCustomKeyEventHandler` call. (`macShellKeys`, also in `terminal.ts`, is the
-  *shell* pane's handler; no pane is both, so the two never collide.)
+  `attachCustomKeyEventHandler` call. A shell pane's one handler is `shellKeys` and a
+  task pane's is `clipboardKeys`, both also in `terminal.ts`; no pane is more than one
+  kind, so the three never collide.
+- **Copy/paste in a shell or task pane is Ctrl+Shift+C/V, and it is ours.** The
+  unshifted chords aren't available: Ctrl+C is the interrupt those panes exist to send,
+  and xterm eats Ctrl+V into a dead `^V`. So `clipboardKeys` claims the shifted pair —
+  the same chords Windows Terminal, GNOME Terminal and VS Code's terminal use — while
+  macOS's ⌘C/⌘V still reach the WebView's native copy/paste untouched. It reads and
+  writes through **`tauri-plugin-clipboard-manager`, not `navigator.clipboard`**:
+  `readText()` in the WebView is behind the `clipboard-read` permission, which wry only
+  auto-grants for a webview built with `enable_clipboard_access()` (Tauri leaves it
+  off), so the browser path would raise a WebView2 permission prompt on Windows and
+  WKWebView's paste-confirmation button on macOS. Pasting goes through `term.paste`
+  rather than `write_pty` so bracketed-paste mode and `\r\n`→`\r` still apply.
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
