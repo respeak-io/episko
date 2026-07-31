@@ -418,6 +418,7 @@ pub fn run() {
             github::gh_claim,
             github::gh_release,
             github::claim_policy,
+            github::gh_day_activity,
             board::list_cards,
             board::create_card,
             board::move_card,

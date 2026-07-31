@@ -326,6 +326,94 @@ pub(crate) async fn gh_release(
     .unwrap_or(ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec!["release task failed".into()] })
 }
 
+// ---------- what happened, and when ----------
+
+/// One thing that happened to an issue or PR on a given day. The Trail buckets these
+/// by date, so what a day *closed* reads as clearly as what it started.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhEvent {
+    pub number: i64,
+    pub kind: String,  // "issue" | "pr"
+    pub event: String, // "opened" | "closed" | "merged"
+    pub title: String,
+    pub url: String,
+    /// ISO-8601 — the frontend already owns calendar-day bucketing (`dayKeyOf`), and
+    /// doing it here would risk the two disagreeing about where midnight falls.
+    pub at: String,
+}
+
+/// Derive events from a list that carries `createdAt`, `closedAt` and (for PRs)
+/// `mergedAt`.
+///
+/// One item can produce two events — opened on Monday, merged on Thursday — and both
+/// matter, so this fans out rather than reducing to a current state. `mergedAt` wins
+/// over `closedAt`: GitHub sets both when a PR merges, and "merged" is the true story.
+pub(crate) fn parse_events(json: &str, kind: &str) -> Vec<GhEvent> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = v.as_array() else { return vec![] };
+    let mut out = Vec::new();
+    for o in arr {
+        let Some(number) = o.get("number").and_then(|x| x.as_i64()) else { continue };
+        let title = o.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let url = o.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let at = |k: &str| o.get(k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(String::from);
+        let mk = |event: &str, when: String| GhEvent {
+            number, kind: kind.to_string(), event: event.to_string(),
+            title: title.clone(), url: url.clone(), at: when,
+        };
+        if let Some(w) = at("createdAt") { out.push(mk("opened", w)); }
+        if let Some(w) = at("mergedAt") {
+            out.push(mk("merged", w));
+        } else if let Some(w) = at("closedAt") {
+            out.push(mk("closed", w));
+        }
+    }
+    out
+}
+
+struct CachedEvents { at: Instant, events: Vec<GhEvent> }
+static EVENT_CACHE: Mutex<Option<HashMap<String, CachedEvents>>> = Mutex::new(None);
+
+/// Everything that opened, closed or merged in this repo recently.
+///
+/// `--state all` in two calls rather than one per state: gh has no "changed since"
+/// filter for these, so the window is applied by the caller after bucketing. The limit
+/// is what bounds the work — 120 covers a very busy month and costs two requests.
+#[tauri::command]
+pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !force {
+            if let Ok(guard) = EVENT_CACHE.lock() {
+                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&root)) {
+                    if hit.at.elapsed() < TTL {
+                        return hit.events.clone();
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Ok(j) = gh(&root, &[
+            "issue", "list", "--state", "all", "--limit", "120",
+            "--json", "number,title,url,createdAt,closedAt",
+        ]) {
+            out.extend(parse_events(&j, "issue"));
+        }
+        if let Ok(j) = gh(&root, &[
+            "pr", "list", "--state", "all", "--limit", "120",
+            "--json", "number,title,url,createdAt,closedAt,mergedAt",
+        ]) {
+            out.extend(parse_events(&j, "pr"));
+        }
+        if let Ok(mut guard) = EVENT_CACHE.lock() {
+            guard.get_or_insert_with(HashMap::new)
+                .insert(root.clone(), CachedEvents { at: Instant::now(), events: out.clone() });
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
 // ---------- the project's own policy ----------
 
 /// What a project permits, from `.episko/episko.toml`:
@@ -456,6 +544,42 @@ mod tests {
         assert_eq!(t[0].title, "");
         assert!(t[0].branch.is_none());
         assert!(!t[0].draft);
+    }
+
+    #[test]
+    fn one_item_can_produce_two_events_on_different_days() {
+        // Opened Monday, merged Thursday — both matter to the day they happened on, so
+        // this fans out rather than reducing to a current state.
+        let e = parse_events(r#"[{"number":46,"title":"a pr","url":"u",
+            "createdAt":"2026-07-31T12:09:32Z","closedAt":"2026-07-31T13:37:35Z","mergedAt":"2026-07-31T13:37:35Z"}]"#, "pr");
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].event, "opened");
+        // mergedAt wins: GitHub sets closedAt too when a PR merges, and "merged" is the
+        // true story — reporting it as merely closed would misread the day.
+        assert_eq!(e[1].event, "merged");
+    }
+
+    #[test]
+    fn a_closed_but_unmerged_pr_is_closed_not_merged() {
+        let e = parse_events(r#"[{"number":9,"title":"x","url":"u",
+            "createdAt":"2026-07-01T00:00:00Z","closedAt":"2026-07-02T00:00:00Z","mergedAt":null}]"#, "pr");
+        assert_eq!(e.iter().map(|x| x.event.as_str()).collect::<Vec<_>>(), vec!["opened", "closed"]);
+    }
+
+    #[test]
+    fn an_open_issue_reports_only_its_opening() {
+        let e = parse_events(r#"[{"number":47,"title":"x","url":"u",
+            "createdAt":"2026-07-31T13:30:17Z","closedAt":null}]"#, "issue");
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].event, "opened");
+        assert_eq!(e[0].kind, "issue");
+    }
+
+    #[test]
+    fn malformed_event_output_is_empty_rather_than_a_panic() {
+        for bad in ["", "null", "{}", "[{\"no\":\"number\"}]"] {
+            assert!(parse_events(bad, "issue").is_empty(), "{bad:?}");
+        }
     }
 
     #[test]

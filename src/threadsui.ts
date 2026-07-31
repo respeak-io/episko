@@ -27,6 +27,7 @@ import {
   BAND_META, bandsOf, buildThreads, dispatchable, inProject, threadStatusKey,
   type GhThread, type Thread,
 } from "./thread";
+import { altitudeSegs } from "./altitude";
 
 // ---------- the GitHub layer ----------
 // Cached per project root and refreshed on a slow leash, never on a repaint: the board
@@ -116,20 +117,12 @@ function current(): Thread[] {
 
 // ---------- markup ----------
 function altHtml(): string {
-  const active = threadsProject();
-  // Only projects that actually have a thread — an altitude with nothing in it is a
-  // dead segment, and the picker should describe the fleet, not the favourites list.
-  const keys = new Set<string>();
-  for (const t of buildThreads({ sessions: sessions.values(), notes: noteList(), dirty: dirtyByFolder, projectName })) {
-    if (t.colorKey) keys.add(t.colorKey);
-  }
-  const segs = [
-    `<button class="th-seg${active === null ? " on" : ""}" data-alt="">⌂ All projects</button>`,
-    ...[...keys].sort().map((k) =>
-      `<button class="th-seg${active === k ? " on" : ""}" data-alt="${esc(k)}">` +
-      `<i style="background:${esc(accentFor(k))}"></i>${esc(projectName(k))}</button>`),
-  ];
-  return segs.join("");
+  // The shared picker, so Threads, the Trail and the Orbit cannot drift into three
+  // versions of the same control.
+  return altitudeSegs(
+    buildThreads({ sessions: sessions.values(), notes: noteList(), dirty: dirtyByFolder, projectName, gh: ghMap() })
+      .map((t) => t.colorKey),
+    threadsProject());
 }
 
 function actionFor(t: Thread): string {

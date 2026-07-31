@@ -86,6 +86,7 @@
                floor, waiting raises it), so the picture keeps changing while
                nothing changes — which is the only reason a glance is worth it. -->
           <div class="orbit-view" id="orbitPane" hidden>
+            <div class="th-bar"><div class="th-alt" id="orbitAlt"></div></div>
             <div class="orbit-wrap" id="orbitWrap">
               <canvas id="orbitCanvas"></canvas>
               <div class="orbit-legend">
@@ -115,6 +116,9 @@
           <div class="trail-view" id="trailPane" hidden>
             <div class="trail-cols">
               <section class="trail-left">
+                <div class="trail-head">
+                  <div class="th-alt" id="trailAlt"></div>
+                </div>
                 <div class="trail-head">
                   <h3>Behind you</h3>
                   <span class="trail-sub" id="trailRange">derived · last 14 days</span>

@@ -17,9 +17,11 @@ import { esc, relTime, uUsd2 } from "./format";
 import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, setNoteProject, type Note } from "./notes";
 import { activeProjectCtx, launch } from "./panes";
-import { FAVORITES, sessions, setActiveId, setMirror, trailOpen } from "./state";
+import { accentFor, FAVORITES, sessions, setActiveId, setMirror, trailOpen, trailProject } from "./state";
+import { altitudeSegs } from "./altitude";
 import {
-  dayFacts, dayIsClosed, deterministicHeadline, trailDays, type TrailCommit, type TrailDay,
+  dayByProject, dayFacts, dayIsClosed, deterministicHeadline, trailDays,
+  type DayProject, type TrailCommit, type TrailDay, type TrailEvent,
 } from "./trail";
 import { usageWindow } from "./usage";
 
@@ -38,7 +40,7 @@ export function setTrailRange(n: number) {
 }
 /// Generated day summaries cost money, so they are opt-in and the switch is honest
 /// about it. Off means the deterministic headline stands, which is a complete view.
-export let trailSummaries = localStorage.getItem("cc-trail-summaries") === "1";
+export let trailSummaries = (localStorage.getItem("cc-trail-summaries") ?? "1") === "1";
 export function setTrailSummaries(on: boolean) {
   trailSummaries = on;
   localStorage.setItem("cc-trail-summaries", on ? "1" : "0");
@@ -77,17 +79,26 @@ async function loadTrail(): Promise<void> {
     // History is capped: the Trail only shows `trailRange` days, and the backend
     // returns newest-first, so a limit generous enough to cover a busy month costs
     // one bounded scan rather than the whole ~1GB corpus.
-    const [hist, commits] = await Promise.all([
+    const roots = projectRoots();
+    const [hist, commits, events] = await Promise.all([
       invoke<HistEntry[]>("list_session_history", { limit: 600 }).catch((e) => {
         dlog("warn", `trail: history scan failed — ${e}`);
         return [] as HistEntry[];
       }),
-      invoke<TrailCommit[]>("git_log_days", { roots: projectRoots(), days: trailRange }).catch((e) => {
+      invoke<TrailCommit[]>("git_log_days", { roots, days: trailRange }).catch((e) => {
         dlog("warn", `trail: git log failed — ${e}`);
         return [] as TrailCommit[];
       }),
+      // Per repo, because gh resolves the repo from the working directory. Each event
+      // is stamped with the root it came from — that is what lets `dayByProject` file
+      // it under the right project without re-deriving anything.
+      Promise.all(roots.map((root) =>
+        invoke<TrailEvent[]>("gh_day_activity", { root, force: false })
+          .then((evs) => evs.map((e) => ({ ...e, root })))
+          .catch(() => [] as (TrailEvent & { root: string })[])))
+        .then((lists) => lists.flat()),
     ]);
-    days = trailDays(hist, usageWindow(trailRange), commits);
+    days = trailDays(hist, usageWindow(trailRange), commits, events);
   } finally {
     loading = false;
   }
@@ -144,7 +155,7 @@ function sessionRow(s: TrailDay["sessions"][number]): string {
   return `<div class="td-item" data-sess="${esc(s.id)}" data-cwd="${esc(s.cwd)}">
     <span class="td-ic ${live ? "g-work" : "g-done"}">${live ? "◐" : "✓"}</span>
     <span class="td-t">${esc(s.title)}</span>
-    <span class="td-r">${esc(s.project)}${s.branch ? ` · ${esc(s.branch)}` : ""}</span>
+    <span class="td-r">${s.branch ? esc(s.branch) : ""}</span>
   </div>`;
 }
 
@@ -156,23 +167,76 @@ function commitRow(c: TrailCommit): string {
   </div>`;
 }
 
-function dayBlock(d: TrailDay): string {
-  const generated = summaries.get(d.key);
-  const headline = generated || deterministicHeadline(d);
-  return `<div class="td-day-block">
-    ${dayGutter(d)}
-    <div class="td-body">
-      <p class="td-sum${generated ? " td-gen" : ""}">${esc(headline)}</p>
-      <div class="td-items">
-        ${d.sessions.map(sessionRow).join("")}
-        ${d.commits.map(commitRow).join("")}
-      </div>
+/// What landed. A chip rather than a row: these are the outcomes of a day, and they
+/// want to be countable at a glance rather than read one by one.
+const EVENT_GLYPH: Record<string, string> = { merged: "⛙", closed: "✓", opened: "＋" };
+function eventChip(e: TrailEvent): string {
+  return `<a class="td-ev ${esc(e.event)}" href="${esc(e.url)}" data-ext="1"
+    title="${esc(e.event)} ${esc(e.kind)} #${e.number} — ${esc(e.title)}">${EVENT_GLYPH[e.event] ?? "·"} #${e.number}</a>`;
+}
+
+/// One project's slice of a day. The grouping is the point: a flat list of everything
+/// reads as noise the moment two projects are in play, because you cannot tell which
+/// commits belong to which sessions.
+function projectBlock(g: DayProject): string {
+  return `<div class="td-proj">
+    <div class="td-proj-h">
+      <i class="td-dot" style="background:${esc(accentFor(g.colorKey))}"></i>
+      <span class="td-proj-n">${esc(g.project)}</span>
+      ${g.events.length ? `<span class="td-evs">${g.events.map(eventChip).join("")}</span>` : ""}
+    </div>
+    <div class="td-items">
+      ${g.sessions.map(sessionRow).join("")}
+      ${g.commits.map(commitRow).join("")}
     </div>
   </div>`;
 }
 
+function dayBlock(d: TrailDay): string {
+  const generated = summaries.get(d.key);
+  const headline = generated || deterministicHeadline(d);
+  const groups = dayByProject(d, projectNameOf);
+  return `<div class="td-day-block">
+    ${dayGutter(d)}
+    <div class="td-body">
+      <p class="td-sum${generated ? " td-gen" : ""}">${esc(headline)}</p>
+      ${groups.map(projectBlock).join("")}
+    </div>
+  </div>`;
+}
+
+/// colorKey → the name the sidebar shows.
+function projectNameOf(colorKey: string): string {
+  if (!colorKey) return "elsewhere";
+  const fav = FAVORITES.find((f) => f.path === colorKey);
+  if (fav) return fav.name;
+  for (const s of sessions.values()) if (s.colorKey === colorKey) return s.project;
+  return colorKey.split(/[/\\]/).pop() || colorKey;
+}
+
+/// The days this altitude shows. Filtering here rather than at fetch time means
+/// switching altitude is instant and costs no `gh` call or history scan.
+function visibleDays(): TrailDay[] {
+  const p = trailProject();
+  if (!p) return days;
+  return days
+    .map((d) => ({
+      ...d,
+      sessions: d.sessions.filter((s) => s.colorKey === p),
+      commits: d.commits.filter((c) => c.root === p),
+      events: (d.events ?? []).filter((e) => (e as TrailEvent & { root?: string }).root === p),
+      // Cost is per-day across the whole fleet, so it cannot honestly be attributed to
+      // one project here — zero it rather than show another project's spend.
+      cost: 0,
+    }))
+    .filter((d) => d.sessions.length || d.commits.length || d.events.length);
+}
+
 function renderDays(): void {
   $("trailRange").textContent = `derived · last ${trailRange} days`;
+  $("trailAlt").innerHTML = altitudeSegs(
+    days.flatMap((d) => [...d.sessions.map((s) => s.colorKey), ...d.commits.map((c) => c.root)]),
+    trailProject());
   const host = $("trailDays");
   if (loading) { host.innerHTML = `<div class="td-empty">Reading your history…</div>`; return; }
   if (!days.length) {
@@ -180,7 +244,9 @@ function renderDays(): void {
       Sessions, commits and spend appear here on their own — there is nothing to fill in.</div>`;
     return;
   }
-  host.innerHTML = days.map(dayBlock).join("");
+  const vis = visibleDays();
+  if (!vis.length) { host.innerHTML = `<div class="td-empty">Nothing in this project in the last ${trailRange} days.</div>`; return; }
+  host.innerHTML = vis.map(dayBlock).join("");
 }
 
 function noteRow(n: Note): string {
@@ -209,7 +275,7 @@ function noteRow(n: Note): string {
 }
 
 function renderNotes(): void {
-  const list = noteList();
+  const list = noteList(trailProject() ?? undefined);
   $("trailNoteCount").textContent = `${list.length} open`;
   $("trailNotes").innerHTML = list.length
     ? list.map(noteRow).join("")
@@ -255,10 +321,10 @@ async function dispatchNote(id: string): Promise<void> {
 }
 
 // ---------- open / close ----------
-export function openTrail(): void {
+export function openTrail(project: string | null = null): void {
   // Read the context BEFORE clearing activeId, or there is nothing left to read.
-  openedFrom = activeProjectCtx()?.path ?? null;
-  setMirror({ kind: "trail" });
+  openedFrom = project ?? activeProjectCtx()?.path ?? null;
+  setMirror({ kind: "trail", project });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
   ($("empty") as HTMLElement).style.display = "none";
@@ -344,6 +410,14 @@ export function wireTrail(): void {
     // or nothing at all — an unfiled note is still worth keeping, and the jot box must
     // never refuse a thought because it doesn't yet know where it belongs.
     if (addNote(input.value, openedFrom)) { input.value = ""; renderNotes(); }
+  });
+
+  $("trailAlt").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-alt]");
+    if (!b) return;
+    // Re-open rather than mutate: the altitude lives in `mirror`, and one entry point
+    // keeps the header, the notes and the days in step with it.
+    openTrail(b.dataset.alt || null);
   });
 
   $("trailWider").addEventListener("click", () => {

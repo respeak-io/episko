@@ -1454,3 +1454,17 @@ select.in-ctl { cursor: pointer; }
 .orbit-tip.show { opacity: 1; }
 .orbit-tip .tp { display: block; margin-top: 2px; font: 9.5px var(--font-mono); color: var(--muted-2); }
 .orbit-foot { flex: none; padding: 6px 13px; font: 10px var(--font-mono); color: var(--muted); background: var(--panel); border-top: 1px solid var(--hair); }
+/* the Trail, grouped by project — a flat list reads as noise once two are in play */
+.td-proj { margin-bottom: 11px; }
+.td-proj:last-child { margin-bottom: 0; }
+.td-proj-h { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 3px; }
+.td-dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.td-proj-n { font: 700 9.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.td-evs { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+/* Outcomes as chips: countable at a glance, rather than read one row at a time. */
+.td-ev { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 5px; text-decoration: none; font: 9.5px var(--font-mono); border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); }
+.td-ev:hover { border-color: var(--hair-strong); }
+.td-ev.merged { color: #c3b0ff; border-color: color-mix(in srgb, #c3b0ff 32%, transparent); background: color-mix(in srgb, #c3b0ff 12%, transparent); }
+.td-ev.closed { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 30%, transparent); background: color-mix(in srgb, var(--st-done) 11%, transparent); }
+.td-ev.opened { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 30%, transparent); background: color-mix(in srgb, #7cc7ff 11%, transparent); }
+.trail-head .th-alt { margin-bottom: 2px; }

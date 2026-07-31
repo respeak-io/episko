@@ -3,7 +3,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import type { HistEntry } from "../src/history";
 import { usage, usageWindow, type UDay } from "../src/usage";
 import {
-  dayFacts, dayIsClosed, dayKeyOf, deterministicHeadline, dominantProject,
+  dayByProject, dayFacts, dayIsClosed, dayKeyOf, deterministicHeadline, dominantProject,
   trailDays, trailSession, type TrailCommit, type TrailDay,
 } from "../src/trail";
 
@@ -98,7 +98,7 @@ describe("day grouping", () => {
 describe("headlines", () => {
   const day = (over: Partial<TrailDay>): TrailDay => ({
     key: "2027-03-13", when: at(2027, 3, 13, 0).getTime(), cost: 0, tokens: 0,
-    sessions: [], commits: [], ...over,
+    sessions: [], commits: [], events: [], ...over,
   });
   const sess = (project: string, title = "t") =>
     ({ id: title, title, project, colorKey: project, branch: "dev", cwd: "/w", when: 0, exists: true });
@@ -128,7 +128,7 @@ describe("summarising", () => {
     const facts = dayFacts({
       key: "2027-03-13", when: 0, cost: 4.2, tokens: 0,
       sessions: [{ id: "a", title: "Usage forecast colours", project: "episko", colorKey: "k", branch: "dev", cwd: "/w", when: 0, exists: true }],
-      commits: [commit({ when: 0, subject: "fix: the thing" })],
+      commits: [commit({ when: 0, subject: "fix: the thing" })], events: [],
     });
     expect(facts).toContain("spend: $4.20");
     expect(facts).toContain("session: Usage forecast colours [episko/dev]");
@@ -138,14 +138,88 @@ describe("summarising", () => {
   it("bounds a heavy day so the prompt cannot grow without limit", () => {
     const many = Array.from({ length: 30 }, (_, i) =>
       ({ id: `s${i}`, title: `t${i}`, project: "p", colorKey: "p", branch: "", cwd: "/w", when: 0, exists: true }));
-    const facts = dayFacts({ key: "k", when: 0, cost: 0, tokens: 0, sessions: many, commits: [] }, 5);
+    const facts = dayFacts({ key: "k", when: 0, cost: 0, tokens: 0, sessions: many, commits: [], events: [] }, 5);
     expect(facts).toContain("… and 25 more sessions");
     expect(facts.split("\n").filter((l) => l.startsWith("session:"))).toHaveLength(5);
   });
 
   it("treats today as still open and every earlier day as final", () => {
-    const mk = (key: string) => ({ key, when: 0, cost: 0, tokens: 0, sessions: [], commits: [] });
+    const mk = (key: string) => ({ key, when: 0, cost: 0, tokens: 0, sessions: [], commits: [], events: [] });
     expect(dayIsClosed(mk("2027-03-14"))).toBe(false); // today — may still change
     expect(dayIsClosed(mk("2027-03-13"))).toBe(true);  // over — cache forever
+  });
+});
+
+describe("a day is split by project", () => {
+  const names = (k: string) => k.split("/").pop() || k;
+  const s = (id: string, colorKey: string) =>
+    ({ id, title: id, project: names(colorKey), colorKey, branch: "", cwd: "/w", when: 1, exists: true });
+  const c = (subject: string, root: string): TrailCommit =>
+    ({ sha: "a", author: "T", when: 1, subject, root });
+  const ev = (n: number, event: "opened" | "closed" | "merged", root: string) =>
+    ({ number: n, kind: "pr", event, title: `#${n}`, url: "u", at: "2027-03-13T10:00:00Z", root });
+  const day = (over: Partial<TrailDay>): TrailDay =>
+    ({ key: "2027-03-13", when: 0, cost: 0, tokens: 0, sessions: [], commits: [], events: [], ...over });
+
+  it("files sessions, commits and events under the project they belong to", () => {
+    const groups = dayByProject(day({
+      sessions: [s("s1", "/w/episko"), s("s2", "/w/api")],
+      commits: [c("fix a", "/w/episko"), c("fix b", "/w/episko")],
+      events: [ev(42, "merged", "/w/api")] as never,
+    }), names);
+    expect(groups.map((g) => g.project)).toEqual(["episko", "api"]); // busiest first
+    expect(groups[0].commits).toHaveLength(2);
+    expect(groups[1].events).toHaveLength(1);
+  });
+
+  it("gives a project a group even when only an event happened there", () => {
+    // A PR merging on a day you touched nothing else IS what happened that day.
+    const groups = dayByProject(day({ events: [ev(9, "merged", "/w/api")] as never }), names);
+    expect(groups.map((g) => g.project)).toEqual(["api"]);
+  });
+
+  it("orders identically on a repaint of unchanged state", () => {
+    const d = day({ sessions: [s("a", "/w/beta"), s("b", "/w/alpha")] });
+    expect(dayByProject(d, names).map((g) => g.project)).toEqual(dayByProject(d, names).map((g) => g.project));
+  });
+});
+
+describe("what a day closed", () => {
+  const day = (events: unknown[]): TrailDay =>
+    ({ key: "k", when: 0, cost: 0, tokens: 0, sessions: [], commits: [], events: events as never });
+
+  it("names merges and closures in the headline, which is what a day is remembered by", () => {
+    const h = deterministicHeadline(day([
+      { number: 1, kind: "pr", event: "merged", title: "x", url: "u", at: "" },
+      { number: 2, kind: "issue", event: "closed", title: "y", url: "u", at: "" },
+    ]));
+    expect(h).toContain("1 merged");
+    expect(h).toContain("1 closed");
+  });
+
+  it("mentions openings only when nothing landed", () => {
+    expect(deterministicHeadline(day([{ number: 3, kind: "issue", event: "opened", title: "z", url: "u", at: "" }])))
+      .toContain("1 opened");
+    const both = deterministicHeadline(day([
+      { number: 1, kind: "pr", event: "merged", title: "x", url: "u", at: "" },
+      { number: 3, kind: "issue", event: "opened", title: "z", url: "u", at: "" },
+    ]));
+    expect(both).toContain("1 merged");
+    expect(both).not.toContain("opened");
+  });
+
+  it("buckets an event into its own local day and drops an unparseable one", () => {
+    const days = usageWindow(3);
+    const out = trailDays([], days, [], [
+      { number: 1, kind: "pr", event: "merged", title: "x", url: "u", at: "2027-03-13T09:00:00Z" },
+      { number: 2, kind: "pr", event: "merged", title: "y", url: "u", at: "nonsense" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].events.map((e) => e.number)).toEqual([1]);
+  });
+
+  it("hands the model what landed, not only what ran", () => {
+    const facts = dayFacts(day([{ number: 46, kind: "pr", event: "merged", title: "notice drift", url: "u", at: "" }]));
+    expect(facts).toContain("merged pr #46: notice drift");
   });
 });

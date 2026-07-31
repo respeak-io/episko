@@ -11,7 +11,8 @@
 
 import { $ } from "./dom";
 import { esc } from "./format";
-import { accentFor, orbitOpen, sessions, setActiveId, setMirror, dirtyByFolder, FAVORITES } from "./state";
+import { accentFor, orbitOpen, orbitProject, sessions, setActiveId, setMirror, dirtyByFolder, FAVORITES } from "./state";
+import { altitudeSegs } from "./altitude";
 import { noteList } from "./notes";
 import { buildThreads, threadStatusKey, type Thread } from "./thread";
 import { collapseUnclaimed, layout, type Dot } from "./orbit";
@@ -52,7 +53,10 @@ function currentThreads(): Thread[] {
 }
 
 function recompute(): void {
-  const all = currentThreads();
+  const p = orbitProject();
+  const every = currentThreads();
+  $("orbitAlt").innerHTML = altitudeSegs(every.map((t) => t.colorKey), p);
+  const all = p ? every.filter((t) => t.colorKey === p) : every;
   const c = collapseUnclaimed(all);
   collapsed = c.collapsed;
   dots = layout(c.shown);
@@ -190,9 +194,10 @@ export function renderOrbit(): void {
 
 export function renderOrbitHeader(): void {
   ($("btnClose") as HTMLButtonElement).hidden = true;
-  $("hProj").textContent = "Orbit";
+  const p = orbitProject();
+  $("hProj").textContent = p ? projectName(p) : "Orbit";
   const hb = $("hBranch");
-  hb.textContent = "all projects"; hb.hidden = false; hb.classList.add("ext-chip");
+  hb.textContent = orbitProject() ? "this project" : "all projects"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = "radius = pressure · angle = project · size = spend";
   $("hPath").textContent = "";
 }
@@ -215,15 +220,16 @@ export function renderOrbitInspector(): void {
     off a radial plot. Click any dot to open its row.</p>`;
 }
 
-export function openOrbit(): void {
-  setMirror({ kind: "orbit" });
+export function openOrbit(project: string | null = null): void {
+  setMirror({ kind: "orbit", project });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
   ($("empty") as HTMLElement).style.display = "none";
   for (const id of ["extPane", "trailPane", "threadsPane", "boardPane"]) ($(id) as HTMLElement).hidden = true;
   ($("orbitPane") as HTMLElement).hidden = false;
   // No single project owns the fleet, so the app's own accent stands.
-  document.documentElement.style.removeProperty("--accent");
+  if (project) document.documentElement.style.setProperty("--accent", accentFor(project));
+  else document.documentElement.style.removeProperty("--accent");
   renderOrbitHeader(); recompute(); renderOrbitInspector();
   if (!raf) raf = reduced() ? 0 : requestAnimationFrame(frame);
   if (reduced()) draw();
@@ -237,6 +243,10 @@ export function closeOrbit(): void {
 }
 
 export function wireOrbit(): void {
+  $("orbitAlt").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-alt]");
+    if (b) openOrbit(b.dataset.alt || null);
+  });
   const wrap = $("orbitWrap");
   const tip = $("orbitTip");
 

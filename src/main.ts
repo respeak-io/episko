@@ -559,14 +559,29 @@ $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
 
 $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
+// ⌘⌥ + a letter is the OVERVIEW LAYER: Trail, Threads, Board, Orbit. One chord for
+// "step back and look at everything", distinct from the plain-⌘ verbs that act on
+// whatever is on screen.
+//
+// Matched on `e.code`, never `e.key`, and that is load-bearing on macOS: Option is a
+// character-composing modifier there, so ⌥F arrives as `key: "ƒ"`, ⌥T as "†", ⌥B as
+// "∫". A `key.toLowerCase() === "f"` test simply never fires — which is exactly why
+// the first ⌘⌥F binding for the Orbit did nothing. `code` is the physical key and is
+// unaffected by modifiers.
+const isCode = (e: KeyboardEvent, letter: string) => e.code === `Key${letter.toUpperCase()}`;
+// A plain-⌘ verb must not fire when Option is down, or it would swallow the overview
+// chord that shares its letter (⌘T terminal vs ⌘⌥T Trail, ⌘B sidebar vs ⌘⌥B Board).
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
-  if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
-  else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
-  else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
-  // !shiftKey, or this would swallow ⌘⇧T (the Trail) — an unshifted test earlier in
-  // the chain wins over a shifted one later in it.
-  else if (meta && !e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
+  const alt = e.altKey;
+  if (meta && alt && isCode(e, "t")) { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
+  else if (meta && alt && isCode(e, "o")) { e.preventDefault(); threadsOpen() ? closeThreads() : openThreads(null); renderAll(); }
+  else if (meta && alt && isCode(e, "b")) { e.preventDefault(); const c = activeProjectCtx(); if (boardOpen()) closeBoard(); else if (c) openBoard(c.path); else toast("Open a project first — the board lives in its repo"); renderAll(); }
+  else if (meta && alt && isCode(e, "f")) { e.preventDefault(); orbitOpen() ? closeOrbit() : openOrbit(); renderAll(); }
+  else if (meta && !alt && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
+  else if (meta && !alt && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
+  else if (meta && !alt && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
+  else if (meta && !alt && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
   else if (meta && e.key >= "1" && e.key <= "9") { e.preventDefault(); const list = orderedSessions(); const s = list[+e.key - 1]; if (s) setActive(s.id); }
   else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); bumpFont(0.5); }
   else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }
@@ -574,10 +589,6 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); threadsOpen() ? closeThreads() : openThreads(null); renderAll(); }
-  else if (meta && e.altKey && e.key.toLowerCase() === "f") { e.preventDefault(); orbitOpen() ? closeOrbit() : openOrbit(); renderAll(); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); const c = activeProjectCtx(); if (boardOpen()) closeBoard(); else if (c) openBoard(c.path); else toast("Open a project first"); renderAll(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && trailOpen()) { e.preventDefault(); closeTrail(); renderAll(); }
   else if (e.key === "Escape" && threadsOpen()) { e.preventDefault(); closeThreads(); renderAll(); }

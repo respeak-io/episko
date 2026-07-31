@@ -40,6 +40,14 @@ export interface TrailSession {
 /// a day in the Usage tab are the *same* key — if these two ever disagreed about
 /// where a midnight falls, the Trail's costs would silently stop matching the
 /// analytics the user already trusts.
+/// One issue or PR that opened, closed or merged. `at` is ISO-8601 from gh; the day
+/// bucketing happens here so the Trail and the Usage tab can never disagree about
+/// where midnight falls.
+export interface TrailEvent {
+  number: number; kind: string; event: "opened" | "closed" | "merged";
+  title: string; url: string; at: string;
+}
+
 export interface TrailDay {
   key: string;
   when: number;          // ms at local midnight — for formatting only
@@ -47,6 +55,21 @@ export interface TrailDay {
   tokens: number;
   sessions: TrailSession[];
   commits: TrailCommit[];
+  events: TrailEvent[];
+}
+
+/// A day's work, split by the project it belonged to.
+///
+/// A day is almost never about one thing, and a flat list of everything that happened
+/// reads as noise the moment two projects are in play — you cannot tell which commits
+/// belong to which sessions. Grouping is the smallest change that makes a mixed day
+/// legible.
+export interface DayProject {
+  colorKey: string;
+  project: string;
+  sessions: TrailSession[];
+  commits: TrailCommit[];
+  events: TrailEvent[];
 }
 
 /// Seconds → ms, once, at the boundary. Both backend timestamps are seconds.
@@ -79,7 +102,12 @@ export const dayKeyOf = (msWhen: number) => uDkey(new Date(msWhen));
  * request for "the last 30 days", not a promise that all 30 had work in them, and a
  * column of blank rows reads as a broken view rather than as a quiet weekend.
  */
-export function trailDays(hist: HistEntry[], days: UDay[], commits: TrailCommit[]): TrailDay[] {
+export function trailDays(
+  hist: HistEntry[],
+  days: UDay[],
+  commits: TrailCommit[],
+  events: TrailEvent[] = [],
+): TrailDay[] {
   const byKey = new Map<string, TrailDay>();
   for (const d of days) {
     const [y, m, dd] = d.key.split("-").map(Number);
@@ -90,6 +118,7 @@ export function trailDays(hist: HistEntry[], days: UDay[], commits: TrailCommit[
       tokens: d.tok,
       sessions: [],
       commits: [],
+      events: [],
     });
   }
   // Sessions and commits outside the window are simply not in `byKey` — no day is
@@ -102,14 +131,58 @@ export function trailDays(hist: HistEntry[], days: UDay[], commits: TrailCommit[
     const day = byKey.get(dayKeyOf(ms(c.when)));
     if (day) day.commits.push(c);
   }
+  for (const ev of events) {
+    const t = Date.parse(ev.at);
+    // A malformed timestamp is dropped rather than bucketed to 1970, where it would
+    // silently vanish from every window anyway.
+    if (!Number.isFinite(t)) continue;
+    const day = byKey.get(dayKeyOf(t));
+    if (day) day.events.push(ev);
+  }
 
-  const out = [...byKey.values()].filter((d) => d.sessions.length || d.commits.length || d.cost > 0);
+  const out = [...byKey.values()].filter((d) => d.sessions.length || d.commits.length || d.events.length || d.cost > 0);
   for (const d of out) {
     d.sessions.sort((a, b) => b.when - a.when);
     d.commits.sort((a, b) => b.when - a.when);
+    d.events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   }
   return out.sort((a, b) => b.when - a.when);
 }
+
+/**
+ * A day split by project, most active first.
+ *
+ * Commits carry the root they came from and sessions carry a colorKey, so both already
+ * know their project — this only has to agree on one key per group. Events are keyed by
+ * the repo root `gh_day_activity` was asked about, which is that same colorKey.
+ *
+ * A project with only an event (a PR merged on a day you touched nothing else) still
+ * gets a group: that IS what happened that day.
+ */
+export function dayByProject(d: TrailDay, nameOf: (colorKey: string) => string): DayProject[] {
+  const groups = new Map<string, DayProject>();
+  const at = (colorKey: string): DayProject => {
+    let g = groups.get(colorKey);
+    if (!g) {
+      g = { colorKey, project: nameOf(colorKey), sessions: [], commits: [], events: [] };
+      groups.set(colorKey, g);
+    }
+    return g;
+  };
+  for (const s of d.sessions) at(s.colorKey).sessions.push(s);
+  for (const c of d.commits) at(c.root).commits.push(c);
+  for (const e of (d.events ?? [])) at(eventRoot(e)).events.push(e);
+  // Busiest first, ties broken by name so a repaint never reorders an unchanged day.
+  return [...groups.values()].sort((a, b) => {
+    const wa = a.sessions.length + a.commits.length + a.events.length;
+    const wb = b.sessions.length + b.commits.length + b.events.length;
+    return wb - wa || a.project.localeCompare(b.project);
+  });
+}
+
+/// Events are tagged with their repo root when fetched; ./trailui stamps it on so this
+/// module needn't know how the fetch was keyed.
+const eventRoot = (e: TrailEvent & { root?: string }) => e.root ?? "";
 
 /// Which project a day was mostly about, by session count then commit count, or null
 /// when the day was genuinely spread across several. Ties break alphabetically so a
@@ -143,6 +216,12 @@ export function deterministicHeadline(d: TrailDay): string {
       : `${plural(d.sessions.length, "session")} across ${plural(projects.size, "project")}`);
   }
   if (d.commits.length) parts.push(plural(d.commits.length, "commit"));
+  const merged = (d.events ?? []).filter((e) => e.event === "merged").length;
+  const closed = (d.events ?? []).filter((e) => e.event === "closed").length;
+  const opened = (d.events ?? []).filter((e) => e.event === "opened").length;
+  if (merged) parts.push(`${merged} merged`);
+  if (closed) parts.push(`${closed} closed`);
+  if (opened && !merged && !closed) parts.push(`${opened} opened`);
   if (!parts.length) return d.cost > 0 ? "Agent time, nothing committed." : "Quiet day.";
   return parts.join(" · ") + ".";
 }
@@ -166,6 +245,10 @@ export function dayFacts(d: TrailDay, limit = 12): string {
   if (d.sessions.length > limit) lines.push(`… and ${d.sessions.length - limit} more sessions`);
   for (const c of d.commits.slice(0, limit)) lines.push(`commit: ${c.subject}`);
   if (d.commits.length > limit) lines.push(`… and ${d.commits.length - limit} more commits`);
+  // What landed, not just what ran — a day is remembered by what it finished.
+  for (const e of (d.events ?? []).slice(0, limit)) {
+    lines.push(`${e.event} ${e.kind} #${e.number}: ${e.title}`);
+  }
   return lines.join("\n");
 }
 
