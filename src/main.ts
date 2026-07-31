@@ -47,8 +47,8 @@ import {
   setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession,
-  setWtHandToTerminal, setWtLaunch, setWtRenderAll, setWtSetActive,
+  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal, setWtLaunch,
+  setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
@@ -172,11 +172,11 @@ setPaletteHost({
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder,
 });
-// Same reasoning, six callees: a context-menu row starts panes and edits the project
+// Same reasoning, seven callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
 setProjMenuHost({
-  renderAll, requestLaunch, launchShell, openProjectFolder, addProjectPath,
-  removeFavorite,
+  renderAll, requestLaunch, launchWorktree, launchShell, openProjectFolder,
+  addProjectPath, removeFavorite,
 });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
 setTaskRunSetActive(setActive);
@@ -213,6 +213,8 @@ setWtCloseSession(closeSession);
 setWtSetActive(setActive);
 setWtRenderAll(renderAll);
 setWtHandToTerminal(handToTerminal);
+// …and removing one changes what checkouts exist, which only a git re-read notices.
+setWtRefreshGit(refreshGitViews);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------

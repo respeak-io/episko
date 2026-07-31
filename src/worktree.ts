@@ -19,7 +19,7 @@ import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
-import { engineDef, sessions, termEngine } from "./state";
+import { engineDef, externals, sessions, termEngine } from "./state";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
 let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
@@ -34,6 +34,12 @@ export function setWtRenderAll(fn: typeof renderAll) { renderAll = fn; }
 // window) and the launch engine — main.ts territory, same as the four above.
 let handToTerminal: (project: string, workdir: string, cmd: string, opts?: { colorKey?: string; worktree?: string | null; branch?: string }) => Promise<void> = async () => {};
 export function setWtHandToTerminal(fn: typeof handToTerminal) { handToTerminal = fn; }
+// A removal here is the one change to "what checkouts exist" the app makes itself, so
+// it is the one it must not wait on the poll to notice — the sidebar's ⑃ roster comes
+// from `worktree_heads`, which `renderAll` only paints, never re-reads. A hook rather
+// than an import because panes.ts already imports this module.
+let refreshGitViews: () => Promise<void> = async () => {};
+export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = fn; }
 
 // Every answer to "where should this session run?" is a directory, so every answer
 // is a row: the repo itself, its worktrees, its branches, and whatever you type.
@@ -834,35 +840,63 @@ async function wtDoRemove(deleteBranch: boolean) {
       return;
     }
     wtArmed = "";
-    await wtLoad(true);
+    await wtLoad(true);                 // this dialog's own list…
+    if (r.ok) await refreshGitViews();  // …and the ⑃ roster the sidebar draws behind it
   } catch (e) {
     dlog("error", `worktree remove failed: ${e}`);
     toast("worktree: " + e);
   } finally { wtBusy = false; renderAll(); }
 }
 
-// The action-panel "Remove this worktree" flow: guard uncommitted work, then close
-// the session and remove its worktree (safe-deleting the branch if it's merged).
-export async function removeWorktreeSession(s: Sess) {
-  const repoDir = s.colorKey, path = s.workdir, branch = s.branch;
+// The action-panel "Remove this worktree" flow: a session names its own checkout, so
+// this is just the path-keyed removal below pointed at it.
+export function removeWorktreeSession(s: Sess) {
+  return removeWorktreeAt(s.project, s.colorKey, s.workdir, s.branch);
+}
+// Remove the checkout at `path`, whatever is (or isn't) running in it: guard
+// uncommitted work, close the sessions living there, then remove the worktree and
+// safe-delete its branch. The sidebar's ⑃ cluster menu is the other caller, and it
+// is why this is keyed by path rather than by session — a cluster can hold none,
+// one or several, and an empty one is exactly the checkout you most want to prune.
+//
+// The backend refuses while an *Episko* session runs in the tree, so those are closed
+// here first. It cannot see an external one, so that case is refused rather than
+// worked around: `git worktree remove` would delete the folder out from under an
+// agent running in someone else's terminal.
+export async function removeWorktreeAt(project: string, repoDir: string, path: string, branch: string) {
+  const label = branch || basename(path);
+  if (externals.some((e) => e.cwd === path)) {
+    toast(`${label}: a session outside Episko is running there — close it first`);
+    return;
+  }
+  const live = wtSessionsIn(path);
   // Never close a session that still has a dirty tree — hand the decision (and a
   // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
   // enough to try", since the backend still refuses (without forcing) if it's wrong.
   const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
   if (ds && ds.dirty > 0) {
-    toast(`${branch || "worktree"}: uncommitted changes — commit or discard first`);
-    await handToTerminal(s.project, path, "git status", { colorKey: repoDir, worktree: s.worktree, branch });
+    toast(`${label}: uncommitted changes — commit or discard first`);
+    await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
     return;
   }
-  if (!await ask(`Remove the worktree at ${basename(path)}/?\n\nIts session closes, the folder goes, and its branch is deleted only if it's fully merged.`,
+  const closes = live.length === 0 ? "Nothing is running in it"
+    : live.length === 1 ? "Its session closes"
+    : `Its ${live.length} sessions close`;
+  if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
     { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
-  closeSession(s.id);
-  await invoke("kill_session", { sessionId: s.id }).catch(() => {}); // ensure the backend guard sees it gone
+  for (const s of live) {
+    closeSession(s.id);
+    await invoke("kill_session", { sessionId: s.id }).catch(() => {}); // ensure the backend guard sees it gone
+  }
   try {
     const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path, branch, deleteBranch: true });
-    dlog(r.ok ? "info" : "warn", `worktree remove · ${branch || path} · ${r.summary}`);
-    if (r.ok) toast(r.summary);
-    else if (r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(s.project, repoDir, r.suggest, { colorKey: repoDir }); }
+    dlog(r.ok ? "info" : "warn", `worktree remove · ${label} · ${r.summary}`);
+    // The cluster this was invoked from is drawn from the ⑃ roster, which only a
+    // re-read drops — renderAll alone would leave the header on screen until the poll.
+    if (r.ok) { toast(r.summary); await refreshGitViews(); }
+    // The handoff must run from the repo root, never the worktree being deleted —
+    // git refuses to remove the tree you're standing in.
+    else if (r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir }); }
     else toast(r.summary);
   } catch (e) {
     dlog("error", `worktree remove failed: ${e}`);

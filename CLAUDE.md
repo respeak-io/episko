@@ -271,7 +271,7 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 37 modules
 
-**No framework, and no longer one file.** ~8,100 lines across 37 modules; `main.ts` is 686 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,300 lines across 37 modules; `main.ts` is 686 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
@@ -295,7 +295,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog, the biggest single module at 932 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `historyui`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module at 976 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `mirror`, `historyui`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
@@ -387,7 +387,30 @@ carries the upstream and ahead/behind that `upstream_state` cost two more proces
 with the `--numstat` walk skipped entirely on a clean tree.
 
 Everything lands through `refreshGitViews` → `renderAll()`, so the sidebar, the header's
-branch chip and the open ⑃ dialog cannot disagree about what is checked out where.
+branch chip and the open ⑃ dialog cannot disagree about what is checked out where. A
+removal is the one change to that roster the app makes *itself*, so both removal paths
+call `refreshGitViews` on success rather than waiting for the poll — `renderAll` only
+paints the roster, it never re-reads it, so without this the cluster you just deleted
+stays on screen.
+
+**The ⑃ cluster header is the surface for a checkout** (subheader mode). It renders
+whether or not anything runs beneath it, which is what lets the roster's discovery show:
+a worktree an agent created appears as a dimmed header (`.wtvacant`) rather than as a
+row that says "no session". It carries a `＋` (→ `launchWorktree`, which keys the new
+session's `colorKey` to the **repo root**, or the pane splits off into a project group of
+its own) and a **right-click menu** in `projmenu.ts` — terminal, folder, copy path, the ⑃
+dialog, and remove. That menu shares `#ctxMenu` with the project one: `data-wt` is
+matched *ahead* of `data-key` in the `contextmenu` handler, because a cluster sits inside
+a project group and a combined `closest()` would be decided by tree distance rather than
+by what was clicked. Chip mode has no headers, so the "no session" row survives there
+alone.
+
+**Removal is keyed by path, not by session** (`removeWorktreeAt`) — a cluster can hold
+none, one or several, and an empty one is exactly the checkout you most want to prune.
+It closes the Episko sessions living there (the backend refuses while one runs), but
+**refuses outright when an external session is in the checkout**: the backend can't see
+one, so `git worktree remove` would delete the folder out from under an agent in someone
+else's terminal. The menu says so on the row rather than letting the click fail.
 
 ## Four launch engines, one telemetry path
 

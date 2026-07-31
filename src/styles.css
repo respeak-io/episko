@@ -1086,6 +1086,10 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-chev { margin-left: auto; padding-left: 6px; color: var(--muted-2); font-size: 13px; }
 .ctxmenu .mp-item.sub-open { background: var(--surface); }
 .ctxmenu .mp-danger .mp-ic, .ctxmenu .mp-danger .mp-l { color: var(--st-attention); }
+/* A verb that cannot run stays listed and says why — dropping the row would read as
+   "Episko forgot how to do this". Same shape the branch popover uses for its own. */
+.ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }
+.ctxmenu .mp-item.dis:hover { background: transparent; }
 
 /* "x needs you" dropdown (multiple sessions awaiting attention) */
 .attn-badge.multi::after { content: "▾"; font-size: 8px; margin-left: 1px; opacity: .7; }

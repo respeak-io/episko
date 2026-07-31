@@ -76,7 +76,7 @@ export function groupBody(p: ProjGroup): string {
       // whole row on saying so.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
         + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
-      return `<div class="wthead${n ? "" : " wtvacant"}"><span class="wtglyph" style="color:${col}">⑃</span>`
+      return `<div class="wthead${n ? "" : " wtvacant"}" ${wtMenuAttrs(p, c)}><span class="wtglyph" style="color:${col}">⑃</span>`
         + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
         + `<span class="wtcount">${n || ""}</span>${add}</div>`
         // No rows, no rail: an empty `.wtsessions` would draw a stub of left border
@@ -94,6 +94,14 @@ export function groupBody(p: ProjGroup): string {
   }
   return flat();
 }
+// What identifies one checkout to the worktree context menu (./projmenu). `data-wt`
+// is the marker its contextmenu handler matches on, and it must be matched *ahead* of
+// the `data-key` project menu — a cluster is a checkout, not the repo it belongs to.
+// The rest is everything the menu's verbs need without a second lookup.
+export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
+  return `data-wt="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}"`
+    + ` data-branch="${esc(c.branch)}"${c.isMain ? ` data-main="1"` : ""}`;
+}
 // A checkout that exists on disk with nothing running in it. Rendered rather than
 // dropped for the same reason a blocked task is: a missing row reads as "Episko didn't
 // notice my worktree", which is exactly the gap this path was built to close.
@@ -110,7 +118,7 @@ export function groupBody(p: ProjGroup): string {
 // the cluster header's ＋ uses.
 function wtEmptyRow(p: ProjGroup, c: WtCluster): string {
   // `o3` widens the grid for the chip and arms its hover-expand, exactly as sessionRow does.
-  return `<div class="srow wtempty o3" data-wtadd="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}" data-branch="${esc(c.branch)}" title="No session here yet — start one in ${esc(tilde(c.key))}">
+  return `<div class="srow wtempty o3" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)} title="No session here yet — start one in ${esc(tilde(c.key))}">
     <span class="sglyph g-idle">＋</span>
     <span class="sbranch">no session</span>
     <span class="chip" style="--wtc:${branchHue(c)}"><span class="fork">⑃</span><span class="lbl">${esc(c.branch)}</span></span></div>`;
