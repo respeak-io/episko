@@ -21,7 +21,8 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
-import type { DiffStat, Engine, ExtSession, Restorable, Sess, WtHead } from "./types";
+import { clampPeekPrefs, type PeekPrefs } from "./peek";
+import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -71,6 +72,19 @@ export let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGr
 if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
 export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "subheader"; }
 
+// --- sidebar peek ---------------------------------------------------------------
+// Whether resting on a project reveals the checkouts nothing is running in, and for
+// how long. The rules (and the clamping below) live in ./peek, which is pure and
+// tested; this only holds the value. Persisted under cc-peek as one JSON blob rather
+// than three keys, because the three are only ever read together.
+export let peekPrefs: PeekPrefs = clampPeekPrefs(safeParse(localStorage.getItem("cc-peek")));
+export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
+function safeParse(raw: string | null): Partial<PeekPrefs> | null {
+  // A corrupt or hand-edited value must not take the app down during module import,
+  // the same stance ./tasks and ./notes take with their own stores.
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+
 // A hand-picked accent per project path, overriding the hash below. A `const` map
 // mutated in place (like `sessions`), so it needs no setter; the colour picker in
 // main.ts still owns writing it back to localStorage.
@@ -101,11 +115,19 @@ export function setActiveId(id: string | null) { activeId = id; }
 // what stays stable, so refreshExternals re-binds through it instead of dropping
 // the selection (which used to silently jump the sidebar to an unrelated session).
 // Same rule as Sess.resumeId and the telemetry path: hold the stable handle.
-export let mirror: { kind: "ext"; id: string; pid: number } | { kind: "past"; id: string } | null = null;
+export let mirror:
+  | { kind: "ext"; id: string; pid: number }
+  | { kind: "past"; id: string }
+  // The project dashboard. Not a session at all, but it owns the stage exactly the way
+  // the read-only mirrors do — so it joins this discriminated pointer rather than
+  // becoming a second flag every `activeId` check would have to be paired with.
+  | { kind: "dash"; root: string; name: string }
+  | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
+export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
@@ -134,6 +156,29 @@ export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
+// --- how a new session starts (claude --permission-mode) -----------------------
+// A persisted preference like the engine above, and the same split: the type is in
+// ./types (it crosses to the backend), the label table stays in the UI layer.
+// Labels follow Claude Code's own names for these modes, so the picker and the
+// indicator the REPL shows after ⇧⇥ can't read as two different things.
+//
+// Ordered by how much the mode hands over: Manual asks about everything, Bypass
+// about nothing. The last three stop Claude asking, and therefore stop Episko's
+// permission cards too — the hint in Settings › Sessions says so, since a pane that
+// never raises one looks identical to a pane nobody has asked anything.
+export interface PermModeDef { id: PermMode; label: string; sub: string; glyph: string }
+export const ALL_PERM_MODES: PermModeDef[] = [
+  { id: "default",           label: "Manual",       sub: "Asks before anything risky — Episko's permission cards", glyph: "◇" },
+  { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙" },
+  { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎" },
+  { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈" },
+  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts — anything not pre-approved is denied",    glyph: "⊘" },
+  { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠" },
+];
+export function permModeDef(id: PermMode): PermModeDef { return ALL_PERM_MODES.find((m) => m.id === id) || ALL_PERM_MODES[0]; }
+export let permMode: PermMode = (localStorage.getItem("cc-perm-mode") as PermMode) || "default";
+if (!ALL_PERM_MODES.some((m) => m.id === permMode)) permMode = "default";
+export function setPermMode(m: PermMode) { permMode = m; }
 // Uncommitted-changes cache, keyed by folder rather than session, because it feeds
 // the sidebar's per-project dot and the external inspector's diff card as well as
 // the active session: `Sess.git` only stays fresh for the session on stage, so
@@ -166,3 +211,15 @@ export const worktreesByRepo = new Map<string, WtHead[]>();
 // file reads and zero renders. That is what lets the roster ride the same tick as the
 // branch poll without adding a cost anyone can feel.
 export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.exists ? 1 : 0}`).join("");
+
+// App-wide disk I/O, summed across every embedded claude session Episko owns — not a
+// per-session figure. With several agents running, the question the inspector's I/O
+// bars answer is "how hard is Episko working the disk", and a number for whichever
+// pane happens to be on screen answers a different one while looking like that one.
+// So it is shown identically on every session, exactly as the account-wide rate
+// limits in `rl.ts` are, and for the same reason.
+//
+// Mutated in place by `refreshSessionStats` (a live binding, read as a bare
+// identifier); `all_sessions_resources` in pty.rs does the summing and the per-pid
+// rate differencing, because that is where the previous readings live.
+export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, primed: false };

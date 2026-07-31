@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS entitlements. The bundle is built with the hardened runtime on
+  (`codesign` reports flags=0x10002(adhoc,runtime)), and under the hardened
+  runtime microphone access is refused unless the process carries
+  `com.apple.security.device.audio-input` — separately from, and in addition to,
+  the `NSMicrophoneUsageDescription` purpose string in Info.plist. Both are
+  required; either one alone still fails.
+
+  Deliberately minimal: the app shipped with NO entitlements file at all and
+  worked, so this adds exactly one key rather than a plausible-looking set.
+  In particular do NOT add `com.apple.security.app-sandbox` — Episko spawns
+  PTYs, reads `~/.claude` and writes into the user's repos, none of which
+  survive the sandbox.
+
+  Known limit: the bundle is **ad-hoc signed** (`signingIdentity: "-"`), so it
+  has no stable designated requirement. TCC keys its grant to the signature, so
+  the grant is invalidated whenever the binary changes — the microphone prompt
+  will reappear (or the grant will silently lapse) on every rebuild. Only a real
+  Developer ID identity fixes that; see SIGNING.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

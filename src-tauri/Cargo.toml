@@ -35,6 +35,10 @@ base64 = "0.22.1"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Terminal copy/paste. The WebView's own `navigator.clipboard.readText()` is behind
+# a permission prompt in both WebView2 and WKWebView (see the comment in `run()`),
+# so the clipboard is read and written from the host side instead.
+tauri-plugin-clipboard-manager = "2"
 # Runnable discovery: .episko/tasks.toml, and format-preserving writes back to it.
 toml = "0.9"
 toml_edit = "0.25.13"

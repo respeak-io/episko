@@ -22,7 +22,7 @@ import { sessions } from "./state";
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml, vitalHtml, wsetHtml,
+  driftHtml, gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 export function renderInspector(s: Sess | null) {
@@ -51,6 +51,9 @@ export function renderInspector(s: Sess | null) {
       : "The turn ended early — the conversation is intact. Send the prompt again to pick it back up.";
     html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
   }
+  // Above the vital, and above the working set it contradicts: everything below reads
+  // the folder the session was launched in, which is not where the work is going.
+  if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));                                        // state, dwell, current tool
   html.push(gaugesHtml(s));                                       // TRACK — context + cost
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
@@ -59,7 +62,7 @@ export function renderInspector(s: Sess | null) {
   // see, and it's the only place the fetch/pull/push buttons live.
   if (s.git) html.push(wsetHtml(s));
   html.push(timelineHtml(s));                                     // activity, by tool
-  if (s.res) html.push(resHtml(s));                              // REFERENCE — cpu/mem, pinned to the bottom
+  html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
   $("inspector").innerHTML = html.join("");
 }
 

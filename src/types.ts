@@ -31,6 +31,20 @@ export interface DiffStat {
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
 export interface WtHead { path: string; branch: string; is_main: boolean; exists: boolean }
+// A checkout of a session's own repo that isn't the one it was launched in, as
+// ./gitwatch reads it off the hook stream. What the inspector's "working in" card
+// offers to point the session at.
+//
+// `via` is not decoration — it decides the repair, because the two ways an agent
+// changes checkout leave the conversation in different places:
+//   "cwd"   — Claude Code moved the session itself (its `EnterWorktree` tool, or any
+//             `cd` staying inside the project dir). It has already re-homed the
+//             transcript, so Episko only has to catch up: adopt the directory, no
+//             restart, no file move.
+//   "write" — the session is still running where it was launched and only its *writes*
+//             moved. Nothing has re-homed anything, so following it means moving the
+//             transcript and relaunching.
+export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
@@ -50,6 +64,13 @@ export type SessKind = "claude" | "shell" | "task";
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
+// How a new claude session treats tool calls at launch (`claude --permission-mode`).
+// Orthogonal to Engine: this decides what the session may do, not where its terminal
+// lives, and it applies to every engine. The spellings are Claude Code's own, because
+// they go on the command line verbatim (bar `default`, which means "pass no flag" —
+// see `permission_mode_arg` in pty.rs). Only the *starting* mode: Claude's own ⇧⇥
+// still switches mode inside a running session, and nothing here tracks that.
+export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";
@@ -109,9 +130,17 @@ export interface Sess {
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
   apiErr: ApiErr | null;
+  // Set when the agent's work has moved to a *different* checkout of this repo than the
+  // one the session was launched in — by either route, see `Drift.via` above and
+  // ./gitwatch for the two signals. Display-only either way: nothing here changes
+  // `workdir`, so the pane keeps acting on its launch folder until the user follows the
+  // drift. Which of the two it is decides what "following" means, and note that for
+  // `via: "cwd"` the process has *already* left `workdir` — that is the gap the
+  // inspector's button closes, not one Episko opened.
+  drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];
-  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: Res | null;
+  ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
   // task panes only

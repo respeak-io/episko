@@ -17,6 +17,7 @@
 - **Usage limits, before you hit them.** Your 5-hour and weekly limits with reset times, and a forecast that warms from amber to red when your current pace won't make it.
 - **A usage dashboard.** Daily spend as a contribution heatmap, tokens by model, token composition (cache reads vs. input vs. output), and cost attributed per project.
 - **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout.
+- **A commit graph per project.** Right-click a project → *Commit graph…* for its lanes, merges, branch and tag labels. It reads a page at a time and fetches the next as you scroll, so opening it on a huge repo costs the same as on a small one.
 - **Sessions started elsewhere show up too.** Claude Code sessions launched outside Episko are discovered and listed read-only, with jump-to-terminal on macOS.
 - **Survives a restart.** Episko's launch id *is* Claude's `--session-id`, so resuming replays Claude's own transcript — nothing to capture, nothing to lose.
 - **Run the project's own tasks** — VS Code tasks, a `justfile`, package scripts, a Makefile and more, in the same panes, with a run's exit code as its status. [See below](#run-your-projects-tasks-too).

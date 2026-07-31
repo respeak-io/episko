@@ -8,5 +8,13 @@
     <string>Episko launches Claude Code sessions in project folders on your Desktop.</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>Episko launches Claude Code sessions in project folders in your Downloads.</string>
+    <!-- Episko itself never records audio. This string exists because macOS
+         attributes a child process's microphone request to the *responsible*
+         process, which for a PTY child is this app — so Claude Code's voice
+         mode (`/voice`) inside an embedded pane is denied, silently and with no
+         prompt, unless the string is here. Removing it does not disable a
+         feature of Episko's; it breaks one of Claude's. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Claude Code's voice mode records audio from sessions you run inside Episko. Episko itself never records.</string>
 </dict>
 </plist>

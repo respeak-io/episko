@@ -59,6 +59,11 @@ export function dbgSnapshot() {
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
       lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
+      // Where the agent's writes are actually landing, when that isn't `workdir`. In
+      // the snapshot because the two disagreeing is precisely the state that needs
+      // explaining from outside the app — the case this was written for looked, from
+      // every log line, like a session sitting quietly in the checkout it had left.
+      drift: s.drift ? `${s.drift.branch} @ ${s.drift.dir}` : null,
     })),
     externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
     dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),

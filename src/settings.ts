@@ -14,12 +14,16 @@
 
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
-import type { Engine } from "./types";
+import type { Engine, PermMode } from "./types";
 import {
-  availEngines, engineDef, setTermFontSize, SORT_META, SORT_MODES, sortMode,
-  termEngine, termFontSize, wtGroup,
+  ALL_PERM_MODES, availEngines, engineDef, peekPrefs, permMode, setTermFontSize,
+  SORT_META, SORT_MODES, sortMode, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import {
+  PEEK_CLOSE_RANGE, PEEK_DEFAULTS, PEEK_IDLE, PEEK_OPEN_RANGE, peekEnter, peekLeave,
+  peekLeaveAll, peekNextDeadline, peekTick, type PeekPrefs, type PeekState,
+} from "./peek";
 import {
   ALL_PROVIDERS, clearStopRule, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
   stopRules, taskPrefs, untrustProject, type Provider, type TaskPrefs,
@@ -42,11 +46,16 @@ export interface SettingsHost {
   // nor regroup the sidebar. It arrives through the host because ./actions imports
   // this module (for renderSettings) and a direct import back would be a cycle.
   setWtGroup: (m: WtGroup) => void;
+  // Same reason as setWtGroup: the app-level one (./actions), which persists and
+  // announces — state.ts's same-named setter only assigns.
+  setPermMode: (m: PermMode) => void;
+  // Ditto. ./actions clamps through ./peek, persists and repaints the sidebar.
+  setPeekPrefs: (p: PeekPrefs) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
-  setWtGroup: () => {},
+  setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -61,6 +70,10 @@ type SetControl =
   | { kind: "seg"; set: string; label: string; hint?: string; active: () => string; segs: () => SetSeg[] }
   | { kind: "font"; label: string; hint?: string }
   | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
+  // The sidebar's peek: one switch, two millisecond steppers, and a mini-sidebar you
+  // can actually hover to feel the numbers. A stepper alone is a guess — "is 1000ms
+  // right?" has no answer until you have rested a pointer on something for 1000ms.
+  | { kind: "peek"; label: string; hint?: string }
   // A single on/off switch.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
@@ -97,6 +110,10 @@ const SET_TABS: SetTab[] = [
       { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
+      { kind: "seg", set: "permmode", label: "Permission mode",
+        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there — this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
+        active: () => permMode,
+        segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
@@ -150,6 +167,8 @@ const SET_TABS: SetTab[] = [
       { kind: "wtpreview", label: "Worktree grouping",
         hint: "How several checkouts of one repo are shown within its project group. Pick the look that reads best for you.",
         active: () => wtGroup },
+      { kind: "peek", label: "Reveal idle checkouts on hover",
+        hint: "Checkouts with nothing running in them stay out of the list until you rest on the project, then slide open. Off keeps them listed all the time. Hover the preview to feel the timings." },
     ],
   },
   {
@@ -240,10 +259,69 @@ function renderWtPreview(active: string): string {
   }).join("");
   return `<div class="wt-grid has-sel">${cards}</div>`;
 }
+// ---------- the peek control: two steppers and something to hover ----------
+// The preview is built from the REAL `.pgroup` / `.pgpeek` / `.pkrow` classes and
+// driven by the REAL ./peek reducer, so it cannot drift from the sidebar it is
+// previewing — a mock of a timing is worth nothing, because the timing is the thing
+// being judged. The only thing that is fake is the sessions.
+const PEEK_DEMO = [
+  { path: "demo:episko", name: "episko", hue: "#818cf8", rows: [
+      { title: "Fix telemetry routing", st: "work" as const, ctx: 12 },
+      { title: "Review PR #49", st: "done" as const, ctx: 61 },
+    ], idle: [{ g: "⌂", b: "dev" }, { g: "⑃", b: "exp/overview" }, { g: "⑃", b: "feat/board" }] },
+  { path: "demo:redactor", name: "pii-redactor", hue: "#2dd4bf", rows: [
+      { title: "Regex fallback pass", st: "done" as const, ctx: 18 },
+    ], idle: [{ g: "⌂", b: "main" }, { g: "⑃", b: "spike/onnx" }] },
+];
+function peekDemoHtml(): string {
+  const groups = PEEK_DEMO.map((p) =>
+    `<div class="pgroup" data-peekdemo="${esc(p.path)}">`
+    + `<div class="p-phead"><span class="p-pdot" style="background:${p.hue}"></span>`
+    + `<span class="p-pname">${esc(p.name)}</span><span class="p-pcount">${p.rows.length}</span></div>`
+    + `<div class="p-rows">${p.rows.map((r) =>
+        `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
+        + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>`
+    + `<div class="pgpeek"><div class="pgpeek-in">${p.idle.map((w) =>
+        `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${w.g}</span>`
+        + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">＋</span></div>`).join("")}</div></div>`
+    + `</div>`).join("");
+  return `<div class="p-mini peekdemo" id="peekDemo">${groups}</div>`;
+}
+function stepper(which: "open" | "close", value: number, step: number, range: { min: number; max: number }): string {
+  return `<div class="set-font peekstep">
+    <span class="peekstep-l">${which === "open" ? "Opens after" : "Closes after"}</span>
+    <button class="set-fbtn" data-setpeek="${which}:${-step}" ${value <= range.min ? "disabled" : ""} aria-label="Shorter">−</button>
+    <span class="set-fval mono">${value}ms</span>
+    <button class="set-fbtn" data-setpeek="${which}:${step}" ${value >= range.max ? "disabled" : ""} aria-label="Longer">+</button>
+  </div>`;
+}
+function renderPeekControl(): string {
+  const on = peekPrefs.enabled;
+  const dflt = peekPrefs.openMs === PEEK_DEFAULTS.openMs && peekPrefs.closeMs === PEEK_DEFAULTS.closeMs;
+  return `<div class="peekbox${on ? "" : " off"}">
+    <div class="peekrow">
+      ${stepper("open", peekPrefs.openMs, 100, PEEK_OPEN_RANGE)}
+      ${stepper("close", peekPrefs.closeMs, 250, PEEK_CLOSE_RANGE)}
+      <button class="set-freset" data-setpeek="reset" ${dflt ? "disabled" : ""}>Reset</button>
+    </div>
+    ${peekDemoHtml()}
+    <div class="peekhint">${on
+      ? "Rest on a project above. Moving straight to the other one opens it at once — the delay is there to ignore a pointer passing over, and you are already inside."
+      : "Peek is off, so idle checkouts stay listed all the time. The preview shows them open."}</div>
+  </div>`;
+}
+
 function renderSetControl(c: SetControl): string {
   const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
   if (c.kind === "wtpreview") {
     return `<div class="set-group">${head}${renderWtPreview(c.active())}</div>`;
+  }
+  if (c.kind === "peek") {
+    // The switch sits on the label row (set-inline), the steppers and the preview
+    // below it — one group, because they are one decision.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${peekPrefs.enabled ? " on" : ""}" data-setpeek="toggle" role="switch"`
+      + ` aria-checked="${peekPrefs.enabled}"></button></div>${renderPeekControl()}</div>`;
   }
   if (c.kind === "font") {
     return `<div class="set-group">${head}<div class="set-font">
@@ -282,6 +360,7 @@ function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
+  else if (set === "permmode") host.setPermMode(val as PermMode);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {
     const p = val as Provider;
@@ -299,6 +378,50 @@ function applySetting(set: string, val: string) {
   else if (set === "unstop") clearStopRule(val);
   renderSettings();
 }
+// A stepper press, the switch, or Reset. Everything routes through the host's
+// clamping setter, so a value that would break the feature can't be reached by
+// holding − : the button disables at the bound and the clamp catches the rest.
+function applyPeekSetting(cmd: string) {
+  if (cmd === "reset") { host.setPeekPrefs({ ...peekPrefs, ...PEEK_DEFAULTS, enabled: peekPrefs.enabled }); return; }
+  if (cmd === "toggle") {
+    const enabled = !peekPrefs.enabled;
+    host.setPeekPrefs({ ...peekPrefs, enabled });
+    // Off means the preview shows the rows open, so a demo mid-hover would fight it.
+    peekDemoReset();
+    return;
+  }
+  const [which, delta] = cmd.split(":");
+  if (which === "open") host.setPeekPrefs({ ...peekPrefs, openMs: peekPrefs.openMs + +delta });
+  else if (which === "close") host.setPeekPrefs({ ...peekPrefs, closeMs: peekPrefs.closeMs + +delta });
+}
+
+// ---------- the preview's own peek driver ----------
+// Same reducer as the sidebar's, its own state. It reads `peekPrefs` at event time
+// rather than capturing it, so a stepper press is felt on the very next hover with
+// no re-wiring. renderSettings() rebuilds #setBody under it, hence the reset.
+let demoPeek: PeekState = PEEK_IDLE;
+let demoTimer: number | null = null;
+let demoHover: string | null = null;
+
+function demoApply() {
+  for (const el of document.querySelectorAll<HTMLElement>("#peekDemo .pgroup")) {
+    el.classList.toggle("peek", el.dataset.peekdemo === demoPeek.open);
+  }
+}
+function demoAdvance(next: PeekState) {
+  const was = demoPeek.open;
+  demoPeek = next;
+  if (demoPeek.open !== was) demoApply();
+  if (demoTimer !== null) { clearTimeout(demoTimer); demoTimer = null; }
+  const at = peekNextDeadline(demoPeek);
+  if (at === null) return;
+  demoTimer = window.setTimeout(() => {
+    demoTimer = null;
+    demoAdvance(peekTick(demoPeek, Date.now()));
+  }, Math.max(0, at - Date.now()));
+}
+function peekDemoReset() { demoHover = null; demoAdvance(PEEK_IDLE); }
+
 function setFontFromSettings(cmd: string) {
   if (cmd === "reset") { setTermFontSize(12.5); host.applyFontSize(); toast("Terminal font 12.5px"); }
   else host.bumpFont(parseFloat(cmd));
@@ -315,11 +438,43 @@ $("setTabs").addEventListener("click", (e) => {
 $("setBody").addEventListener("click", (e) => {
   const f = (e.target as HTMLElement).closest<HTMLElement>("[data-setfont]");
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
+  const pk = (e.target as HTMLElement).closest<HTMLElement>("[data-setpeek]");
+  if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
   const r = (e.target as HTMLElement).closest<HTMLElement>("[data-urange]");
   if (r) { setUsageRange(+r.dataset.urange!); renderSettings(); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");
   if (o) applySetting(o.dataset.set!, o.dataset.val!);
 });
+// The preview's hover, delegated on the persistent #setBody for the same reason the
+// sidebar's is delegated on #projects: renderSettings() replaces the demo's DOM on
+// every stepper press, and per-element listeners would go with it.
+$("setBody").addEventListener("mouseover", (e) => {
+  const g = (e.target as HTMLElement).closest<HTMLElement>("#peekDemo .pgroup");
+  const path = g?.dataset.peekdemo;
+  if (!path || path === demoHover) return;
+  demoHover = path;
+  demoAdvance(peekEnter(demoPeek, path, Date.now(), peekPrefs));
+});
+$("setBody").addEventListener("mouseout", (e) => {
+  const g = (e.target as HTMLElement).closest<HTMLElement>("#peekDemo .pgroup");
+  const path = g?.dataset.peekdemo;
+  if (!path) return;
+  const to = e.relatedTarget as Node | null;
+  if (to && g!.contains(to)) return;
+  if (demoHover === path) demoHover = null;
+  demoAdvance(peekLeave(demoPeek, path, Date.now(), peekPrefs));
+});
+// Leaving the preview entirely — the pointer can exit through the gap between the
+// two demo groups, where no group mouseout fires.
+$("setBody").addEventListener("mouseout", (e) => {
+  const demo = (e.target as HTMLElement).closest<HTMLElement>("#peekDemo");
+  if (!demo) return;
+  const to = e.relatedTarget as Node | null;
+  if (to && demo.contains(to)) return;
+  demoHover = null;
+  demoAdvance(peekLeaveAll(demoPeek, Date.now(), peekPrefs));
+});
+
 // Shared hover tooltip for the Usage panel's heatmap cells and cost bars. One
 // element on <body> (not #setBody), so a renderSettings() rebuild never drops it.
 const uTip = Object.assign(document.createElement("div"), { className: "u-tip", hidden: true });

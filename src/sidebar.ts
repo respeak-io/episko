@@ -15,9 +15,13 @@ import { dlog } from "./debug";
 import { esc, tilde } from "./format";
 import { iconFor, projGlyph } from "./icons";
 import { projectList } from "./grouping";
-import { dormantRows, groupBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, saveProjOrder, sessions,
+  PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
+  type PeekState,
+} from "./peek";
+import { dormantRows, groupBody, peekBody } from "./sidebarview";
+import {
+  activeId, extMirrorId, FAVORITES, folderDirty, peekPrefs, saveProjOrder, sessions,
   setProjOrder, sortMode, type SortMode,
 } from "./state";
 
@@ -84,10 +88,10 @@ export function renderSidebar() {
     const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
+      head = `<div class="phead" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
     } else if (isFav) {
-      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
-      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
+      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
+      head = `<div class="phead empty-p" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
     } else {
       // discovered via an external session or a restorable one only — not a saved project
       const tail = p.externals.length
@@ -95,11 +99,94 @@ export function renderSidebar() {
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
       head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span></div>`;
     }
-    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
+    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
   }).join("");
   if (html === lastHtml) return; // nothing the sidebar shows has changed
   lastHtml = html;
   $("projects").innerHTML = html;
+  // The DOM the expansion lives on was just replaced, so re-apply it. This is the
+  // whole reason ./peek tracks a project *path* rather than an element.
+  applyPeek();
+}
+
+// ---------- peek: resting on a project reveals its idle checkouts ----------
+// ./peek owns the rules and is pure; this is the driver. Three things it has to get
+// right, and each of them is why the state does not live in the DOM:
+//
+//   1. **Hover must not be a render input.** renderSidebar skips its (7ms) DOM write
+//      when the markup is unchanged; making the expansion part of the string would
+//      bust that on every mouse move. So peekBody always renders the rows and this
+//      only toggles a class.
+//   2. **A repaint must not collapse an open group.** renderAll() fires on every
+//      telemetry event, so #projects is rebuilt under the pointer constantly —
+//      applyPeek() above re-applies the class to the new nodes.
+//   3. **An idle sidebar must cost nothing.** One timeout scheduled to the next
+//      deadline, not an interval.
+let peek: PeekState = PEEK_IDLE;
+let peekTimer: number | null = null;
+/// Which group the pointer is in. mouseover fires for every descendant, so this is
+/// what turns that stream into "entered a different group".
+let peekHover: string | null = null;
+
+function applyPeek() {
+  for (const el of $("projects").querySelectorAll<HTMLElement>(".pgroup")) {
+    el.classList.toggle("peek", el.dataset.path === peek.open);
+  }
+}
+function peekSchedule() {
+  if (peekTimer !== null) { clearTimeout(peekTimer); peekTimer = null; }
+  const at = peekNextDeadline(peek);
+  if (at === null) return;
+  peekTimer = window.setTimeout(() => {
+    peekTimer = null;
+    peekAdvance(peekTick(peek, Date.now()));
+  }, Math.max(0, at - Date.now()));
+}
+/// Commit a new state: repaint only when what's on screen actually changed, then
+/// re-arm the timer.
+function peekAdvance(next: PeekState) {
+  const wasOpen = peek.open;
+  peek = next;
+  if (peek.open !== wasOpen) applyPeek();
+  peekSchedule();
+}
+
+export function initSidebarPeek() {
+  const container = $("projects");
+  // mouseover/mouseout rather than mouseenter/mouseleave: these bubble, so one pair
+  // of delegated listeners survives every re-render. Per-group listeners would have
+  // to be re-attached on each repaint, which is the bug this shape avoids.
+  container.addEventListener("mouseover", (e) => {
+    const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
+    const path = g?.dataset.path;
+    if (!path || path === peekHover) return;
+    peekHover = path;
+    peekAdvance(peekEnter(peek, path, Date.now(), peekPrefs));
+  });
+  container.addEventListener("mouseout", (e) => {
+    const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
+    const path = g?.dataset.path;
+    if (!path) return;
+    // mouseout also fires when crossing between children of the same group; only a
+    // pointer that has genuinely left the group's subtree counts as leaving it.
+    const to = e.relatedTarget as Node | null;
+    if (to && g!.contains(to)) return;
+    if (peekHover === path) peekHover = null;
+    peekAdvance(peekLeave(peek, path, Date.now(), peekPrefs));
+  });
+  // Leaving the rail through a gap between groups fires no group mouseout, so the
+  // container gets its own (non-bubbling, but bound directly) leave.
+  container.addEventListener("mouseleave", () => {
+    peekHover = null;
+    peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
+  });
+}
+
+/// Collapse whatever is expanded — called when peek is switched off in Settings, and
+/// after a launch, so the rail doesn't stay open over a pane you just started.
+export function closePeek() {
+  peekHover = null;
+  peekAdvance(PEEK_IDLE);
 }
 // Reordering of project groups, on pointer events (not HTML5 drag). The window now
 // sets dragDropEnabled:true so external file drops paste a path instead of navigating
@@ -134,8 +221,9 @@ export function initProjectDnD() {
   container.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !e.isPrimary) return;
     const t = e.target as HTMLElement;
-    // Leave the interactive bits (launch +, remove ✕, colour dot) to their own clicks.
-    if (t.closest(".padd, .plaunch, .premove, .pdot, .pdirty")) return;
+    // Leave the interactive bits (launch +, per-worktree +, remove ✕, colour dot) to
+    // their own clicks.
+    if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
     const g = t.closest<HTMLElement>(".pgroup");
     if (!g) return;
     candidate = g;
