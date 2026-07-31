@@ -66,8 +66,8 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview
 // with the shared scrim and Esc, like every other dialog.
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import {
-  closeDashboard, dashEscape, openDashboard, renderDash, renderDashHeader,
-  renderDashInspector, setDashHost, wireDashboard,
+  closeDashboard, dashEscape, openDashboard, releaseClaimFor, renderDash,
+  renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -421,6 +421,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   // dependency chain can never deadlock on a session that vanished.
   const waiter = exitWaiters.get(e.payload.sessionId);
   if (waiter) { exitWaiters.delete(e.payload.sessionId); waiter(e.payload.code); }
+  // Hand a claimed issue back. Before the early return for the same reason as the
+  // waiter above: a colleague looking at a claim for an agent that stopped hours ago
+  // is exactly the "graveyard of dead claims" the feature is built to avoid.
+  releaseClaimFor(e.payload.sessionId);
   const s = sessions.get(e.payload.sessionId); if (!s) return;
   const code = e.payload.code;
   s.attention = null;
