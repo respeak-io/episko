@@ -22,8 +22,8 @@ import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
-  setActionsRenderAll,
-  setSort, setTheme, setWtGroup, toggleInsp, toggleRail, toggleTheme,
+  setActionsRenderAll, setPermMode, setSort, setTheme, setWtGroup, toggleInsp,
+  toggleRail, toggleTheme,
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
@@ -207,11 +207,11 @@ setActionsRenderAll(renderAll);
 setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
-// The settings window changes eight things it does not own; this is the whole of
+// The settings window changes nine things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup,
+  setWtGroup, setPermMode,
 });
 // The task panels run tasks, hand commands to terminals and put panes on stage —
 // none of which they own.

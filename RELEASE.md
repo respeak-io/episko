@@ -16,7 +16,7 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
 - `pnpm test` — 431 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 88 on
+- `cargo check --locked` and `cargo test --locked` — 93 tests on macOS, 90 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -30,18 +30,26 @@ permission round trip, and whether Claude Code's own interfaces still match ours
 
 ## Before tagging
 
-### 1. The CLI contract test — run it, it is not in CI
+### 1. The CLI contract tests — run them, they are not in CI
 
 ```sh
 cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Runs one real `claude -p` against a throwaway session in a temp dir and asserts our
-hooks reach our server, that routing still uses our launch id, and that the
-transcript still carries the fields the cost ledger reads. **It needs `claude` on
-PATH and an authenticated account, and it spends tokens** — which is exactly why it
-is `#[ignore]`d and lives here rather than in the PR gate.
+Two tests, both against the real binary, in one pass:
+
+- `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
+  throwaway session in a temp dir and asserts our hooks reach our server, that routing
+  still uses our launch id, and that the transcript still carries the fields the cost
+  ledger reads. **It needs `claude` on PATH and an authenticated account, and it spends
+  tokens** — which is exactly why it is `#[ignore]`d and lives here rather than in the
+  PR gate.
+- `claude_cli_still_accepts_every_permission_mode_we_offer` runs `claude
+  --permission-mode <m> --version` for each mode Settings offers. Claude Code validates
+  the flag against its own choice list, so a mode renamed or dropped upstream turns
+  every launch in that mode into a pane that dies before it starts. This one costs **no
+  tokens and needs no auth** — it is `#[ignore]`d only because CI has no `claude`.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
@@ -128,6 +136,12 @@ A regression in either is silent.
       is a *blocking* hook — if the UI doesn't answer, Claude hangs, so a failure here
       is a hard blocker.
 - [ ] **Answering in the CLI instead** also clears the badge on the next lifecycle event.
+- [ ] **A non-default permission mode reaches the session.** Settings › Sessions →
+      **Plan**, then `＋ Session`: the new-session dialog shows the Plan chip and the
+      pane comes up in plan mode (Claude's own indicator says so, and it refuses to
+      edit). Set it back to **Manual** afterwards — every launch, including a restore,
+      reads this preference. Worth one pass in an *external* engine too, since that is
+      the only path where the flag goes through a generated shell script.
 
 ### Identity across rotations
 

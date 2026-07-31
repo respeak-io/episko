@@ -19,7 +19,7 @@ import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
-import { engineDef, externals, sessions, termEngine } from "./state";
+import { engineDef, externals, permMode, permModeDef, sessions, termEngine } from "./state";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
 let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
@@ -200,6 +200,17 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   $("wtEng").textContent = `${termEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
   ($("wtEng") as HTMLElement).title = `New sessions open in ${eng.label}`;
   ($("wtEng") as HTMLElement).style.display = manage ? "none" : "";
+  // What this launch will be allowed to do, next to where it will open — but only when
+  // that isn't the standard ask-me mode, so the chip means "something is different
+  // here" rather than becoming furniture. A session that starts in Bypass or Plan
+  // otherwise looks exactly like any other until it acts (or refuses to). Hidden in
+  // manage mode alongside the engine chip: nothing is being launched from there, so a
+  // chip describing the next launch would only be furniture of a worse kind.
+  const pm = permModeDef(permMode);
+  const modeEl = $("wtMode") as HTMLElement;
+  modeEl.hidden = manage || permMode === "default";
+  modeEl.textContent = `${pm.glyph} ${pm.label}`;
+  modeEl.title = `Starts in ${pm.label} mode — ${pm.sub} (Settings › Sessions)`;
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
