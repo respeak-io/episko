@@ -22,8 +22,8 @@ import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
-  copyPath, openTerminalIn, setActionsRenderAll, setPermMode, setSort, setTheme,
-  setWtGroup, toggleInsp,
+  copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
+  setTheme, setWtGroup, toggleInsp,
   toggleRail, toggleTheme,
 } from "./actions";
 import {
@@ -46,8 +46,8 @@ import {
 import "./update";
 import { probeIcon, setIconRenderMini, setIconRenderSidebar } from "./icons";
 import {
-  initFileDrop, initProjectDnD, renderMini, renderSidebar, reorderGuardUntil,
-  setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
+  closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
+  reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
   closeBranchPop, closeWt, openWt as openWtDlg, setWtCloseSession, setWtHandToTerminal,
@@ -217,11 +217,11 @@ setActionsRenderAll(renderAll);
 setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
-// The settings window changes nine things it does not own; this is the whole of
+// The settings window changes ten things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode,
+  setWtGroup, setPermMode, setPeekPrefs,
 });
 // The task panels run tasks, hand commands to terminals and put panes on stage —
 // none of which they own.
@@ -522,7 +522,10 @@ document.addEventListener("click", (e) => {
   // A launch into one specific checkout. Unlike data-launch this keeps colorKey pinned
   // to the repo root (data-root), so the new session joins the project it belongs to
   // rather than becoming a project of its own — the same contract the ⑃ dialog uses.
-  else if (el.dataset.wtadd) launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || "");
+  // closePeek first: the row just clicked is about to reappear as a session row in the
+  // list above it, and leaving the rail expanded over a pane you started reads as the
+  // click not having landed.
+  else if (el.dataset.wtadd) { closePeek(); launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || ""); }
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
@@ -762,6 +765,7 @@ void refreshGitViews(); // seed the roster so the first paint isn't a checkout s
 
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
+initSidebarPeek();
 initFileDrop();
 // caffeinate always starts off — the assertion is bound to the last run's process
 // (`-w <pid>` on macOS, the parked thread on Windows) and died with it; renderAll's

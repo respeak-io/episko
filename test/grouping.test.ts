@@ -6,9 +6,9 @@ import {
   setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, needsYou, needsYouSessions, nextAfterClose,
-  orderedSessions, projectList, reactorLabel, reactorState, splitByWorktree,
-  urgencyRank, type ProjGroup,
+  allProjects, clusterByWorktree, clusterIsLive, needsYou, needsYouSessions,
+  nextAfterClose, orderedSessions, projectList, reactorLabel, reactorState,
+  splitByWorktree, urgencyRank, type ProjGroup,
 } from "../src/grouping";
 import { taskPrefs } from "../src/tasks";
 
@@ -114,6 +114,28 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
   it("takes a cluster's branch from an external when no session carries one", () => {
     const p = grp({ externals: [ext({ cwd: "/w/wt", branch: "feature" })] });
     expect(clusterByWorktree(p)[0].branch).toBe("feature");
+  });
+});
+
+// The line the sidebar draws: live clusters are rows, the rest are peek rows that
+// only appear while the pointer rests on the project (./peek, ./sidebarview).
+describe("clusterIsLive", () => {
+  it("counts a checkout with an Episko session as live", () => {
+    const p = grp({ sessions: [sess({ workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p).map(clusterIsLive)).toEqual([true]);
+  });
+  it("counts an EXTERNAL session as live too — a colleague's pane still holds the row", () => {
+    const p = grp({ externals: [ext({ cwd: "/w/wt" })] });
+    expect(clusterByWorktree(p).map(clusterIsLive)).toEqual([true]);
+  });
+  it("is false for a roster checkout nobody has started anything in", () => {
+    worktreesByRepo.set("/w/epi", [
+      { path: "/w/epi", branch: "main", is_main: true, exists: true },
+      { path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true },
+    ]);
+    const p = grp({ sessions: [sess({ workdir: "/w/epi" })] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => [c.key, clusterIsLive(c)])).toEqual([["/w/epi", true], ["/w/wt-x", false]]);
   });
 });
 

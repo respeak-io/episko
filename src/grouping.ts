@@ -69,6 +69,11 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
   for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
   return order;
 }
+// Does anything actually run in this checkout? The line the sidebar now draws: live
+// clusters are rows, everything else is a peek row that only appears when you rest on
+// the project (./peek, ./sidebarview). Externals count — a colleague's session in a
+// checkout is still a reason for it to hold its place in the list.
+export const clusterIsLive = (c: WtCluster): boolean => c.sessions.length + c.externals.length > 0;
 // toplevel mode: explode any project whose sessions span >1 worktree into one group
 // per worktree. The root checkout keeps the project's identity (path/favourite/
 // externals); each worktree gets its own group keyed by its checkout dir, carrying

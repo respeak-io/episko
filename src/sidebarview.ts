@@ -14,9 +14,10 @@
 import { basename, esc, fmtShort, relTime, tilde } from "./format";
 import { apiErrText, statusKey, type ExtSession, type Restorable, type Sess } from "./types";
 import {
-  accentFor, activeId, externals, extMirrorId, pastMirrorId, sessions, wtGroup,
+  accentFor, activeId, externals, extMirrorId, folderDirty, pastMirrorId, peekPrefs,
+  sessions, wtGroup,
 } from "./state";
-import { clusterByWorktree, type ProjGroup, type WtCluster } from "./grouping";
+import { clusterByWorktree, clusterIsLive, type ProjGroup, type WtCluster } from "./grouping";
 
 // The status glyph vocabulary. Shared with the mini-rail, the tray and the
 // inspector pill, which is why it sits beside the rows rather than inside them.
@@ -86,42 +87,89 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
 // flat rows each tagged with a colour-coded branch chip; off/toplevel → plain flat
 // rows. A single-checkout project (one cluster) always renders flat — nothing to
 // disambiguate. Externals cluster right alongside owned sessions (same checkout dir).
+//
+// **Only checkouts with something running in them appear here.** The idle ones moved
+// to `peekBody` — see the block comment there for why.
 export function groupBody(p: ProjGroup): string {
   const flat = () => p.sessions.map((s) => sessionRow(s)).join("") + p.externals.map((e) => extRow(e)).join("");
   if (wtGroup === "subheader") {
+    // `cl` still folds the idle checkouts in (`withEmpty`), because their *count* is
+    // what decides whether this project is worth clustering at all: one live checkout
+    // beside three idle ones is exactly the case a ⑃ header disambiguates. They are
+    // filtered out of the rows, not out of the question.
     const cl = clusterByWorktree(p, true);
-    if (cl.length >= 2) return cl.map((c) => {
+    if (cl.length >= 2) return cl.filter(clusterIsLive).map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
       const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
       // The cluster header already answers the only question the worktree dialog
       // would ask — which checkout — so its ＋ launches straight into `c.key`.
       // `data-root` carries the repo root separately: it is the colorKey every
       // session in this project groups by, and a worktree's own path is not it.
-      //
-      // This is also what makes an *empty* cluster carry its own weight: the header
-      // renders whether or not anything runs in the checkout, so a worktree nobody has
-      // started a session in is still visible — and startable — without spending a
-      // whole row on saying so.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
         + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
-      return `<div class="wthead${n ? "" : " wtvacant"}" ${wtMenuAttrs(p, c)}>`
+      return `<div class="wthead" ${wtMenuAttrs(p, c)}>`
         + `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`
         + `<span class="wtname" style="color:${col}" title="${esc(clusterTip(c))}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n || ""}</span>${add}</div>`
-        // No rows, no rail: an empty `.wtsessions` would draw a stub of left border
-        // under a header that has nothing beneath it.
-        + (n ? `<div class="wtsessions" style="--wtc:${col}">${body}</div>` : "");
+        + `<span class="wtcount">${n}</span>${add}</div>`
+        + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
     }).join("");
   } else if (wtGroup === "chip") {
     const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) {
       const byKey = new Map(cl.map((c) => [c.key, c]));
       return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
-        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("")
-        + cl.filter((c) => !c.sessions.length && !c.externals.length).map((c) => wtEmptyRow(p, c)).join("");
+        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
     }
   }
   return flat();
+}
+// The checkouts nothing is running in — collapsed until the pointer rests on the
+// project group, then revealed (./peek owns the timing, ./sidebar drives it).
+//
+// WHY THEY LEFT THE MAIN LIST. A row that permanently says "no session" costs the
+// same vertical space as one that is doing something, and a repo with four worktrees
+// spent four rows saying it. These rows are worth *reaching*, not *showing*: you want
+// them at the moment you are about to start something, which is exactly the moment
+// the pointer is already on the project.
+//
+// Rendered whether or not the group is expanded — hover must never change the markup.
+// `renderSidebar` skips its DOM write when the string is byte-identical (84.5% of
+// repaints), so making hover a render input would bust that cache on every mouse
+// move *and* let a telemetry tick rebuild the DOM out from under an open group.
+// The expansion is one class, applied outside the render path.
+//
+// Peek switched off keeps the old behaviour rather than hiding these for good: the
+// wrapper renders already-open, so nothing that used to be reachable stops being so.
+export function peekBody(p: ProjGroup): string {
+  // Only the two modes that showed idle checkouts before. `toplevel` gives each
+  // worktree its own group (there is nothing nested to reveal) and `off` is the
+  // deliberately flat legacy mode.
+  if (wtGroup !== "subheader" && wtGroup !== "chip") return "";
+  const cl = clusterByWorktree(p, true);
+  if (cl.length < 2) return "";
+  const vacant = cl.filter((c) => !clusterIsLive(c));
+  if (!vacant.length) return "";
+  return `<div class="pgpeek${peekPrefs.enabled ? "" : " open"}"><div class="pgpeek-in">`
+    + vacant.map((c) => peekRow(p, c)).join("")
+    + `</div></div>`;
+}
+// One idle checkout. The whole row launches — there is no ＋ to aim at, because the
+// row has exactly one thing it can do and a target the width of the sidebar is easier
+// to hit than a glyph. Same `data-wtadd` contract as the cluster header's ＋, so the
+// new session keeps the repo's identity (`data-root`) instead of splintering into a
+// project group of its own, and the same `wtMenuAttrs` so right-click still reaches
+// the checkout menu.
+function peekRow(p: ProjGroup, c: WtCluster): string {
+  const col = branchHue(c);
+  // The one piece of state worth carrying at this size. Anything more (ahead/behind,
+  // merged) costs a `git` process per checkout — that is what the ⑃ dialog is for.
+  const dirty = folderDirty(c.key)
+    ? `<span class="pkdirty" title="Uncommitted changes in this checkout"></span>` : "";
+  return `<div class="pkrow" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)}`
+    + ` title="${esc(`Start a session in ${c.branch} — ${tilde(c.key)}`)}">`
+    + `<span class="pkglyph" style="color:${col}">${clusterGlyph(c)}</span>`
+    + `<span class="pkname">${esc(c.branch)}</span>${dirty}`
+    + `<span class="pkgo">＋</span></div>`;
 }
 // What identifies one checkout to the worktree context menu (./projmenu). `data-wt`
 // is the marker its contextmenu handler matches on, and it must be matched *ahead* of
@@ -130,26 +178,6 @@ export function groupBody(p: ProjGroup): string {
 export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
   return `data-wt="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}"`
     + ` data-branch="${esc(c.branch)}"${c.isMain ? ` data-main="1"` : ""}`;
-}
-// A checkout that exists on disk with nothing running in it. Rendered rather than
-// dropped for the same reason a blocked task is: a missing row reads as "Episko didn't
-// notice my worktree", which is exactly the gap this path was built to close.
-//
-// **chip mode only.** In subheader mode the ⑃ cluster header renders whether or not
-// anything runs in the checkout and carries its own ＋, so a whole row saying "no
-// session" was a second, bulkier way of stating what the header already showed. Chip
-// mode has no headers at all — a flat list of rows each wearing a branch chip — so
-// without this row an empty checkout would have nowhere to appear.
-//
-// Clicking it launches into that checkout while keeping the repo's identity — colorKey
-// stays the repo root (`data-root`), so the new session joins this project group
-// instead of splintering into one of its own. That is the same `data-wtadd` contract
-// the cluster header's ＋ uses.
-function wtEmptyRow(p: ProjGroup, c: WtCluster): string {
-  // `o3` widens the grid for the chip and arms its hover-expand, exactly as sessionRow does.
-  return `<div class="srow wtempty o3" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)} title="No session here yet — start one in ${esc(tilde(c.key))}">
-    <span class="sglyph g-idle">＋</span>
-    <span class="sbranch">no session</span>${clusterChip(c)}</div>`;
 }
 // Dormant rows always sit below the live ones, outside any worktree cluster.
 export function dormantRows(p: ProjGroup): string {
