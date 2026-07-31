@@ -9,6 +9,12 @@ import type { FitAddon } from "@xterm/addon-fit";
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
 export type Risk = "low" | "med" | "high";
+// Why the last turn died, from the StopFailure hook. `kind` is Claude Code's own
+// `error` enum, `detail` the message it printed in the pane. Held beside the phase
+// rather than folded into it because "the turn broke" and "whose fault it was" are
+// different questions: overloaded means wait, rate_limit means wait longer,
+// authentication_failed means go fix your credentials.
+export interface ApiErr { kind: string; detail: string; at: number }
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
 export interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
@@ -21,6 +27,14 @@ export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number;
 }
+// One checkout of a repo as `worktree_heads` reports it — path, the branch on its
+// HEAD, and whether the directory is still on disk. Read from files rather than from
+// `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
+export interface WtHead { path: string; branch: string; is_main: boolean; exists: boolean }
+// Disk I/O for one session's `claude` process: rates over the gap since the previous
+// sample, plus lifetime totals. `primed` is false on the first reading, when there is
+// nothing to difference against and the rates are 0 by default rather than measured.
+export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
 export interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
@@ -47,6 +61,21 @@ export const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
 // and the tray menu — same three-reader argument as statusKey above, so it lives
 // beside it rather than in whichever of them was extracted first.
 export const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…", working: "working…", done: "your turn", error: "error", ended: "ended" };
+// Claude Code's StopFailure `error` enum in the cockpit's words. An unlisted value
+// (Claude adds to this enum) falls back to the raw one de-underscored, so a new
+// failure kind still reads as itself rather than as a bare "error".
+export const API_ERR_TEXT: Record<string, string> = {
+  overloaded: "API overloaded", rate_limit: "rate limited", server_error: "API server error",
+  authentication_failed: "auth failed", oauth_org_not_allowed: "org not allowed",
+  billing_error: "billing problem", invalid_request: "invalid request",
+  model_not_found: "model not found", max_output_tokens: "output limit reached",
+  unknown: "API error",
+};
+export const apiErrText = (e: ApiErr) => API_ERR_TEXT[e.kind] ?? (e.kind.replace(/_/g, " ") || "API error");
+// The phase in prose, naming the API failure when there is one. Every surface that
+// labels a state reads this rather than PILL_TEXT directly: "error" tells you the
+// turn broke, "API overloaded" also tells you it wasn't your fault and to retry.
+export const phaseText = (s: Sess) => (s.phase === "error" && s.apiErr ? apiErrText(s.apiErr) : PILL_TEXT[s.phase]);
 
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }
@@ -76,9 +105,13 @@ export interface Sess {
   resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null; subagents: number;
+  // Set by StopFailure, cleared the moment the session starts a new turn. While it
+  // is set the turn is known-failed, which is what stops the 60s idle Notification
+  // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
+  apiErr: ApiErr | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];
-  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: { cpu: number; memMb: number } | null;
+  ctxHist: number[]; costHist: number[]; git: DiffStat | null; res: Res | null;
   lastEvent: string; activity: Act[];
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
   // task panes only

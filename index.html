@@ -30,6 +30,7 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode">▾</button>
           </div>
+          <button class="ibtn" id="histBtn" title="Session history — every past conversation, all projects" aria-label="Session history">◷</button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
         </div>
@@ -51,6 +52,7 @@
             <span class="path" id="hPath"></span>
           </div>
           <div class="st-actions">
+            <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
             <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
             <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
             <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
@@ -173,6 +175,43 @@
       <div class="wt-foot">
         <span><span class="k">↑</span><span class="k">↓</span> move</span>
         <span><span class="k">⏎</span> <span class="wt-verb" id="wtVerb">start session</span></span>
+        <span class="sp"></span>
+        <span><span class="k">esc</span> close</span>
+      </div>
+    </div>
+
+    <!--
+      History. Same shape as the new-session dialog (and the same .wt-* skin): one
+      scrolling list of past conversations on the left, the consequences of the
+      highlighted one — where it ran, what was said, whether it can come back — on
+      the right. Reuses the transcript mirror's .tvmsg markup for the preview.
+    -->
+    <div class="wtdlg histdlg" id="histDlg" role="dialog" aria-modal="true" aria-label="Session history">
+      <div class="wt-head">
+        <div class="wt-title"><b>History</b><span class="wt-proj" id="histCount"></span></div>
+        <div class="wt-headrow">
+          <span class="wt-path">Every Claude Code conversation on this machine — pick one up where it left off.</span>
+          <button class="wt-chip" id="histScope" type="button" title="Limit the list to the project on screen">
+            <span class="ic">◧</span><span id="histScopeTxt">all projects</span>
+          </button>
+          <button class="wt-chip" id="histRefresh" type="button" title="Re-read the transcripts on disk">
+            <span class="ic">⟳</span><span id="histAge">now</span>
+          </button>
+        </div>
+      </div>
+      <div class="wt-q">
+        <span class="wt-caret">◷</span>
+        <input id="histQ" spellcheck="false" autocomplete="off" aria-label="Search past sessions"
+               placeholder="Search by title, project, branch or path…" />
+        <span class="wt-count" id="histN"></span>
+      </div>
+      <div class="wt-body">
+        <div class="wt-list" id="histList" role="listbox" aria-label="Past sessions"></div>
+        <div class="wt-detail" id="histDetail" aria-live="polite"></div>
+      </div>
+      <div class="wt-foot">
+        <span><span class="k">↑</span><span class="k">↓</span> move</span>
+        <span><span class="k">⏎</span> resume</span>
         <span class="sp"></span>
         <span><span class="k">esc</span> close</span>
       </div>

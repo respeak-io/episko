@@ -25,7 +25,7 @@ import {
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, openPlainTerminal, refreshBranches, refreshSessionStats, renderHeader,
+  launchTask, noteGitCommand, openPlainTerminal, refreshGitViews, refreshSessionStats, renderHeader,
   requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
   syncStageButtons,
 } from "./panes";
@@ -66,13 +66,15 @@ import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
 import { dwellText } from "./inspectorview";
+import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
-  applyHook, applyStatusline, permCmd, riskLevel, setOnTurnEnd, setPhase,
+  applyHook, applyStatusline, permCmd, riskLevel, setOnSessionTouched, setOnTurnEnd,
+  setPhase,
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
-  mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine, setTermFontSize,
-  sortMode, termEngine,
+  markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
+  setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
 import {
@@ -143,6 +145,11 @@ homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // All default to a no-op, so the modules stand alone in a test.
 setRlLogger(dlog);
 setOnTurnEnd((s) => { void maybeRunOnStop(s); });
+// A settled tool call (or a finished turn) is the app's only warning that a session
+// changed its checkout — nothing watches the filesystem. Two consequences, both cheap:
+// the folder is queued for a working-set re-read, and a git command that could have
+// moved HEAD or added a worktree pokes the git views straight away.
+setOnSessionTouched((s, tool, cmd) => { markWorkdirStale(s, tool); noteGitCommand(cmd); });
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -445,7 +452,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-wtlaunch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
@@ -460,6 +467,14 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
+  // A session-less worktree row. Unlike data-launch this keeps colorKey pinned to the
+  // repo root, so the new session joins the project it belongs to rather than becoming
+  // a project of its own — the same contract the ⑃ dialog's worktree rows use.
+  else if (el.dataset.wtlaunch) {
+    const branch = el.dataset.wtbranch || "";
+    launch(el.dataset.proj || basename(el.dataset.wtlaunch), el.dataset.wtlaunch,
+      { colorKey: el.dataset.key || el.dataset.wtlaunch, worktree: branch, branch });
+  }
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
   else if (el.dataset.toast) toast(el.dataset.toast);
@@ -492,12 +507,17 @@ $("btnNew").addEventListener("click", () => {
   if (c) requestLaunch(c.project, c.path); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+// Two doors into History: the stage-header button opens it scoped to the project on
+// screen (like ❯ Terminal and ▶ Run beside it), the top-bar icon opens every project.
+$("btnHist").addEventListener("click", () => { void openHistory(true); });
+$("histBtn").addEventListener("click", () => { void openHistory(false); });
+initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
@@ -510,6 +530,8 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === "0") { e.preventDefault(); setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); }
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
+  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
@@ -641,14 +663,18 @@ void loadDormants();
 window.addEventListener("beforeunload", flushRoster);
 
 // keep the sidebar's "uncommitted changes" dot (and the external diff card) honest
-// for every project at once — s.git alone only covers the active session.
-refreshDirtyStates();
+// for every project at once — s.git alone only covers the active session. The tick
+// stays at 5s, but the work behind it is now driven by which folders an agent actually
+// touched (see setOnSessionTouched below); the sweep inside is the backstop.
+refreshDirtyStates(true);
 setInterval(refreshDirtyStates, 5000);
 
-// keep each session's branch label honest — re-read the real HEAD so switching
-// branches inside a session (or a worktree) is reflected instead of the stale
-// creation-time name.
-setInterval(refreshBranches, 4000);
+// Keep every git-derived label honest: each session's real HEAD, plus the set of
+// checkouts each repo has. The hook stream pokes the same function the moment an agent
+// runs a git command, so this interval is the backstop that catches changes made
+// outside Claude — your own terminal, an editor, an MCP tool.
+setInterval(refreshGitViews, 4000);
+void refreshGitViews(); // seed the roster so the first paint isn't a checkout short
 
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();

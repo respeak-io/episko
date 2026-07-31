@@ -23,8 +23,9 @@ import { dormantBusy, extWorking } from "./sidebarview";
 import { orderedSessions } from "./grouping";
 import { isAgent, type DiffStat, type ExtSession, type Restorable, type Sess } from "./types";
 import {
-  accentFor, dirtyByFolder, dormants, externals, extMirrorId, extMirrorPid, isDirty,
-  mirror, pastMirrorId, sessions, setActiveId, setDormants, setExternals, setMirror,
+  accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
+  isDirty, mirror, pastMirrorId, sessions, setActiveId, setDormants, setExternals,
+  setMirror,
 } from "./state";
 
 // Three callees this module does not own: putting an Episko pane on the stage when a
@@ -103,18 +104,36 @@ export async function refreshExternals() {
     renderSidebar(); renderMini();
   } catch { /* backend not ready yet */ }
 }
-// Poll uncommitted git state for every folder in play (session workdirs + external
-// cwds), so the sidebar dot and the external diff card are accurate for all projects
-// at once — not just whichever session is active. git_diffstat is the same cheap
-// call the inspector already makes; here it fans out across the distinct folders.
-export async function refreshDirtyStates() {
+// The backstop sweep. Agent-driven edits arrive via `markWorkdirStale` and are picked
+// up on the very next tick; this interval exists only for the changes no hook can see —
+// you editing in your own editor, a build writing artefacts, an external session.
+const DIRTY_SWEEP_MS = 15_000;
+let dirtySweptAt = 0;
+// Uncommitted git state for every folder in play (session workdirs + external cwds), so
+// the sidebar dot and the external diff card are accurate for all projects at once —
+// not just whichever session is active.
+//
+// This used to re-read every folder every 5s, which on an idle fleet was pure waste: a
+// `git status` walk per open worktree, forever, to learn nothing. Now the hook stream
+// says which folders actually moved (a Write/Edit/Bash names its session, and the
+// session names its workdir), and everything else rides the slower sweep. An idle fleet
+// costs nothing; a busy one is *more* responsive than before, because a folder is
+// re-read on the tick after the edit rather than up to 5s later.
+export async function refreshDirtyStates(force = false) {
   const folders = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
+  const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
+  if (sweep) dirtySweptAt = Date.now();
+  // A folder never read is always read now — otherwise a newly launched session would
+  // show no dot until the first sweep happened to come round.
+  const targets = [...folders].filter((f) => sweep || dirtyStale.has(f) || !dirtyByFolder.has(f));
+  dirtyStale.clear();
+  if (!targets.length) return;
   const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
   let changed = false;
-  await Promise.all([...folders].map(async (f) => {
+  await Promise.all(targets.map(async (f) => {
     const g = await invoke<DiffStat | null>("git_diffstat", { workdir: f }).catch(() => null);
     if (sig(dirtyByFolder.get(f)) !== sig(g)) changed = true;
     dirtyByFolder.set(f, g ?? null);
@@ -134,7 +153,10 @@ export function openExternal(sid: string) {
   document.documentElement.style.setProperty("--accent", accentFor(e.cwd));
   renderExtHeader(e); renderExtInspector(e); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void refreshDirtyStates(); // fill the working-set card promptly, not on the next poll tick
+  // Fill the working-set card promptly, not on the next poll tick. Forced, because
+  // this folder is very likely already cached and would otherwise be skipped — the
+  // point is a fresh read for the card the user just opened.
+  void refreshDirtyStates(true);
   loadTranscript(e, true);
   clearInterval(extTranscriptTimer);
   extTranscriptTimer = window.setInterval(() => {

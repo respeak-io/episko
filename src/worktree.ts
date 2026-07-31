@@ -171,6 +171,15 @@ async function wtLoad(quiet = false) {
   void wtMaybeFetch();
 }
 
+// Re-list because the repo changed underneath the open dialog — a worktree created or
+// removed by an agent while you were looking at the picker. A no-op when the dialog is
+// closed, so the caller (the git-invalidation path in panes.ts) doesn't have to know
+// whether it is. Local read only: this is not a reason to hit the network.
+export async function refreshWtDialog() {
+  if (!wtCtx) return;
+  await wtReadLocal(true);
+}
+
 // Fetch is throttled and best-effort: it runs in the background, never blocks the list,
 // and stays silent on failure (offline, no remote, auth) — a stale number is a better
 // outcome than a toast every time you alt-tab with no network.
