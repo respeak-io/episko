@@ -17,7 +17,7 @@ import { iconFor } from "./icons";
 import { setEngine } from "./footer";
 // runGit went to ./panes with the rest of a session's lifecycle, so it is a plain
 // import rather than a host member (seam rule 1).
-import { runGit } from "./panes";
+import { activeProjectCtx, runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import { taskStateText } from "./sidebarview";
@@ -26,6 +26,7 @@ import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping"
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
 import { openTrail } from "./trailui";
+import { openThreads } from "./threadsui";
 import {
   askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
 } from "./taskui";
@@ -111,6 +112,8 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, sc: [MOD, "⇧", "H"] },
   { key: "cmd:histall", label: "Session history — every project…", glyph: "◷", run: () => { void openHistory(false); } },
   { key: "cmd:trail", label: "Trail — what you've been working on, and what's next", glyph: "◷", run: () => { openTrail(); }, sc: [MOD, "⇧", "T"] },
+  { key: "cmd:threads", label: "Threads — everything that wants you, ranked", glyph: "▤", run: () => { openThreads(null); }, sc: [MOD, "⇧", "O"] },
+  { key: "cmd:threadsproj", label: "Threads in this project…", glyph: "▤", run: () => { openThreads(activeProjectCtx()?.path ?? null); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },

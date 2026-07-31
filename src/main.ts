@@ -74,9 +74,12 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
   markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
-  setTermFontSize, sortMode, termEngine, trailOpen,
+  setTermFontSize, sortMode, termEngine, threadsOpen, trailOpen,
 } from "./state";
 import { closeTrail, openTrail, renderTrailHeader, renderTrailInspector, wireTrail } from "./trailui";
+import {
+  closeThreads, openThreads, renderThreads, renderThreadsHeader, renderThreadsInspector, wireThreads,
+} from "./threadsui";
 import { orderedSessions } from "./grouping";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
@@ -316,7 +319,11 @@ function renderAll() {
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
   // external header/inspector ~1s after clicking it.
-  if (trailOpen()) {
+  if (threadsOpen()) {
+    // Unlike the Trail this IS derived from live state, so it repaints with the fleet
+    // — that is the point of it, and renderAll is already the app's one repaint.
+    renderThreadsHeader(); renderThreadsInspector(); renderThreads();
+  } else if (trailOpen()) {
     // Derived from history, not from the fleet's live state — so unlike the two
     // transcript mirrors this one never needs re-fetching on a telemetry tick, and
     // repainting its chrome is enough.
@@ -520,6 +527,7 @@ $("histBtn").addEventListener("click", () => { void openHistory(false); });
 initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 wireTrail();
+wireThreads();
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
@@ -541,8 +549,10 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); threadsOpen() ? closeThreads() : openThreads(null); renderAll(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && trailOpen()) { e.preventDefault(); closeTrail(); renderAll(); }
+  else if (e.key === "Escape" && threadsOpen()) { e.preventDefault(); closeThreads(); renderAll(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }

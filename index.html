@@ -72,6 +72,16 @@
             <div class="ext-view-bar"><span class="ext-view-dot"></span>Read-only mirror · this session runs in another terminal</div>
             <div class="ext-body" id="extBody"></div>
           </div>
+          <!-- The Threads board: every thread with a phase, ranked. The altitude
+               segments filter the SAME list rather than switching component, which is
+               what keeps the meta and project views from drifting apart. -->
+          <div class="threads-view" id="threadsPane" hidden>
+            <div class="th-bar">
+              <div class="th-alt" id="threadsAlt"></div>
+              <span class="th-hint">⏎ open · ⌘⏎ dispatch</span>
+            </div>
+            <div class="th-scroll"><table class="th-tbl" id="threadsTbl"></table></div>
+          </div>
           <!-- The Trail. Its own pane rather than more of #extPane: that one is a
                transcript mirror (one scrolling column of messages), this is a two-pane
                derived/typed layout, and sharing a container would make both sets of

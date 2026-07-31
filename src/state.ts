@@ -107,16 +107,21 @@ export function setActiveId(id: string | null) { activeId = id; }
 // than becoming a flag for exactly the reason above — every `if (mirror) return`
 // guard in the render path then treats it correctly for free, and it can never be
 // on screen at the same time as a session or a transcript.
+// "threads" carries the altitude it is filtered to (null = every project), because
+// that is the only state the board has that must survive a repaint.
 export let mirror:
   | { kind: "ext"; id: string; pid: number }
   | { kind: "past"; id: string }
   | { kind: "trail" }
+  | { kind: "threads"; project: string | null }
   | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 export const trailOpen = (): boolean => mirror?.kind === "trail";
+export const threadsOpen = (): boolean => mirror?.kind === "threads";
+export const threadsProject = (): string | null => (mirror?.kind === "threads" ? mirror.project : null);
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.

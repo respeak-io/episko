@@ -1345,3 +1345,54 @@ select.in-ctl { cursor: pointer; }
 .td-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .td-stat { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
 .td-stat b { font: 700 15px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+
+/* ── the Threads board (src/threadsui.ts) ───────────────────────────────────
+ * A ranked table, not a grid of cards: a grid asks you to search it, a ranked
+ * list has one entry point — the top row. Bands are the only structure. */
+.threads-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.th-bar { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 13px; background: var(--panel); border-bottom: 1px solid var(--hair); }
+.th-alt { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-sm); background: var(--bg-2); border: 1px solid var(--hair); }
+.th-seg { display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 9px; border: 0; border-radius: 6px; cursor: pointer; background: none; font: 600 10.5px var(--font-ui); color: var(--muted-2); }
+.th-seg:hover { color: var(--text); }
+.th-seg.on { color: var(--accent-ink); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.th-seg i { width: 6px; height: 6px; border-radius: 2px; flex: none; }
+.th-hint { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); }
+
+.th-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* fixed, not auto: with auto layout a long thread title contributes its full
+ * natural width and pushes the action column off the stage, so the one control
+ * that matters gets clipped. Fixed makes the sized columns authoritative and
+ * gives the Thread column whatever is left. */
+.th-tbl { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; }
+.th-tbl thead th { position: sticky; top: 0; z-index: 2; padding: 7px 8px; text-align: left; background: var(--bg-2); border-bottom: 1px solid var(--hair); font: 700 9px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.th-tbl thead th.r { text-align: right; }
+/* Band labels deliberately do NOT stick: several pinned at one offset pile into
+ * each other, and every row's own glyph already says which band it is in. */
+.th-band th { padding: 12px 8px 5px; border: 0; background: linear-gradient(180deg, var(--bg-2), transparent); }
+.th-blbl { display: inline-flex; align-items: center; gap: 8px; font: 700 9.5px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--bc, var(--muted-2)); }
+.th-bn { padding: 1px 6px; border-radius: 5px; font: 9.5px var(--font-mono); letter-spacing: 0; color: var(--bc, var(--muted-2)); background: color-mix(in srgb, var(--bc, var(--muted-2)) 14%, transparent); border: 1px solid color-mix(in srgb, var(--bc, var(--muted-2)) 28%, transparent); }
+.th-bx { font: 400 10px var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--muted-2); }
+.b-needs { --bc: var(--st-attention); } .b-running { --bc: var(--st-working); }
+.b-move { --bc: var(--st-done); } .b-open { --bc: var(--st-idle); }
+
+.th-row { cursor: pointer; }
+.th-row td { padding: 6px 8px; border-bottom: 1px solid var(--hair); vertical-align: middle; }
+.th-row:hover td { background: var(--surface); }
+.th-row.hot td { background: color-mix(in srgb, var(--st-attention) 7%, transparent); }
+.th-row.hot:hover td { background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
+.th-g { text-align: center; font: 11px var(--font-mono); }
+.th-pc { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 10.5px var(--font-mono); color: var(--muted); }
+.th-pc i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.th-t { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; font-size: 12px; }
+.th-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-row.hot .th-txt { font-weight: 620; }
+.th-src { flex: none; padding: 1px 5px; border-radius: 4px; font: 9px var(--font-mono); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+.th-src.note { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 28%, transparent); }
+.th-w { font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-s { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-row.hot .th-s { color: var(--st-attention); }
+.th-n { text-align: right; font: 10px var(--font-mono); color: var(--muted-2); }
+.th-a { text-align: right; }
+.mini-act.ans { color: var(--st-attention); border-color: color-mix(in srgb, var(--st-attention) 34%, transparent); background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
+.mini-act[disabled] { opacity: .4; cursor: default; }
+.th-empty { padding: 22px 12px; max-width: 52ch; font-size: 11.5px; line-height: 1.55; color: var(--muted-2); }
