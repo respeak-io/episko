@@ -108,6 +108,25 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
 
+/* The title bar, which is this header — there is no native one (see lib.rs).
+   Two platforms, two halves of the job. macOS floats its real traffic lights
+   over the header, so all the CSS owes them is room; in fullscreen the OS takes
+   them back into its own sliding overlay, and the gap would be empty (html.fs,
+   set from main.ts). Windows has no frame at all, so #winCtl draws the buttons:
+   flush into the corner and full height, because that corner is where a thrown
+   pointer lands. .wclose alone takes the OS's red, the one colour a user should
+   never have to aim for twice. */
+html.mac .top { padding-left: 78px; }
+html.mac.fs .top { padding-left: 12px; }
+.wctl { display: none; align-self: stretch; margin-right: -12px; }
+html.win .wctl { display: flex; }
+.wctl .wc { width: 42px; padding: 0; border: 0; cursor: pointer; display: grid; place-items: center; color: var(--muted); background: transparent; }
+.wctl .wc svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+.wctl .wc:hover { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.wctl .wclose:hover { color: #fff; background: #e81123; }
+.wctl .ic-restore, .wctl.maxed .ic-max { display: none; }
+.wctl.maxed .ic-restore { display: block; }
+
 /* caffeinate split button — icon toggles the last-used preset, caret opens the
    preset dropdown. The whole control reflects on/off via the .on class. */
 .caf { display: inline-flex; align-items: stretch; height: 26px; border-radius: 8px; overflow: hidden; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
@@ -175,8 +194,12 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .rail-add::after { width: 1.6px; height: 10px; }
 
 .pgroup { margin-bottom: 3px; }
-/* While reordering (pointer-driven), suppress text selection across the whole list. */
+/* While reordering (pointer-driven), suppress text selection across the whole list —
+   and hold the grabbing cursor over every row the pointer crosses, since the buttons
+   and rows below are pointer/default the rest of the time. The #id beats their classes,
+   so no !important is needed. */
 #projects.reordering { user-select: none; }
+#projects.reordering, #projects.reordering * { cursor: grabbing; }
 /* The dragged group fades in place; a .dropmark separator line shows where it lands. */
 .pgroup.dragging { opacity: .38; }
 .pgroup.dragging .phead { cursor: grabbing; }
@@ -209,11 +232,13 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .pcount { flex: none; margin-left: auto; font: 600 10px var(--font-mono); color: var(--muted-2); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
 /* project has uncommitted changes in one of its folders — sits right after the name */
 .pdirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
-.padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; }
+/* The header body is the drag handle (cursor: grab), but its buttons are not — they
+   click, so they say so. Same for every other interactive bit nested in a .pgroup. */
+.padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; cursor: pointer; }
 .padd:hover { color: var(--text); }
 .phead.empty-p .pname { color: var(--muted-2); font-weight: 550; }
 .phead.empty-p .pdot { opacity: .5; }
-.plaunch { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); opacity: 0; transition: opacity .12s; }
+.plaunch { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); opacity: 0; cursor: pointer; transition: opacity .12s; }
 .phead.empty-p:hover .plaunch { opacity: 1; }
 .premove { flex: none; margin-left: 7px; opacity: 0; color: var(--muted-2); font-size: 10px; cursor: pointer; transition: opacity .12s, color .12s; }
 .phead.empty-p:hover .premove { opacity: .75; }
@@ -239,17 +264,50 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 /* subheader mode: a ⑃-branch cluster header, its sessions nested under a tinted rule */
 /* padding-left 0 + a 13px glyph box centres the ⑃ (box centre 6.5px) on the
    .wtsessions border-left below it (margin-left 6px + 0.5px half-border) */
-.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; }
+/* `cursor: default`, not `text` and not `pointer`: the header body does nothing on a
+   left click (the ＋ and the right-click menu are what act), so an I-beam invites a
+   selection nobody wants and a hand would promise a click that isn't there.
+   `user-select: none` for the same reason — dragging across it only ever highlighted
+   the branch name. The reorder's `#projects.reordering *` still outspecifies both. */
+.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; border-radius: 7px; cursor: default; user-select: none; }
+/* The whole header lights, not just the ＋ — it is one hover target (right-click menu,
+   ＋, and the rows it names), so lighting only the ＋ made the rest look inert. */
+.wthead:hover { background: var(--surface); }
 .wtglyph { flex: none; width: 13px; text-align: center; font-size: 11px; line-height: 1; }
 .wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
+/* Per-cluster ＋ — a session straight into that checkout, no dialog. Hidden until the
+   header is hovered, the same way .plaunch is: a repo with five worktrees is five
+   headers, and a standing ＋ on each turns the list into a column of plus signs.
+   Opacity, not display — the count sits on `margin-left: auto`, so removing the ＋
+   from flow would slide it right every time the pointer left the row. */
+.wtadd { flex: none; margin-left: 5px; padding: 0 2px; font-size: 12px; line-height: 1; color: var(--muted-2); opacity: 0; cursor: pointer; border-radius: 5px; transition: opacity .12s, color .12s; }
+.wthead:hover .wtadd { opacity: 1; }
+.wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* A cluster with nothing running in it. The header is the whole row — it renders with
+   or without sessions, so an idle checkout costs one line instead of two. Dimmed, but
+   still hover-to-＋ like every other header: it is one of a list, and the one thing it
+   must do unprompted is say the checkout is there. */
+.wthead.wtvacant .wtglyph, .wthead.wtvacant .wtname { opacity: .55; }
+/* chip mode has no cluster headers, so an idle checkout still needs a row of its own:
+   present, but clearly not a session */
+.srow.wtempty .sbranch { font-style: italic; color: var(--muted-2); }
+.srow.wtempty .sglyph { color: var(--muted-2); }
+.srow.wtempty:hover .sbranch, .srow.wtempty:hover .sglyph { color: var(--accent-ink); }
 /* toplevel mode: the branch suffix on a per-worktree group header */
 .pwt { margin-left: 5px; color: var(--muted-2); font-weight: 550; }
 /* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
 .srow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
 .srow.extrow.o3e { grid-template-columns: 14px minmax(0,1fr) auto auto auto; }
 .chip { display: inline-flex; align-items: center; overflow: hidden; font: 600 10px var(--font-mono); color: var(--wtc, var(--muted-2)); }
+/* Both row tags (drift marker, worktree chip) share one grid cell — see sessionRow. */
+.stags { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+/* The agent is writing in a different checkout than the one this session was launched
+   in. Deliberately quiet: it is information, not an alert — the row is still healthy,
+   it is only pointing somewhere else. The inspector card is where the fix lives. */
+.sdrift { flex: none; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-working); opacity: .85; }
+.srow.drifted .sbranch { color: color-mix(in srgb, var(--st-working) 55%, var(--muted)); }
 .chip .fork { flex: none; }
 .chip .lbl { max-width: 0; opacity: 0; white-space: nowrap; transform: translateX(-3px); transition: max-width .22s ease, opacity .18s ease, transform .22s ease, margin-left .22s ease; }
 .srow.o3:hover .chip .lbl, .srow.o3e:hover .chip .lbl { max-width: 130px; opacity: 1; transform: none; margin-left: 4px; }
@@ -323,9 +381,33 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn { border-radius: var(--radius); padding: 11px; display: flex; flex-direction: column; gap: 9px; background: linear-gradient(180deg, color-mix(in srgb, var(--st-attention) 15%, transparent), color-mix(in srgb, var(--st-attention) 6%, transparent)); border: 1px solid color-mix(in srgb, var(--st-attention) 32%, transparent); }
 .attn-h { display: flex; align-items: center; gap: 7px; font-weight: 700; color: var(--st-attention); font-size: 12px; }
 .attn code { font-family: var(--font-mono); font-size: 10.5px; background: rgba(0,0,0,.32); color: var(--terminal-text); padding: 7px 9px; border-radius: 7px; display: block; word-break: break-all; }
+/* Same card, error colours: a turn the API killed is not an ask, so it must not
+   read like one — no bell, no buttons, and the palette the ✕ glyph already uses. */
+.attn.err { background: linear-gradient(180deg, color-mix(in srgb, var(--st-error) 15%, transparent), color-mix(in srgb, var(--st-error) 6%, transparent)); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
+.attn.err .attn-h { color: var(--st-error); }
+.attn-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
 .attn-btns { display: flex; gap: 6px; }
 .attn-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
 .attn-btns .allow { background: linear-gradient(180deg, color-mix(in srgb, var(--st-done) 86%, white), var(--st-done)); color: #07281a; border-color: transparent; }
+
+/* ---- drift card ---- */
+/* Same card grammar as .attn, in the working colour rather than the attention one: an
+   agent that moved checkout is doing exactly what it meant to. Nothing is wrong, so it
+   must not read as an alarm — but it sits at the top of the inspector, because every
+   figure below it (branch, working set, fetch/pull/push) reads the *launch* folder. */
+.drift { border-radius: var(--radius); padding: 11px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--st-working) 13%, transparent), color-mix(in srgb, var(--st-working) 5%, transparent)); border: 1px solid color-mix(in srgb, var(--st-working) 30%, transparent); }
+.drift-h { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12px; color: var(--st-working); }
+.drift-h .b { font-family: var(--font-mono); font-size: 11px; }
+.drift-g { font-size: 13px; line-height: 1; }
+.drift-path { font: 10.5px var(--font-mono); color: var(--muted); word-break: break-all; }
+.drift-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
+.drift-note .b { font-family: var(--font-mono); color: var(--muted); }
+.drift-btns { display: flex; }
+.drift-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
+.drift-btns button:hover { background: color-mix(in srgb, var(--st-working) 14%, var(--surface)); border-color: var(--st-working); }
+
+/* The stage header's branch chip, when the two branches disagree. */
+#hBranch.drifted { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 34%, transparent); background: color-mix(in srgb, var(--st-working) 10%, transparent); }
 .attn-btns button:hover { filter: brightness(1.06); }
 
 /* ============ redesigned inspector modules ============ */
@@ -626,7 +708,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .res .rbar { flex: 1; height: 4px; border-radius: 2px; background: var(--hair-strong); overflow: hidden; }
 .res .rbar > i { display: block; height: 100%; border-radius: 2px; background: var(--st-done); }
 .res .rbar.warn > i { background: var(--st-working); } .res .rbar.hot > i { background: var(--st-error); }
-.res .rv { font: 11px var(--font-mono); width: 54px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+/* lifetime totals: context for the rates above, so it reads as a footnote not a third gauge */
+.res .rtot { margin-top: 1px; }
+.res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
 
 /* --- risk badge on the pending-permission block --- */
 .attn-h { justify-content: flex-start; }
@@ -833,7 +918,7 @@ select.in-ctl { cursor: pointer; }
 
 /* list left, consequences right */
 .wt-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 366px minmax(0, 1fr); }
-.wt-list { min-height: 0; overflow-y: auto; padding: 6px; border-right: 1px solid var(--hair); scrollbar-width: thin; }
+.wt-list { min-height: 0; overflow-y: auto; padding: 6px; border-right: 1px solid var(--hair); }
 .wt-gh { display: flex; align-items: center; gap: 7px; padding: 10px 8px 4px; font: 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted-2); }
 .wt-gh:first-child { padding-top: 4px; }
 .wt-gh .gc { letter-spacing: 0; color: var(--muted); background: var(--surface-2); border-radius: 4px; padding: 0 5px; }
@@ -865,6 +950,9 @@ select.in-ctl { cursor: pointer; }
 .wt-tag.moved { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 42%, transparent); }
 .wt-tag.missing { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
 .wt-tag.det, .wt-tag.locked, .wt-tag.ext { color: var(--st-idle); }
+/* `rem` names the remote a branch lives on and is pure orientation — the row is a
+   perfectly good destination, so it must not borrow any of the warning colours. */
+.wt-tag.rem { color: var(--st-idle); }
 /* `gone` is INFORMATION, not a fault: the remote branch was deleted, which usually
    follows a merged PR but just as often precedes picking the work back up. It must
    not share .missing's error red — that reads as "broken, delete me" and argues
@@ -892,7 +980,7 @@ select.in-ctl { cursor: pointer; }
 .wt-empty b { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 3px; }
 
 /* the detail pane — what you're about to walk into */
-.wt-detail { min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 13px; scrollbar-width: thin; }
+.wt-detail { min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 13px; }
 .wt-dhead { display: flex; flex-direction: column; gap: 4px; }
 .wt-dkind { font: 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted-2); }
 .wt-dname { font: 13px var(--font-mono); color: var(--text); overflow-wrap: anywhere; line-height: 1.35; }
@@ -955,6 +1043,25 @@ select.in-ctl { cursor: pointer; }
   .wt-detail { max-height: 42vh; }
 }
 
+/* History — the new-session dialog's skin, reused wholesale (.wt-* head/query/body/
+   foot). Only the things it doesn't have get rules here: a wider list column, since a
+   row's identity is a sentence-long title rather than a branch name, the scope chip's
+   states, and the inline transcript preview. */
+.histdlg .wt-body { grid-template-columns: 420px minmax(0, 1fr); }
+.histdlg .wt-chip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.histdlg .wt-chip:disabled { opacity: .4; cursor: default; }
+.histdlg .wt-chip:disabled:hover { color: var(--muted); border-color: var(--hair); }
+.histdlg .wt-ic { font-size: 11px; }
+.histdlg .wt-facts dd .dim { color: var(--muted-2); }
+
+/* The read-only mirror's .tvmsg markup, boxed and scroll-capped for the detail
+   column: enough to recognise a conversation, not enough to read it here. */
+.hist-tv { display: flex; flex-direction: column; gap: 9px; max-height: 34vh; overflow-y: auto; padding: 10px 11px; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--terminal-bg); }
+.hist-tv .tvtext { font-size: 11px; line-height: 1.55; }
+.hist-tv.empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
+
+@media (max-width: 900px) { .histdlg .wt-body { grid-template-columns: minmax(0, 1fr); } }
+
 /* settings dialog — sidebar-tab layout on the shared #scrim overlay */
 /* Fixed footprint on purpose: one size shared by every tab, so switching tabs never
    reflows the window. The busy tab (Worktrees) scrolls inside .set-body instead. */
@@ -968,7 +1075,7 @@ select.in-ctl { cursor: pointer; }
 .set-tab.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); }
 .set-tglyph { flex: none; width: 16px; text-align: center; font-size: 12px; opacity: .9; }
 .set-pane { position: relative; min-width: 0; min-height: 0; display: flex; }
-.set-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; scrollbar-width: thin; scrollbar-color: var(--hair-strong) transparent; }
+.set-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; }
 .set-body::-webkit-scrollbar { width: 10px; }
 .set-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
 .set-body::-webkit-scrollbar-thumb:hover { background: var(--muted-2); border: 3px solid transparent; background-clip: padding-box; }
@@ -1162,7 +1269,7 @@ select.in-ctl { cursor: pointer; }
 .bpop .bp-q span { color: var(--accent); font: 12px var(--font-mono); flex: none; }
 .bpop .bp-q input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font: 12px var(--font-mono); padding: 0; }
 .bpop .bp-q input::placeholder { color: var(--muted-2); }
-.bpop .bp-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; scrollbar-width: thin; }
+.bpop .bp-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; }
 .bpop .mp-l { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bpop .mp-main { flex: 1; }
 .bpop .bp-none { padding: 10px 9px; color: var(--muted-2); font-size: 11.5px; }
@@ -1194,6 +1301,10 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-chev { margin-left: auto; padding-left: 6px; color: var(--muted-2); font-size: 13px; }
 .ctxmenu .mp-item.sub-open { background: var(--surface); }
 .ctxmenu .mp-danger .mp-ic, .ctxmenu .mp-danger .mp-l { color: var(--st-attention); }
+/* A verb that cannot run stays listed and says why — dropping the row would read as
+   "Episko forgot how to do this". Same shape the branch popover uses for its own. */
+.ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }
+.ctxmenu .mp-item.dis:hover { background: transparent; }
 
 /* "x needs you" dropdown (multiple sessions awaiting attention) */
 .attn-badge.multi::after { content: "▾"; font-size: 8px; margin-left: 1px; opacity: .7; }
@@ -1331,8 +1442,17 @@ select.in-ctl { cursor: pointer; }
 .dl.error { background: color-mix(in srgb, var(--st-error) 14%, transparent); }
 .dl.error .dl-l, .dl.error .dl-m { color: var(--st-error); }
 
+/* Every scroll area in the app, styled once.
+   DO NOT add `scrollbar-width` or `scrollbar-color` to a scroller. The standard
+   properties and these pseudo-elements are mutually exclusive in Chromium: setting
+   either one opts that scroller OUT of ::-webkit-scrollbar and back to the platform
+   renderer — which on Windows is the classic bar WITH stepper arrows. Five dialogs
+   carried a `scrollbar-width: thin` that did nothing on macOS (WKWebView renders
+   overlay bars either way) and looked like a 1998 control on Windows. */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-2); }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 
 @media (max-width: 1080px) { .app, .app.insp-off { grid-template-columns: 224px minmax(0,1fr); } .insp { display: none; } }
 

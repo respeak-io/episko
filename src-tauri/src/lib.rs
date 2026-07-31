@@ -53,6 +53,10 @@ pub(crate) struct AppState {
     /// as "external" — robust to the session id changing under /resume or /clear
     /// (which rewrites `~/.claude/sessions/<pid>.json` with the new id).
     owned_pids: Mutex<HashSet<u32>>,
+    /// Last disk-I/O reading per owned pid: (total_read, total_written, when).
+    /// `session_resources` differences against this to turn the kernel's lifetime byte
+    /// counters into a rate — see there for why sysinfo's own deltas aren't used.
+    io_samples: Mutex<HashMap<u32, (u64, u64, std::time::Instant)>>,
     /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
@@ -212,6 +216,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Terminal copy/paste (Ctrl+Shift+C / Ctrl+Shift+V) reads and writes the
+        // clipboard from here rather than through `navigator.clipboard`: reading it
+        // in the WebView needs the `clipboard-read` permission, which wry only
+        // auto-grants when the webview was built with `enable_clipboard_access()`
+        // (Tauri leaves it off), so WebView2 would raise its own permission prompt
+        // and WKWebView its paste-confirmation button. See `clipboardKeys`.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // Windows analog of the macOS Cmd+Q catcher in `setup` below: Windows gets
         // no app menu (see there), so quitting means closing the window. Intercept
         // the close and run the same frontend confirm flow — only `confirm_quit`
@@ -239,6 +250,7 @@ pub fn run() {
                 port,
                 sessions: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
+                io_samples: Mutex::new(HashMap::new()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
@@ -246,6 +258,44 @@ pub fn run() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || run_telemetry_server(server, handle));
+
+            // ---- The window (one title bar, not two) ----
+            // The app draws its own header, so the native title bar above it is a
+            // second one saying less. macOS can hide it and keep the parts worth
+            // keeping: `titleBarStyle: "Overlay"` + `hiddenTitle` in tauri.conf.json
+            // float the real traffic lights over our header (the green one is
+            // *zoom/fullscreen* — no <button> reproduces that), and
+            // `trafficLightPosition` centres them in its 40px. Windows has no such
+            // style, so there the frame goes entirely and the header draws its own
+            // minimize/maximize/close (`#winCtl`).
+            //
+            // Hence this window is built here rather than by the config (`create:
+            // false` above): `decorations` is not a per-platform config key, and a
+            // `tauri.windows.conf.json` would replace the whole `windows` array —
+            // json merge-patch, so every shared key would exist twice and drift.
+            // Flipping it *after* creation is not the same thing either: tauri only
+            // attaches its undecorated-resize child window when the webview is
+            // created over an already-undecorated window, so a late flip yields a
+            // window whose edges cannot be dragged at all (the WebView2 child
+            // swallows the hit test). `from_config` keeps one definition and
+            // cfg-gates the single flag that differs.
+            //
+            // One thing falls out for free: the webview now starts *after*
+            // `app.manage`, so the frontend cannot invoke a command before the
+            // state that command expects exists.
+            #[allow(unused_mut)] // `mut` is only used by the windows arm below
+            let mut win_cfg = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .expect("main window config in tauri.conf.json");
+            #[cfg(windows)]
+            {
+                win_cfg.decorations = false;
+            }
+            tauri::WebviewWindowBuilder::from_config(app, &win_cfg)?.build()?;
 
             // macOS menu-bar (tray) icon — its menu mirrors the sidebar and is
             // rebuilt from the frontend via `update_tray`.
@@ -400,6 +450,7 @@ pub fn run() {
             platform::set_caffeinate,
             telemetry::resolve_permission,
             git::list_worktrees,
+            git::worktree_heads,
             git::remove_worktree,
             git::git_branch_list,
             git::delete_branch,
@@ -422,7 +473,9 @@ pub fn run() {
             external::list_external_sessions,
             external::focus_external_session,
             usage::read_transcript,
+            usage::move_session_transcript,
             usage::list_past_sessions,
+            usage::list_session_history,
             usage::token_usage_by_day,
             icons::find_project_icon,
             icons::read_custom_icon,

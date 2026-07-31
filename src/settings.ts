@@ -14,10 +14,10 @@
 
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
-import type { Engine } from "./types";
+import type { Engine, PermMode } from "./types";
 import {
-  availEngines, engineDef, setTermFontSize, SORT_META, SORT_MODES, sortMode,
-  termEngine, termFontSize, wtGroup,
+  ALL_PERM_MODES, availEngines, engineDef, permMode, setTermFontSize, SORT_META,
+  SORT_MODES, sortMode, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
 import {
@@ -42,11 +42,14 @@ export interface SettingsHost {
   // nor regroup the sidebar. It arrives through the host because ./actions imports
   // this module (for renderSettings) and a direct import back would be a cycle.
   setWtGroup: (m: WtGroup) => void;
+  // Same reason as setWtGroup: the app-level one (./actions), which persists and
+  // announces — state.ts's same-named setter only assigns.
+  setPermMode: (m: PermMode) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
-  setWtGroup: () => {},
+  setWtGroup: () => {}, setPermMode: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -97,6 +100,10 @@ const SET_TABS: SetTab[] = [
       { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
+      { kind: "seg", set: "permmode", label: "Permission mode",
+        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there — this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
+        active: () => permMode,
+        segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
@@ -282,6 +289,7 @@ function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
+  else if (set === "permmode") host.setPermMode(val as PermMode);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {
     const p = val as Provider;

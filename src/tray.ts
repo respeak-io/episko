@@ -8,7 +8,7 @@
 // early when nothing changed — the same guarded-invoke pattern reconcileCaf uses.
 
 import { invoke } from "@tauri-apps/api/core";
-import { PILL_TEXT, statusKey } from "./types";
+import { phaseText, statusKey } from "./types";
 import { needsYouSessions, orderedSessions, reactorLabel, reactorState } from "./grouping";
 import { GLYPH } from "./sidebarview";
 
@@ -18,7 +18,7 @@ export function updateTray() {
   const items = list.map((s) => {
     const k = statusKey(s);
     const branch = s.worktree ? `⑃ ${s.branch}` : (s.branch || "session");
-    const status = s.attention ? s.attention : PILL_TEXT[s.phase];
+    const status = s.attention ? s.attention : phaseText(s);
     return { id: s.id, label: `${GLYPH[k]}  ${s.project} · ${branch}  —  ${status}` };
   });
   const needy = needsYouSessions();

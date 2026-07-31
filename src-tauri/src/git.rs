@@ -17,7 +17,7 @@
 
 use tauri::State;
 
-use crate::platform::{augmented_path, norm_path, sys_command};
+use crate::platform::{augmented_path, norm_path, physical_cwd, sys_command};
 use crate::AppState;
 
 /// Create a git worktree with a new (or existing) branch off `repo_dir`.
@@ -80,10 +80,29 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
         }
     }
 
+    // A start-point that IS a remote-tracking ref means "check out what's on the remote",
+    // so the branch we cut must follow it: without an upstream, `git push`/`git pull` in
+    // the new worktree need arguments, and the picker's ahead/behind for it reads empty
+    // forever. Git already does this when `branch.autoSetupMerge` is at its default —
+    // which is exactly why it must be said outright, since a user who turned that off
+    // would otherwise get a silently untracked branch. Detected rather than passed as a
+    // flag so the rule holds for any caller, and so `base` keeps its one meaning.
+    let track = !branch_exists
+        && base.as_deref().is_some_and(|b| {
+            git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{b}")])
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        });
+
     let add = if branch_exists {
         git(&["-C", &root, "worktree", "add", &wt_str, &safe])
     } else if let Some(b) = base.as_deref() {
-        git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str, b])
+        let mut args = vec!["-C", &root, "worktree", "add"];
+        if track {
+            args.push("--track");
+        }
+        args.extend_from_slice(&["-b", &safe, &wt_str, b]);
+        git(&args)
     } else {
         git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str])
     }.map_err(|e| e.to_string())?;
@@ -101,6 +120,99 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
         }
     }
     Err(String::from_utf8_lossy(&add.stderr).trim().to_string())
+}
+
+/// One checkout as seen by `worktree_heads` — the cheap, spawn-free half of
+/// `list_worktrees`. Deliberately carries only what can be answered from files.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct WorktreeHead {
+    /// The checkout directory, in the same physical spelling `repo_root_of` uses.
+    path: String,
+    /// Branch name, or "(detached)" when HEAD holds a raw sha.
+    branch: String,
+    is_main: bool,
+    /// The checkout dir is still on disk. A hand-deleted folder stays registered under
+    /// `.git/worktrees` until pruned, so this mirrors `Worktree::exists`.
+    exists: bool,
+}
+
+/// Read a `HEAD` file into a branch label without spawning git.
+/// `ref: refs/heads/foo` → "foo"; a bare sha → "(detached)".
+fn head_branch(head_file: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(head_file).ok()?;
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(match t.strip_prefix("ref:") {
+        Some(r) => r.trim().strip_prefix("refs/heads/").unwrap_or(r.trim()).to_string(),
+        None => "(detached)".to_string(),
+    })
+}
+
+/// Every checkout of `dir`'s repo and the branch each has on HEAD — read straight off
+/// the filesystem, with **no `git` process at all**.
+///
+/// This is the cheap counterpart to `list_worktrees`, and it exists because the sidebar
+/// wants to notice a new worktree *continuously*, not when a dialog is opened.
+/// `list_worktrees` costs a `status --porcelain` per checkout plus a `merge-base` per
+/// branch — right for a picker, far too heavy to poll across every open project. The
+/// facts here come from three files per worktree:
+///
+/// ```text
+/// <root>/.git/HEAD                      → the main worktree's branch
+/// <root>/.git/worktrees/<n>/gitdir      → …/<checkout>/.git, whose parent is the checkout
+/// <root>/.git/worktrees/<n>/HEAD        → that checkout's branch
+/// ```
+///
+/// Two things this must not get wrong. `<n>` is git's bookkeeping name and does **not**
+/// have to match the checkout's folder name (`worktrees/board` can own `…/feat-board`),
+/// so the path comes from `gitdir` and never from the directory name. And every path is
+/// run through `physical_cwd`, for the reason spelled out on `repo_root_of`: git writes
+/// an already-resolved path into `gitdir`, so an unresolved one derived here would be a
+/// *second spelling of the same checkout*, and the sidebar groups by exact string
+/// equality — one worktree would render as two.
+///
+/// The result doubles as a change stamp: the caller compares it to its previous copy and
+/// only reaches for the expensive `list_worktrees` when it actually moved.
+#[tauri::command(async)]
+pub(crate) fn worktree_heads(dir: String) -> Vec<WorktreeHead> {
+    // repo_root_of already resolves both `.git` shapes (dir and `gitdir:` file) from a
+    // physical starting point, so asking it is what keeps this in step with every other
+    // root in the app — including when called from inside a linked worktree.
+    let Some(root) = repo_root_of(&dir) else {
+        return vec![];
+    };
+    let common = std::path::Path::new(&root).join(".git");
+    let mut out: Vec<WorktreeHead> = Vec::new();
+    if let Some(branch) = head_branch(&common.join("HEAD")) {
+        out.push(WorktreeHead {
+            path: root.clone(),
+            branch,
+            is_main: true,
+            exists: std::path::Path::new(&root).is_dir(),
+        });
+    }
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return out; // a repo with no linked worktrees has no such dir
+    };
+    for e in entries.flatten() {
+        let bk = e.path();
+        // `gitdir` points at the checkout's `.git` file; its parent is the checkout.
+        let Ok(gd) = std::fs::read_to_string(bk.join("gitdir")) else { continue };
+        let Some(checkout) = std::path::Path::new(gd.trim()).parent() else { continue };
+        let Some(branch) = head_branch(&bk.join("HEAD")) else { continue };
+        let exists = checkout.is_dir();
+        out.push(WorktreeHead {
+            path: norm_path(&physical_cwd(&checkout.to_string_lossy())),
+            branch,
+            is_main: false,
+            exists,
+        });
+    }
+    // Stable order so the caller's change comparison isn't fooled by readdir order.
+    out.sort_by(|a, b| (!a.is_main, &a.path).cmp(&(!b.is_main, &b.path)));
+    out
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -504,18 +616,31 @@ pub(crate) struct BranchInfo {
     /// An upstream is configured but no longer exists on the remote (branch deleted
     /// after a merge, typically). `upstream` still names it.
     gone: bool,
+    /// This row is a remote-tracking ref with no local branch of the same name —
+    /// someone else pushed it and nothing here points at it yet. The fields are then
+    /// read one level over: `name` is the local branch a checkout would CREATE and
+    /// `upstream` the ref it would track, which is exactly the pair the row will hold
+    /// a second after it is picked. `current`/`checked_out` are always false (there is
+    /// no local ref to be either) and so are `ahead`/`behind`/`gone` — the branch has
+    /// nothing to be ahead of yet.
+    remote: bool,
     rel: String,
     unix: i64,
 }
 
-/// Local branches for the worktree picker, most-recently-committed first, each with
+/// Branches for the worktree picker, most-recently-committed first, each with
 /// staleness + upstream context (see `BranchInfo`). Nothing is filtered here — the
 /// frontend hides `current` and `checked_out` from the pickable list; returning them
 /// with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP so a
 /// repo with hundreds of refs can't blow the list up.
 ///
-/// Everything comes out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
+/// Local branches come out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
 /// ahead/behind arithmetic itself, so this no longer spawns a `rev-list` per branch.
+/// A second pass adds **remote-only** branches (`remote: true`) — a colleague's branch
+/// that exists on a remote and nowhere locally is a destination you'd want, and before
+/// this it wasn't merely hidden: typing its name fell through to the create path and
+/// made a *new, unrelated* branch off HEAD under the same name. Remote rows are capped
+/// separately so a fork with hundreds of them can't crowd out the local list.
 #[tauri::command(async)]
 pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     const BRANCH_LIST_CAP: usize = 80;
@@ -554,6 +679,16 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     };
     let text = String::from_utf8_lossy(&out.stdout);
 
+    // Every local branch name, uncapped. The remote pass below asks "is there already a
+    // local branch called this?", and `res` stops being able to answer that the moment
+    // BRANCH_LIST_CAP truncates it — which would resurrect a checked-out branch as a
+    // remote-only row in exactly the repos big enough to hit the cap.
+    let local_names: std::collections::HashSet<&str> = text
+        .lines()
+        .filter_map(|l| l.split('\t').next())
+        .filter(|n| !n.is_empty())
+        .collect();
+
     let mut res = Vec::new();
     for line in text.lines().take(BRANCH_LIST_CAP) {
         let mut parts = line.split('\t');
@@ -585,7 +720,83 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
             current: current.as_deref() == Some(name.as_str()),
+            remote: false,
             name, upstream, ahead, behind, gone, rel, unix,
+        });
+    }
+
+    // ---- remote-only branches ------------------------------------------------------
+    // The remote names are read rather than assumed, because the short ref is the only
+    // thing `for-each-ref` gives us and "origin/feature/x" has to be split back into
+    // remote + branch. Nothing here can guess where that boundary is.
+    let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    if remotes.is_empty() {
+        return res;
+    }
+    let rout = match git(&[
+        "-C", &repo_dir,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)",
+        "refs/remotes",
+    ]) {
+        Ok(o) if o.status.success() => o,
+        _ => return res,
+    };
+    let rtext = String::from_utf8_lossy(&rout.stdout);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in rtext.lines() {
+        if seen.len() >= BRANCH_LIST_CAP {
+            break;
+        }
+        let mut parts = line.split('\t');
+        let short = match parts.next() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        // Longest matching prefix wins: git permits a remote named `a` alongside one
+        // named `a/b`, and only the longer one splits `a/b/topic` where it really joins.
+        // The empty remainder is what drops `refs/remotes/<remote>/HEAD` — the symbolic
+        // pointer at the remote's default branch, which would otherwise duplicate
+        // whatever it points at. Worth spelling out because it does NOT shorten to
+        // `origin/HEAD` as you'd expect: git renders it as a bare `origin`, so no test
+        // on the name would have caught it. (The `HEAD` check below is a belt for any
+        // git that does spell it out.)
+        let local = match remotes
+            .iter()
+            .filter_map(|r| short.strip_prefix(r.as_str()).and_then(|s| s.strip_prefix('/')))
+            .filter(|s| !s.is_empty())
+            .min_by_key(|s| s.len())
+        {
+            Some(l) => l,
+            None => continue,
+        };
+        // A name that already exists locally isn't remote-*only*, and two remotes
+        // carrying the same branch is one destination, not two.
+        if local == "HEAD" || local_names.contains(local) || !seen.insert(local.to_string()) {
+            continue;
+        }
+        let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let rel = parts.next().unwrap_or("").to_string();
+        res.push(BranchInfo {
+            name: local.to_string(),
+            current: false,
+            checked_out: false,
+            upstream: short.to_string(),
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            remote: true,
+            rel,
+            unix,
         });
     }
     res
@@ -640,6 +851,73 @@ pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
     Some(HeadInfo { branch, short })
+}
+
+/// The same answer as `git_repo_info`'s first half — the repo's MAIN worktree root —
+/// read straight off the filesystem instead of spawning `git`.
+///
+/// This exists because History asks the question in bulk. One `git rev-parse` costs
+/// ~140ms on Windows (process creation dominates, not the work), so resolving the ~28
+/// distinct folders behind a few hundred transcripts cost **3.3 s** — two thirds of the
+/// whole scan, and a cost that a smaller page size cannot reduce because the number of
+/// distinct folders barely moves. The same walk in `std::fs` is microseconds.
+///
+/// It reads the layout `git` itself defines, so there is no guesswork:
+/// - `.git` is a **directory** → this dir is the main worktree.
+/// - `.git` is a **file** holding `gitdir: …/.git/worktrees/<name>` → a linked
+///   worktree, and the main one is the parent of the `.git` that path points into.
+///   This is the case that matters: a worktree usually lives *beside* its repo.
+/// - `.git` is a file pointing anywhere else (a submodule's `…/.git/modules/<name>`) →
+///   the submodule checkout is its own root. `git_repo_info` answers `…/.git/modules`
+///   here, which is not a checkout at all, so this is the more useful answer as well
+///   as the cheaper one.
+/// - No `.git` at this level → walk up; `None` at the filesystem root.
+///
+/// `git_repo_info` stays for the callers that also need the branch.
+///
+/// The walk starts from the **physical** `cwd`, and that is load-bearing rather than
+/// tidy. `git` resolves symlinks before it answers (`getcwd()` does it for free), so a
+/// folder reached through one — `/tmp/x` for `/private/tmp/x`, or a Windows 8.3 short
+/// name — makes an unresolved walk return a *different string* for the same repo. The
+/// two spellings then fail the exact string equality the sidebar groups by, and a
+/// repo's main checkout stops merging with its own worktrees. Canonicalising the
+/// starting point fixes every branch below at once, including the one that was already
+/// physical by accident: a linked worktree's answer is read out of the `gitdir:` file,
+/// which `git` wrote canonically, so before this the same function disagreed with
+/// itself depending on which kind of checkout it landed in.
+pub(crate) fn repo_root_of(cwd: &str) -> Option<String> {
+    let phys = physical_cwd(cwd);
+    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
+    while let Some(d) = dir {
+        let dot = d.join(".git");
+        match std::fs::metadata(&dot) {
+            Ok(m) if m.is_dir() => return Some(norm_path(&d.to_string_lossy())),
+            Ok(_) => {
+                // A `.git` FILE: one line, `gitdir: <path>`, absolute in a worktree and
+                // possibly relative in a submodule — resolve it against this dir either way.
+                let link = std::fs::read_to_string(&dot).ok()?;
+                let target = link.trim().strip_prefix("gitdir:")?.trim();
+                let abs = d.join(target);
+                // A worktree whose admin dir has been pruned leaves the `.git` file
+                // behind pointing at nothing. `git` treats that as "not a repository"
+                // and stops — it does NOT keep searching upward past a `.git` file — so
+                // returning None here is what keeps this in step with it. Following the
+                // dangling pointer would file a dead checkout under a repo that no
+                // longer knows about it.
+                if !abs.exists() {
+                    return None;
+                }
+                let flat = abs.to_string_lossy().replace('\\', "/");
+                // …/<repo>/.git/worktrees/<name> → <repo>
+                if let Some(i) = flat.rfind("/.git/worktrees/") {
+                    return Some(norm_path(&flat[..i]));
+                }
+                return Some(norm_path(&d.to_string_lossy()));
+            }
+            Err(_) => dir = d.parent(),
+        }
+    }
+    None
 }
 
 /// Resolve `cwd` to its repo's MAIN worktree root and current branch. This is what
@@ -796,32 +1074,66 @@ pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
             .args(args)
             .output()
     };
-    let ns = git(&["--no-optional-locks", "diff", "--numstat", "HEAD"]).ok()?;
-    if !ns.status.success() {
-        return None; // not a repo, or an unborn HEAD (no commits)
+    // ONE spawn for everything except the line counts. `--porcelain=v2 --branch` is
+    // git's machine format: it reports the dirty entries *and* the upstream name and
+    // ahead/behind in a single walk, which is what `upstream_state`'s two extra
+    // processes used to cost. This is polled per folder on a timer (see
+    // `refreshDirtyStates`), so the spawn count here is the difference between
+    // "background" and "a git every few hundred milliseconds".
+    let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch"]).ok()?;
+    if !st.status.success() {
+        return None; // not a repo
     }
-    let (mut added, mut removed, mut files) = (0u32, 0u32, 0u32);
-    for line in String::from_utf8_lossy(&ns.stdout).lines() {
-        let mut it = line.split('\t');
-        let a = it.next().unwrap_or("");
-        let d = it.next().unwrap_or("");
-        files += 1;
-        added += a.parse::<u32>().unwrap_or(0); // "-" (binary) parses to 0
-        removed += d.parse::<u32>().unwrap_or(0);
-    }
+    let text = String::from_utf8_lossy(&st.stdout);
     let (mut untracked, mut dirty) = (0u32, 0u32);
-    if let Ok(st) = git(&["--no-optional-locks", "status", "--porcelain"]) {
-        for line in String::from_utf8_lossy(&st.stdout).lines() {
-            if line.is_empty() {
-                continue;
-            }
-            dirty += 1;
-            if line.starts_with("??") {
+    let (mut upstream, mut ahead, mut behind) = (None, 0u32, 0u32);
+    let mut unborn = false;
+    for line in text.lines() {
+        match line.as_bytes().first() {
+            // Tracked entries: `1` changed, `2` renamed/copied, `u` unmerged.
+            Some(b'1') | Some(b'2') | Some(b'u') => dirty += 1,
+            Some(b'?') => {
+                dirty += 1;
                 untracked += 1;
             }
+            Some(b'#') => {
+                if let Some(v) = line.strip_prefix("# branch.upstream ") {
+                    upstream = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("# branch.ab ") {
+                    // "+<ahead> -<behind>", present only when an upstream is set.
+                    let mut it = v.split_whitespace();
+                    ahead = it.next().and_then(|s| s.trim_start_matches('+').parse().ok()).unwrap_or(0);
+                    behind = it.next().and_then(|s| s.trim_start_matches('-').parse().ok()).unwrap_or(0);
+                } else if line.starts_with("# branch.oid (initial)") {
+                    unborn = true;
+                }
+            }
+            _ => {}
         }
     }
-    let (upstream, ahead, behind) = upstream_state(&workdir);
+    // An unborn HEAD has nothing to diff against; None, as before, so the UI shows no
+    // working-set card rather than a card claiming zero changes in a repo full of them.
+    if unborn {
+        return None;
+    }
+    // The expensive half — a second walk, purely for +/- line counts — is skipped
+    // entirely when the tree is clean. That is the steady state for most open folders,
+    // so in practice this halves the polling cost rather than shaving it.
+    let (mut added, mut removed, mut files) = (0u32, 0u32, 0u32);
+    if dirty > 0 {
+        let ns = git(&["--no-optional-locks", "diff", "--numstat", "HEAD"]).ok()?;
+        if !ns.status.success() {
+            return None;
+        }
+        for line in String::from_utf8_lossy(&ns.stdout).lines() {
+            let mut it = line.split('\t');
+            let a = it.next().unwrap_or("");
+            let d = it.next().unwrap_or("");
+            files += 1;
+            added += a.parse::<u32>().unwrap_or(0); // "-" (binary) parses to 0
+            removed += d.parse::<u32>().unwrap_or(0);
+        }
+    }
     Some(DiffStat { added, removed, files, untracked, dirty, upstream, ahead, behind })
 }
 
@@ -1192,7 +1504,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::scratch_dir;
+    use crate::testutil::{git, scratch_dir};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -1209,11 +1521,95 @@ mod tests {
             .join(repo.file_name().unwrap())
     }
 
-    /// Run a git command in `dir`, asserting success. Identity/signing are passed via
-    /// `-c` so the test doesn't depend on (or touch) the developer's global gitconfig.
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().expect("failed to spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    /// `repo_root_of` replaces a `git rev-parse` that cost ~140ms per call, so it has
+    /// to give the same answer git does — including where git *refuses* one. Each case
+    /// is asserted against `git_repo_info` in the same breath, which is what makes this
+    /// a substitution test rather than a restatement of the implementation.
+    #[test]
+    fn repo_root_of_matches_git_without_spawning_it() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let root = norm_path(&repo.to_string_lossy());
+        let agree = |dir: &Path| {
+            let (fs, via_git) = (repo_root_of(&dir.to_string_lossy()), git_repo_info(&dir.to_string_lossy()).0);
+            assert_eq!(fs, via_git, "disagreed with git at {}", dir.display());
+            fs
+        };
+
+        // The main checkout, and a subdirectory of it — `.git` is a directory.
+        assert_eq!(agree(&repo), Some(root.clone()));
+        let sub = repo.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(agree(&sub), Some(root.clone()));
+
+        // A linked worktree BESIDE the repo — `.git` is a file pointing into
+        // `<repo>/.git/worktrees/<name>`. This is the case History exists for.
+        let wt = wt_root(&repo).join("side");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        assert!(wt.join(".git").is_file(), "fixture must be a linked worktree, not a clone");
+        assert_eq!(agree(&wt), Some(root.clone()), "a worktree resolves to its repo");
+
+        // Pruned admin dir: the `.git` file survives pointing at nothing. git calls that
+        // "not a repository" and stops rather than searching upward, and so must we —
+        // otherwise a dead checkout files itself under a repo that has forgotten it.
+        std::fs::remove_dir_all(repo.join(".git/worktrees/side")).unwrap();
+        assert_eq!(agree(&wt), None, "a stale worktree resolves to nothing");
+
+        // Not a repository at all, at any level above it.
+        let bare = std::env::temp_dir();
+        assert_eq!(repo_root_of(&bare.to_string_lossy()), None);
+
+        let _ = std::fs::remove_dir_all(wt_root(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// One repo reached by two spellings must resolve to ONE root, because the sidebar
+    /// groups projects by exact string equality — two spellings mean a repo that no
+    /// longer merges with its own worktrees.
+    ///
+    /// This is the case the fixtures cannot catch on their own: `scratch_dir` hands back
+    /// a physical path by design, so every other assertion here compares like with like
+    /// and would pass whether or not `repo_root_of` resolves anything. A symlink put
+    /// there on purpose is the only way to hold it to the same answer `git` gives, which
+    /// is what the whole function promises.
+    #[cfg(unix)]
+    #[test]
+    fn repo_root_of_resolves_a_symlinked_path_like_git_does() {
+        let root = scratch_dir();
+        let repo = root.join("real");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        // Committed before anything is asserted: `git_repo_info` asks for the branch in
+        // the same `rev-parse` as the root, and an unborn HEAD fails the whole call, so
+        // a fresh `init` would compare against None rather than against git's answer.
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+
+        let physical = norm_path(&repo.to_string_lossy());
+        assert_eq!(repo_root_of(&link.to_string_lossy()), Some(physical.clone()));
+        assert_eq!(
+            repo_root_of(&link.to_string_lossy()),
+            git_repo_info(&link.to_string_lossy()).0,
+            "still the answer git gives, through a symlink too"
+        );
+        // A subdirectory below the link resolves the same way — the walk starts from the
+        // resolved path, so every level above it is resolved as well.
+        let sub = link.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(repo_root_of(&sub.to_string_lossy()), Some(physical.clone()));
+
+        // The half that was already physical by accident: a linked worktree's root comes
+        // out of the `gitdir:` file, which git wrote canonically. Its answer and the main
+        // checkout's had to become the same string, or a worktree groups on its own.
+        let wt = root.join("side");
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        assert_eq!(repo_root_of(&wt.to_string_lossy()), Some(physical));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1260,6 +1656,57 @@ mod tests {
         git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
     }
 
+    /// `worktree_heads` is the sidebar's polling path, so it has to agree with
+    /// `list_worktrees` while spawning no git at all. Four things are load-bearing: it
+    /// must answer identically from a *linked* checkout (whose `.git` is a file, a
+    /// different branch of `repo_root_of`), it must take the path from `gitdir` rather
+    /// than the bookkeeping folder name, it must track a branch switch — that is the
+    /// whole reason it exists — and it must label a detached HEAD rather than drop the
+    /// row, or a rebasing worktree would vanish from the sidebar mid-operation.
+    #[test]
+    fn worktree_heads_reads_every_checkout_without_spawning_git() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "init");
+        let repo = dir.to_str().unwrap().to_string();
+        let made = create_worktree(repo.clone(), "feat/thing".into(), None).expect("worktree created");
+
+        let heads = worktree_heads(repo.clone());
+        assert_eq!(heads.len(), 2, "main + the linked checkout: {heads:?}");
+        let main = heads.iter().find(|w| w.is_main).expect("a main entry");
+        assert_eq!(main.branch, "main");
+        assert_eq!(Some(main.path.as_str()), repo_root_of(&repo).as_deref(),
+            "main's path is the checkout root, in the same spelling every other root uses");
+        let linked = heads.iter().find(|w| !w.is_main).expect("a linked entry");
+        assert_eq!(linked.branch, "feat/thing", "a slashed branch keeps its slash");
+        // The linked entry is the CHECKOUT, not the repo root `repo_root_of` would map
+        // it back to — and its folder is `feat-thing` while git's bookkeeping name is
+        // whatever it chose, so this also pins that the path came out of `gitdir`.
+        assert_eq!(linked.path, norm_path(&physical_cwd(&made)));
+        assert!(linked.path.ends_with("feat-thing"), "the checkout dir, not the repo root: {}", linked.path);
+        assert!(linked.exists);
+
+        // Asked from *inside* the linked worktree the answer must be identical. That
+        // dir's `.git` is a file, so this is a different resolution path reaching the
+        // same repo — the asymmetry that produced two spellings of one root before.
+        assert_eq!(worktree_heads(made.clone()), heads, "same repo, same answer from any checkout");
+
+        // The point of the whole thing: a branch switch is visible with no git spawn.
+        git(Path::new(&made), &["checkout", "-q", "-b", "second"]);
+        assert_eq!(worktree_heads(repo.clone()).iter().find(|w| !w.is_main).unwrap().branch, "second");
+
+        git(Path::new(&made), &["checkout", "-q", "--detach"]);
+        assert_eq!(worktree_heads(repo.clone()).iter().find(|w| !w.is_main).unwrap().branch, "(detached)");
+
+        // A directory that is not a repo answers empty rather than erroring.
+        let plain = scratch_dir();
+        assert!(worktree_heads(plain.to_str().unwrap().to_string()).is_empty());
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The inspector's working-set strip ("+2 −1 · 1 file · 1 new") and the ahead/
     /// behind pair beside it. Two things it must not do: count an untracked file's
     /// lines as insertions (they're a separate, differently-worded number), and
@@ -1303,6 +1750,22 @@ mod tests {
         // Detached HEAD tracks nothing — it must not inherit the branch it left.
         git(&dir, &["checkout", "-q", "--detach"]);
         assert_eq!(upstream_state(&path), (None, 0, 0));
+        // …and the same through `git_diffstat`, which reads the gap out of porcelain=v2
+        // rather than asking separately: detached prints no `# branch.upstream` and no
+        // `# branch.ab`, so this is the parser's absent-field path, not its zero path.
+        let d = git_diffstat(path.clone()).expect("a detached checkout still has a working set");
+        assert_eq!(d.upstream, None);
+        assert_eq!((d.ahead, d.behind), (0, 0));
+        assert_eq!((d.added, d.removed, d.untracked), (2, 1, 1), "detaching changed no files");
+
+        // A clean tree takes the path that skips `--numstat` entirely, so it needs its
+        // own assertion — every count zero, and still Some rather than None.
+        git(&dir, &["checkout", "-q", "main"]);
+        git(&dir, &["checkout", "-q", "--", "a.txt"]);
+        std::fs::remove_file(dir.join("new.txt")).unwrap();
+        let clean = git_diffstat(path.clone()).expect("clean is still a diffstat");
+        assert_eq!((clean.added, clean.removed, clean.files, clean.untracked, clean.dirty), (0, 0, 0, 0, 0));
+        assert_eq!(clean.upstream.as_deref(), Some("origin/main"), "clean does not lose the upstream");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
@@ -1596,6 +2059,78 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A branch that exists on a remote and nowhere locally is a destination too. Both
+    /// halves matter and the second is the one with teeth: picking such a row must cut a
+    /// branch from the remote's tip and TRACK it, not mint a same-named stranger off
+    /// HEAD — which is precisely what the create path did before these rows existed.
+    #[test]
+    fn git_branch_list_offers_remote_only_branches_and_their_worktrees_track() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        let theirs = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "dev"]);
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "dev"]);
+
+        // A colleague pushes from their own clone; ours only ever fetches, so these two
+        // branches exist under refs/remotes and nowhere else.
+        git(&theirs, &["clone", "-q", remote.to_str().unwrap(), "."]);
+        git(&theirs, &["checkout", "-q", "-b", "their-feature"]);
+        commit(&theirs, "their work");
+        git(&theirs, &["push", "-q", "-u", "origin", "their-feature"]);
+        git(&theirs, &["checkout", "-q", "-b", "nested/topic"]);
+        commit(&theirs, "nested work");
+        git(&theirs, &["push", "-q", "-u", "origin", "nested/topic"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "dev"]);   // creates origin/HEAD
+
+        let bs = git_branch_list(dir.to_str().unwrap().to_string());
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+
+        let f = by("their-feature");
+        assert!(f.remote, "their-feature exists only on the remote: {bs:?}");
+        assert_eq!(f.upstream, "origin/their-feature", "name is the local branch to create, upstream the ref it tracks: {bs:?}");
+        assert!(!f.current && !f.checked_out, "a remote-only branch has no local checkout: {bs:?}");
+        assert!(!f.gone && (f.ahead, f.behind) == (0, 0), "nothing to be ahead of yet: {bs:?}");
+
+        // The short ref has to be split back into remote + branch, and a branch name
+        // containing a slash must not be split at the first one it happens to hold.
+        assert_eq!(by("nested/topic").upstream, "origin/nested/topic", "{bs:?}");
+
+        // dev has a local branch, so it is not remote-*only*; origin/HEAD is a symbolic
+        // pointer at the default branch rather than a branch. Neither may appear. Both
+        // spellings are asserted because git shortens that ref to a bare `origin`, so a
+        // filter that only looked for "HEAD" would let it through as a phantom row.
+        assert!(!by("dev").remote, "dev has a local branch: {bs:?}");
+        assert!(!bs.iter().any(|b| b.name == "HEAD" || b.name == "origin"),
+            "the remote's HEAD pointer is not a branch: {bs:?}");
+
+        // Picking the row is `create_worktree(name, base = upstream)`.
+        let path = create_worktree(dir.to_str().unwrap().to_string(), "their-feature".into(), Some("origin/their-feature".into()))
+            .expect("worktree on a remote-only branch");
+        let out = |args: &[&str]| String::from_utf8_lossy(
+            &Command::new("git").current_dir(&path).args(args).output().unwrap().stdout
+        ).trim().to_string();
+        assert_eq!(out(&["rev-parse", "--abbrev-ref", "HEAD"]), "their-feature");
+        assert_eq!(out(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]), "origin/their-feature",
+            "the new branch must track the remote ref it was cut from");
+        assert_eq!(out(&["log", "-1", "--format=%s"]), "their work",
+            "it must hold THEIR commit, not a fresh branch off our HEAD");
+
+        // And having become local, it must stop being offered as remote-only.
+        let bs2 = git_branch_list(dir.to_str().unwrap().to_string());
+        let f2 = bs2.iter().find(|b| b.name == "their-feature").expect("still listed");
+        assert!(!f2.remote && f2.checked_out, "it is a local, checked-out branch now: {bs2:?}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&theirs);
         let _ = std::fs::remove_dir_all(&remote);
     }
     /// Without a start-point, `worktree add -b` cuts from HEAD — which makes whatever

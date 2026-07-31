@@ -9,9 +9,16 @@
   </head>
   <body>
     <div class="app" id="app">
-      <header class="top">
+      <!--
+        This header IS the title bar — there is no native one behind it (see the
+        window block in lib.rs). `deep` makes the whole strip draggable except its
+        clickable elements, which tauri's drag script excludes for us; the ⌘K bar
+        opts out explicitly because it is a <div> that listens for a click, and a
+        drag would eat the mouseup that click needs.
+      -->
+      <header class="top" data-tauri-drag-region="deep">
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
-        <div class="kbar" id="kbar"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+        <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
@@ -30,8 +37,28 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode">▾</button>
           </div>
+          <button class="ibtn" id="histBtn" title="Session history — every past conversation, all projects" aria-label="Session history">◷</button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
+        </div>
+        <!--
+          Window controls. Windows only (html.win) — macOS keeps its real traffic
+          lights, which float over this header instead. A child of the header
+          rather than of .top-right, because only there can it stretch to the full
+          40px and sit flush in the corner, which is where a thrown pointer lands.
+          The middle button swaps glyph via .maxed.
+        -->
+        <div class="wctl" id="winCtl">
+          <button class="wc" id="winMin" title="Minimize" aria-label="Minimize">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
+          </button>
+          <button class="wc" id="winMax" title="Maximize" aria-label="Maximize">
+            <svg class="ic-max" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" /></svg>
+            <svg class="ic-restore" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5v-2h7v7h-2" /><rect x=".5" y="2.5" width="7" height="7" /></svg>
+          </button>
+          <button class="wc wclose" id="winClose" title="Close" aria-label="Close">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
+          </button>
         </div>
       </header>
 
@@ -51,6 +78,7 @@
             <span class="path" id="hPath"></span>
           </div>
           <div class="st-actions">
+            <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
             <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
             <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
             <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
@@ -151,10 +179,12 @@
     -->
     <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true" aria-label="New session">
       <div class="wt-head">
-        <div class="wt-title"><b>New session</b><span class="wt-proj" id="wtProj"></span></div>
+        <div class="wt-title"><b id="wtTitle">New session</b><span class="wt-proj" id="wtProj"></span></div>
         <div class="wt-headrow">
           <span class="wt-path" id="wtPath"></span>
           <span class="wt-eng" id="wtEng"></span>
+          <!-- Only shown when the launch is NOT the standard ask-me mode (see openWt). -->
+          <span class="wt-eng" id="wtMode" hidden></span>
           <button class="wt-chip" id="wtRefresh" type="button" title="Re-read worktrees and branches">
             <span class="ic">⟳</span><span id="wtAge">now</span>
           </button>
@@ -173,6 +203,43 @@
       <div class="wt-foot">
         <span><span class="k">↑</span><span class="k">↓</span> move</span>
         <span><span class="k">⏎</span> <span class="wt-verb" id="wtVerb">start session</span></span>
+        <span class="sp"></span>
+        <span><span class="k">esc</span> close</span>
+      </div>
+    </div>
+
+    <!--
+      History. Same shape as the new-session dialog (and the same .wt-* skin): one
+      scrolling list of past conversations on the left, the consequences of the
+      highlighted one — where it ran, what was said, whether it can come back — on
+      the right. Reuses the transcript mirror's .tvmsg markup for the preview.
+    -->
+    <div class="wtdlg histdlg" id="histDlg" role="dialog" aria-modal="true" aria-label="Session history">
+      <div class="wt-head">
+        <div class="wt-title"><b>History</b><span class="wt-proj" id="histCount"></span></div>
+        <div class="wt-headrow">
+          <span class="wt-path">Every Claude Code conversation on this machine — pick one up where it left off.</span>
+          <button class="wt-chip" id="histScope" type="button" title="Limit the list to the project on screen">
+            <span class="ic">◧</span><span id="histScopeTxt">all projects</span>
+          </button>
+          <button class="wt-chip" id="histRefresh" type="button" title="Re-read the transcripts on disk">
+            <span class="ic">⟳</span><span id="histAge">now</span>
+          </button>
+        </div>
+      </div>
+      <div class="wt-q">
+        <span class="wt-caret">◷</span>
+        <input id="histQ" spellcheck="false" autocomplete="off" aria-label="Search past sessions"
+               placeholder="Search by title, project, branch or path…" />
+        <span class="wt-count" id="histN"></span>
+      </div>
+      <div class="wt-body">
+        <div class="wt-list" id="histList" role="listbox" aria-label="Past sessions"></div>
+        <div class="wt-detail" id="histDetail" aria-live="polite"></div>
+      </div>
+      <div class="wt-foot">
+        <span><span class="k">↑</span><span class="k">↓</span> move</span>
+        <span><span class="k">⏎</span> resume</span>
         <span class="sp"></span>
         <span><span class="k">esc</span> close</span>
       </div>

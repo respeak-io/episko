@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 405 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 85 tests on macOS, 82 on
+- `pnpm test` — 468 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 96 tests on macOS, 93 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -30,18 +30,26 @@ permission round trip, and whether Claude Code's own interfaces still match ours
 
 ## Before tagging
 
-### 1. The CLI contract test — run it, it is not in CI
+### 1. The CLI contract tests — run them, they are not in CI
 
 ```sh
 cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Runs one real `claude -p` against a throwaway session in a temp dir and asserts our
-hooks reach our server, that routing still uses our launch id, and that the
-transcript still carries the fields the cost ledger reads. **It needs `claude` on
-PATH and an authenticated account, and it spends tokens** — which is exactly why it
-is `#[ignore]`d and lives here rather than in the PR gate.
+Two tests, both against the real binary, in one pass:
+
+- `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
+  throwaway session in a temp dir and asserts our hooks reach our server, that routing
+  still uses our launch id, and that the transcript still carries the fields the cost
+  ledger reads. **It needs `claude` on PATH and an authenticated account, and it spends
+  tokens** — which is exactly why it is `#[ignore]`d and lives here rather than in the
+  PR gate.
+- `claude_cli_still_accepts_every_permission_mode_we_offer` runs `claude
+  --permission-mode <m> --version` for each mode Settings offers. Claude Code validates
+  the flag against its own choice list, so a mode renamed or dropped upstream turns
+  every launch in that mode into a pane that dies before it starts. This one costs **no
+  tokens and needs no auth** — it is `#[ignore]`d only because CI has no `claude`.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
@@ -109,6 +117,12 @@ A regression in either is silent.
       In a **shell** pane the same keystroke must still kill the process outright.
 - [ ] **Windows only: Ctrl+V pastes an image** into a claude pane (copy a screenshot
       first). Plain text paste must still work in the same pane.
+- [ ] **Ctrl+Shift+C / Ctrl+Shift+V copy and paste** in a **shell** pane and in a
+      **task** pane. Select output with the mouse, Ctrl+Shift+C (a "Copied" toast, and
+      it must land in another app's clipboard), then Ctrl+Shift+V into a prompt and see
+      the text arrive intact. Neither chord may raise an OS clipboard-permission
+      prompt — one means the WebView served it rather than the plugin. Plain Ctrl+C in
+      those panes must still interrupt, and on macOS ⌘C/⌘V must still work.
 - [ ] **The sidebar still repaints when it should.** `renderSidebar` now skips the
       `innerHTML` write when the markup is byte-identical, so watch that a phase
       change, an arriving permission, a new session, and closing one *all* still move
@@ -122,6 +136,12 @@ A regression in either is silent.
       is a *blocking* hook — if the UI doesn't answer, Claude hangs, so a failure here
       is a hard blocker.
 - [ ] **Answering in the CLI instead** also clears the badge on the next lifecycle event.
+- [ ] **A non-default permission mode reaches the session.** Settings › Sessions →
+      **Plan**, then `＋ Session`: the new-session dialog shows the Plan chip and the
+      pane comes up in plan mode (Claude's own indicator says so, and it refuses to
+      edit). Set it back to **Manual** afterwards — every launch, including a restore,
+      reads this preference. Worth one pass in an *external* engine too, since that is
+      the only path where the flag goes through a generated shell script.
 
 ### Identity across rotations
 
@@ -132,6 +152,35 @@ A regression in either is silent.
 - [ ] **Resume works after a restart.** Quit with a live session, reopen, resume it
       from the roster. It must resume the *same* conversation — that is `resumeId`, not
       the launch id, doing its job.
+
+### Drift — an agent that changes checkout
+
+**Two cases, and they behave as opposites** — one is not a spot check for the other.
+Nothing here can be checked headlessly: the rules are unit-tested and the CLI contract is
+pinned by the `--ignored` test above, but every surface below is DOM.
+
+- [ ] **Case 1 — writes move, the session does not.** In a session launched in one
+      checkout, have the agent `git worktree add` a **sibling** worktree (outside the
+      project dir) and **write a file in it**. The sidebar row gains `⤳ <branch>`, the
+      header chip reads `old ⤳ ⑃ new`, and the inspector shows the *Working in* card
+      above the vital, offering **Move session here**.
+- [ ] **The row does not move**, and does not flicker as the agent reads its old files.
+      (Only a *write* back home clears the marker — reads must not.)
+- [ ] **Move session here** confirms, ends the session, and resumes it in the new
+      checkout with its history intact (ask it about something from before the move).
+      Afterwards: marker gone, chip shows the new branch alone, and
+      `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
+- [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+
+- [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
+      run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`
+      tool into `<repo>/.claude/worktrees/<name>`. **No file need be written.** The same
+      marker and card appear, but the button reads **Follow it here**.
+- [ ] **Follow it here is instant and lossless** — no confirm, no restart, the pane does
+      not blink and the terminal keeps its scrollback. Afterwards the header path, the
+      branch, ▶ Run and ❯ Terminal all point at the new checkout.
+- [ ] **The conversation is still resumable afterwards** (Claude had already re-homed the
+      transcript; Episko must not have moved it a second time).
 
 ### Panes that aren't agents
 
@@ -188,6 +237,26 @@ A regression in either is silent.
 - [ ] **Quit guard** warns about live sessions.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
+
+### The title bar, which is the header (no native one behind it)
+
+Nothing here has automated cover: the frame is drawn by the OS on one side and by
+`#winCtl` on the other, and each platform only ever sees its own half.
+
+- [ ] **There is one bar, not two**, and the window still moves: drag the header
+      (its background, the logo, the empty space around ⌘K) and the window follows;
+      double-clicking it maximizes. **⌘K still opens on a single click** — the search
+      bar opts out of the drag region, and a regression there is silent.
+- [ ] **Windows:** minimize / maximize / close all work from the header, the middle
+      glyph flips to the restore pair when maximized **and back** (also after Win+↑
+      and a snap, which don't go through our button), and ✕ still raises the quit
+      guard rather than killing live sessions. Then **resize from every edge and
+      corner** and drag the window to a screen edge to snap — an undecorated window
+      resizes through a child window tauri only attaches at creation, so this is what
+      catches it having been lost.
+- [ ] **macOS:** the traffic lights sit in the header, vertically centred, without
+      overlapping the logo — and all three work, the green one included (both zoom
+      and, held, fullscreen). In fullscreen the header must close the gap they leave.
 
 ### Logs, after all of the above
 

@@ -11,8 +11,8 @@
 // over ProjGroups and WtClusters already split and sorted, and this only paints
 // them.
 
-import { basename, esc, fmtShort, relTime } from "./format";
-import { statusKey, type ExtSession, type Restorable, type Sess } from "./types";
+import { basename, esc, fmtShort, relTime, tilde } from "./format";
+import { apiErrText, statusKey, type ExtSession, type Restorable, type Sess } from "./types";
 import {
   accentFor, activeId, externals, extMirrorId, pastMirrorId, sessions, wtGroup,
 } from "./state";
@@ -26,7 +26,25 @@ export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping",
 
 // A stable colour per branch, from the same hash as project accents so the sidebar's
 // colour language stays consistent (a branch and a project just seed different hues).
-const branchHue = (c: WtCluster) => accentFor(c.branch || c.key);
+//
+// The main checkout is the exception, and deliberately: it is seeded by its *path*,
+// which is the project's own key — so it comes out wearing the exact accent the
+// project header does, including a colour the user picked by hand. Seeded by its
+// branch it would draw a fourth unrelated hue for the one cluster that isn't a
+// separate thing at all.
+const branchHue = (c: WtCluster) => accentFor(c.isMain ? c.key : (c.branch || c.key));
+// ⑃ forks off something; the repo's own checkout is the something. Wearing the same
+// glyph as its worktrees left the project folder identifiable only by knowing which
+// branch name meant "the original", which is not knowledge the sidebar should assume —
+// a repo whose default is `develop` sitting under three `feat/*` worktrees reads as
+// four worktrees. ⌂ is the glyph the ⑃ dialog's Repo row and the project menu's "Open
+// project folder" already use for exactly this folder.
+const clusterGlyph = (c: WtCluster) => (c.isMain ? "⌂" : "⑃");
+const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} — the project folder itself` : c.branch);
+// The branch chip a row wears in chip mode, colour-coded and hover-expanded.
+const clusterChip = (c: WtCluster) =>
+  `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
+  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(c.branch)}</span></span>`;
 
 // `chip` (chip mode only) tags the row with its worktree's colour-coded branch,
 // which expands from a bare ⑃ to the branch name on row hover.
@@ -41,12 +59,25 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
   // build reads exactly like a broken session in the rail.
   const glyph = s.kind === "shell" ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
   const gcls = s.kind === "shell" ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
-  const chipHtml = chip
-    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+  const chipHtml = chip ? clusterChip(chip) : "";
+  // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
+  // and "auth failed" are the same glyph and completely different problems.
+  const tip = s.phase === "error" && s.apiErr
+    ? `${label} — ${apiErrText(s.apiErr)}`
+    : s.drift ? `${label} — writing to ${s.drift.branch}, not ${s.branch || "this checkout"}` : label;
+  // The row stays under the checkout the session was *launched* in — that is its
+  // identity, and where `--resume` goes. This is what says the agent's writes have
+  // moved elsewhere, without moving the row out from under you.
+  const drift = s.drift
+    ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
     : "";
-  return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
+  // Both tags share one grid cell. `.srow`'s column count is fixed by CSS (`.o3` adds
+  // the fourth for a chip), so a second in-flow child would wrap the row instead of
+  // sitting beside it — wrapping them keeps the existing grid math untouched.
+  const tags = drift + chipHtml;
+  return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
-    <span class="sbranch" title="${esc(label)}">${esc(label)}</span>${chipHtml}
+    <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${tags ? `<span class="stags">${tags}</span>` : ""}
     <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }
@@ -58,24 +89,67 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
 export function groupBody(p: ProjGroup): string {
   const flat = () => p.sessions.map((s) => sessionRow(s)).join("") + p.externals.map((e) => extRow(e)).join("");
   if (wtGroup === "subheader") {
-    const cl = clusterByWorktree(p);
+    const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) return cl.map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
       const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
-      return `<div class="wthead"><span class="wtglyph" style="color:${col}">⑃</span>`
-        + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n}</span></div>`
-        + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
+      // The cluster header already answers the only question the worktree dialog
+      // would ask — which checkout — so its ＋ launches straight into `c.key`.
+      // `data-root` carries the repo root separately: it is the colorKey every
+      // session in this project groups by, and a worktree's own path is not it.
+      //
+      // This is also what makes an *empty* cluster carry its own weight: the header
+      // renders whether or not anything runs in the checkout, so a worktree nobody has
+      // started a session in is still visible — and startable — without spending a
+      // whole row on saying so.
+      const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
+      return `<div class="wthead${n ? "" : " wtvacant"}" ${wtMenuAttrs(p, c)}>`
+        + `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`
+        + `<span class="wtname" style="color:${col}" title="${esc(clusterTip(c))}">${esc(c.branch)}</span>`
+        + `<span class="wtcount">${n || ""}</span>${add}</div>`
+        // No rows, no rail: an empty `.wtsessions` would draw a stub of left border
+        // under a header that has nothing beneath it.
+        + (n ? `<div class="wtsessions" style="--wtc:${col}">${body}</div>` : "");
     }).join("");
   } else if (wtGroup === "chip") {
-    const cl = clusterByWorktree(p);
+    const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) {
       const byKey = new Map(cl.map((c) => [c.key, c]));
       return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
-        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
+        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("")
+        + cl.filter((c) => !c.sessions.length && !c.externals.length).map((c) => wtEmptyRow(p, c)).join("");
     }
   }
   return flat();
+}
+// What identifies one checkout to the worktree context menu (./projmenu). `data-wt`
+// is the marker its contextmenu handler matches on, and it must be matched *ahead* of
+// the `data-key` project menu — a cluster is a checkout, not the repo it belongs to.
+// The rest is everything the menu's verbs need without a second lookup.
+export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
+  return `data-wt="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}"`
+    + ` data-branch="${esc(c.branch)}"${c.isMain ? ` data-main="1"` : ""}`;
+}
+// A checkout that exists on disk with nothing running in it. Rendered rather than
+// dropped for the same reason a blocked task is: a missing row reads as "Episko didn't
+// notice my worktree", which is exactly the gap this path was built to close.
+//
+// **chip mode only.** In subheader mode the ⑃ cluster header renders whether or not
+// anything runs in the checkout and carries its own ＋, so a whole row saying "no
+// session" was a second, bulkier way of stating what the header already showed. Chip
+// mode has no headers at all — a flat list of rows each wearing a branch chip — so
+// without this row an empty checkout would have nowhere to appear.
+//
+// Clicking it launches into that checkout while keeping the repo's identity — colorKey
+// stays the repo root (`data-root`), so the new session joins this project group
+// instead of splintering into one of its own. That is the same `data-wtadd` contract
+// the cluster header's ＋ uses.
+function wtEmptyRow(p: ProjGroup, c: WtCluster): string {
+  // `o3` widens the grid for the chip and arms its hover-expand, exactly as sessionRow does.
+  return `<div class="srow wtempty o3" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)} title="No session here yet — start one in ${esc(tilde(c.key))}">
+    <span class="sglyph g-idle">＋</span>
+    <span class="sbranch">no session</span>${clusterChip(c)}</div>`;
 }
 // Dormant rows always sit below the live ones, outside any worktree cluster.
 export function dormantRows(p: ProjGroup): string {
@@ -103,9 +177,7 @@ export function dormantBusy(d: Restorable): boolean {
 }
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
-  const chipHtml = chip
-    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
-    : "";
+  const chipHtml = chip ? clusterChip(chip) : "";
   return `<div class="srow extrow${chip ? " o3e" : ""} ${e.session_id === extMirrorId() ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
     <span class="sglyph ${working ? "g-work" : "g-idle"}">${working ? "●" : "○"}</span>
     <span class="sbranch">${esc(e.name || basename(e.cwd))}</span>${chipHtml}

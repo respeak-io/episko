@@ -134,8 +134,9 @@ export function initProjectDnD() {
   container.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !e.isPrimary) return;
     const t = e.target as HTMLElement;
-    // Leave the interactive bits (launch +, remove ✕, colour dot) to their own clicks.
-    if (t.closest(".padd, .plaunch, .premove, .pdot, .pdirty")) return;
+    // Leave the interactive bits (launch +, per-worktree +, remove ✕, colour dot) to
+    // their own clicks.
+    if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
     const g = t.closest<HTMLElement>(".pgroup");
     if (!g) return;
     candidate = g;
