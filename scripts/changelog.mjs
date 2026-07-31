@@ -193,7 +193,7 @@ function release(version) {
   const rebuilt =
     preamble.join("\n").replace(/\s+$/, "") +
     `\n\n## Unreleased\n\n` +
-    `## ${v} — ${today}\n${bodyText(unrel)}\n\n` +
+    `## ${v} — ${today}\n\n${bodyText(unrel)}\n\n` +
     rest.map((s) => `${s.heading}\n${bodyText(s)}\n`).join("\n");
   writeFileSync(FILE, rebuilt.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n");
   process.stderr.write(`CHANGELOG.md: Unreleased → ${v} (${today})\n`);

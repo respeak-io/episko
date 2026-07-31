@@ -13,6 +13,8 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.13.0 — 2026-07-31
+
 A project is a place you arrive at now, not a session you fall into.
 
 + **Clicking a project opens a dashboard.** The last week of that project's commits and
@@ -30,7 +32,6 @@ A project is a place you arrive at now, not a session you fall into.
   because on the dashboard it holds the only copy of History, Terminal and Run.
 
 ## 0.12.0 — 2026-07-31
-
 Six branches landed at once, and the window finally has one title bar.
 
 + The app draws its own title bar on both platforms — the native one is gone.
@@ -46,7 +47,6 @@ Six branches landed at once, and the window finally has one title bar.
 ! Windows: one canonical path spelling, so a repo stops rendering as two.
 
 ## 0.11.1 — 2026-07-28
-
 A one-line fix for something that made a whole feature look broken.
 
 ! A symlinked working directory found no past sessions at all. The transcript folder is
@@ -54,7 +54,6 @@ A one-line fix for something that made a whole feature look broken.
   read as "no history" rather than as a failure.
 
 ## 0.11.0 — 2026-07-27
-
 **Runnables** — Episko runs the task definitions your project already ships.
 
 + Run tasks from `package.json`, `justfile`, `Makefile`, `Taskfile.yml`, `mise.toml`,
@@ -68,14 +67,12 @@ A one-line fix for something that made a whole feature look broken.
 ! Ctrl+V pastes images correctly.
 
 ## 0.10.1 — 2026-07-23
-
 Cleanup after the rename.
 
 ! Recover settings stranded by the Muster → Episko rename. macOS keys localStorage to
   the bundle id, so a renamed bundle looked like a factory reset.
 
 ## 0.10.0 — 2026-07-23
-
 **Muster is now Episko.** Same app, better name.
 
 ~ Renamed throughout, including the bundle id — see 0.10.1 for the settings this stranded.
@@ -83,47 +80,40 @@ Cleanup after the rename.
 ! Embedded-terminal ghost cells — resize is debounced and forces a repaint.
 
 ## 0.9.0 — 2026-07-22
-
 Released as Muster.
 
 + Worktree grouping in the sidebar: several checkouts of one repo read as one project.
 + Session history — reopen a session you closed.
 
 ## 0.8.0 — 2026-07-21
-
 Released as Muster.
 
 + Usage analytics: spend per day, per model and per project, with a token ledger read
   from Claude's own transcripts.
 
 ## 0.7.0 — 2026-07-21
-
 Released as Muster.
 
 + External sessions — Claude sessions started outside the app are listed, mirrored
   read-only, and can be jumped to in their own terminal.
 
 ## 0.6.0 — 2026-07-21
-
 Released as Muster.
 
 + The permission cockpit: a blocking permission request is answered in the app, without
   switching to the pane that asked.
 
 ## 0.5.1 — 2026-07-20
-
 Released as Muster.
 
 ! The tray title no longer lags a phase behind the sidebar.
 
 ## 0.5.0 — 2026-07-20
-
 Released as Muster.
 
 + The ⑃ worktree dialog: create, switch and prune checkouts without leaving the app.
 
 ## 0.4.3 — 2026-07-18
-
 Released as Muster. The first build worth installing.
 
 + Auto-update, so this is the last one you install by hand.

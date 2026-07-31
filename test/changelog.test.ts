@@ -138,8 +138,12 @@ describe("the real CHANGELOG.md", () => {
       expect(r.entries.length, `${r.version} has no entries`).toBeGreaterThan(0);
     }
   });
-  it("has an Unreleased section with something in it — the CI gate reads this", () => {
-    expect(log[0].entries.length).toBeGreaterThan(0);
+  it("always carries an Unreleased section, even right after a release stamps it empty", () => {
+    // Non-EMPTY is a branch policy and belongs to `changelog.mjs check`, which runs on
+    // the dev → main PR. Asserting it here would fail on main every time a release is
+    // cut, which is the one moment the section is legitimately blank.
+    expect(log[0].version).toBe("Unreleased");
+    expect(log[0].released).toBe(false);
   });
   it("lists versions newest-first, which is the order the rail renders", () => {
     const rel = log.filter((r) => r.released).map((r) => r.date);
