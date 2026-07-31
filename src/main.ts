@@ -20,12 +20,13 @@ import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
-  removeFavorite, resolvePermission, revealActiveFolder, setActionsRenderAll,
+  followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
+  setActionsRenderAll,
   setSort, setTheme, setWtGroup, toggleInsp, toggleRail, toggleTheme,
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, noteGitCommand, openPlainTerminal, refreshGitViews, refreshSessionStats, renderHeader,
+  launchTask, noteDrift, noteGitCommand, openPlainTerminal, refreshGitViews, refreshSessionStats, renderHeader,
   requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
   syncStageButtons,
 } from "./panes";
@@ -149,7 +150,9 @@ setOnTurnEnd((s) => { void maybeRunOnStop(s); });
 // changed its checkout — nothing watches the filesystem. Two consequences, both cheap:
 // the folder is queued for a working-set re-read, and a git command that could have
 // moved HEAD or added a worktree pokes the git views straight away.
-setOnSessionTouched((s, tool, cmd) => { markWorkdirStale(s, tool); noteGitCommand(cmd); });
+setOnSessionTouched((s, tool, data) => {
+  markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
+});
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -452,9 +455,10 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-wtlaunch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-wtlaunch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
+  else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
   else if (el.dataset.close) closeSession(el.dataset.close);
