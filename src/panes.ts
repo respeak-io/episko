@@ -29,7 +29,7 @@ import {
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fmtMb, fmtRate } from "./format";
-import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, winClaudePaste } from "./terminal";
+import { claudeInput, cleanTitle, clipboardKeys, fitSession, loadWebgl, MONO, shellKeys, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
@@ -159,7 +159,8 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   loadWebgl(term);
   term.open(pane);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
-  term.attachCustomKeyEventHandler(macShellKeys(id)); // Terminal.app-style ⌥/⌘ nav for the shell
+  // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
+  term.attachCustomKeyEventHandler(shellKeys(id, term));
   const s: Sess = {
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
@@ -210,6 +211,8 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   term.open(pane);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+  // …and a run's output is the thing you most want out of a pane, so it copies too.
+  term.attachCustomKeyEventHandler(clipboardKeys(term));
 
   const cmd = execCmd(r);
   const s: Sess = {
