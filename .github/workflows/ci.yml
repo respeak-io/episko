@@ -30,6 +30,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          # No deps, so no cache. Left on, setup-node reads `packageManager` from
+          # package.json and shells out to pnpm — which this job has no reason to
+          # install, and which fails the gate before it ever reads the changelog.
+          package-manager-cache: false
       - name: CHANGELOG.md has an Unreleased section
         run: node scripts/changelog.mjs check
 
