@@ -113,6 +113,10 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
+  // The new session's id, for the same reason `launchShell` returns one: a caller that
+  // launched a pane in order to put something *into* it needs a handle. Existing
+  // callers ignore it.
+  return id;
 }
 
 // Offer a worktree when launching into a repo that already has a session.

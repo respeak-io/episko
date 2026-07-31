@@ -22,7 +22,11 @@ import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
 import { engineDef, sessions, termEngine } from "./state";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
-let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
+// Resolves to the new session's id — ./panes returns one so a caller can write into
+// the pane it just opened (the Trail dispatches a note that way). This dialog has no
+// use for it, so the return stays loose rather than being threaded through every call
+// site here.
+let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<unknown> = async () => {};
 export function setWtLaunch(fn: typeof launch) { launch = fn; }
 let closeSession: (id: string) => void = () => {};
 export function setWtCloseSession(fn: typeof closeSession) { closeSession = fn; }

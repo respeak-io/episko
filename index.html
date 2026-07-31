@@ -72,6 +72,35 @@
             <div class="ext-view-bar"><span class="ext-view-dot"></span>Read-only mirror · this session runs in another terminal</div>
             <div class="ext-body" id="extBody"></div>
           </div>
+          <!-- The Trail. Its own pane rather than more of #extPane: that one is a
+               transcript mirror (one scrolling column of messages), this is a two-pane
+               derived/typed layout, and sharing a container would make both sets of
+               styles fight over the same element. -->
+          <div class="trail-view" id="trailPane" hidden>
+            <div class="trail-cols">
+              <section class="trail-left">
+                <div class="trail-head">
+                  <h3>Behind you</h3>
+                  <span class="trail-sub" id="trailRange">derived · last 14 days</span>
+                  <span class="trail-spacer"></span>
+                  <button class="mini-act" id="trailWider" title="Look further back">Wider ↔</button>
+                </div>
+                <div id="trailDays"></div>
+              </section>
+              <section class="trail-right">
+                <div class="trail-head">
+                  <h3>Ahead of you</h3>
+                  <span class="trail-sub" id="trailNoteCount">0 open</span>
+                </div>
+                <form class="trail-jot" id="trailJot">
+                  <input id="trailInput" type="text" autocomplete="off" spellcheck="false"
+                         placeholder="Jot an idea…" aria-label="Jot an idea" />
+                  <button class="act primary" type="submit">Add</button>
+                </form>
+                <div id="trailNotes"></div>
+              </section>
+            </div>
+          </div>
         </div>
       </main>
 

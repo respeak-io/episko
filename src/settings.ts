@@ -26,6 +26,7 @@ import {
 } from "./tasks";
 import { usagePanelHtml } from "./usageview";
 import { setUsageRange } from "./usage";
+import { setTrailRange, setTrailSummaries, trailRange, trailSummaries } from "./trailui";
 
 // What this dialog changes but does not own. Every entry is somebody else's
 // setter; main.ts hands them over at startup and until then they do nothing.
@@ -156,6 +157,20 @@ const SET_TABS: SetTab[] = [
     id: "usage", label: "Usage", glyph: "▦",
     controls: () => [],
     render: () => usagePanelHtml(),
+  },
+  {
+    id: "trail", label: "Trail", glyph: "◷",
+    controls: () => [
+      { kind: "seg", set: "trailrange", label: "How far back",
+        hint: "How many days the Trail assembles. Everything on its left is derived from your transcripts, git and the usage rollup — nothing there is typed by hand.",
+        active: () => String(trailRange),
+        segs: () => [7, 14, 30, 90].map((d) => ({ value: String(d), label: `${d} days` })) },
+      // The only control in Episko that turns on *spending money*, so the hint says
+      // that plainly rather than describing the feature.
+      { kind: "toggle", set: "trailsum", label: "Write a one-line summary for each day",
+        hint: "Asks Claude (Haiku) to label each day from its own session titles and commit subjects — never transcript contents. One short call per day, cached: a day that is over is never re-asked. Off, every day still shows a counted headline.",
+        on: () => trailSummaries },
+    ],
   },
 ];
 
@@ -297,6 +312,11 @@ function applySetting(set: string, val: string) {
   else if (set === "taskattn") { taskPrefs.attention = val === "1"; saveTaskPrefs(); }
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);
+  // `data-val` carries the DESIRED state, not the current one (see renderSetControl),
+  // so "1" means turn it on. Both setters refresh the Trail themselves when it is on
+  // screen, so a change here is visible at once rather than at the next open.
+  else if (set === "trailrange") setTrailRange(+val);
+  else if (set === "trailsum") setTrailSummaries(val === "1");
   renderSettings();
 }
 function setFontFromSettings(cmd: string) {

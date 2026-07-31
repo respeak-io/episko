@@ -74,8 +74,9 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
   markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
-  setTermFontSize, sortMode, termEngine,
+  setTermFontSize, sortMode, termEngine, trailOpen,
 } from "./state";
+import { closeTrail, openTrail, renderTrailHeader, renderTrailInspector, wireTrail } from "./trailui";
 import { orderedSessions } from "./grouping";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
@@ -315,7 +316,12 @@ function renderAll() {
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
   // external header/inspector ~1s after clicking it.
-  if (pastMirrorId()) {
+  if (trailOpen()) {
+    // Derived from history, not from the fleet's live state — so unlike the two
+    // transcript mirrors this one never needs re-fetching on a telemetry tick, and
+    // repainting its chrome is enough.
+    renderTrailHeader(); renderTrailInspector();
+  } else if (pastMirrorId()) {
     const d = dormants.find((x) => x.id === pastMirrorId());
     if (d) { renderPastHeader(d); renderPastInspector(d); }
   } else if (extMirrorId()) {
@@ -513,6 +519,7 @@ $("btnHist").addEventListener("click", () => { void openHistory(true); });
 $("histBtn").addEventListener("click", () => { void openHistory(false); });
 initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
+wireTrail();
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
@@ -523,7 +530,9 @@ window.addEventListener("keydown", (e) => {
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
   else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
   else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
-  else if (meta && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
+  // !shiftKey, or this would swallow ⌘⇧T (the Trail) — an unshifted test earlier in
+  // the chain wins over a shifted one later in it.
+  else if (meta && !e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
   else if (meta && e.key >= "1" && e.key <= "9") { e.preventDefault(); const list = orderedSessions(); const s = list[+e.key - 1]; if (s) setActive(s.id); }
   else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); bumpFont(0.5); }
   else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }
@@ -531,7 +540,9 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  else if (e.key === "Escape" && trailOpen()) { e.preventDefault(); closeTrail(); renderAll(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }

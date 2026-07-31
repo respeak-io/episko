@@ -1282,3 +1282,66 @@ select.in-ctl { cursor: pointer; }
 .fc-rec { display: flex; gap: 8px; align-items: flex-start; margin-top: 13px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 .fc-recic { flex: none; margin-top: 1px; }
 .fc-rec b { color: var(--text); font-weight: 650; }
+
+/* ── the Trail (src/trailui.ts) ─────────────────────────────────────────────
+ * Its own pane rather than more of .ext-view: that one is a transcript mirror
+ * (one column of monospace messages), this is a two-pane derived/typed layout.
+ * Sharing a container would make both sets of rules fight over one element. */
+.trail-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.trail-cols { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
+.trail-left, .trail-right { min-width: 0; overflow-y: auto; padding: 13px 16px 22px; }
+.trail-right { border-left: 1px solid var(--hair); background: linear-gradient(180deg, var(--lift), transparent 12%), var(--panel); }
+@media (max-width: 900px) { .trail-cols { grid-template-columns: minmax(0, 1fr); } .trail-right { border-left: 0; border-top: 1px solid var(--hair); } }
+
+.trail-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 11px; }
+.trail-head h3 { margin: 0; font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+.trail-sub { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.trail-spacer { margin-left: auto; }
+
+/* one day */
+.td-day-block { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 11px; }
+.td-gut { text-align: right; padding-top: 2px; }
+.td-day { display: block; font: 700 10px var(--font-mono); color: var(--text); }
+.td-cost { display: block; margin-top: 2px; font: 9px var(--font-mono); color: var(--muted-2); }
+.td-body { position: relative; min-width: 0; padding: 0 0 15px 13px; border-left: 1px solid var(--hair); }
+.td-body::before { content: ""; position: absolute; left: -4px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg); }
+.td-sum { margin: 0 0 7px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+/* A generated sentence is marked, quietly: the user is entitled to know which line
+ * was written by a model and which was counted. */
+.td-sum.td-gen::after { content: "·  ai"; margin-left: 7px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); vertical-align: 1px; }
+.td-items { display: flex; flex-direction: column; gap: 1px; }
+.td-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 5px; border-radius: 6px; font-size: 11.5px; }
+.td-item[data-sess] { cursor: default; }
+.td-item:hover { background: var(--surface); }
+.td-ic { flex: none; width: 13px; text-align: center; font: 10px var(--font-mono); }
+.td-commit { color: var(--muted-2); }
+.td-t { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.td-r { margin-left: auto; flex: none; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.td-empty { padding: 14px 6px; max-width: 46ch; font-size: 11.5px; line-height: 1.55; color: var(--muted-2); }
+
+/* notes */
+.trail-jot { display: flex; gap: 6px; margin-bottom: 12px; }
+.trail-jot input { flex: 1; min-width: 0; height: 29px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--bg-2); color: var(--text); font: 12px var(--font-ui); }
+.trail-jot input::placeholder { color: var(--muted-2); }
+.trail-jot input:focus { outline: none; border-color: var(--accent-line); background: var(--accent-wash); }
+.td-note { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 6px; padding: 8px 9px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); }
+.td-note-b { flex: 1; min-width: 0; }
+.td-note-t { display: block; font-size: 11.5px; line-height: 1.4; }
+.td-note-m { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.mini-act { flex: none; height: 20px; padding: 0 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; font: 650 10px var(--font-ui); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+.mini-act:hover { color: var(--text); border-color: var(--hair-strong); }
+.mini-act.go:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+
+/* the Trail's inspector */
+.isec { display: flex; flex-direction: column; gap: 7px; }
+.seg-row { display: flex; gap: 4px; }
+.seg-btn { flex: 1; height: 24px; border-radius: 7px; cursor: pointer; font: 600 10.5px var(--font-mono); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.ihint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+.td-note-proj { height: 18px; max-width: 130px; padding: 0 3px; border-radius: 5px; cursor: pointer; font: 9.5px var(--font-mono); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+.td-note-proj:hover { color: var(--text); border-color: var(--hair-strong); }
+.td-note-proj:focus { outline: none; border-color: var(--accent-line); color: var(--accent-ink); }
+.td-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.td-stat { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
+.td-stat b { font: 700 15px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }

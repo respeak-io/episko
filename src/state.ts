@@ -101,11 +101,22 @@ export function setActiveId(id: string | null) { activeId = id; }
 // what stays stable, so refreshExternals re-binds through it instead of dropping
 // the selection (which used to silently jump the sidebar to an unrelated session).
 // Same rule as Sess.resumeId and the telemetry path: hold the stable handle.
-export let mirror: { kind: "ext"; id: string; pid: number } | { kind: "past"; id: string } | null = null;
+//
+// The "trail" kind carries no id: it is a view of the whole fleet's history rather
+// than of one thing, so there is nothing to re-bind to. It joins this union rather
+// than becoming a flag for exactly the reason above — every `if (mirror) return`
+// guard in the render path then treats it correctly for free, and it can never be
+// on screen at the same time as a session or a transcript.
+export let mirror:
+  | { kind: "ext"; id: string; pid: number }
+  | { kind: "past"; id: string }
+  | { kind: "trail" }
+  | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
+export const trailOpen = (): boolean => mirror?.kind === "trail";
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.

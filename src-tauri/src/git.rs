@@ -1221,6 +1221,121 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
     })
 }
 
+/// One commit on the Trail. `when` is the author date in UNIX **seconds**, matching
+/// `HistorySession.mtime` — the frontend converts both once, at the boundary.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct DayCommit {
+    pub sha: String,
+    pub author: String,
+    pub when: u64,
+    pub subject: String,
+    /// The repo this came from, as the caller named it — so the frontend can attribute
+    /// a commit to a project without re-resolving paths.
+    pub root: String,
+}
+
+/// Resolve a folder to something that identifies its **repository**, not its checkout.
+///
+/// This is the whole reason the Trail doesn't double-count: Episko is worktree-heavy,
+/// and every worktree of one repo shares one object store, so asking each of them for
+/// "commits since Monday" returns the same commits N times. Worktrees share a
+/// *common dir*, so that is the identity.
+///
+/// `--path-format=absolute` matters: plain `--git-common-dir` answers `.git` for a main
+/// worktree, which is relative to the cwd and would compare unequal to the absolute
+/// path a linked worktree reports for the very same repo.
+fn repo_identity(dir: &str) -> Option<String> {
+    let out = sys_command("git")
+        .env("LC_ALL", "C")
+        .arg("-C").arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(norm_path(&s)) }
+}
+
+/// Commits across `roots` in the last `days` days, for the Trail's "behind you" half.
+///
+/// **One git call per repository, never one per day or per commit.** A day view over a
+/// month is 30 buckets; asking git per bucket would be 30 processes for what one pass
+/// answers, and the frontend groups by date anyway.
+///
+/// Includes every local branch (`--branches`), not just HEAD: with several worktrees
+/// open, the work that landed today is spread across them, and a Trail that only saw
+/// the checked-out branch would miss most of it. Merges are kept — "merged #43" is
+/// exactly the kind of thing a day is remembered by.
+///
+/// Every author is returned, not just the current user. Seeing that a colleague pushed
+/// while you were elsewhere is the point of the collaborator work, and the frontend
+/// decides how to show whose commit it was.
+///
+/// Failures are per-repo and silent: a root that isn't a repo, has no commits yet, or
+/// has since been deleted contributes nothing rather than failing the whole call.
+#[tauri::command(async)]
+pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<DayCommit> = Vec::new();
+    // git's approxidate cannot express a date before the UNIX epoch, and it fails
+    // *silently*: `--since=36500.days.ago` matches NOTHING rather than everything, so an
+    // over-wide window would blank the Trail instead of widening it — the worst kind of
+    // bug, because "no work happened" is a plausible-looking answer.
+    //
+    // A window wider than git can express simply means "all history", which is what
+    // omitting `--since` already means — so say that, rather than guessing a magic
+    // cutoff that drifts further from the epoch every year.
+    const WIDER_THAN_GIT_CAN_SAY: u64 = 18_000; // ~49 years; the epoch is the real limit
+    let since = format!("--since={days}.days.ago");
+
+    for root in &roots {
+        // Dedupe by repository, keeping the first-named root as the label.
+        let id = repo_identity(root).unwrap_or_else(|| norm_path(root));
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+
+        let mut args: Vec<&str> = vec!["--no-optional-locks", "log", "--branches"];
+        if days < WIDER_THAN_GIT_CAN_SAY {
+            args.push(&since);
+        }
+        // NUL between fields so a subject containing any printable character still
+        // parses; %s is the subject *line*, so it can't contain a newline and records
+        // stay newline-separated.
+        args.push("--format=%H%x00%an%x00%at%x00%s");
+
+        let res = sys_command("git")
+            .env("LC_ALL", "C")
+            .arg("-C").arg(root)
+            .args(&args)
+            .output();
+        let Ok(res) = res else { continue };
+        if !res.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&res.stdout).lines() {
+            let mut p = line.split('\0');
+            let (Some(sha), Some(author), Some(at), Some(subject)) =
+                (p.next(), p.next(), p.next(), p.next())
+            else {
+                continue;
+            };
+            let Ok(when) = at.parse::<u64>() else { continue };
+            out.push(DayCommit {
+                sha: sha.chars().take(9).collect(),
+                author: author.to_string(),
+                when,
+                subject: subject.to_string(),
+                root: root.clone(),
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,6 +1356,98 @@ mod tests {
             .join(repo.file_name().unwrap())
     }
 
+
+    /// The Trail asks for commits across every project folder it knows, and Episko is
+    /// worktree-heavy — so the same repository arrives under several paths. Counting it
+    /// once per checkout would triple a busy day's history.
+    #[test]
+    fn git_log_days_counts_a_repo_once_however_many_worktrees_name_it() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let commit = |msg: &str| {
+            git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        };
+        commit("first thing");
+        commit("second thing");
+
+        let wt = wt_root(&repo).join("side");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "side", &wt.to_string_lossy()]);
+
+        let root = repo.to_string_lossy().to_string();
+        let side = wt.to_string_lossy().to_string();
+
+        // One checkout: both commits, newest first is not asserted (the frontend sorts).
+        let one = git_log_days(vec![root.clone()], 3650);
+        assert_eq!(one.len(), 2, "expected both commits, got {one:?}");
+        assert!(one.iter().any(|c| c.subject == "first thing"));
+        assert_eq!(one[0].author, "T");
+        assert!(one[0].when > 0, "author date must be a real unix timestamp");
+
+        // Both checkouts of the SAME repo: still two commits, not four.
+        let both = git_log_days(vec![root.clone(), side.clone()], 3650);
+        assert_eq!(both.len(), 2, "worktrees of one repo must not double-count: {both:?}");
+
+        // And the sibling worktree alone answers identically — the dedupe key is the
+        // repository, not whichever path happened to be listed first.
+        assert_eq!(git_log_days(vec![side], 3650).len(), 2);
+
+        let _ = std::fs::remove_dir_all(wt_root(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A folder that isn't a repo (or has been deleted) must contribute nothing rather
+    /// than failing the whole call — the Trail spans every project the user has open.
+    #[test]
+    fn git_log_days_shrugs_off_a_root_that_is_not_a_repo() {
+        let plain = scratch_dir();
+        assert!(git_log_days(vec![plain.to_string_lossy().to_string()], 30).is_empty());
+        assert!(git_log_days(vec!["/nope/does/not/exist".into()], 30).is_empty());
+
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                     "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "only one"]);
+        // A bad root alongside a good one still yields the good one's commits.
+        let mixed = git_log_days(vec!["/nope".into(), repo.to_string_lossy().to_string()], 3650);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].subject, "only one");
+
+        let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// `--since` is what bounds the scan; a commit outside the window must not appear,
+    /// or the "last 30 days" window silently becomes "everything".
+    #[test]
+    fn git_log_days_honours_the_window() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        // GIT_AUTHOR_DATE/COMMITTER_DATE are the only way to fabricate an old commit.
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_DATE", "2001-02-03T04:05:06")
+            .env("GIT_COMMITTER_DATE", "2001-02-03T04:05:06")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=T",
+                   "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "ancient"])
+            .output()
+            .expect("git");
+        assert!(out.status.success());
+
+        let root = repo.to_string_lossy().to_string();
+        assert!(git_log_days(vec![root.clone()], 30).is_empty(),
+                "a 2001 commit must fall outside a 30-day window");
+        assert_eq!(git_log_days(vec![root.clone()], 20_000).len(), 1, "a wide window must include it");
+
+        // The clamp, asserted as behaviour rather than trusted: git's approxidate
+        // matches NOTHING past ~100 years, so without clamping an over-wide window
+        // would silently blank the Trail. It must widen, never empty.
+        assert_eq!(git_log_days(vec![root.clone()], 36_500).len(), 1, "an over-wide window must not go blank");
+        assert_eq!(git_log_days(vec![root], u64::MAX).len(), 1, "and neither must an absurd one");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 
     /// `repo_root_of` replaces a `git rev-parse` that cost ~140ms per call, so it has
     /// to give the same answer git does — including where git *refuses* one. Each case

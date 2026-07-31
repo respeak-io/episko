@@ -169,6 +169,11 @@ export function closeExternalView() {
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
   ($("extPane") as HTMLElement).hidden = true;
+  // Despite the name this is the one "drop whatever mirror owns the stage" call —
+  // the dormant flows below already route through it — so every mirror pane hides
+  // here. Done by element rather than by importing ./trailui, which would close an
+  // import cycle (trailui → panes → mirror).
+  ($("trailPane") as HTMLElement).hidden = true;
 }
 // ---------- dormant (restorable) sessions ----------
 // Clicking a dormant row mirrors its transcript read-only — the same pane an
