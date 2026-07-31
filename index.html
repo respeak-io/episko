@@ -76,9 +76,11 @@
                segments filter the SAME list rather than switching component, which is
                what keeps the meta and project views from drifting apart. -->
           <div class="threads-view" id="threadsPane" hidden>
-            <div class="th-bar">
-              <div class="th-alt" id="threadsAlt"></div>
-              <span class="th-hint">⏎ open · ⌘⏎ dispatch</span>
+            <div class="ov-bar">
+              <span class="ov-name">Threads</span>
+              <span class="ov-sub" id="threadsCount"></span>
+              <div class="th-alt" id="threadsGroup"></div>
+              <span class="ov-right"><div class="th-alt" id="threadsAlt"></div></span>
             </div>
             <div class="th-scroll"><table class="th-tbl" id="threadsTbl"></table></div>
           </div>
@@ -103,9 +105,12 @@
           <!-- The board: RFC #24's committable cards. Its own pane because the
                middle columns hold live panes, not summaries of them. -->
           <div class="board-view" id="boardPane" hidden>
-            <div class="b-bar">
-              <span class="b-proj" id="boardProj"></span>
-              <span class="b-sub">one markdown file per card, committed with the repo</span>
+            <div class="ov-bar">
+              <span class="ov-name">Board</span>
+              <span class="ov-sub">one markdown file per card, committed with the repo</span>
+              <span class="ov-right">
+                <select class="ov-sel" id="boardScope" aria-label="Project"></select>
+              </span>
             </div>
             <div class="b-cols" id="boardCols"></div>
           </div>
@@ -114,26 +119,31 @@
                derived/typed layout, and sharing a container would make both sets of
                styles fight over the same element. -->
           <div class="trail-view" id="trailPane" hidden>
+            <div class="ov-bar">
+              <span class="ov-name">Trail</span>
+              <span class="ov-sub" id="trailRange"></span>
+              <span class="ov-right">
+                <select class="ov-sel" id="trailWindow" aria-label="How far back"></select>
+              </span>
+            </div>
             <div class="trail-cols">
               <section class="trail-left">
-                <div class="trail-head">
-                  <div class="th-alt" id="trailAlt"></div>
-                </div>
-                <div class="trail-head">
-                  <h3>Behind you</h3>
-                  <span class="trail-sub" id="trailRange">derived · last 14 days</span>
-                  <span class="trail-spacer"></span>
-                  <button class="mini-act" id="trailWider" title="Look further back">Wider ↔</button>
-                </div>
                 <div id="trailDays"></div>
               </section>
               <section class="trail-right">
                 <div class="trail-head">
                   <h3>Ahead of you</h3>
                   <span class="trail-sub" id="trailNoteCount">0 open</span>
+                  <span class="trail-spacer"></span>
+                  <!-- The scope lives HERE, not as a segmented row across the top: with a
+                       dozen projects that row wrapped to two lines and forced a horizontal
+                       scroll. A select costs one line whatever the count — and filtering
+                       here also decides which project a new note is filed against. -->
+                  <select class="ov-sel" id="trailScope" aria-label="Project"></select>
                 </div>
                 <form class="trail-jot" id="trailJot">
-                  <input id="trailInput" type="text" autocomplete="off" spellcheck="false"
+                  <input id="trailInput" type="text" autocomplete="off" autocorrect="off"
+                         autocapitalize="off" spellcheck="false"
                          placeholder="Jot an idea…" aria-label="Jot an idea" />
                   <button class="act primary" type="submit">Add</button>
                 </form>
@@ -174,7 +184,8 @@
 
     <div class="scrim" id="scrim"></div>
     <div class="palette" id="palette" role="dialog" aria-modal="true">
-      <input id="palInput" placeholder="Search sessions, run a command…   ⟩ @ /" autocomplete="off" />
+      <input id="palInput" placeholder="Search sessions, run a command…   ⟩ @ /"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div class="pal-list" id="palList"></div>
       <div class="pal-foot" id="palFoot"></div>
     </div>

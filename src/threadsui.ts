@@ -10,9 +10,10 @@
 // list and drops that column. There is no second screen to keep in sync.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
-import { esc, relTime, uUsd2 } from "./format";
+import { esc, relTime } from "./format";
 import { noteList, removeNote } from "./notes";
 import {
   ALLOW_ALL, claimForSession, claimText, DEFAULT_POLICY, dropClaim, recordClaim,
@@ -24,8 +25,8 @@ import {
   threadsOpen, threadsProject,
 } from "./state";
 import {
-  BAND_META, bandsOf, buildThreads, dispatchable, inProject, threadStatusKey,
-  type GhThread, type Thread,
+  bandsOf, buildThreads, dispatchable, inProject, threadBand, threadStatusKey,
+  groupThreads, type GhThread, type GroupMode, type Thread,
 } from "./thread";
 import { altitudeSegs } from "./altitude";
 
@@ -66,7 +67,10 @@ async function refreshGh(force = false): Promise<void> {
       allowByRoot.set(root, await invoke<ClaimAllow>("claim_policy", { root }).catch(() => ALLOW_ALL));
     } catch (e) {
       // gh missing, logged out, or not a GitHub repo — a quiet absence, not breakage.
-      ghByRoot.set(root, { threads: [], viewer: null, available: false, reason: String(e) });
+      // The reason shown is ours, not the raw rejection: a stringified TypeError in the
+      // middle of the board tells the user nothing they can act on.
+      dlog("warn", `gh: ${root} — ${e}`);
+      ghByRoot.set(root, { threads: [], viewer: null, available: false, reason: "GitHub is not reachable from here" });
     }
   }));
   if (threadsOpen()) { renderThreads(); renderThreadsInspector(); }
@@ -79,6 +83,15 @@ function ghReason(): string | null {
   if (!states.length) return null;
   if (states.some((s) => s.available)) return null;
   return states.find((s) => s.reason)?.reason ?? null;
+}
+
+/// How the rows are grouped. Urgency answers "what should I do next", recency answers
+/// "what has been going on" — different questions, so this is a preference.
+export let threadGroup: GroupMode = (localStorage.getItem("cc-thread-group") as GroupMode) || "urgency";
+export function setThreadGroup(m: GroupMode) {
+  threadGroup = m === "recency" ? "recency" : "urgency";
+  localStorage.setItem("cc-thread-group", threadGroup);
+  if (threadsOpen()) renderThreads();
 }
 
 const GLYPH: Record<string, string> = {
@@ -127,31 +140,39 @@ function altHtml(): string {
 
 function actionFor(t: Thread): string {
   if (t.sess?.attention) return `<button class="mini-act ans" data-answer="${esc(t.id)}">Answer</button>`;
-  if (t.sess) return `<button class="mini-act" data-open="${esc(t.id)}">Open</button>`;
-  if (dispatchable(t)) return `<button class="mini-act go" data-dispatch="${esc(t.id)}">⏎ dispatch</button>`;
-  return `<button class="mini-act" data-open="${esc(t.id)}" disabled>—</button>`;
+  if (t.sess) return `<button class="th-go" data-open="${esc(t.id)}" title="Open this pane">→</button>`;
+  // A play button, not the word "dispatch": the column is one shape repeated down the
+  // page, and by the second row you already know what it does.
+  if (dispatchable(t)) return `<button class="th-go disp" data-dispatch="${esc(t.id)}" title="Start an agent on this">▶</button>`;
+  return "";
+}
+
+/// Issues and PRs are different objects and read as one blur when they share a chip
+/// shape, so each gets its own glyph and colour: ○ an issue, ⑂ a pull request.
+function sourceChip(t: Thread): string {
+  if (t.source === "issue") return `<span class="th-src issue" title="Issue #${t.number}">○ ${t.number}</span>`;
+  if (t.source === "pr") return `<span class="th-src pr" title="Pull request #${t.number}">⑂ ${t.number}</span>`;
+  if (t.source === "note") return `<span class="th-src note" title="A note you jotted">note</span>`;
+  if (t.source === "task") return `<span class="th-src" title="A task run">task</span>`;
+  if (t.source === "branch") return `<span class="th-src" title="Git state">git</span>`;
+  return "";
 }
 
 function rowHtml(t: Thread, showProject: boolean): string {
   const key = threadStatusKey(t);
   const hot = key === "attention" || key === "error";
-  const src = t.source === "note" ? `<span class="th-src note">note</span>`
-    : t.source === "task" ? `<span class="th-src">task</span>`
-    : t.source === "branch" ? `<span class="th-src">git</span>`
-    : t.number ? `<span class="th-src ${t.source}">#${t.number}</span>` : "";
-  // Initials, deliberately not an avatar: GitHub tells us who was *assigned* and git
-  // who *pushed* — neither is presence, and a face would imply liveness we cannot see.
   const who = t.whoShort
     ? `<span class="th-who${t.who?.isMe ? " me" : ""}" title="${esc(t.who!.login)}">${esc(t.whoShort)}</span>`
     : "";
+  // The project reads as a word, not a colour swatch: at the meta altitude the dot was
+  // a second encoding of something the name already says, and it crowded the title.
+  const proj = showProject ? `<td class="th-p">${esc(t.project)}</td>` : "";
   return `<tr class="th-row${hot ? " hot" : ""}" data-open="${esc(t.id)}">
     <td class="th-g ${GCLS[key] ?? "g-idle"}">${GLYPH[key] ?? "·"}</td>
-    ${showProject ? `<td class="th-p"><span class="th-pc"><i style="background:${esc(accentFor(t.colorKey))}"></i>${esc(t.project)}</span></td>` : ""}
-    <td><div class="th-t">${src}${who}<span class="th-txt">${esc(t.title)}</span></div></td>
-    <td class="th-w">${esc(t.where)}</td>
-    <td class="th-s">${esc(t.state)}</td>
+    ${proj}
+    <td class="th-tcell"><div class="th-t">${sourceChip(t)}${who}<span class="th-txt" title="${esc(t.title)}">${esc(t.title)}</span></div>
+      <div class="th-sub">${esc(t.state)}${t.where ? ` · ${esc(t.where)}` : ""}</div></td>
     <td class="th-n">${esc(t.since ? relTime(t.since) : "—")}</td>
-    <td class="th-n th-c">${t.cost != null ? esc(uUsd2(t.cost)) : "—"}</td>
     <td class="th-a">${actionFor(t)}</td>
   </tr>`;
 }
@@ -159,34 +180,29 @@ function rowHtml(t: Thread, showProject: boolean): string {
 export function renderThreads(): void {
   if (!threadsOpen()) return;
   $("threadsAlt").innerHTML = altHtml();
+  $("threadsGroup").innerHTML = (["urgency", "recency"] as GroupMode[]).map((m) =>
+    `<button class="th-seg${threadGroup === m ? " on" : ""}" data-group="${m}">${m === "urgency" ? "By urgency" : "By recency"}</button>`).join("");
 
   const threads = current();
   const showProject = threadsProject() === null;
-  const cols = showProject ? 8 : 7;
-  // The widths live here, not on the body cells: under `table-layout: fixed` a column's
-  // width is taken from the FIRST row, so widths declared on `<td>`s are ignored and
-  // every column ends up equal. A colgroup states them once, authoritatively; the
-  // Thread column is deliberately unsized so it absorbs whatever is left.
-  const colgroup = `<colgroup>` +
-    `<col style="width:18px">` +
-    (showProject ? `<col style="width:98px">` : "") +
-    `<col>` +
-    `<col style="width:140px"><col style="width:176px">` +
-    `<col style="width:52px"><col style="width:60px"><col style="width:92px">` +
-    `</colgroup>`;
-  const head = `<thead><tr><th></th>${showProject ? "<th>Project</th>" : ""}` +
-    `<th>Thread</th><th>Where</th><th>State</th><th class="r">Age</th><th class="r">Spend</th><th></th></tr></thead>`;
+  const cols = showProject ? 5 : 4;
+  // The title column is unsized so it takes everything left over — reading the name is
+  // the whole point of the row, and Spend was a number nobody was scanning for.
+  const colgroup = `<colgroup><col style="width:18px">` +
+    (showProject ? `<col style="width:104px">` : "") +
+    `<col><col style="width:64px"><col style="width:34px"></colgroup>`;
 
-  const groups = bandsOf(threads);
-  const body = groups.map((g) => {
-    const m = BAND_META[g.band];
-    return `<tr class="th-band"><th colspan="${cols}"><span class="th-blbl b-${g.band}">` +
-      `${esc(m.label)}<span class="th-bn">${g.threads.length}</span>` +
-      `<span class="th-bx">${esc(m.hint)}</span></span></th></tr>` +
-      g.threads.map((t) => rowHtml(t, showProject)).join("");
-  }).join("");
+  const body = groupThreads(threads, threadGroup).map((g) =>
+    `<tr class="th-band"><th colspan="${cols}"><span class="th-blbl b-${esc(g.id)}">` +
+    `${esc(g.label)}<span class="th-bn">${g.threads.length}</span>` +
+    `${g.hint ? `<span class="th-bx">${esc(g.hint)}</span>` : ""}</span></th></tr>` +
+    g.threads.map((t) => rowHtml(t, showProject)).join("")).join("");
 
-  $("threadsTbl").innerHTML = colgroup + head + `<tbody>${ghRow(cols)}${body || emptyRow(cols)}</tbody>`;
+  $("threadsTbl").innerHTML = colgroup + `<tbody>${ghRow(cols)}${body || emptyRow(cols)}</tbody>`;
+  const needs = threads.filter((t) => threadBand(t) === "needs").length;
+  $("threadsCount").textContent = needs
+    ? `${needs} need${needs === 1 ? "s" : ""} you · ${threads.length} threads`
+    : `${threads.length} threads`;
 }
 
 function emptyRow(cols: number): string {
@@ -299,6 +315,9 @@ export async function releaseClaimFor(sessionId: string): Promise<void> {
 function openThread(id: string): void {
   const t = find(id);
   if (!t) return;
+  // An issue or a PR opens where it lives. Episko mirrors a little of GitHub, never
+  // all of it, so "read the whole thing" means the browser.
+  if (t.url) { void openUrl(t.url).catch((e) => dlog("warn", `open ${t.url} failed — ${e}`)); return; }
   if (t.sess) {
     // Leaving the board for a pane is a normal activation — `setActive` drops the
     // mirror through closeExternalView, so the board hides itself.
@@ -377,6 +396,8 @@ export function wireThreads(): void {
       openThreads(alt.dataset.alt || null);
       return;
     }
+    const grp = t.closest<HTMLElement>("[data-group]");
+    if (grp) { setThreadGroup(grp.dataset.group as GroupMode); return; }
     const ans = t.closest<HTMLElement>("[data-answer]");
     if (ans) {
       const th = find(ans.dataset.answer!);

@@ -300,6 +300,57 @@ export function sortThreads(threads: Thread[]): Thread[] {
   });
 }
 
+// ---------- grouping ----------
+// Two ways to read the same list, because they answer different questions. Urgency
+// asks "what should I do next"; recency asks "what has been going on". Which one is
+// useful depends on whether you are working or catching up, so it is a preference
+// rather than a decision made for the user.
+export type GroupMode = "urgency" | "recency";
+
+export interface RecencyBucket { id: string; label: string; maxAgeMs: number }
+/// Deliberately coarse and human: "today", "this week" — not a date per row. The exact
+/// timestamp is one hover away, and a column of dates is not something anyone scans.
+export const RECENCY: RecencyBucket[] = [
+  { id: "today", label: "Today", maxAgeMs: 24 * 3600e3 },
+  { id: "3d", label: "Last 3 days", maxAgeMs: 3 * 24 * 3600e3 },
+  { id: "week", label: "Last week", maxAgeMs: 7 * 24 * 3600e3 },
+  { id: "older", label: "Earlier", maxAgeMs: Infinity },
+];
+
+export function recencyOf(t: Thread, now = Date.now()): RecencyBucket {
+  // No known age sorts with the oldest rather than pretending to be new — a row with
+  // no timestamp is exactly the one you have not looked at.
+  const age = t.since > 0 ? now - t.since : Infinity;
+  return RECENCY.find((b) => age <= b.maxAgeMs) ?? RECENCY[RECENCY.length - 1];
+}
+
+/** One group of rows, however they were grouped. */
+export interface ThreadGroup { id: string; label: string; hint: string; threads: Thread[] }
+
+/// Group by recency, newest bucket first, empties dropped.
+export function recencyGroups(threads: Thread[], now = Date.now()): ThreadGroup[] {
+  return RECENCY
+    .map((b) => ({
+      id: b.id,
+      label: b.label,
+      hint: "",
+      threads: threads.filter((t) => recencyOf(t, now).id === b.id)
+        .sort((a, b2) => (b2.since || 0) - (a.since || 0)),
+    }))
+    .filter((g) => g.threads.length > 0);
+}
+
+/// Group by urgency band — the default, and what `urgencyRank` already encodes.
+export function urgencyGroups(threads: Thread[]): ThreadGroup[] {
+  return bandsOf(threads).map((g) => ({
+    id: g.band, label: BAND_META[g.band].label, hint: BAND_META[g.band].hint, threads: g.threads,
+  }));
+}
+
+export function groupThreads(threads: Thread[], mode: GroupMode, now = Date.now()): ThreadGroup[] {
+  return mode === "recency" ? recencyGroups(threads, now) : urgencyGroups(threads);
+}
+
 /** Group into bands, dropping empty ones. */
 export function bandsOf(threads: Thread[]): { band: Band; threads: Thread[] }[] {
   return BANDS

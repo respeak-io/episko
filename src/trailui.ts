@@ -11,6 +11,7 @@
 //           one keystroke apart; that arrow is the reason the two share a screen.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, relTime, uUsd2 } from "./format";
@@ -18,7 +19,6 @@ import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, setNoteProject, type Note } from "./notes";
 import { activeProjectCtx, launch } from "./panes";
 import { accentFor, FAVORITES, sessions, setActiveId, setMirror, trailOpen, trailProject } from "./state";
-import { altitudeSegs } from "./altitude";
 import {
   dayByProject, dayFacts, dayIsClosed, deterministicHeadline, trailDays,
   type DayProject, type TrailCommit, type TrailDay, type TrailEvent,
@@ -150,19 +150,33 @@ function dayGutter(d: TrailDay): string {
   </div>`;
 }
 
+// The two kinds of thing a day contains are labelled rather than left to a glyph.
+// "What does the check mean versus the fork?" is the question the glyphs alone
+// produced, and a four-letter word answers it permanently.
 function sessionRow(s: TrailDay["sessions"][number]): string {
   const live = sessions.has(s.id);
   return `<div class="td-item" data-sess="${esc(s.id)}" data-cwd="${esc(s.cwd)}">
-    <span class="td-ic ${live ? "g-work" : "g-done"}">${live ? "◐" : "✓"}</span>
+    <span class="td-kind sess">${live ? "live" : "chat"}</span>
     <span class="td-t">${esc(s.title)}</span>
     <span class="td-r">${s.branch ? esc(s.branch) : ""}</span>
   </div>`;
 }
 
-function commitRow(c: TrailCommit): string {
+/// A commit, with the issue or PR it mentions. `fix: …(#42)` and `Merge pull request
+/// #30` both carry their number in the subject, which is the only link git has to
+/// GitHub — so it is read from there rather than guessed.
+function commitRow(c: TrailCommit, evByNumber: Map<number, TrailEvent>): string {
+  const refs = [...new Set([...c.subject.matchAll(/#(\d+)/g)].map((m) => +m[1]))].slice(0, 2);
+  const chips = refs.map((n) => {
+    const e = evByNumber.get(n);
+    return e ? `<a class="td-ev ${esc(e.event)}" href="${esc(e.url)}" data-ext="1"
+        title="${esc(e.event)} ${esc(e.kind)} #${n} — ${esc(e.title)}">${EVENT_GLYPH[e.event] ?? "·"} #${n}</a>`
+      : `<span class="td-ev">#${n}</span>`;
+  }).join("");
   return `<div class="td-item">
-    <span class="td-ic td-commit">⎇</span>
+    <span class="td-kind commit">code</span>
     <span class="td-t">${esc(c.subject)}</span>
+    ${chips ? `<span class="td-evs-inline">${chips}</span>` : ""}
     <span class="td-r">${esc(c.author)}</span>
   </div>`;
 }
@@ -178,6 +192,18 @@ function eventChip(e: TrailEvent): string {
 /// One project's slice of a day. The grouping is the point: a flat list of everything
 /// reads as noise the moment two projects are in play, because you cannot tell which
 /// commits belong to which sessions.
+/// Number → the event it belongs to, so a commit can carry the state of the thing it
+/// references rather than a bare "#42".
+function evIndex(events: TrailEvent[]): Map<number, TrailEvent> {
+  const m = new Map<number, TrailEvent>();
+  // A merge beats an opening for the same number: it is the later, more useful fact.
+  for (const e of events) {
+    const cur = m.get(e.number);
+    if (!cur || e.event !== "opened") m.set(e.number, e);
+  }
+  return m;
+}
+
 function projectBlock(g: DayProject): string {
   return `<div class="td-proj">
     <div class="td-proj-h">
@@ -187,7 +213,7 @@ function projectBlock(g: DayProject): string {
     </div>
     <div class="td-items">
       ${g.sessions.map(sessionRow).join("")}
-      ${g.commits.map(commitRow).join("")}
+      ${g.commits.map((c) => commitRow(c, evIndex(g.events))).join("")}
     </div>
   </div>`;
 }
@@ -232,11 +258,24 @@ function visibleDays(): TrailDay[] {
     .filter((d) => d.sessions.length || d.commits.length || d.events.length);
 }
 
+function renderChrome(): void {
+  const p = trailProject();
+  $("trailRange").textContent = `derived · last ${trailRange} days${p ? ` · ${projectNameOf(p)}` : ""}`;
+  ($("trailWindow") as HTMLSelectElement).innerHTML = RANGES
+    .map((r) => `<option value="${r}"${r === trailRange ? " selected" : ""}>${r} days</option>`).join("");
+  // Every project that has a favourite or a session, not only ones with history in
+  // this window — you need to be able to select an empty project to file a note to it.
+  const keys = new Set<string>([...FAVORITES.map((f) => f.path)]);
+  for (const s of sessions.values()) keys.add(s.colorKey);
+  for (const d of days) { for (const x of d.sessions) keys.add(x.colorKey); for (const c of d.commits) keys.add(c.root); }
+  ($("trailScope") as HTMLSelectElement).innerHTML =
+    `<option value=""${p ? "" : " selected"}>All projects</option>` +
+    [...keys].filter(Boolean).sort().map((k) =>
+      `<option value="${esc(k)}"${k === p ? " selected" : ""}>${esc(projectNameOf(k))}</option>`).join("");
+}
+
 function renderDays(): void {
-  $("trailRange").textContent = `derived · last ${trailRange} days`;
-  $("trailAlt").innerHTML = altitudeSegs(
-    days.flatMap((d) => [...d.sessions.map((s) => s.colorKey), ...d.commits.map((c) => c.root)]),
-    trailProject());
+  renderChrome();
   const host = $("trailDays");
   if (loading) { host.innerHTML = `<div class="td-empty">Reading your history…</div>`; return; }
   if (!days.length) {
@@ -357,6 +396,8 @@ export function renderTrailHeader(): void {
   $("hPath").textContent = "";
 }
 
+/// The Trail hides the inspector (see `.app.ov`), so this only runs if that mode is
+/// ever turned off. Kept minimal rather than deleted: renderAll still calls it.
 export function renderTrailInspector(): void {
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "derived";
@@ -412,26 +453,22 @@ export function wireTrail(): void {
     if (addNote(input.value, openedFrom)) { input.value = ""; renderNotes(); }
   });
 
-  $("trailAlt").addEventListener("click", (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-alt]");
-    if (!b) return;
-    // Re-open rather than mutate: the altitude lives in `mirror`, and one entry point
-    // keeps the header, the notes and the days in step with it.
-    openTrail(b.dataset.alt || null);
+  $("trailScope").addEventListener("change", (e) => {
+    // Re-open rather than mutate: the scope lives in `mirror`, and one entry point
+    // keeps the days, the notes and what a new note gets filed against in step.
+    openTrail((e.target as HTMLSelectElement).value || null);
   });
 
-  $("trailWider").addEventListener("click", () => {
-    setTrailRange(RANGES[(RANGES.indexOf(trailRange) + 1) % RANGES.length]);
-    renderTrailInspector();
-    void loadTrail();
+  $("trailWindow").addEventListener("change", (e) => {
+    setTrailRange(+(e.target as HTMLSelectElement).value);
   });
 
-  $("inspector").addEventListener("click", (e) => {
-    if (!trailOpen()) return;
-    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-range]");
-    if (!b) return;
-    setTrailRange(+b.dataset.range!);
-    renderTrailInspector();
-    void loadTrail();
+  // Chips and commit references open on GitHub — Episko mirrors a little of it, never
+  // all of it, so "read the whole thing" means the browser.
+  $("trailPane").addEventListener("click", (e) => {
+    const a = (e.target as HTMLElement).closest<HTMLAnchorElement>("a[data-ext]");
+    if (!a) return;
+    e.preventDefault();
+    void openUrl(a.href).catch((err) => dlog("warn", `open ${a.href} failed — ${err}`));
   });
 }

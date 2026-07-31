@@ -1348,60 +1348,67 @@ select.in-ctl { cursor: pointer; }
 
 /* ── the Threads board (src/threadsui.ts) ───────────────────────────────────
  * A ranked table, not a grid of cards: a grid asks you to search it, a ranked
- * list has one entry point — the top row. Bands are the only structure. */
+ * list has one entry point — the top row.
+ *
+ * Two lines per row, because reading the NAME is the whole point: the title
+ * gets a full line to itself and the state/branch sit under it in a quieter
+ * one, instead of five columns fighting for the same width. */
 .threads-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
-.th-bar { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 13px; background: var(--panel); border-bottom: 1px solid var(--hair); }
 .th-alt { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-sm); background: var(--bg-2); border: 1px solid var(--hair); }
-.th-seg { display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 9px; border: 0; border-radius: 6px; cursor: pointer; background: none; font: 600 10.5px var(--font-ui); color: var(--muted-2); }
+.th-seg { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 9px; border: 0; border-radius: 6px; cursor: pointer; background: none; font: 600 10px var(--font-ui); color: var(--muted-2); white-space: nowrap; }
 .th-seg:hover { color: var(--text); }
 .th-seg.on { color: var(--accent-ink); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .th-seg i { width: 6px; height: 6px; border-radius: 2px; flex: none; }
-.th-hint { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); }
+/* The altitude picker scrolls rather than wrapping: with a dozen projects a wrapping
+ * row silently ate a third of the pane and pushed the table off screen. */
+.ov-right .th-alt, .trail-head .th-alt { max-width: min(46vw, 520px); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.ov-right .th-alt::-webkit-scrollbar, .trail-head .th-alt::-webkit-scrollbar { height: 0; }
 
 .th-scroll { flex: 1; min-height: 0; overflow: auto; }
-/* fixed, not auto: with auto layout a long thread title contributes its full
- * natural width and pushes the action column off the stage, so the one control
- * that matters gets clipped. Fixed makes the sized columns authoritative and
- * gives the Thread column whatever is left. */
-.th-tbl { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; }
-.th-tbl thead th { position: sticky; top: 0; z-index: 2; padding: 7px 8px; text-align: left; background: var(--bg-2); border-bottom: 1px solid var(--hair); font: 700 9px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
-.th-tbl thead th.r { text-align: right; }
-/* Band labels deliberately do NOT stick: several pinned at one offset pile into
- * each other, and every row's own glyph already says which band it is in. */
-.th-band th { padding: 12px 8px 5px; border: 0; background: linear-gradient(180deg, var(--bg-2), transparent); }
-.th-blbl { display: inline-flex; align-items: center; gap: 8px; font: 700 9.5px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--bc, var(--muted-2)); }
+.th-tbl { width: 100%; min-width: 420px; border-collapse: collapse; table-layout: fixed; }
+/* Bands get real air around them — at a glance you should see three groups, not
+ * one continuous list with occasional small print. */
+.th-band th { padding: 20px 10px 6px; border: 0; text-align: left; }
+.th-band:first-child th { padding-top: 10px; }
+.th-blbl { display: inline-flex; align-items: center; gap: 8px; font: 700 10px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--bc, var(--muted-2)); }
 .th-bn { padding: 1px 6px; border-radius: 5px; font: 9.5px var(--font-mono); letter-spacing: 0; color: var(--bc, var(--muted-2)); background: color-mix(in srgb, var(--bc, var(--muted-2)) 14%, transparent); border: 1px solid color-mix(in srgb, var(--bc, var(--muted-2)) 28%, transparent); }
 .th-bx { font: 400 10px var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--muted-2); }
 .b-needs { --bc: var(--st-attention); } .b-running { --bc: var(--st-working); }
 .b-move { --bc: var(--st-done); } .b-open { --bc: var(--st-idle); }
+.b-today { --bc: var(--accent-ink); } .b-3d { --bc: var(--st-working); }
+.b-week { --bc: var(--st-idle); } .b-older { --bc: var(--muted-2); }
 
 .th-row { cursor: pointer; }
-.th-row td { padding: 6px 8px; border-bottom: 1px solid var(--hair); vertical-align: middle; }
+.th-row td { padding: 7px 10px; border-bottom: 1px solid var(--hair); vertical-align: top; }
 .th-row:hover td { background: var(--surface); }
 .th-row.hot td { background: color-mix(in srgb, var(--st-attention) 7%, transparent); }
 .th-row.hot:hover td { background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
 .th-g { text-align: center; font: 11px var(--font-mono); }
-.th-pc { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 10.5px var(--font-mono); color: var(--muted); }
-.th-pc i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
-.th-t { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; font-size: 12px; }
-.th-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-p { font: 10.5px var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-tcell { min-width: 0; }
+.th-t { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.th-txt { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .th-row.hot .th-txt { font-weight: 620; }
-.th-src { flex: none; padding: 1px 5px; border-radius: 4px; font: 9px var(--font-mono); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+/* The second line: everything that used to fight the title for width. */
+.th-sub { margin-top: 2px; font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-row.hot .th-sub { color: var(--st-attention); }
+/* An issue and a PR are different objects; one chip shape made them a blur. */
+.th-src { flex: none; padding: 1px 5px; border-radius: 4px; font: 9.5px var(--font-mono); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
 .th-src.note { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 28%, transparent); }
-.th-w { font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.th-s { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.th-row.hot .th-s { color: var(--st-attention); }
-.th-n { text-align: right; font: 10px var(--font-mono); color: var(--muted-2); }
+.th-src.issue { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 30%, transparent); background: color-mix(in srgb, #7cc7ff 10%, transparent); }
+.th-src.pr { color: #c3b0ff; border-color: color-mix(in srgb, #c3b0ff 32%, transparent); background: color-mix(in srgb, #c3b0ff 10%, transparent); }
+.th-who { flex: none; display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 5px; font: 700 8.5px var(--font-mono); color: #9fd8ff; background: color-mix(in srgb, #7cc7ff 16%, transparent); border: 1px solid color-mix(in srgb, #7cc7ff 34%, transparent); }
+.th-who.me { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+/* Age never wraps — "13h" over two lines was the table telling you it had no room. */
+.th-n { text-align: right; font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
 .th-a { text-align: right; }
+.th-go { width: 24px; height: 24px; border-radius: 6px; cursor: pointer; font: 11px var(--font-ui); color: var(--muted-2); background: var(--bg-2); border: 1px solid var(--hair); }
+.th-go:hover { color: var(--text); border-color: var(--hair-strong); }
+.th-go.disp { color: var(--accent-ink); border-color: var(--accent-line); }
+.th-go.disp:hover { background: var(--accent-wash); }
 .mini-act.ans { color: var(--st-attention); border-color: color-mix(in srgb, var(--st-attention) 34%, transparent); background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
 .mini-act[disabled] { opacity: .4; cursor: default; }
 .th-empty { padding: 22px 12px; max-width: 52ch; font-size: 11.5px; line-height: 1.55; color: var(--muted-2); }
-/* Whose thread it is. Initials, never an avatar: GitHub knows who was assigned and
- * git who pushed — neither is presence, and a face would imply liveness we cannot see. */
-.th-who { flex: none; display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 5px; font: 700 8.5px var(--font-mono); color: #9fd8ff; background: color-mix(in srgb, #7cc7ff 16%, transparent); border: 1px solid color-mix(in srgb, #7cc7ff 34%, transparent); }
-.th-who.me { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
-.th-src.issue { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 28%, transparent); }
-.th-src.pr { color: var(--accent-ink); border-color: var(--accent-line); }
 
 /* ── the board (src/boardui.ts) ─────────────────────────────────────────────
  * The middle columns hold LIVE panes, not summaries of them — a card in flight
@@ -1468,3 +1475,30 @@ select.in-ctl { cursor: pointer; }
 .td-ev.closed { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 30%, transparent); background: color-mix(in srgb, var(--st-done) 11%, transparent); }
 .td-ev.opened { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 30%, transparent); background: color-mix(in srgb, #7cc7ff 11%, transparent); }
 .trail-head .th-alt { margin-bottom: 2px; }
+
+/* ── overview mode ──────────────────────────────────────────────────────────
+ * Trail, Threads, Board and Orbit each carry their own bar — the view's name,
+ * its scope, its controls. The session header and inspector around them are
+ * describing a session that isn't there, and cost a dense view real space.
+ * Hidden by one class toggled from renderAll, so leaving restores them. */
+.app.ov { grid-template-columns: 232px minmax(0, 1fr); grid-template-areas: "top top" "rail stage" "foot foot"; }
+.app.ov.rail-mini { grid-template-columns: 54px minmax(0, 1fr); }
+.app.ov .insp { display: none; }
+.app.ov .stage-head { display: none; }
+
+/* Each view's own bar: the name, then its controls. One shape for all four. */
+.ov-bar { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 13px; background: linear-gradient(180deg, var(--accent-wash), transparent 90%), var(--panel); border-bottom: 1px solid var(--hair); }
+.ov-name { font: 800 13px var(--font-ui); letter-spacing: -.02em; color: var(--accent-ink); }
+.ov-sub { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.ov-right { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+/* One select instead of a segmented row: with a dozen projects the segments wrapped
+ * to two lines and forced a horizontal scroll. A select costs one line at any count. */
+.ov-sel { height: 22px; max-width: 190px; padding: 0 4px; border-radius: 6px; cursor: pointer; font: 10.5px var(--font-mono); color: var(--muted); background: var(--bg-2); border: 1px solid var(--hair); }
+.ov-sel:hover { color: var(--text); border-color: var(--hair-strong); }
+.ov-sel:focus { outline: none; border-color: var(--accent-line); color: var(--accent-ink); }
+/* Say what a row IS. A check versus a fork glyph left people guessing; a word doesn't. */
+.td-kind { flex: none; width: 30px; text-align: center; padding: 1px 0; border-radius: 4px; font: 8.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); }
+.td-kind.sess { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 26%, transparent); }
+.td-kind.commit { color: #c3b0ff; border-color: color-mix(in srgb, #c3b0ff 26%, transparent); }
+.td-evs-inline { display: inline-flex; gap: 4px; flex: none; margin-left: 6px; }
+.trail-left { padding-top: 10px; }

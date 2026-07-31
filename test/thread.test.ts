@@ -5,8 +5,8 @@ import type { Note } from "../src/notes";
 import { urgencyRank } from "../src/grouping";
 import {
   bandsOf, buildThreads, dispatchable, fromBranchBehind, fromNote, fromSession,
-  fromGh, initials, inProject, sortThreads, threadBand, threadRank,
-  type GhThread, type Thread,
+  fromGh, groupThreads, initials, inProject, recencyGroups, recencyOf, sortThreads,
+  threadBand, threadRank, type GhThread, type Thread,
 } from "../src/thread";
 
 // A Sess is large and mostly irrelevant here; only the fields the adapters read are
@@ -245,5 +245,52 @@ describe("issues and pull requests", () => {
       projectName: names, gh: ghMap,
     });
     expect(threads.filter((t) => t.source === "pr")).toHaveLength(1);
+  });
+});
+
+describe("two ways to read the same list", () => {
+  const NOW = 1_700_000_000_000;
+  const ago = (ms: number) => NOW - ms;
+  const t = (id: string, since: number): Thread => ({
+    id, source: "note", title: id, project: "e", colorKey: "/w/e", where: "", state: "",
+    phase: "unclaimed", since, cost: null,
+  });
+
+  it("buckets by how recent, coarsely and in human terms", () => {
+    const groups = recencyGroups([
+      t("today", ago(2 * 3600e3)),
+      t("twoDays", ago(2 * 24 * 3600e3)),
+      t("fiveDays", ago(5 * 24 * 3600e3)),
+      t("ages", ago(90 * 24 * 3600e3)),
+    ], NOW);
+    expect(groups.map((g) => g.id)).toEqual(["today", "3d", "week", "older"]);
+    expect(groups[0].threads[0].id).toBe("today");
+  });
+
+  it("drops empty buckets rather than rendering blank headers", () => {
+    expect(recencyGroups([t("a", ago(1000))], NOW).map((g) => g.id)).toEqual(["today"]);
+  });
+
+  it("files an ageless row with the oldest — it is the one you haven't looked at", () => {
+    expect(recencyOf(t("x", 0), NOW).id).toBe("older");
+  });
+
+  it("sorts newest first inside a bucket", () => {
+    const groups = recencyGroups([t("old", ago(20 * 3600e3)), t("new", ago(1000))], NOW);
+    expect(groups[0].threads.map((x) => x.id)).toEqual(["new", "old"]);
+  });
+
+  it("urgency grouping still defers to urgencyRank", () => {
+    const groups = groupThreads([
+      fromSession(sess({ id: "blocked", attention: "x" })),
+      fromSession(sess({ id: "work", phase: "working" })),
+    ], "urgency");
+    expect(groups.map((g) => g.id)).toEqual(["needs", "running"]);
+  });
+
+  it("the two modes are the same threads, only regrouped", () => {
+    const list = [t("a", ago(1000)), fromSession(sess({ id: "b", phase: "working" }))];
+    const count = (gs: ReturnType<typeof groupThreads>) => gs.reduce((n, g) => n + g.threads.length, 0);
+    expect(count(groupThreads(list, "urgency", NOW))).toBe(count(groupThreads(list, "recency", NOW)));
   });
 });

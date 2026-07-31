@@ -75,6 +75,7 @@ import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
   markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
   setTermFontSize, sortMode, termEngine, threadsOpen, trailOpen, boardOpen, orbitOpen,
+  overviewOpen,
 } from "./state";
 import { closeTrail, openTrail, renderTrailHeader, renderTrailInspector, wireTrail } from "./trailui";
 import {
@@ -323,6 +324,8 @@ function listPhrase(parts: string[]): string {
 
 function renderAll() {
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
+  // An overview surface brings its own bar, so the session chrome steps aside.
+  $("app").classList.toggle("ov", overviewOpen());
   // When mirroring an external session, activeId is null but the stage/inspector
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
@@ -576,7 +579,17 @@ window.addEventListener("keydown", (e) => {
   const alt = e.altKey;
   if (meta && alt && isCode(e, "t")) { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
   else if (meta && alt && isCode(e, "o")) { e.preventDefault(); threadsOpen() ? closeThreads() : openThreads(null); renderAll(); }
-  else if (meta && alt && isCode(e, "b")) { e.preventDefault(); const c = activeProjectCtx(); if (boardOpen()) closeBoard(); else if (c) openBoard(c.path); else toast("Open a project first — the board lives in its repo"); renderAll(); }
+  else if (meta && alt && isCode(e, "b")) {
+    e.preventDefault();
+    // Falls back to the first project rather than refusing: a board is per-repo, but
+    // needing a LIVE SESSION in that repo just to look at its cards made the surface
+    // unreachable most of the time. The picker in its bar switches from there.
+    const root = activeProjectCtx()?.path ?? FAVORITES[0]?.path ?? null;
+    if (boardOpen()) closeBoard();
+    else if (root) openBoard(root);
+    else toast("Add a project folder first — a board lives inside a repo");
+    renderAll();
+  }
   else if (meta && alt && isCode(e, "f")) { e.preventDefault(); orbitOpen() ? closeOrbit() : openOrbit(); renderAll(); }
   else if (meta && !alt && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
   else if (meta && !alt && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }

@@ -91,7 +91,14 @@ function cardHtml(c: Card, canDispatch: boolean): string {
 export function renderBoard(): void {
   if (!boardOpen()) return;
   const root = boardProject()!;
-  $("boardProj").textContent = projectName(root);
+  // Every known project, not just the one that happened to be active: a board is a
+  // file in a repo, so being unable to open one without a live session in that repo
+  // made the whole surface unreachable much of the time.
+  const keys = new Set<string>(FAVORITES.map((f) => f.path));
+  for (const s of sessions.values()) keys.add(s.colorKey);
+  keys.add(root);
+  ($("boardScope") as HTMLSelectElement).innerHTML = [...keys].filter(Boolean).sort()
+    .map((k) => `<option value="${esc(k)}"${k === root ? " selected" : ""}>${esc(projectName(k))}</option>`).join("");
 
   if (loading) { $("boardCols").innerHTML = `<div class="b-empty">Reading the board…</div>`; return; }
   if (!data.exists) {
@@ -245,6 +252,10 @@ export function closeBoard(): void {
 
 export function wireBoard(): void {
   const pane = $("boardPane");
+
+  $("boardScope").addEventListener("change", (e) => {
+    openBoard((e.target as HTMLSelectElement).value);
+  });
 
   pane.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;

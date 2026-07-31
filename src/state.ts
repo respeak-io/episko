@@ -129,6 +129,12 @@ export const boardOpen = (): boolean => mirror?.kind === "board";
 export const boardProject = (): string | null => (mirror?.kind === "board" ? mirror.project : null);
 export const orbitOpen = (): boolean => mirror?.kind === "orbit";
 export const orbitProject = (): string | null => (mirror?.kind === "orbit" ? mirror.project : null);
+/// True while one of the overview surfaces owns the stage. They carry their own bar —
+/// the view's name, its scope and its controls — so the session chrome around them
+/// (the stage header's buttons, the inspector) is describing a session that is not
+/// there, and is only taking space a dense view needs.
+export const overviewOpen = (): boolean =>
+  mirror?.kind === "trail" || mirror?.kind === "threads" || mirror?.kind === "board" || mirror?.kind === "orbit";
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.

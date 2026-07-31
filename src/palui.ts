@@ -34,7 +34,7 @@ import {
 } from "./taskui";
 import { discoverTasks, execCmd, launchWithDeps } from "./tasks";
 import {
-  accentFor, availEngines, engineDef, sessions, termEngine,
+  accentFor, availEngines, engineDef, FAVORITES, sessions, termEngine,
 } from "./state";
 
 // Everything a palette row can do that this module does not own. Twelve callees is
@@ -105,10 +105,15 @@ function sessionActions(s: Sess): PalItem[] {
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));
   return a;
 }
+// Every `run` is an arrow that calls through `host` at CLICK time, never a direct
+// `host.method` reference. This table is a module const, so it is built at import —
+// when `host` is still the object of no-ops above. Capturing `host.addProject` there
+// froze the no-op permanently, and `setPaletteHost` could not replace what had already
+// been read: seven commands in this list silently did nothing.
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
-  { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: host.addProject },
-  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: host.openPlainTerminal, sc: [MOD, "T"] },
-  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, sc: [MOD, "⏎"] },
+  { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: () => host.addProject() },
+  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: () => host.openPlainTerminal(), sc: [MOD, "T"] },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: () => host.revealActiveFolder(), sc: [MOD, "⏎"] },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, sc: [MOD, "⇧", "H"] },
@@ -116,12 +121,12 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:trail", label: "Trail — what you've been working on, and what's next", glyph: "◷", run: () => { openTrail(); }, sc: [MOD, "⌥", "T"] },
   { key: "cmd:threads", label: "Threads — everything that wants you, ranked", glyph: "▤", run: () => { openThreads(null); }, sc: [MOD, "⌥", "O"] },
   { key: "cmd:threadsproj", label: "Threads in this project…", glyph: "▤", run: () => { openThreads(activeProjectCtx()?.path ?? null); } },
-  { key: "cmd:board", label: "Board — this project's committed cards", glyph: "▦", run: () => { const c = activeProjectCtx(); if (c) openBoard(c.path); }, sc: [MOD, "⌥", "B"] },
+  { key: "cmd:board", label: "Board — this project's committed cards", glyph: "▦", run: () => { const r = activeProjectCtx()?.path ?? FAVORITES[0]?.path; if (r) openBoard(r); }, sc: [MOD, "⌥", "B"] },
   { key: "cmd:orbit", label: "Orbit — the fleet at a glance, by how hard it is pulling", glyph: "◎", run: () => { openOrbit(); }, sc: [MOD, "⌥", "F"] },
-  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
-  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
-  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },
-  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: host.toggleTheme },
+  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: () => host.cycleSort() },
+  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), sc: [MOD, "I"] },
+  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), sc: [MOD, "B"] },
+  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
 function buildPalGroups(raw: string): PalGroup[] {
   // action panel page — one group of the target session's actions, fuzzy-filtered
@@ -188,7 +193,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   if (mode === "all" || mode === "sess") { const l = launch.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (l.length) groups.push({ name: "Launch", items: l }); }
   if (mode === "all" || mode === "sess") { const t = tsk.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (t.length) groups.push({ name: "Tasks", count: t.length, items: t }); }
   if (mode === "all" || mode === "cmd") { const c = cmds.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (c.length) groups.push({ name: "Commands", items: c }); }
-  if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: host.addProject }] });
+  if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: () => host.addProject() }] });
   return groups;
 }
 function runPalItem(it: PalItem | undefined) { if (!it) return; bumpFrec(it.key); closePalette(); it.run(); }
