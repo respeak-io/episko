@@ -766,6 +766,9 @@ select.in-ctl { cursor: pointer; }
 .wt-tag.moved { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 42%, transparent); }
 .wt-tag.missing { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
 .wt-tag.det, .wt-tag.locked, .wt-tag.ext { color: var(--st-idle); }
+/* `rem` names the remote a branch lives on and is pure orientation — the row is a
+   perfectly good destination, so it must not borrow any of the warning colours. */
+.wt-tag.rem { color: var(--st-idle); }
 /* `gone` is INFORMATION, not a fault: the remote branch was deleted, which usually
    follows a merged PR but just as often precedes picking the work back up. It must
    not share .missing's error red — that reads as "broken, delete me" and argues
