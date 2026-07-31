@@ -100,6 +100,25 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
 
+/* The title bar, which is this header — there is no native one (see lib.rs).
+   Two platforms, two halves of the job. macOS floats its real traffic lights
+   over the header, so all the CSS owes them is room; in fullscreen the OS takes
+   them back into its own sliding overlay, and the gap would be empty (html.fs,
+   set from main.ts). Windows has no frame at all, so #winCtl draws the buttons:
+   flush into the corner and full height, because that corner is where a thrown
+   pointer lands. .wclose alone takes the OS's red, the one colour a user should
+   never have to aim for twice. */
+html.mac .top { padding-left: 78px; }
+html.mac.fs .top { padding-left: 12px; }
+.wctl { display: none; align-self: stretch; margin-right: -12px; }
+html.win .wctl { display: flex; }
+.wctl .wc { width: 42px; padding: 0; border: 0; cursor: pointer; display: grid; place-items: center; color: var(--muted); background: transparent; }
+.wctl .wc svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+.wctl .wc:hover { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.wctl .wclose:hover { color: #fff; background: #e81123; }
+.wctl .ic-restore, .wctl.maxed .ic-max { display: none; }
+.wctl.maxed .ic-restore { display: block; }
+
 /* caffeinate split button — icon toggles the last-used preset, caret opens the
    preset dropdown. The whole control reflects on/off via the .on class. */
 .caf { display: inline-flex; align-items: stretch; height: 26px; border-radius: 8px; overflow: hidden; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }

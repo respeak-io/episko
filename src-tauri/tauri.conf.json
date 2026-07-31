@@ -16,7 +16,11 @@
         "title": "Episko",
         "width": 1200,
         "height": 800,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "create": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 14, "y": 14 }
       }
     ],
     "security": {

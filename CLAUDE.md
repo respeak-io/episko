@@ -246,7 +246,7 @@ Four smaller P4 affordances, all in the frontend:
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 456 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `lib.rs` | 494 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
 | `git.rs` | 1,877 | worktrees, branches, the working-set diff, the toolbar's fetch/pull/push, commit info |
 | `usage.rs` | 1,470 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
@@ -272,9 +272,9 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 37 modules
 
-**No framework, and no longer one file.** ~8,300 lines across 37 modules; `main.ts` is 689 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,580 lines across 37 modules; `main.ts` is 726 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
-What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
+What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the nine `setInterval`s.
 
 **Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 431 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
@@ -491,6 +491,54 @@ conversation did start there) and not worth rewriting records to fix.
 - **terminal / iterm** — `spawn_external_terminal` writes an executable `.command` wrapper and hands it to `open -a`.
 
 `available_terminals` reports which are installed so the UI only offers working ones.
+
+## One title bar, and it is the header
+
+The app draws its own header, so a native title bar above it was a second bar
+saying less. It is gone on both platforms, but by different routes, and the
+difference is the point:
+
+- **macOS keeps its decorations.** `titleBarStyle: "Overlay"` + `hiddenTitle` hide
+  the bar while floating the *real* traffic lights over `.top`;
+  `trafficLightPosition` centres them in its 40px and `html.mac`'s `padding-left`
+  leaves them room. Drawing our own would lose the green button, which zooms or
+  goes fullscreen depending on how you hold it. In fullscreen the OS takes the
+  lights back into its own sliding overlay, so `html.fs` closes that gap.
+- **Windows has no such style**, so the frame goes entirely (`decorations: false`)
+  and `#winCtl` draws minimize / maximize / close.
+- **A browser gets neither.** The same HTML opens on vite's port in dev, where
+  there is no window behind it — and `IS_WIN` is a *user-agent* read, so it is
+  still true in Chrome. Everything that acts on the native window is therefore
+  gated on **`IS_TAURI`** (`dom.ts`, from the `isTauri` global tauri defines
+  before any page script), including the platform class itself: no class, so the
+  CSS shows no controls and reserves no traffic-light gap.
+
+Four things about that split are easy to get wrong:
+
+- **The window is built in `setup()`, not by the config** (`"create": false`).
+  `decorations` is not a per-platform config key, and a `tauri.windows.conf.json`
+  would replace the whole `windows` array (json merge-patch), so every shared key
+  would exist twice and drift. **Flipping it after creation is not the same
+  thing:** tauri attaches its undecorated-resize child window only when the webview
+  is created over an *already* undecorated window, so a late flip yields a window
+  whose edges cannot be dragged at all — the WebView2 child swallows the hit test
+  and nothing behind it answers. `from_config` keeps one definition and cfg-gates
+  the single flag that differs. (What tao does *not* do is drop `WS_CAPTION`: it
+  zeroes the non-client area instead, which is what keeps the shadow, the rounded
+  corners and snap. So a style-bit check reads "decorated" either way — measure
+  `GetClientRect` against `GetWindowRect` instead. It was 1px inset here, 30 on a
+  build with the bar.)
+- **Dragging is `data-tauri-drag-region="deep"` on the header**, which excludes
+  clickable elements for us — but only what the DOM calls clickable. `#kbar` is a
+  `<div>` that listens for a click, so it opts out explicitly (`="false"`); without
+  that the drag swallows the mouseup its click needs and ⌘K stops opening, with
+  nothing in any log to say so.
+- **Close goes through the OS close request** (`win.close()`), so it lands in the
+  same `quit-requested` confirm as Ctrl+Q instead of stepping around the guard.
+- **Maximize is only *asked* for.** The glyph flips on the `onResized` that comes
+  back, which is also what catches Win+↑, a snap, and the double-click the drag
+  region handles itself. The same listener is what tells macOS it entered
+  fullscreen.
 
 ## External (non-Episko) sessions
 
