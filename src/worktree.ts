@@ -50,11 +50,14 @@ export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = 
 // panel each led to a dialog that couldn't start a session in the project itself.
 // ahead/behind are versus this branch's OWN remote upstream (empty when it has none),
 // not versus whatever HEAD is on — see the BranchInfo doc comment in lib.rs.
-type BranchInfo = { name: string; current: boolean; checked_out: boolean; upstream: string; ahead: number; behind: number; gone: boolean; rel: string; unix: number };
+// `remote: true` inverts how the row is read: it has no local branch at all, so `name`
+// is the local branch a checkout WOULD create and `upstream` the ref it would track.
+// See the BranchInfo doc comment in git.rs.
+type BranchInfo = { name: string; current: boolean; checked_out: boolean; upstream: string; ahead: number; behind: number; gone: boolean; remote: boolean; rel: string; unix: number };
 type WtInfo = { path: string; branch: string; is_main: boolean; dirty: boolean; merged: boolean; locked: boolean; exists: boolean };
 type CommitInfo = { short: string; subject: string; author: string; rel: string };
 
-type DestKind = "repo" | "wt" | "branch" | "create";
+type DestKind = "repo" | "wt" | "branch" | "remote" | "create";
 interface Dest {
   kind: DestKind;
   group: string;          // "" pins the row above every group (the create row)
@@ -74,7 +77,12 @@ interface Dest {
 
 let wtCtx: { project: string; repoDir: string } | null = null;
 let wtWts: WtInfo[] = [];
+// Kept apart rather than filtered at each use: `wtBranches` means "branches this repo
+// has", and every existing reader (the base chooser, the switch chooser, delete) is only
+// ever correct for those. A remote-only row is not a branch you can base, switch to or
+// delete — it doesn't exist yet.
 let wtBranches: BranchInfo[] = [];
+let wtRemotes: BranchInfo[] = [];
 let wtRepoBranch = "";
 let wtLoading = true;          // git hasn't answered yet — draw skeleton rows
 let wtRows: Dest[] = [];
@@ -212,7 +220,9 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
 //   wtReadLocal — pure local git, instant, safe to run whenever.
 //   wtMaybeFetch — network. ahead/behind and `gone` come from %(upstream:track), which
 //     compares against refs/remotes/*, a cache only `git fetch` moves. Without this the
-//     panel's most useful signal would silently reflect whenever you last fetched.
+//     panel's most useful signal would silently reflect whenever you last fetched — and
+//     the Remote branches group is read straight out of refs/remotes, so a colleague's
+//     branch pushed five minutes ago would not be a destination at all.
 async function wtLoad(quiet = false) {
   await wtReadLocal(quiet);
   void wtMaybeFetch();
@@ -266,7 +276,9 @@ async function wtReadLocal(quiet = false) {
     invoke<string | null>("git_branch", { workdir: repoDir }).catch(() => null),
   ]);
   if (gen !== wtGen || !wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on
-  wtWts = wts; wtBranches = branches; wtRepoBranch = head || wtRepoBranch;
+  wtWts = wts; wtRepoBranch = head || wtRepoBranch;
+  wtBranches = branches.filter((b) => !b.remote);
+  wtRemotes = branches.filter((b) => b.remote);
   wtLoading = false;
   wtLoadedAt = Date.now();
   if (!wts.length && !quiet) toast(`${basename(repoDir)} isn't a git repository`);
@@ -289,7 +301,10 @@ function wtBuild(): Dest[] {
   const hit = (s: string) => !q || s.toLowerCase().includes(q);
   const out: Dest[] = [];
 
-  const known = [...wtWts.map((w) => w.branch), ...wtBranches.map((b) => b.name), wtRepoBranch];
+  // Remote-only names count as known: typing one must land on its row, not fall through
+  // to "create", which would cut an unrelated branch off HEAD under the very same name.
+  const known = [...wtWts.map((w) => w.branch), ...wtBranches.map((b) => b.name),
+    ...wtRemotes.map((b) => b.name), wtRepoBranch];
   const exact = known.some((n) => n && n.toLowerCase() === q);
 
   // The typed query, promoted to an action. This is what lets the branch field, its
@@ -367,7 +382,29 @@ function wtBuild(): Dest[] {
       verb: clash ? "blocked — that folder exists" : "create a worktree on this branch & start",
     });
   }
+
+  // Branches that exist on a remote and nowhere here — a colleague's work, or your own
+  // from another machine. Last, because they're the least likely destination and the
+  // only ones that touch a name the repo doesn't have yet.
+  for (const b of wtRemotes) {
+    if (!hit(`${b.name} ${b.upstream}`)) continue;
+    const clash = wtWts.find((w) => !w.is_main && basename(w.path) === wtSlug(b.name));
+    out.push({
+      kind: "remote", group: "Remote branches", ic: "⇣", br: b, clash,
+      label: b.name, sub: "", dir: wtTargetDir(repoDir, b.name), branch: b.name,
+      tags: [], stale: b.unix > 0 && now - b.unix > STALE,
+      meta: `<span class="wt-tag rem" title="Only on ${esc(b.upstream)} — no local branch yet">${esc(wtRemoteOf(b))}</span>`
+        + `<span class="wt-when">${esc(b.rel || "")}</span>`,
+      verb: clash ? "blocked — that folder exists" : `check ${b.upstream} out into a worktree & start`,
+    });
+  }
   return out;
+}
+
+/** The remote a remote-only row came from. `upstream` is exactly `<remote>/<name>`, so
+ *  this is a slice rather than a split — the branch name may itself contain slashes. */
+function wtRemoteOf(b: BranchInfo) {
+  return b.upstream.slice(0, Math.max(0, b.upstream.length - b.name.length - 1));
 }
 
 function wtRender() {
@@ -441,6 +478,8 @@ function wtCommitKey(d: Dest): string {
   if (d.kind === "repo") return `${d.dir}\n`;
   if (d.kind === "wt") return d.wt!.exists ? `${d.dir}\n` : "";
   if (d.kind === "branch") return `${wtCtx.repoDir}\n${d.branch}`;
+  // A remote-only row has no local ref to name, so ask about the remote-tracking one.
+  if (d.kind === "remote") return `${wtCtx.repoDir}\n${d.br!.upstream}`;
   return "";
 }
 
@@ -564,6 +603,27 @@ function wtDetailHtml(d: Dest | undefined): string {
       + `<button class="wt-rm" type="button" data-wtact="arm">Delete branch…</button>`
       + `</div>`;
   }
+
+  // A remote-only branch. Nothing here can be deleted or switched to — there is no local
+  // ref yet — so the pane is entirely about what picking it would bring into existence.
+  if (d.kind === "remote") {
+    const b = d.br!;
+    return `<div class="wt-dhead"><span class="wt-dkind">Remote branch — no local copy</span><span class="wt-dname">${esc(b.upstream)}</span></div>`
+      + clashWarn
+      + (clash ? "" : `<div class="wt-warn note"><span class="t">Not checked out anywhere yet</span>`
+        + `This exists on <b>${esc(wtRemoteOf(b))}</b> and nowhere in this repo. Starting here cuts <b>${esc(b.name)}</b> `
+        + `from it and sets it to track <b>${esc(b.upstream)}</b>, so <b>git push</b> and <b>git pull</b> in the new worktree take no arguments.</div>`)
+      + wtFacts([
+        ["Last commit", wtCommitHtml(d)],
+        ["Will track", `<span class="em">${esc(b.upstream)}</span>`],
+        ["Local branch", `<span class="em">${esc(b.name)}</span> <span class="dim">— created now</span>`],
+        [clash ? "Would be" : "Will create", wtPathHtml(d.dir)],
+      ])
+      + `<div class="wt-acts"><button class="wt-go" type="button" data-wtact="go"${clash ? " disabled" : ""}>Create worktree &amp; start</button>`
+      + (clash ? `<button class="wt-alt" type="button" data-wtact="openclash">Open that checkout instead</button>` : "")
+      + `</div>`;
+  }
+
   return `<div class="wt-dhead"><span class="wt-dkind">New worktree</span><span class="wt-dname">${esc(d.label)}</span></div>`
     + clashWarn
     + wtFacts([
@@ -851,7 +911,9 @@ function wtRun(d: Dest | undefined) {
     return;
   }
   if (d.clash) { toast(`${basename(d.clash.path)}/ already exists`); return; }
-  void wtCreate(d.branch, d.kind === "create" ? wtBase : "");
+  // A remote-only row starts from its remote ref, which is also what makes the new
+  // branch track it — `create_worktree` reads that off the start-point.
+  void wtCreate(d.branch, d.kind === "create" ? wtBase : d.kind === "remote" ? d.br!.upstream : "");
 }
 
 async function wtCreate(branch: string, base = "") {

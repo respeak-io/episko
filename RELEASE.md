@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 408 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 89 tests on macOS, 86 on
+- `pnpm test` — 431 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 88 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -109,6 +109,12 @@ A regression in either is silent.
       In a **shell** pane the same keystroke must still kill the process outright.
 - [ ] **Windows only: Ctrl+V pastes an image** into a claude pane (copy a screenshot
       first). Plain text paste must still work in the same pane.
+- [ ] **Ctrl+Shift+C / Ctrl+Shift+V copy and paste** in a **shell** pane and in a
+      **task** pane. Select output with the mouse, Ctrl+Shift+C (a "Copied" toast, and
+      it must land in another app's clipboard), then Ctrl+Shift+V into a prompt and see
+      the text arrive intact. Neither chord may raise an OS clipboard-permission
+      prompt — one means the WebView served it rather than the plugin. Plain Ctrl+C in
+      those panes must still interrupt, and on macOS ⌘C/⌘V must still work.
 - [ ] **The sidebar still repaints when it should.** `renderSidebar` now skips the
       `innerHTML` write when the markup is byte-identical, so watch that a phase
       change, an arriving permission, a new session, and closing one *all* still move
@@ -133,6 +139,35 @@ A regression in either is silent.
       from the roster. It must resume the *same* conversation — that is `resumeId`, not
       the launch id, doing its job.
 
+### Drift — an agent that changes checkout
+
+**Two cases, and they behave as opposites** — one is not a spot check for the other.
+Nothing here can be checked headlessly: the rules are unit-tested and the CLI contract is
+pinned by the `--ignored` test above, but every surface below is DOM.
+
+- [ ] **Case 1 — writes move, the session does not.** In a session launched in one
+      checkout, have the agent `git worktree add` a **sibling** worktree (outside the
+      project dir) and **write a file in it**. The sidebar row gains `⤳ <branch>`, the
+      header chip reads `old ⤳ ⑃ new`, and the inspector shows the *Working in* card
+      above the vital, offering **Move session here**.
+- [ ] **The row does not move**, and does not flicker as the agent reads its old files.
+      (Only a *write* back home clears the marker — reads must not.)
+- [ ] **Move session here** confirms, ends the session, and resumes it in the new
+      checkout with its history intact (ask it about something from before the move).
+      Afterwards: marker gone, chip shows the new branch alone, and
+      `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
+- [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+
+- [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
+      run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`
+      tool into `<repo>/.claude/worktrees/<name>`. **No file need be written.** The same
+      marker and card appear, but the button reads **Follow it here**.
+- [ ] **Follow it here is instant and lossless** — no confirm, no restart, the pane does
+      not blink and the terminal keeps its scrollback. Afterwards the header path, the
+      branch, ▶ Run and ❯ Terminal all point at the new checkout.
+- [ ] **The conversation is still resumable afterwards** (Claude had already re-homed the
+      transcript; Episko must not have moved it a second time).
+
 ### Panes that aren't agents
 
 - [ ] **`❯ Terminal`** opens a working shell pane.
@@ -154,6 +189,26 @@ A regression in either is silent.
 - [ ] **Quit guard** warns about live sessions.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
+
+### The title bar, which is the header (no native one behind it)
+
+Nothing here has automated cover: the frame is drawn by the OS on one side and by
+`#winCtl` on the other, and each platform only ever sees its own half.
+
+- [ ] **There is one bar, not two**, and the window still moves: drag the header
+      (its background, the logo, the empty space around ⌘K) and the window follows;
+      double-clicking it maximizes. **⌘K still opens on a single click** — the search
+      bar opts out of the drag region, and a regression there is silent.
+- [ ] **Windows:** minimize / maximize / close all work from the header, the middle
+      glyph flips to the restore pair when maximized **and back** (also after Win+↑
+      and a snap, which don't go through our button), and ✕ still raises the quit
+      guard rather than killing live sessions. Then **resize from every edge and
+      corner** and drag the window to a screen edge to snap — an undecorated window
+      resizes through a child window tauri only attaches at creation, so this is what
+      catches it having been lost.
+- [ ] **macOS:** the traffic lights sit in the header, vertically centred, without
+      overlapping the logo — and all three work, the green one included (both zoom
+      and, held, fullscreen). In fullscreen the header must close the gap they leave.
 
 ### Logs, after all of the above
 

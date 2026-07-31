@@ -62,10 +62,22 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
   const chipHtml = chip ? clusterChip(chip) : "";
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.
-  const tip = s.phase === "error" && s.apiErr ? `${label} — ${apiErrText(s.apiErr)}` : label;
-  return `<div class="srow${chip ? " o3" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
+  const tip = s.phase === "error" && s.apiErr
+    ? `${label} — ${apiErrText(s.apiErr)}`
+    : s.drift ? `${label} — writing to ${s.drift.branch}, not ${s.branch || "this checkout"}` : label;
+  // The row stays under the checkout the session was *launched* in — that is its
+  // identity, and where `--resume` goes. This is what says the agent's writes have
+  // moved elsewhere, without moving the row out from under you.
+  const drift = s.drift
+    ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
+    : "";
+  // Both tags share one grid cell. `.srow`'s column count is fixed by CSS (`.o3` adds
+  // the fourth for a chip), so a second in-flow child would wrap the row instead of
+  // sitting beside it — wrapping them keeps the existing grid math untouched.
+  const tags = drift + chipHtml;
+  return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
-    <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${chipHtml}
+    <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${tags ? `<span class="stags">${tags}</span>` : ""}
     <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }

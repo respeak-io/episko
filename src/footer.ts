@@ -10,7 +10,7 @@
 // refreshes the usage one only while it is actually shown).
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, FILE_MANAGER, toast } from "./dom";
+import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, fmtUntil } from "./format";
 import { abbr } from "./phase";
@@ -102,7 +102,11 @@ export function closeFootMenus(keep?: string) {
   for (const [id, close] of menus) if (id !== keep) close();
 }
 // Keyboard shortcuts, listed in the footer's ⌘ Shortcuts popover. Keep in sync with
-// the global keydown handler (the sole source of truth for what these actually do).
+// the global keydown handler (the sole source of truth for what these actually do) —
+// bar the last row, which belongs to a terminal pane and lives in `clipboardKeys`.
+// That one is spelled per-platform because it genuinely differs: ⌘C/⌘V reach the
+// WebView's native copy/paste on macOS, while everywhere else Ctrl+C is the interrupt
+// and Ctrl+V a dead key, so only the shifted pair is left.
 const SHORTCUTS: { label: string; chords: string[][] }[] = [
   { label: "Command palette", chords: [["⌘", "K"]] },
   { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
@@ -113,6 +117,10 @@ const SHORTCUTS: { label: string; chords: string[][] }[] = [
   { label: "Toggle inspector", chords: [["⌘", "I"]] },
   { label: "Settings", chords: [["⌘", ","]] },
   { label: "Terminal font size", chords: [["⌘", "+"], ["⌘", "−"], ["⌘", "0"]] },
+  {
+    label: "Copy / paste in a terminal",
+    chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "⇧", "C"], ["Ctrl", "⇧", "V"]],
+  },
 ];
 function renderShortPop() {
   const rows = SHORTCUTS.map((s) => {

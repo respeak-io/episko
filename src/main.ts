@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { isAgent } from "./types";
-import { $, chord, IS_MAC, toast } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
   closeAttnPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
@@ -20,14 +21,15 @@ import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
-  removeFavorite, resolvePermission, revealActiveFolder, setActionsRenderAll,
+  followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
+  setActionsRenderAll,
   setSort, setTheme, setWtGroup, toggleInsp, toggleRail, toggleTheme,
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, launchWorktree, noteGitCommand, openPlainTerminal, refreshGitViews,
-  refreshSessionStats, renderHeader, requestLaunch, runGit, scheduleDismiss, setActive,
-  setPanesRenderAll, syncStageButtons,
+  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal,
+  refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -111,6 +113,17 @@ void (async () => {
   }
 })();
 
+// The app header IS the title bar — there is no native one behind it (see the
+// window block in lib.rs) — but which half of that the CSS has to draw is a
+// platform fact it cannot read. Stamp it here, at module scope, so the first
+// paint already has it: macOS leaves room for its real traffic lights, Windows
+// shows the controls wired below, and an unported Linux keeps its native frame
+// and needs neither. **Nothing is stamped in a browser** — this same HTML opens
+// on vite's port in dev, where there is no window behind it, so an unqualified
+// `IS_WIN` (a user-agent read) would hand a Chrome tab three buttons that can
+// only throw.
+if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "win" : "linux");
+
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
 // platforms (everything rendered from TS goes through MOD/chord instead, which now
 // live in ./dom beside `$` — the sidebar, the palette and the footer all label
@@ -149,7 +162,9 @@ setOnTurnEnd((s) => { void maybeRunOnStop(s); });
 // changed its checkout — nothing watches the filesystem. Two consequences, both cheap:
 // the folder is queued for a working-set re-read, and a git command that could have
 // moved HEAD or added a worktree pokes the git views straight away.
-setOnSessionTouched((s, tool, cmd) => { markWorkdirStale(s, tool); noteGitCommand(cmd); });
+setOnSessionTouched((s, tool, data) => {
+  markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
+});
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -454,9 +469,10 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
+  else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
   else if (el.dataset.close) closeSession(el.dataset.close);
@@ -491,6 +507,30 @@ document.addEventListener("click", (e) => {
 
 $("kbar").addEventListener("click", openPalette);
 $("themeBtn").addEventListener("click", toggleTheme);
+
+// Window controls — the other half of "the header is the title bar". Windows
+// only: macOS's traffic lights are the real ones, and its green button zooms or
+// goes fullscreen depending on how you hold it, which no <button> reproduces.
+// Close goes through the OS close request, so it lands in the same
+// `quit-requested` confirm below as Ctrl+Q rather than stepping around it.
+// Maximize is only *asked* for here — the answer comes back through onResized,
+// which is also how Win+↑, a snap and the drag region's own double-click get the
+// glyph right; on macOS the same listener catches entering fullscreen, where the
+// OS reclaims the traffic lights and the room the header leaves for them.
+if (IS_TAURI && (IS_MAC || IS_WIN)) {
+  const win = getCurrentWindow();
+  const syncWin = async () => {
+    if (IS_WIN) $("winCtl").classList.toggle("maxed", await win.isMaximized());
+    else document.documentElement.classList.toggle("fs", await win.isFullscreen());
+  };
+  if (IS_WIN) {
+    $("winMin").addEventListener("click", () => { void win.minimize(); });
+    $("winMax").addEventListener("click", () => { void win.toggleMaximize(); });
+    $("winClose").addEventListener("click", () => { void win.close(); });
+  }
+  void win.onResized(() => { void syncWin(); });
+  void syncWin();
+}
 $("railCollapse").addEventListener("click", toggleRail);
 $("railSort").addEventListener("click", cycleSort);
 $("inspBtn").addEventListener("click", toggleInsp);
