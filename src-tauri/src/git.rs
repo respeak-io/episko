@@ -1501,10 +1501,273 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
     })
 }
 
+/// One commit on the Trail. `when` is the author date in UNIX **seconds**, matching
+/// `HistorySession.mtime` — the frontend converts both once, at the boundary.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct DayCommit {
+    pub sha: String,
+    pub author: String,
+    pub when: u64,
+    pub subject: String,
+    /// The repo this came from, as the caller named it — so the frontend can attribute
+    /// a commit to a project without re-resolving paths.
+    pub root: String,
+}
+
+/// Resolve a folder to something that identifies its **repository**, not its checkout.
+///
+/// This is the whole reason the Trail doesn't double-count: Episko is worktree-heavy,
+/// and every worktree of one repo shares one object store, so asking each of them for
+/// "commits since Monday" returns the same commits N times. Worktrees share a
+/// *common dir*, so that is the identity.
+///
+/// `--path-format=absolute` matters: plain `--git-common-dir` answers `.git` for a main
+/// worktree, which is relative to the cwd and would compare unequal to the absolute
+/// path a linked worktree reports for the very same repo.
+fn repo_identity(dir: &str) -> Option<String> {
+    let out = sys_command("git")
+        .env("LC_ALL", "C")
+        .arg("-C").arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(norm_path(&s)) }
+}
+
+/// Commits across `roots` in the last `days` days, for the Trail's "behind you" half.
+///
+/// **One git call per repository, never one per day or per commit.** A day view over a
+/// month is 30 buckets; asking git per bucket would be 30 processes for what one pass
+/// answers, and the frontend groups by date anyway.
+///
+/// Includes every local branch (`--branches`), not just HEAD: with several worktrees
+/// open, the work that landed today is spread across them, and a Trail that only saw
+/// the checked-out branch would miss most of it. Merges are kept — "merged #43" is
+/// exactly the kind of thing a day is remembered by.
+///
+/// Every author is returned, not just the current user. Seeing that a colleague pushed
+/// while you were elsewhere is the point of the collaborator work, and the frontend
+/// decides how to show whose commit it was.
+///
+/// Failures are per-repo and silent: a root that isn't a repo, has no commits yet, or
+/// has since been deleted contributes nothing rather than failing the whole call.
+#[tauri::command(async)]
+pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<DayCommit> = Vec::new();
+    // git's approxidate cannot express a date before the UNIX epoch, and it fails
+    // *silently*: `--since=36500.days.ago` matches NOTHING rather than everything, so an
+    // over-wide window would blank the Trail instead of widening it — the worst kind of
+    // bug, because "no work happened" is a plausible-looking answer.
+    //
+    // A window wider than git can express simply means "all history", which is what
+    // omitting `--since` already means — so say that, rather than guessing a magic
+    // cutoff that drifts further from the epoch every year.
+    const WIDER_THAN_GIT_CAN_SAY: u64 = 18_000; // ~49 years; the epoch is the real limit
+    let since = format!("--since={days}.days.ago");
+
+    for root in &roots {
+        // Dedupe by repository, keeping the first-named root as the label.
+        let id = repo_identity(root).unwrap_or_else(|| norm_path(root));
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+
+        let mut args: Vec<&str> = vec!["--no-optional-locks", "log", "--branches"];
+        if days < WIDER_THAN_GIT_CAN_SAY {
+            args.push(&since);
+        }
+        // NUL between fields so a subject containing any printable character still
+        // parses; %s is the subject *line*, so it can't contain a newline and records
+        // stay newline-separated.
+        args.push("--format=%H%x00%an%x00%at%x00%s");
+
+        let res = sys_command("git")
+            .env("LC_ALL", "C")
+            .arg("-C").arg(root)
+            .args(&args)
+            .output();
+        let Ok(res) = res else { continue };
+        if !res.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&res.stdout).lines() {
+            let mut p = line.split('\0');
+            let (Some(sha), Some(author), Some(at), Some(subject)) =
+                (p.next(), p.next(), p.next(), p.next())
+            else {
+                continue;
+            };
+            let Ok(when) = at.parse::<u64>() else { continue };
+            out.push(DayCommit {
+                sha: sha.chars().take(9).collect(),
+                author: author.to_string(),
+                when,
+                subject: subject.to_string(),
+                root: root.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// What the project dashboard needs to know about a folder before it renders anything.
+///
+/// **One call, because it decides which cards exist at all.** Three tiers, and they are
+/// not the same gate: a GitHub remote unlocks issues and pull requests, *git* unlocks
+/// the commit half of the timeline and everything shared (`.episko/` is only meaningful
+/// if it can be committed), and neither gates sessions, spend or tasks. A card with
+/// nothing to say is absent rather than empty — an empty "Issues" panel in a folder that
+/// has no issues reads as breakage.
+#[derive(serde::Serialize, Debug, PartialEq, Default)]
+pub(crate) struct ProjectFacts {
+    pub is_repo: bool,
+    /// The repo's main checkout, so a dashboard opened on a worktree still speaks for
+    /// the project. None when the folder isn't a repo at all.
+    pub root: Option<String>,
+    /// `origin`'s URL verbatim, for display. None for a repo with no remote — a normal
+    /// local-only project, not an error.
+    pub origin: Option<String>,
+    /// The host, lowercased (`github.com`, `gitlab.com`, `git.example.internal`).
+    pub host: Option<String>,
+    /// `owner/repo`, only when the host is GitHub — it is what `gh` needs, and naming it
+    /// for any other host would imply a capability Episko doesn't have there.
+    pub slug: Option<String>,
+}
+
+/// Host and `owner/repo` out of a git remote URL.
+///
+/// Pure and separated out because the spellings git accepts all appear in the wild and
+/// only some are URIs: `git@host:owner/repo.git` has no scheme and a colon where a slash
+/// belongs, while `ssh://git@host/owner/repo` and `https://host/owner/repo.git` are
+/// ordinary URLs. Getting this wrong does not error — it silently files a GitHub project
+/// under "no GitHub" and drops two cards, which is the failure this test-covers against.
+pub(crate) fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
+    let u = url.trim();
+    if u.is_empty() {
+        return (None, None);
+    }
+    // scp-like `[user@]host:path`, told apart from a scheme by the absence of "://".
+    let rest = if let Some((_, after)) = u.split_once("://") {
+        after.to_string()
+    } else if let Some((hostish, path)) = u.split_once(':') {
+        // A Windows drive letter or a plain relative path is not a remote host.
+        if hostish.contains('/') || hostish.chars().count() <= 1 {
+            return (None, None);
+        }
+        format!("{hostish}/{path}")
+    } else {
+        return (None, None);
+    };
+    let rest = rest.split_once('@').map_or(rest.as_str(), |(_, r)| r); // strip user[:pass]@
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    // Strip a port: `git@host:2222/o/r` and `ssh://host:2222/o/r` are both legal.
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    if host.is_empty() {
+        return (None, None);
+    }
+    let path = path.trim_matches('/').trim_end_matches(".git");
+    let mut seg = path.split('/').filter(|s| !s.is_empty());
+    let slug = match (seg.next(), seg.next()) {
+        // Only GitHub gets a slug: it is what `gh` is handed, and producing one for a
+        // GitLab remote would promise a capability that does not exist.
+        (Some(o), Some(r)) if host == "github.com" => Some(format!("{o}/{r}")),
+        _ => None,
+    };
+    (Some(host), slug)
+}
+
+/// The one probe the dashboard makes before deciding what it can show.
+#[tauri::command(async)]
+pub(crate) fn project_facts(dir: String) -> ProjectFacts {
+    let Some(root) = repo_root_of(&dir) else {
+        return ProjectFacts::default();
+    };
+    // `git remote get-url origin` rather than reading .git/config directly: worktrees,
+    // submodules and `includeIf` all make the file the wrong place to look, and this is
+    // one process on a folder the user just clicked.
+    let origin = sys_command("git")
+        .env("LC_ALL", "C")
+        .arg("-C").arg(&root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (host, slug) = origin.as_deref().map_or((None, None), parse_remote);
+    ProjectFacts { is_repo: true, root: Some(root), origin, host, slug }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    #[test]
+    fn parse_remote_reads_every_spelling_git_accepts() {
+        // scp-like: not a URI at all, and the most common form for an SSH key setup.
+        assert_eq!(parse_remote("git@github.com:respeak-io/episko.git"),
+                   (Some("github.com".into()), Some("respeak-io/episko".into())));
+        assert_eq!(parse_remote("https://github.com/respeak-io/episko.git"),
+                   (Some("github.com".into()), Some("respeak-io/episko".into())));
+        assert_eq!(parse_remote("ssh://git@github.com/respeak-io/episko"),
+                   (Some("github.com".into()), Some("respeak-io/episko".into())));
+        // A token in the URL must not become the host.
+        assert_eq!(parse_remote("https://x-access-token:ghp_abc@github.com/respeak-io/episko.git"),
+                   (Some("github.com".into()), Some("respeak-io/episko".into())));
+        // A port is legal on both forms and is not part of the host.
+        assert_eq!(parse_remote("ssh://git@github.com:2222/respeak-io/episko.git").0,
+                   Some("github.com".into()));
+    }
+
+    #[test]
+    fn a_slug_is_only_ever_produced_for_github() {
+        // The slug is what `gh` is handed. Producing one for another host would promise
+        // issues and pull requests Episko cannot reach there.
+        assert_eq!(parse_remote("git@gitlab.com:team/thing.git"),
+                   (Some("gitlab.com".into()), None));
+        assert_eq!(parse_remote("git@git.respeak.internal:team/thing.git"),
+                   (Some("git.respeak.internal".into()), None));
+        // Host case is normalised — GitHub URLs are written both ways.
+        assert_eq!(parse_remote("git@GitHub.com:o/r.git").1, Some("o/r".into()));
+    }
+
+    #[test]
+    fn a_local_path_is_not_a_remote_host() {
+        assert_eq!(parse_remote("/srv/git/thing.git"), (None, None));
+        assert_eq!(parse_remote("../sibling"), (None, None));
+        assert_eq!(parse_remote("C:/repos/thing"), (None, None));
+        assert_eq!(parse_remote(""), (None, None));
+        assert_eq!(parse_remote("   "), (None, None));
+    }
+
+    #[test]
+    fn project_facts_separates_not_a_repo_from_a_repo_with_no_remote() {
+        // The two are different tiers: one loses the whole git half of the dashboard,
+        // the other only loses issues and pull requests.
+        let plain = scratch_dir();
+        assert_eq!(project_facts(plain.to_string_lossy().to_string()), ProjectFacts::default());
+
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let f = project_facts(repo.to_string_lossy().to_string());
+        assert!(f.is_repo);
+        assert!(f.root.is_some());
+        assert_eq!(f.origin, None, "a repo with no remote is normal, not an error");
+        assert_eq!(f.slug, None);
+
+        git(&repo, &["remote", "add", "origin", "git@github.com:respeak-io/episko.git"]);
+        let f = project_facts(repo.to_string_lossy().to_string());
+        assert_eq!(f.slug, Some("respeak-io/episko".into()));
+        assert_eq!(f.host, Some("github.com".into()));
+    }
+
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -1521,6 +1784,98 @@ mod tests {
             .join(repo.file_name().unwrap())
     }
 
+
+    /// The Trail asks for commits across every project folder it knows, and Episko is
+    /// worktree-heavy — so the same repository arrives under several paths. Counting it
+    /// once per checkout would triple a busy day's history.
+    #[test]
+    fn git_log_days_counts_a_repo_once_however_many_worktrees_name_it() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let commit = |msg: &str| {
+            git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        };
+        commit("first thing");
+        commit("second thing");
+
+        let wt = wt_root(&repo).join("side");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "side", &wt.to_string_lossy()]);
+
+        let root = repo.to_string_lossy().to_string();
+        let side = wt.to_string_lossy().to_string();
+
+        // One checkout: both commits, newest first is not asserted (the frontend sorts).
+        let one = git_log_days(vec![root.clone()], 3650);
+        assert_eq!(one.len(), 2, "expected both commits, got {one:?}");
+        assert!(one.iter().any(|c| c.subject == "first thing"));
+        assert_eq!(one[0].author, "T");
+        assert!(one[0].when > 0, "author date must be a real unix timestamp");
+
+        // Both checkouts of the SAME repo: still two commits, not four.
+        let both = git_log_days(vec![root.clone(), side.clone()], 3650);
+        assert_eq!(both.len(), 2, "worktrees of one repo must not double-count: {both:?}");
+
+        // And the sibling worktree alone answers identically — the dedupe key is the
+        // repository, not whichever path happened to be listed first.
+        assert_eq!(git_log_days(vec![side], 3650).len(), 2);
+
+        let _ = std::fs::remove_dir_all(wt_root(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A folder that isn't a repo (or has been deleted) must contribute nothing rather
+    /// than failing the whole call — the Trail spans every project the user has open.
+    #[test]
+    fn git_log_days_shrugs_off_a_root_that_is_not_a_repo() {
+        let plain = scratch_dir();
+        assert!(git_log_days(vec![plain.to_string_lossy().to_string()], 30).is_empty());
+        assert!(git_log_days(vec!["/nope/does/not/exist".into()], 30).is_empty());
+
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                     "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "only one"]);
+        // A bad root alongside a good one still yields the good one's commits.
+        let mixed = git_log_days(vec!["/nope".into(), repo.to_string_lossy().to_string()], 3650);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].subject, "only one");
+
+        let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// `--since` is what bounds the scan; a commit outside the window must not appear,
+    /// or the "last 30 days" window silently becomes "everything".
+    #[test]
+    fn git_log_days_honours_the_window() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        // GIT_AUTHOR_DATE/COMMITTER_DATE are the only way to fabricate an old commit.
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_DATE", "2001-02-03T04:05:06")
+            .env("GIT_COMMITTER_DATE", "2001-02-03T04:05:06")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=T",
+                   "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "ancient"])
+            .output()
+            .expect("git");
+        assert!(out.status.success());
+
+        let root = repo.to_string_lossy().to_string();
+        assert!(git_log_days(vec![root.clone()], 30).is_empty(),
+                "a 2001 commit must fall outside a 30-day window");
+        assert_eq!(git_log_days(vec![root.clone()], 20_000).len(), 1, "a wide window must include it");
+
+        // The clamp, asserted as behaviour rather than trusted: git's approxidate
+        // matches NOTHING past ~100 years, so without clamping an over-wide window
+        // would silently blank the Trail. It must widen, never empty.
+        assert_eq!(git_log_days(vec![root.clone()], 36_500).len(), 1, "an over-wide window must not go blank");
+        assert_eq!(git_log_days(vec![root], u64::MAX).len(), 1, "and neither must an absurd one");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 
     /// `repo_root_of` replaces a `git rev-parse` that cost ~140ms per call, so it has
     /// to give the same answer git does — including where git *refuses* one. Each case

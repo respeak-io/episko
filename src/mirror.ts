@@ -169,6 +169,10 @@ export function closeExternalView() {
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
   ($("extPane") as HTMLElement).hidden = true;
+  // The dashboard rides the same pointer, so it has the same lifetime: whatever took
+  // the stage just replaced it. Hidden here rather than through ./dashboard so this
+  // module keeps no dependency on it — one `hidden` flag is not worth an import edge.
+  ($("dashPane") as HTMLElement).hidden = true;
 }
 // ---------- dormant (restorable) sessions ----------
 // Clicking a dormant row mirrors its transcript read-only — the same pane an

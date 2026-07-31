@@ -16,6 +16,7 @@ import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
 import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
 import { openWt, removeWorktreeAt } from "./worktree";
+import { copyPath, openTerminalIn } from "./actions";
 import { isAgent } from "./types";
 import {
   accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, sessions,
@@ -257,17 +258,6 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "wtremove": void removeWorktreeAt(t.project, t.root, t.dir, t.branch); break;
   }
 });
-
-// A plain shell in this project's folder — embedded gets an in-app pane, the
-// external engines their own window (the same split as openPlainTerminal).
-function openTerminalIn(project: string, dir: string) {
-  if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
-  void host.launchShell(project, dir, { colorKey: dir });
-}
-async function copyPath(dir: string) {
-  try { await navigator.clipboard.writeText(dir); toast("Path copied"); }
-  catch { toast(dir); } // clipboard denied — at least show what it was
-}
 
 // Appearance is the one row that opens rather than commits: the menu stays put and
 // the swatch panel hangs off its edge. Re-entrant — `mouseover` fires again for

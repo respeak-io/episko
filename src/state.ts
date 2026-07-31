@@ -101,11 +101,19 @@ export function setActiveId(id: string | null) { activeId = id; }
 // what stays stable, so refreshExternals re-binds through it instead of dropping
 // the selection (which used to silently jump the sidebar to an unrelated session).
 // Same rule as Sess.resumeId and the telemetry path: hold the stable handle.
-export let mirror: { kind: "ext"; id: string; pid: number } | { kind: "past"; id: string } | null = null;
+export let mirror:
+  | { kind: "ext"; id: string; pid: number }
+  | { kind: "past"; id: string }
+  // The project dashboard. Not a session at all, but it owns the stage exactly the way
+  // the read-only mirrors do — so it joins this discriminated pointer rather than
+  // becoming a second flag every `activeId` check would have to be paired with.
+  | { kind: "dash"; root: string; name: string }
+  | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
+export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
