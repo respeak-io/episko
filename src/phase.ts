@@ -29,14 +29,15 @@ export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
 // so without a nudge from here the sidebar waits for the next poll to notice a branch
 // switch and never notices a new checkout at all.
 //
-// The whole `tool_input` travels, not just `.command`: the git half reads the command,
-// and the drift half reads `file_path`, which is the only field that can say the agent
-// moved to another checkout (Claude Code's `cwd` provably cannot — see ./gitwatch).
+// The whole payload travels, not a field or two: the git half reads `tool_input.command`,
+// and the drift half needs BOTH `tool_input.file_path` and `cwd` — the two ways an agent
+// changes checkout are invisible to each other's signal (see ./gitwatch). Passing `data`
+// rather than growing the parameter list keeps that from happening a third time.
 //
 // A seam rather than a direct call for the same reason as `onTurnEnd`: acting on it
 // means git commands, the roster and a repaint, none of which belong in the phase state
 // machine. main.ts wires it; in a test a settled tool is just a settled tool.
-let onSessionTouched: (s: Sess, tool: string, input: any) => void = () => {};
+let onSessionTouched: (s: Sess, tool: string, data: any) => void = () => {};
 export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
 
 // Set the phase and, when it actually changes, stamp phaseSince — the anchor for
@@ -167,7 +168,7 @@ export function applyHook(s: Sess, data: any) {
     case "PostToolUseFailure": {
       const tool = data.tool_name || "";
       closeActivity(s, data.tool_name);
-      onSessionTouched(s, tool, data.tool_input);
+      onSessionTouched(s, tool, data);
       if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
       break;
     }
@@ -176,7 +177,7 @@ export function applyHook(s: Sess, data: any) {
     case "Stop": endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
       // Reconcile the working set even if the last tool looked read-only, so the state
       // you come back to read is the state after the whole turn.
-      onSessionTouched(s, "Stop", undefined);
+      onSessionTouched(s, "Stop", data);
       // Only a turn that really ended gets its work checked: an unattended run
       // against a turn the API cut short would be verifying half-written files.
       if (!s.apiErr) onTurnEnd(s);

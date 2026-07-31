@@ -71,8 +71,9 @@ describe("driftTarget", () => {
   // The shape the roster reports, and the shape of the real case this was written for:
   // a session launched in exp-overview whose agent created ../overview and moved there.
   const WT = "/Users/t/w/cc-launcher-spike";
+  const REPO = "/Users/t/repos/cc-launcher-spike";
   const roster = [
-    { path: "/Users/t/repos/cc-launcher-spike", branch: "main", exists: true, is_main: true },
+    { path: REPO, branch: "main", exists: true, is_main: true },
     { path: `${WT}/exp-overview`, branch: "exp/overview", exists: true, is_main: false },
     { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
     { path: `${WT}/gone`, branch: "dead/branch", exists: false, is_main: false },
@@ -81,12 +82,12 @@ describe("driftTarget", () => {
 
   it("names the checkout a write landed in when it isn't the session's own", () => {
     expect(driftTarget(launched, "Write", `${WT}/overview/src/usage.ts`, roster))
-      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview" });
+      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
     expect(driftTarget(launched, "Edit", `${WT}/overview/src-tauri/src/usage.rs`, roster))
-      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview" });
+      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
     // Drifting into the repo's own main checkout counts exactly the same.
-    expect(driftTarget(launched, "Write", "/Users/t/repos/cc-launcher-spike/README.md", roster))
-      .toEqual({ dir: "/Users/t/repos/cc-launcher-spike", branch: "main" });
+    expect(driftTarget(launched, "Write", `${REPO}/README.md`, roster))
+      .toEqual({ dir: REPO, branch: "main", via: "write" });
   });
 
   it("stays silent while the agent works where it was launched", () => {
@@ -114,17 +115,18 @@ describe("driftTarget", () => {
   });
 
   it("picks the innermost checkout when one worktree sits inside another", () => {
-    // A worktree created *inside* its own repo: the repo root contains it, so a
-    // longest-match is the only thing that names the right branch.
+    // Claude Code's own worktrees live at `<repo>/.claude/worktrees/<name>`, so the repo
+    // root also contains them and a longest-match is the only thing that names the right
+    // branch. This is not hypothetical — it is where `EnterWorktree` puts them.
     const nested = [
       { path: "/r", branch: "main", exists: true, is_main: true },
-      { path: "/r/wt/feature", branch: "feat/x", exists: true, is_main: false },
+      { path: "/r/.claude/worktrees/feature", branch: "feat/x", exists: true, is_main: false },
     ];
-    expect(driftTarget("/r", "Write", "/r/wt/feature/a.ts", nested))
-      .toEqual({ dir: "/r/wt/feature", branch: "feat/x" });
+    expect(driftTarget("/r", "Write", "/r/.claude/worktrees/feature/a.ts", nested))
+      .toEqual({ dir: "/r/.claude/worktrees/feature", branch: "feat/x", via: "write" });
     // …and from inside that worktree, writing back up into the repo is drift too.
-    expect(driftTarget("/r/wt/feature", "Write", "/r/src/a.ts", nested))
-      .toEqual({ dir: "/r", branch: "main" });
+    expect(driftTarget("/r/.claude/worktrees/feature", "Write", "/r/src/a.ts", nested))
+      .toEqual({ dir: "/r", branch: "main", via: "write" });
   });
 
   it("does not mistake a sibling with a shared name prefix for a match", () => {
@@ -135,7 +137,7 @@ describe("driftTarget", () => {
       { path: `${WT}/overview-old`, branch: "old/overview", exists: true, is_main: false },
     ];
     expect(driftTarget(launched, "Write", `${WT}/overview-old/a.ts`, sib))
-      .toEqual({ dir: `${WT}/overview-old`, branch: "old/overview" });
+      .toEqual({ dir: `${WT}/overview-old`, branch: "old/overview", via: "write" });
   });
 
   it("treats a session launched in a subfolder of a checkout as being in it", () => {
@@ -147,7 +149,7 @@ describe("driftTarget", () => {
     const win = [{ path: "C:\\r\\main\\", branch: "main", exists: true, is_main: true },
                  { path: "C:\\r\\feat", branch: "feat/x", exists: true, is_main: false }];
     expect(driftTarget("C:\\r\\main", "Edit", "C:\\r\\feat\\src\\a.ts", win))
-      .toEqual({ dir: "C:\\r\\feat", branch: "feat/x" });
+      .toEqual({ dir: "C:\\r\\feat", branch: "feat/x", via: "write" });
     expect(driftTarget("C:\\r\\main", "Edit", "C:\\r\\main\\src\\a.ts", win)).toBeNull();
   });
 
@@ -159,10 +161,11 @@ describe("driftTarget", () => {
     expect(driftTarget(launched, "Write", `${WT}/overview/a.ts`, [])).toBeNull();
   });
 
-  describe("driftUpdate — the latch", () => {
-    const moved = { dir: `${WT}/overview`, branch: "feat/overview" };
-    const upd = (prev: Drift | null, tool: string, fp: unknown) =>
-      driftUpdate(prev, launched, tool, fp, roster);
+  describe("driftUpdate — two signals, one answer", () => {
+    const moved = { dir: `${WT}/overview`, branch: "feat/overview", via: "write" as const };
+    // Case 1: cwd is pinned to the launch dir for the whole life of the drift.
+    const upd = (prev: Drift | null, tool: string, fp: unknown, cwd: unknown = launched) =>
+      driftUpdate(prev, launched, tool, fp, cwd, roster);
 
     it("latches on the first write into another checkout", () => {
       expect(upd(null, "Write", `${WT}/overview/src/a.ts`)).toEqual(moved);
@@ -185,14 +188,65 @@ describe("driftTarget", () => {
     });
 
     it("re-targets straight from one drifted checkout to another", () => {
-      expect(upd(moved, "Write", "/Users/t/repos/cc-launcher-spike/README.md"))
-        .toEqual({ dir: "/Users/t/repos/cc-launcher-spike", branch: "main" });
+      expect(upd(moved, "Write", `${REPO}/README.md`))
+        .toEqual({ dir: REPO, branch: "main", via: "write" });
     });
 
     it("is a no-op on a session that never drifted", () => {
       expect(upd(null, "Read", `${WT}/overview/src/a.ts`)).toBeNull();
       expect(upd(null, "Write", `${launched}/src/a.ts`)).toBeNull();
       expect(upd(null, "Bash", undefined)).toBeNull();
+    });
+
+    // --- the cwd signal: Claude Code moving the session itself ---
+
+    it("reads a moved cwd as drift with no write at all", () => {
+      // The EnterWorktree case, exactly: three Bash calls, zero writes, and the only
+      // thing that changed is the cwd riding along on every hook. The write signal is
+      // blind here, which is why this half exists.
+      expect(driftUpdate(null, launched, "Bash", undefined, `${WT}/overview`, roster))
+        .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" });
+      expect(driftUpdate(null, launched, "Bash", undefined, `${WT}/overview/src`, roster))
+        .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" });
+    });
+
+    it("does not read a cd within the same checkout as a move", () => {
+      // `cd src && …` moves the cwd and changes no checkout. Without resolving both
+      // sides to a checkout first, every such call would read as a relocation.
+      expect(driftUpdate(null, launched, "Bash", undefined, `${launched}/src`, roster)).toBeNull();
+      expect(driftUpdate(null, launched, "Bash", undefined, launched, roster)).toBeNull();
+    });
+
+    it("lets cwd outrank a write, since it also moves the conversation", () => {
+      // Both signals firing at once: cwd wins, and the `via` it carries is what tells
+      // the repair that the transcript has already been re-homed by Claude.
+      expect(driftUpdate(null, launched, "Write", `${REPO}/a.ts`, `${WT}/overview`, roster))
+        .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" });
+    });
+
+    it("retires a cwd drift when cwd comes home", () => {
+      const byCwd = { dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" as const };
+      expect(driftUpdate(byCwd, launched, "Bash", undefined, launched, roster)).toBeNull();
+    });
+
+    // The regression guard for the bug this whole feature exists to fix.
+    it("NEVER lets a home cwd clear a write drift", () => {
+      // In case 1 the cwd reads "home" on every single hook for the entire life of the
+      // drift — Claude Code resets it. If that were allowed to clear the flag, the
+      // feature would work for exactly one tool call and then delete its own answer.
+      expect(upd(moved, "Bash", undefined, launched)).toEqual(moved);
+      expect(upd(moved, "Read", `${WT}/overview/a.ts`, launched)).toEqual(moved);
+      expect(upd(moved, "Read", `${launched}/a.ts`, `${launched}/src`)).toEqual(moved);
+    });
+
+    it("says nothing when cwd names no checkout of this repo", () => {
+      // A session whose cwd is a scratch dir tells us nothing about checkouts, so it
+      // must neither set a drift nor retire one.
+      expect(driftUpdate(null, launched, "Bash", undefined, "/tmp/whatever", roster)).toBeNull();
+      expect(driftUpdate(moved, launched, "Bash", undefined, "/tmp/whatever", roster)).toEqual(moved);
+      const byCwd = { dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" as const };
+      expect(driftUpdate(byCwd, launched, "Bash", undefined, "/tmp/whatever", roster)).toEqual(byCwd);
+      expect(driftUpdate(byCwd, launched, "Bash", undefined, undefined, roster)).toEqual(byCwd);
     });
   });
 });

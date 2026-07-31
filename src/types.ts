@@ -32,9 +32,19 @@ export interface DiffStat {
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
 export interface WtHead { path: string; branch: string; is_main: boolean; exists: boolean }
 // A checkout of a session's own repo that isn't the one it was launched in, as
-// `driftTarget` (./gitwatch) reads it off the agent's writes. What the inspector's
-// "working in" card offers to move the session to.
-export interface Drift { dir: string; branch: string }
+// ./gitwatch reads it off the hook stream. What the inspector's "working in" card
+// offers to point the session at.
+//
+// `via` is not decoration — it decides the repair, because the two ways an agent
+// changes checkout leave the conversation in different places:
+//   "cwd"   — Claude Code moved the session itself (its `EnterWorktree` tool, or any
+//             `cd` staying inside the project dir). It has already re-homed the
+//             transcript, so Episko only has to catch up: adopt the directory, no
+//             restart, no file move.
+//   "write" — the session is still running where it was launched and only its *writes*
+//             moved. Nothing has re-homed anything, so following it means moving the
+//             transcript and relaunching.
+export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.

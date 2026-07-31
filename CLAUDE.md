@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **423 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **429 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -276,7 +276,7 @@ Four conventions hold across them:
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 423 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 429 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -290,7 +290,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its *writes* are landing in |
+| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -392,59 +392,77 @@ branch chip and the open ⑃ dialog cannot disagree about what is checked out wh
 
 ## Drift — the agent left the checkout it was launched in
 
-The above answers "what is checked out where". This answers the other half, which it
-cannot: **which checkout is this agent's work actually landing in?** An agent that runs
-`git worktree add … -b feat/x` and moves into the new checkout leaves the session pinned
-to the folder it started in, and every surface goes on naming that folder — correctly,
-and uselessly. The worktree roster notices the new checkout (the toast fires, the row
-appears); it is the *session → checkout* link that goes stale.
+The section above answers "what is checked out where". This answers the other half,
+which it cannot: **which checkout is this agent's work actually landing in?** The
+worktree roster notices a new checkout (the toast fires, the row appears); it is the
+*session → checkout* link that goes stale.
 
-**`cwd` cannot tell us, and that is a property of Claude Code, not an oversight.**
-Verified against 2.1.220: a `cd` *inside* the session's directory persists and the hook's
-`cwd` follows it, but a `cd` *outside* it is undone — the tool result literally says
-`Shell cwd was reset to …` — and `cwd` never moves. The session that prompted this had 42
-such resets and 622 transcript records all naming the folder it had already left. So any
-design that watches `cwd`, `workspace.current_dir` or the transcript is watching a field
-that is pinned by construction for exactly the case that matters.
+**There are two ways an agent changes checkout, they behave as opposites, and each is
+invisible to the signal that catches the other.** Both were verified against the real
+CLI (2.1.220) and against real sessions — guessing here produced a first cut that
+covered one and read as broken in the other.
 
-**What does name the new checkout is `tool_input.file_path`**, absolute on every
-Write/Edit payload (asserted against the real binary in the `#[ignore]`d contract test —
-if it ever goes relative, drift silently stops working rather than failing). Hence:
+| | **out of** the project dir | **into** the project dir |
+| --- | --- | --- |
+| how | `git worktree add ../x` via Bash | Claude Code's `EnterWorktree` tool |
+| where | a sibling, e.g. `.cc-worktrees/…` | `<repo>/.claude/worktrees/<name>` |
+| hook `cwd` | **pinned** — every `cd` out is undone (`Shell cwd was reset to …`) | **follows** |
+| the transcript | stays where it was | **Claude re-homes it itself** |
+| `gitMutates` | fires | never — no Bash command ran |
+| the signal | a write's `file_path` | `cwd` |
 
-- **Only writes count.** A `Read` lands anywhere — a sibling repo, `~/.claude`, `$TMPDIR`
-  — and reading is how an agent that moved *ports work across*. Counting reads would make
-  the flag flicker on every glance back at the old checkout.
-- **Both sides resolve to a checkout before being compared** (`driftTarget`), never the
-  file against `workdir` directly. That is what keeps a session launched in a *subfolder*
-  of a checkout (not drift) apart from one launched in a *nested worktree* (drift the
-  moment it writes to the enclosing repo). Longest match wins, for the same reason.
+One real session had 42 `Shell cwd was reset to …` and 622 records all naming the folder
+it had already left; another used `EnterWorktree`, made **zero** writes, and had its
+transcript moved out from under Episko by Claude. Neither signal alone covers both.
+
+Hence two signals with different standing, and the asymmetry is the whole design
+(`driftUpdate`):
+
+- **`cwd` may only ever *set* a drift, never clear a write-derived one.** A `cwd` reading
+  "home" proves nothing about where the writes are going — that is exactly the left-hand
+  column, where it reads "home" for the entire life of the drift. Letting it clear would
+  delete the answer on the next hook. It retires only a drift `cwd` itself reported.
+- **Writes latch**, because an agent working in another checkout still reads its original
+  one constantly (usually *why* it moved). Cleared only by a write home.
+- **Both sides resolve to a checkout before being compared**, never the path against
+  `workdir` directly. That is what keeps `cd src/` (not a move), a session launched in a
+  subfolder (not a move) and a nested worktree (a move) all straight at once, and why the
+  longest match wins — `EnterWorktree`'s worktrees live *inside* the repo that contains
+  them.
 - **The target must be a checkout the roster already knows.** Unlike `gitMutates`, a
-  false positive here is not a wasted re-read — it puts a wrong branch on screen and
-  offers to relocate a live session into `$TMPDIR`. Unknown folder → no drift.
-- **Latched, not sampled** (`driftUpdate`). Once seen, a drift holds until the agent
-  *writes home* again, which is the only act that means it came back.
+  false positive is not a wasted re-read — it puts a wrong branch on screen and offers to
+  relocate a live session into `$TMPDIR`.
 
-Display-only: `Sess.workdir` stays the folder Claude runs in and `--resume` needs. The
-row **does not move** — it stays under the checkout that owns its identity — and instead
-carries a `⤳ branch` marker, the header chip shows `old ⤳ ⑃ new`, and the inspector gets
-a card at the top, above the working set and git buttons it contradicts.
+Display is the same either way and **the row does not move**: it stays under the checkout
+that owns its identity, carrying a `⤳ branch` marker, with `old ⤳ ⑃ new` on the header
+chip and a card at the top of the inspector, above the working set and git buttons it
+contradicts.
 
-**`moveSessionToDrift` is the one action that writes inside `~/.claude`**, and the second
-exception to "Episko only writes `.episko/tasks.toml`". It has to be an action rather
-than something a user could do by hand: `claude --resume` takes a session id and **no
-path** (there is no path-based resume flag), and looks the conversation up under
-`<enc(cwd)>/<id>.jsonl` — so *no sequence of commands* resumes a session in a folder
-other than the one it started in. The order is the safety argument: **kill, then move,
-then relaunch**. `closeSession` fires `kill_session` without awaiting it, so the await is
-what makes this a move of a *dead* session — a live one would keep the file open (Windows
-refuses the rename outright; POSIX would succeed and leave it writing into the moved
-file). `move_session_transcript` renames rather than copies (two files with one id would
-double-list in History and leave `--resume` ambiguous), carries the `<id>/tool-results`
-sidecar with it, refuses to overwrite, and rejects any id that isn't uuid-shaped before it
-reaches a filename. A failed move still relaunches — in the *original* folder, same
-conversation — so the cost is a restarted pane and nothing else.
+**`Drift.via` is not decoration — it decides the repair**, and conflating the two would
+be wrong in both directions:
 
-Known wart: the moved transcript's first user record still names the old cwd, so
+- **`via: "cwd"`** → *Follow it here.* The process is already running there and the
+  conversation is already there. Episko is merely behind, so `followSessionDrift` adopts
+  the directory **in place** — no confirm, no kill, no file move, no relaunch; the pane
+  never blinks. It re-points `workdir`/`branch`, drops the stale `git` working set, marks
+  the new folder for a re-read and re-saves the roster (restore must target the folder
+  the transcript is in).
+- **`via: "write"`** → *Move session here.* Nothing has re-homed anything. `claude
+  --resume` takes a session id and **no path** (there is no path-based resume flag) and
+  looks the conversation up under `<enc(cwd)>/<id>.jsonl`, so *no sequence of commands a
+  user could type* relocates a session. **Kill, then move, then relaunch**: `closeSession`
+  fires `kill_session` without awaiting it, so the await is what makes this a move of a
+  *dead* session (a live one holds the file open — Windows refuses the rename outright;
+  POSIX would succeed and leave it writing into the moved file). `move_session_transcript`
+  renames rather than copies (two files with one id would double-list in History and leave
+  `--resume` ambiguous), carries the `<id>/tool-results` sidecar, refuses to overwrite, and
+  rejects any id that isn't uuid-shaped before it reaches a filename. A failed move still
+  relaunches — in the *original* folder — so the cost is a restarted pane.
+
+`move_session_transcript` is the only thing Episko ever writes inside `~/.claude`, and the
+second exception to "Episko only writes `.episko/tasks.toml`".
+
+Known wart: a moved transcript's first user record still names the old cwd, so
 `transcript_origin` grafts its History row onto the old project. Defensible (the
 conversation did start there) and not worth rewriting records to fix.
 

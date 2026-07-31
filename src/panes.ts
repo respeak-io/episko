@@ -400,15 +400,17 @@ export function noteGitCommand(cmd: unknown) {
 // the session's own folder, so a session whose agent moved to a sibling checkout goes on
 // reporting the branch it left, forever and correctly.
 //
-// `driftUpdate` owns the rule (including why it latches); this owns only the repaint.
-export function noteDrift(s: Sess, tool: string, input: any) {
+// `driftUpdate` owns the rule (including which signal outranks which); this owns only
+// the repaint. Both fields it reads come off the same payload — `cwd` catches the moves
+// Claude Code makes itself, `file_path` the ones it doesn't know about.
+export function noteDrift(s: Sess, tool: string, data: any) {
   if (!isAgent(s) || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
-  const next = driftUpdate(s.drift, s.workdir, tool, input?.file_path, roster);
-  if (next?.dir === s.drift?.dir) return;
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);
+  if (next?.dir === s.drift?.dir && next?.via === s.drift?.via) return;
   s.drift = next;
-  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch}` : `drift cleared ${s.id.slice(0, 8)}`);
+  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
   renderAll();
 }
 

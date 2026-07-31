@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 408 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 89 tests on macOS, 86 on
+- `pnpm test` — 429 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 88 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -135,23 +135,32 @@ A regression in either is silent.
 
 ### Drift — an agent that changes checkout
 
-Nothing here can be checked headlessly: the detection is unit-tested and the CLI
-contract is pinned by the `--ignored` test above, but every surface below is DOM.
+**Two cases, and they behave as opposites** — one is not a spot check for the other.
+Nothing here can be checked headlessly: the rules are unit-tested and the CLI contract is
+pinned by the `--ignored` test above, but every surface below is DOM.
 
-- [ ] **The drift is noticed.** In a session launched in one checkout, have the agent
-      `git worktree add` a new one and **write a file in it**. Within a couple of tool
-      calls the sidebar row gains `⤳ <branch>`, the header chip reads `old ⤳ ⑃ new`, and
-      the inspector shows the *Working in* card **above** the vital.
-- [ ] **The row does not move** — it stays under the checkout the session was launched
-      in, and does not hop back and forth as the agent reads its old files. (A read must
-      never clear the marker; only a *write* back home does.)
-- [ ] **Move session here** ends the session, moves the conversation and resumes it in
-      the new checkout — with its history intact (ask it about something from before the
-      move). Afterwards the marker is gone, the branch chip is the new branch alone, and
+- [ ] **Case 1 — writes move, the session does not.** In a session launched in one
+      checkout, have the agent `git worktree add` a **sibling** worktree (outside the
+      project dir) and **write a file in it**. The sidebar row gains `⤳ <branch>`, the
+      header chip reads `old ⤳ ⑃ new`, and the inspector shows the *Working in* card
+      above the vital, offering **Move session here**.
+- [ ] **The row does not move**, and does not flicker as the agent reads its old files.
+      (Only a *write* back home clears the marker — reads must not.)
+- [ ] **Move session here** confirms, ends the session, and resumes it in the new
+      checkout with its history intact (ask it about something from before the move).
+      Afterwards: marker gone, chip shows the new branch alone, and
       `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
-- [ ] **A refused move is harmless.** Deny it once at the confirm dialog: nothing
-      changes. (The failure path — relaunch in the original folder — is worth forcing
-      once by pre-creating a file at the destination transcript path.)
+- [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+
+- [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
+      run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`
+      tool into `<repo>/.claude/worktrees/<name>`. **No file need be written.** The same
+      marker and card appear, but the button reads **Follow it here**.
+- [ ] **Follow it here is instant and lossless** — no confirm, no restart, the pane does
+      not blink and the terminal keeps its scrollback. Afterwards the header path, the
+      branch, ▶ Run and ❯ Terminal all point at the new checkout.
+- [ ] **The conversation is still resumable afterwards** (Claude had already re-homed the
+      transcript; Episko must not have moved it a second time).
 
 ### Panes that aren't agents
 

@@ -17,9 +17,10 @@ import { refit } from "./terminal";
 import { activeCwd, closeSession, launch } from "./panes";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
+import { queueRosterSave } from "./mirror";
 import {
-  FAVORITES, saveFavorites, sessions, setFavorites, setSortMode, SORT_META,
-  SORT_MODES, sortMode, setWtGroup as setWtGroupState, wtGroup,
+  FAVORITES, markWorkdirStale, saveFavorites, sessions, setFavorites, setSortMode,
+  SORT_META, SORT_MODES, sortMode, setWtGroup as setWtGroupState, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
 
@@ -105,24 +106,45 @@ export function setTheme(t: "dark" | "light") {
 }
 export function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
 
-// ---------- moving a session to the checkout its agent moved to ----------
+// ---------- following a session to the checkout its agent moved to ----------
 //
-// The one action in Episko that writes inside `~/.claude`, and the reason it has to:
-// `claude --resume <id>` finds a conversation only under `<enc(cwd)>/<id>.jsonl` and
-// takes no path, so *no sequence of commands a user could type* resumes a session in a
-// folder other than the one it started in. Doing it by hand means exiting, moving a
-// file out of Claude Code's private store, and relaunching with the right flags. This
-// is that, in one click, in the right order.
+// Two drifts, two repairs, and conflating them was the bug this file already shipped
+// once in miniature: what has to happen depends entirely on whether Claude Code moved
+// the session itself or only its writes moved.
 //
-// The order is the safety argument. The session is killed **first**, so nothing is
-// appending to the transcript while it is renamed; the move happens on a dead session,
-// and only then is a new one launched in the new folder against the same conversation.
-// If the move fails, the relaunch still happens — in the original folder, resuming the
-// same id — so a failed move costs a restarted pane and nothing else.
-export async function moveSessionToDrift(id: string) {
+// **via "cwd"** — Claude Code did it (its `EnterWorktree` tool, or a `cd` that stayed
+// inside the project dir). The process is *already* running in the new checkout and
+// Claude has already re-homed the transcript under it. Nothing needs killing, moving or
+// relaunching; Episko is simply behind, and adopting the directory in place is both the
+// complete fix and the one with no cost — the session on screen never even blinks.
+//
+// **via "write"** — the session is still running where it was launched and only its
+// writes moved. Following it therefore means relocating the conversation, and
+// `claude --resume` finds one only under `<enc(cwd)>/<id>.jsonl` and takes no path — so
+// *no sequence of commands a user could type* does this. Kill, move, relaunch: the await
+// on the kill is what makes it a move of a dead session (a live one holds the file open,
+// which Windows refuses to rename outright). A failed move still relaunches, in the
+// original folder, so the cost is a restarted pane and nothing else.
+export async function followSessionDrift(id: string) {
   const s = sessions.get(id);
   if (!s?.drift) return;
-  const { dir, branch } = s.drift;
+  const { dir, branch, via } = s.drift;
+
+  if (via === "cwd") {
+    // No confirm: nothing is destroyed, interrupted or written. This only makes
+    // Episko's idea of the folder agree with the one the session is already in.
+    s.workdir = dir;
+    s.branch = branch;
+    s.worktree = dir === s.colorKey ? null : branch;
+    s.drift = null;
+    s.git = null;                  // the old checkout's working set is not this one's
+    markWorkdirStale(s, "Write");  // re-read the new folder on the next sweep
+    queueRosterSave();             // restore must target the folder the transcript is in
+    renderAll();
+    toast(`Now following ${branch}`);
+    return;
+  }
+
   const ok = await ask(
     `Move this session to ${branch}?\n\n`
     + `Episko will end the session, move its conversation to ${dir}, and resume it there.\n\n`
@@ -134,10 +156,6 @@ export async function moveSessionToDrift(id: string) {
   // Captured before the close, because the fallback path has to be able to rebuild the
   // session exactly as it was — same labels, not the drift's.
   const { project, colorKey, workdir, resumeId, worktree: wasWt, branch: wasBranch } = s;
-  // Kill before close: `closeSession` fires kill_session without awaiting it, and the
-  // rename must not race a process that still has the file open (Windows refuses one
-  // outright; a POSIX rename would succeed and leave the dying session writing into the
-  // moved file). Awaiting the kill is what makes the move a move of a dead session.
   await invoke("kill_session", { sessionId: id }).catch(() => {});
   closeSession(id);
 
