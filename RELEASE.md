@@ -155,6 +155,26 @@ A regression in either is silent.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
 
+### The title bar, which is the header (no native one behind it)
+
+Nothing here has automated cover: the frame is drawn by the OS on one side and by
+`#winCtl` on the other, and each platform only ever sees its own half.
+
+- [ ] **There is one bar, not two**, and the window still moves: drag the header
+      (its background, the logo, the empty space around ⌘K) and the window follows;
+      double-clicking it maximizes. **⌘K still opens on a single click** — the search
+      bar opts out of the drag region, and a regression there is silent.
+- [ ] **Windows:** minimize / maximize / close all work from the header, the middle
+      glyph flips to the restore pair when maximized **and back** (also after Win+↑
+      and a snap, which don't go through our button), and ✕ still raises the quit
+      guard rather than killing live sessions. Then **resize from every edge and
+      corner** and drag the window to a screen edge to snap — an undecorated window
+      resizes through a child window tauri only attaches at creation, so this is what
+      catches it having been lost.
+- [ ] **macOS:** the traffic lights sit in the header, vertically centred, without
+      overlapping the logo — and all three work, the green one included (both zoom
+      and, held, fullscreen). In fullscreen the header must close the gap they leave.
+
 ### Logs, after all of the above
 
 - [ ] `episko.log` ends with `exit · clean shutdown`. A log that just stops is

@@ -252,6 +252,44 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || run_telemetry_server(server, handle));
 
+            // ---- The window (one title bar, not two) ----
+            // The app draws its own header, so the native title bar above it is a
+            // second one saying less. macOS can hide it and keep the parts worth
+            // keeping: `titleBarStyle: "Overlay"` + `hiddenTitle` in tauri.conf.json
+            // float the real traffic lights over our header (the green one is
+            // *zoom/fullscreen* — no <button> reproduces that), and
+            // `trafficLightPosition` centres them in its 40px. Windows has no such
+            // style, so there the frame goes entirely and the header draws its own
+            // minimize/maximize/close (`#winCtl`).
+            //
+            // Hence this window is built here rather than by the config (`create:
+            // false` above): `decorations` is not a per-platform config key, and a
+            // `tauri.windows.conf.json` would replace the whole `windows` array —
+            // json merge-patch, so every shared key would exist twice and drift.
+            // Flipping it *after* creation is not the same thing either: tauri only
+            // attaches its undecorated-resize child window when the webview is
+            // created over an already-undecorated window, so a late flip yields a
+            // window whose edges cannot be dragged at all (the WebView2 child
+            // swallows the hit test). `from_config` keeps one definition and
+            // cfg-gates the single flag that differs.
+            //
+            // One thing falls out for free: the webview now starts *after*
+            // `app.manage`, so the frontend cannot invoke a command before the
+            // state that command expects exists.
+            #[allow(unused_mut)] // `mut` is only used by the windows arm below
+            let mut win_cfg = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .expect("main window config in tauri.conf.json");
+            #[cfg(windows)]
+            {
+                win_cfg.decorations = false;
+            }
+            tauri::WebviewWindowBuilder::from_config(app, &win_cfg)?.build()?;
+
             // macOS menu-bar (tray) icon — its menu mirrors the sidebar and is
             // rebuilt from the frontend via `update_tray`.
             let tray_menu = MenuBuilder::new(app)
