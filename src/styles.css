@@ -1587,3 +1587,169 @@ select.in-ctl { cursor: pointer; }
 .fc-rec { display: flex; gap: 8px; align-items: flex-start; margin-top: 13px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 .fc-recic { flex: none; margin-top: 1px; }
 .fc-rec b { color: var(--text); font-weight: 650; }
+
+/* ═══ the project dashboard ════════════════════════════════════════════════════
+   Opened by clicking a project. Nothing here is on renderAll's path until then —
+   #dashPane stays hidden and empty for the whole life of the app otherwise.
+   ./dash owns the rules, ./dashview the markup, ./dashboard the pane. */
+.dash-view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+.dash-view[hidden] { display: none; }
+.dash { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* the pulse strip — five numbers before any detail, so the window answers itself */
+.db-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) auto; gap: 1px; background: var(--hair); border-bottom: 1px solid var(--hair); flex: none; }
+.db-tile { padding: 9px 13px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.db-tile .k { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
+.db-tile .v { font: 700 19px var(--font-mono); letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.db-tile .d { font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-tile.win { flex-direction: row; align-items: center; padding: 9px 12px; }
+.db-spark { font-size: 12px; line-height: 1; color: var(--accent-ink); letter-spacing: -1px; }
+.dim { color: var(--muted-2); }
+/* Its own picker — `.seg` belongs to the settings window and is a flex column. */
+.db-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--hair); gap: 1px; flex: none; }
+.db-seg button { border: 0; background: none; color: var(--muted-2); font: 600 10px var(--font-mono); padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.db-seg button.on { background: var(--accent-wash); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-line); }
+
+.db-body { display: grid; grid-template-columns: minmax(0, 1fr) 318px; flex: 1; min-height: 0; }
+.db-spine { min-width: 0; padding: 15px 17px 26px; overflow-y: auto; }
+.db-aside { min-width: 0; border-left: 1px solid var(--hair); background: color-mix(in srgb, var(--panel) 55%, transparent); padding: 12px 12px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.db-empty { padding: 18px 6px; max-width: 48ch; font-size: 12px; line-height: 1.6; color: var(--muted-2); }
+
+/* the timeline: the summary IS the row, every commit one ⌄ away */
+.db-day { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; }
+.db-gut { text-align: right; padding-top: 1px; }
+.db-gut .dd { display: block; font: 700 10.5px var(--font-mono); color: var(--text); }
+.db-gut .cc { display: block; margin-top: 3px; font: 9px var(--font-mono); color: var(--muted-2); }
+.db-dbody { position: relative; min-width: 0; padding: 0 0 17px 15px; border-left: 1px solid var(--hair); }
+.db-dbody::before { content: ""; position: absolute; left: -4px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg); }
+.db-day:last-child .db-dbody { padding-bottom: 2px; border-left-color: transparent; }
+.db-sum { margin: 0 0 9px; font-size: 12.5px; line-height: 1.58; color: var(--text); max-width: 64ch; }
+/* A generated sentence is marked, always: the reader has to be able to tell what the
+   app observed from what a model wrote about it. */
+.db-sum .ai { display: inline-block; margin-left: 7px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); vertical-align: 1px; }
+.db-facts { display: flex; align-items: center; gap: 9px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.db-facts .dot { opacity: .4; }
+.db-facts .who { color: var(--muted); }
+.db-more { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; cursor: pointer; font: 9.5px var(--font-mono); color: var(--muted-2); padding: 2px 4px; border-radius: 5px; }
+.db-more:hover { color: var(--text); background: var(--surface); }
+.db-more .cv { transition: transform .18s ease; display: inline-block; }
+.db-day.open .db-more .cv { transform: rotate(180deg); }
+.db-detail { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .24s cubic-bezier(.32,.72,0,1), opacity .18s ease; opacity: 0; }
+.db-day.open .db-detail { grid-template-rows: 1fr; opacity: 1; }
+.db-detail > div { overflow: hidden; min-height: 0; }
+.db-rows { display: flex; flex-direction: column; gap: 1px; padding-top: 8px; }
+.db-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 5px; border-radius: 6px; font-size: 11.5px; }
+.db-item:hover { background: var(--surface); }
+.db-kind { flex: none; min-width: 50px; text-align: center; padding: 1px 0; border-radius: 4px; font: 8.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); }
+.db-kind.sess { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 26%, transparent); }
+.db-t { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-r { margin-left: auto; flex: none; font: 9.5px var(--font-mono); color: var(--muted-2); }
+
+/* the aside cards. Both edge tracks of a row are FIXED — `auto` lets each row size to
+   its own tag and the columns stagger, the same trap the commit graph's grid documents. */
+.ac { border-radius: var(--radius); border: 1px solid var(--hair); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); overflow: hidden; flex: none; }
+.ac-h { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--hair); }
+.ac-h .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.ac-h .n { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.ac-h .xb { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px; width: 19px; height: 19px; border-radius: 6px; display: grid; place-items: center; flex: none; }
+.ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
+.ac-empty { padding: 9px 7px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) 74px; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.cr:hover { background: var(--surface-2); }
+.cr .k { text-align: center; font-size: 11px; color: var(--muted-2); }
+.cr .ti { min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.cr:hover .ti { color: var(--text); }
+.cr .rt { display: flex; align-items: center; justify-content: flex-end; gap: 5px; overflow: hidden; }
+.tag { flex: none; font: 9.5px var(--font-mono); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); white-space: nowrap; }
+.tag.ok { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 28%, transparent); }
+.tag.warn { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 28%, transparent); }
+.tag.acc { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+
+.nt-form { display: flex; gap: 5px; padding: 4px 4px 3px; }
+.nt-form input { flex: 1; min-width: 0; height: 25px; padding: 0 9px; border-radius: 7px; font: 11.5px var(--font-ui); color: var(--text); background: var(--bg-2); border: 1px solid var(--hair); }
+.nt-form input::placeholder { color: var(--muted-2); }
+.nt-form input:focus { outline: none; border-color: var(--accent-line); }
+.nt-form button { width: 25px; height: 25px; flex: none; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); cursor: pointer; font-size: 12px; }
+.nt { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; }
+.nt:hover { background: var(--surface-2); }
+.nt .ntx { min-width: 0; }
+.nt .tx { display: block; font-size: 11.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt .mt { margin-top: 2px; display: flex; align-items: center; gap: 5px; font: 9px var(--font-mono); color: var(--muted-2); }
+.nt-b { display: flex; gap: 2px; opacity: 0; transition: opacity .14s; flex: none; }
+.nt:hover .nt-b { opacity: 1; }
+.nb { border: 0; background: none; cursor: pointer; color: var(--muted-2); font-size: 10px; padding: 2px 4px; border-radius: 5px; }
+.nb:hover { color: var(--text); background: var(--surface); }
+
+/* What this folder can't do, said once — rendered INSTEAD of the cards it replaces. */
+.miss { padding: 11px 12px; border-radius: var(--radius); border: 1px dashed var(--hair-strong); background: color-mix(in srgb, var(--bg-2) 70%, transparent); display: flex; flex-direction: column; gap: 8px; flex: none; }
+.miss .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.miss p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted-2); }
+.miss code { font: 10.5px var(--font-mono); color: var(--accent-ink); }
+
+/* the enlarge overlay — covers the dashboard, Esc steps out one layer */
+.ovl { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(255,255,255,.04), transparent 30%), color-mix(in srgb, var(--panel) 95%, transparent); backdrop-filter: blur(18px) saturate(1.3); opacity: 0; pointer-events: none; transform: translateY(6px); transition: opacity .2s ease, transform .2s cubic-bezier(.32,.72,0,1); }
+.ovl.show { opacity: 1; pointer-events: auto; transform: none; }
+.ovl-h { display: flex; flex-wrap: nowrap; align-items: center; gap: 9px; padding: 9px 14px; border-bottom: 1px solid var(--hair); min-width: 0; }
+.ovl-h .t { font-size: 12.5px; font-weight: 750; letter-spacing: -.01em; white-space: nowrap; flex: none; }
+.ovl-h .s { font: 10px var(--font-mono); color: var(--muted-2); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ovl-h .rt { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.ovl-b { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px 24px; }
+.ovl-f { padding: 8px 14px; border-top: 1px solid var(--hair); font-size: 11px; line-height: 1.5; color: var(--muted-2); background: var(--bg-2); }
+.ovl-f code { font: 10.5px var(--font-mono); color: var(--accent-ink); }
+/* One geometry for the header and every row, declared once. `.wt-*` is the worktree
+   dialog's own skin, hence the `dbwt` prefix. */
+.dbwt, .dbwt-hd { display: grid; grid-template-columns: 18px 146px minmax(0, 1fr) 178px 81px; gap: 10px; align-items: center; }
+.dbwt-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.dbwt-hd .r { text-align: right; }
+.dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbwt:hover { background: var(--surface); }
+.dbwt .gl { text-align: center; font-size: 11px; }
+.dbwt .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbwt .pt { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbwt .tags { display: flex; gap: 5px; overflow: hidden; }
+/* Icon-only, so a row with two actions ends on the same edge as one with three. */
+.dbwt .acts { display: flex; justify-content: flex-end; gap: 4px; }
+.dbwt .acts .act { width: 23px; padding: 0; justify-content: center; font-size: 10.5px; opacity: .55; }
+.dbwt:hover .acts .act { opacity: 1; }
+.ncol { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 9px; align-items: stretch; }
+.ncard { padding: 11px 12px; border-radius: var(--radius); border: 1px solid var(--hair); background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.ncard .tx { font-size: 12px; line-height: 1.5; }
+.ncard .mt { display: flex; align-items: center; gap: 7px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.ncard .bar { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 2px; }
+.ncard .bar .act { height: 23px; font-size: 10px; padding: 0 9px; }
+
+/* the inspector as the project's context menu, standing open */
+.ip-live { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; }
+.ip-live .srow { padding: 4px 7px; }
+.ip-acts { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; }
+.ia { display: grid; grid-template-columns: 19px minmax(0, 1fr); gap: 9px; align-items: center; padding: 6px 7px; border-radius: 7px; cursor: pointer; border: 0; background: none; text-align: left; color: var(--text); font-family: var(--font-ui); width: 100%; }
+.ia:hover { background: var(--surface-2); }
+.ia .ic { font-size: 12px; color: var(--muted-2); text-align: center; }
+.ia:hover .ic { color: var(--accent-ink); }
+.ia .lb { font-size: 11.5px; font-weight: 550; }
+.ia .sb { display: block; font: 9.5px var(--font-mono); color: var(--muted-2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-sep { height: 1px; background: var(--hair); margin: 5px 3px; }
+.db-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+
+/* The 44px rail ⌘I collapses to on the dashboard. It exists because the inspector
+   holds the ONLY copy of History / Terminal / Run here — the header gave them up — so
+   collapsing to nothing would hide real verbs. */
+.insp-strip { display: none; flex-direction: column; align-items: center; gap: 4px; padding: 9px 0 12px; overflow-y: auto; min-height: 0; }
+.app.insp-mini .insp-strip { display: flex; }
+.app.insp-mini .insp-head, .app.insp-mini .insp-scroll { display: none; }
+.insp-strip .sglyphs { display: flex; flex-direction: column; align-items: center; gap: 3px; padding-bottom: 7px; margin-bottom: 4px; border-bottom: 1px solid var(--hair); width: 26px; }
+.insp-strip .pglyph { width: 22px; height: 22px; border-radius: 6px; font-size: 11px; }
+.isb { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; cursor: pointer; font-size: 12.5px; color: var(--muted-2); background: none; border: 1px solid transparent; }
+.isb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.isb.live { color: var(--st-working); }
+.isb.live.g-attn { color: var(--st-attention); }
+.isb.live.g-done { color: var(--st-done); }
+.isb.live.g-idle { color: var(--st-idle); }
+.isep { width: 18px; height: 1px; background: var(--hair); margin: 4px 0; }
+
+@media (max-width: 1180px) {
+  .db-body { grid-template-columns: 1fr; }
+  .db-aside { border-left: 0; border-top: 1px solid var(--hair); }
+}
+@media (prefers-reduced-motion: reduce) { .db-detail, .ovl { transition: none; } }

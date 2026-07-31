@@ -17,8 +17,8 @@ pnpm coverage           # the same suites with v8 coverage
 ```
 
 Coverage is a **yardstick, not a target** — there is deliberately no gate, because the
-render and DOM-owning modules are untested by design. Current: **88.4%** statements
-over the modules the suites load, **19.3%** over all of `src/`, and **71.0%** Rust
+render and DOM-owning modules are untested by design. Current: **89.6%** statements
+over the modules the suites load, **20.5%** over all of `src/`, and **71.0%** Rust
 lines (`cargo llvm-cov --summary-only` from `src-tauri/`). Both gaps are the OS edge,
 which `RELEASE.md` covers by hand. Note vitest's `text` reporter **hides any file at
 100% in all four columns**, so a fully-covered module looks absent; use
@@ -52,9 +52,9 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **490 vitest + cargo (100 on macOS, 97 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **541 vitest + cargo (118 on macOS, 115 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which thirteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which sixteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -248,6 +248,64 @@ Four smaller P4 affordances, all in the frontend:
   button and the picker's ⌘⇧R both route through it. The escape hatch for the one
   thing the stamp can't see: a file an introspector imports itself.
 
+## The project dashboard (`dash.ts`, `dashview.ts`, `dashboard.ts`)
+
+**Left-clicking a project opens it.** That click used to select whichever session
+sorted first, so one gesture meant two different things depending on state, and "what
+is going on in this repo" lived in a right-click menu nobody opens. The sessions are
+the rows directly beneath the header; this is the header's own answer.
+
+The split is `graph.ts`/`graphview.ts` again: **`dash.ts` is pure and tested**
+(`projectTier`, `dashDays`, `dashPulse`, `projectCost`, `densePerDay`), **`dashview.ts`
+takes data and returns a string**, **`dashboard.ts`** owns the pane, the IPC, the
+summary queue and the delegated events. It rides the same `mirror` pointer as the
+read-only session mirrors (`kind: "dash"`) rather than adding a second flag every
+`activeId` check would have to be paired with.
+
+**Nothing runs until a project is clicked.** No probe at startup, nothing on
+`renderAll`'s path — a dashboard that cost anything to *not* open would tax every
+session in the app for a view most ticks never show.
+
+**Three gates decide what it can show, and they are not the same gate** (`projectTier`,
+from one `project_facts` call):
+
+- **GitHub** — issues, pull requests, claims. All `gh`, all still to come.
+- **git** — the commit half of the timeline, the checkouts card, and *everything
+  shared*: `.episko/` only means anything if it can be committed, so **sharing needs
+  git, not GitHub**. A GitLab or self-hosted remote is this tier, which is why
+  `parse_remote` mints a slug for `github.com` and nothing else.
+- **neither** — sessions, spend and personal notes. None of those ever cared about git.
+
+A card with nothing to say is **absent, not empty** — an "Issues" panel in a folder
+that has no issues reads as breakage — and `missingCard` says once, plainly, what this
+folder cannot do instead.
+
+Three things that are easy to get wrong:
+
+- **Per-project cost comes from `cc-usage-detail`, never `cc-usage`.** The plain rollup
+  is every project's spend that day at once, so attributing it to whichever dashboard
+  is open would invent a number. The detail split only exists going forward, so older
+  days legitimately have none, and the strip shows a dash rather than `$0.00` — "we
+  didn't keep this" and "it was free" are different facts.
+- **The list drops empty days and the sparkline must not.** `trailDays` omits a day
+  nothing happened on (a column of blank rows reads as broken); `densePerDay` fills
+  them back in, because two busy days a week apart otherwise render as two adjacent
+  bars and read as "constantly busy".
+- **⌘I collapses to a 44px rail here, not to nothing.** The dashboard header carries
+  only `＋ Session`, `✕` and `◨` — History, Terminal and Run act on the *project* and
+  live in the inspector — so hiding the panel outright would hide real verbs. On a
+  session ⌘I still hides it completely.
+
+**The work log is the one thing Episko generates and then commits.** `summarize_day`
+spends money (one `claude -p` per day, Haiku), so it is cached, opt-in, and **read
+before it is generated**: `read_digest` parses `.episko/digest.md` first, which means
+the second person to open a week pays nothing for it. Writing it is gated on an
+explicit per-project yes (`cc-digest-ok`), because a new committable file in someone's
+repo is a real side effect — the same stance `tasks.rs` takes with `tasks.toml`. This
+is the **third** thing Episko writes outside its own config, after `.episko/tasks.toml`
+and the `~/.claude` transcript move. Only a *closed* day is written: today's line
+changes as the day goes on, and each change would dirty a tracked file.
+
 ## Project history — the commit graph panel (`git_graph`, `graph.ts`, `graphview.ts`)
 
 A project's lanes, refs and recent commits, opened from the **project right-click menu**
@@ -369,20 +427,21 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 `styles.css`. Scope (`all refs` / `this branch`) resets on each open and is deliberately
 **not** persisted — all-refs is the answer the panel exists to give.
 
-## Backend (`src-tauri/src/`) — ten modules
+## Backend (`src-tauri/src/`) — eleven modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 504 lines out of ~10,215 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~11,020 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 504 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `git.rs` | 2,363 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `lib.rs` | 518 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `git.rs` | 2,718 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
 | `usage.rs` | 1,613 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
 | `pty.rs` | 1,071 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
 | `telemetry.rs` | 926 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | 750 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `summarize.rs` | 446 | `summarize_day` (Haiku via `claude -p`) + the committed `.episko/digest.md` |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
@@ -399,13 +458,13 @@ Four conventions hold across them:
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 40 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 45 modules
 
-**No framework, and no longer one file.** ~10,300 lines across 40 modules; `main.ts` is 735 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~11,590 lines across 45 modules; `main.ts` is 770 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (thirteen — no DOM, no Tauri, no render imports; these are what the 490 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (sixteen — no DOM, no Tauri, no render imports; these are what the 541 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -422,6 +481,9 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
+| `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` |
+| `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
+| `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -431,7 +493,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 40 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 45 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -487,7 +549,7 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the sidebar's `cc-peek` timings, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the sidebar's `cc-peek`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 

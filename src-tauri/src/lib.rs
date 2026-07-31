@@ -12,6 +12,7 @@ mod git;
 mod icons;
 mod platform;
 mod pty;
+mod summarize;
 mod tasks;
 mod telemetry;
 mod usage;
@@ -463,6 +464,8 @@ pub fn run() {
             git::delete_branch,
             git::switch_branch,
             git::git_commit_info,
+            git::git_log_days,
+            git::project_facts,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,
@@ -484,6 +487,10 @@ pub fn run() {
             usage::list_past_sessions,
             usage::list_session_history,
             usage::token_usage_by_day,
+            summarize::summarize_day,
+            summarize::read_digest,
+            summarize::has_digest,
+            summarize::write_digest,
             icons::find_project_icon,
             icons::read_custom_icon,
             platform::read_legacy_localstorage,

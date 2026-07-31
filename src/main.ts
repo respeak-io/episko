@@ -22,7 +22,8 @@ import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
-  setActionsRenderAll, setPeekPrefs, setPermMode, setSort, setTheme, setWtGroup, toggleInsp,
+  copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
+  setTheme, setWtGroup, toggleInsp,
   toggleRail, toggleTheme,
 } from "./actions";
 import {
@@ -49,8 +50,8 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal, setWtLaunch,
-  setWtRefreshGit, setWtRenderAll, setWtSetActive,
+  closeBranchPop, closeWt, openWt as openWtDlg, setWtCloseSession, setWtHandToTerminal,
+  setWtLaunch, setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
@@ -63,7 +64,11 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview
 // The commit-graph panel needs nothing from here — it is opened from the project
 // context menu (./projmenu) and owns its own handlers; this file only has to close it
 // with the shared scrim and Esc, like every other dialog.
-import { closeGraph, graphEscape, graphOpen } from "./graphview";
+import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
+import {
+  closeDashboard, dashEscape, openDashboard, renderDash, renderDashHeader,
+  renderDashInspector, setDashHost, wireDashboard,
+} from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, setMgrEdit, setTaskUiHost,
@@ -78,8 +83,9 @@ import {
   setPhase,
 } from "./phase";
 import {
-  activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
-  markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
+  activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
+  FAVORITES, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
+  setTermEngine,
   setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
@@ -219,6 +225,21 @@ setSettingsHost({
 });
 // The task panels run tasks, hand commands to terminals and put panes on stage —
 // none of which they own.
+// The dashboard acts on a project through verbs it does not own — the launcher, the
+// worktree dialog, the task picker, the graph and History all live elsewhere.
+setDashHost({
+  launch: (project, workdir, opts) => launch(project, workdir, opts),
+  openWorktreeDialog: (project, root) => { void openWtDlg(project, root); },
+  openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  openRun: () => { void openRunPicker(); },
+  openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
+  openHistory: () => { void openHistory(true); },
+  openFolder: (dir) => { void openProjectFolder(dir); },
+  copyPath: (dir) => { void copyPath(dir); },
+  setActive,
+  renderAll,
+});
+wireDashboard();
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 setTaskUiHost({
@@ -336,7 +357,9 @@ function renderAll() {
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
   // external header/inspector ~1s after clicking it.
-  if (pastMirrorId()) {
+  if (dashMirror()) {
+    renderDashHeader(); renderDashInspector(); renderDash();
+  } else if (pastMirrorId()) {
     const d = dormants.find((x) => x.id === pastMirrorId());
     if (d) { renderPastHeader(d); renderPastInspector(d); }
   } else if (extMirrorId()) {
@@ -488,6 +511,10 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  // A project header. This used to select whichever session sorted first, so one
+  // click meant two different things depending on state; it now opens the project
+  // dashboard, and the sessions are the rows directly beneath it.
+  else if (el.dataset.dash) { openDashboard(el.dataset.proj || basename(el.dataset.dash), el.dataset.dash); closeAttnPop(); }
   // A launch into one specific checkout. Unlike data-launch this keeps colorKey pinned
   // to the repo root (data-root), so the new session joins the project it belongs to
   // rather than becoming a project of its own — the same contract the ⑃ dialog uses.
@@ -560,7 +587,12 @@ initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
-$("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
+// ✕ closes whatever is on the stage. On the dashboard that is the dashboard — it
+// does not touch the project.
+$("btnClose").addEventListener("click", () => {
+  if (dashMirror()) { closeDashboard(); renderAll(); return; }
+  if (activeId) closeSession(activeId);
+});
 
 $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
 window.addEventListener("keydown", (e) => {
@@ -583,6 +615,9 @@ window.addEventListener("keydown", (e) => {
   // step out of that first.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
+  // dashEscape, not closeDashboard: an enlarge overlay can be up over the pane and
+  // Esc has to take that first. Same rule as graphEscape above.
+  else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
 });
 // ⌘⏎ — reveal the current selection's folder. Deliberately a *second* listener, in the

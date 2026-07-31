@@ -98,10 +98,27 @@
             <div class="ext-view-bar"><span class="ext-view-dot"></span>Read-only mirror · this session runs in another terminal</div>
             <div class="ext-body" id="extBody"></div>
           </div>
+          <!-- The project dashboard. Nothing inside it runs until a project is
+               clicked: ./dashboard fills every one of these on open, and the pane
+               stays hidden (and empty) for the whole life of the app otherwise. -->
+          <div class="dash-view" id="dashPane" hidden>
+            <div class="dash" id="dashJotHost">
+              <div id="dashPulse"></div>
+              <div class="db-body">
+                <div class="db-spine" id="dashSpine"></div>
+                <div class="db-aside" id="dashAside"></div>
+              </div>
+            </div>
+            <div class="ovl" id="dashOverlay"></div>
+          </div>
         </div>
       </main>
 
       <aside class="insp">
+        <!-- The 44px rail ⌘I collapses to on the dashboard, where the inspector holds
+             the only copy of History / Terminal / Run. Empty (and display:none) on
+             every other view. -->
+        <div class="insp-strip" id="dashStrip"></div>
         <div class="insp-head"><span class="label">Session</span><span class="pill idle" id="iPill"><span class="pd"></span><span id="iPillTxt">–</span></span></div>
         <div class="insp-scroll" id="inspector"></div>
       </aside>

@@ -14,13 +14,14 @@ import { $, toast } from "./dom";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";
-import { activeCwd, closeSession, launch } from "./panes";
+import { activeCwd, closeSession, launch, launchShell } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  FAVORITES, markWorkdirStale, peekPrefs, permMode, permModeDef, saveFavorites, sessions,
+  dashMirror, FAVORITES, markWorkdirStale, peekPrefs, permMode, permModeDef,
+  saveFavorites, sessions, termEngine,
   setFavorites, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setSortMode, SORT_META, SORT_MODES,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -32,6 +33,19 @@ import type { PermMode } from "./types";
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
+
+// A plain shell in a project's folder — embedded gets an in-app pane, the external
+// engines their own window. Here rather than in ./projmenu because the context menu,
+// the project dashboard and (soon) the checkouts overlay all want it, which is this
+// module's whole reason to exist.
+export function openTerminalIn(project: string, dir: string) {
+  if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
+  void launchShell(project, dir, { colorKey: dir });
+}
+export async function copyPath(dir: string) {
+  try { await navigator.clipboard.writeText(dir); toast("Path copied"); }
+  catch { toast(dir); } // clipboard denied — at least show what it was
+}
 
 export async function openProjectFolder(key: string) {
   try { await invoke("open_folder", { dir: key }); }
@@ -126,7 +140,23 @@ export function setSort(m: SortMode, announce = true) {
 }
 export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length]); }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
-export function toggleInsp() { $("app").classList.toggle("insp-off"); $("inspBtn").classList.toggle("on", !$("app").classList.contains("insp-off")); refit(); }
+// ⌘I / ◨. On a session this hides the inspector outright — nothing in it is
+// unreachable from that header. **On the dashboard it collapses to a 44px icon rail
+// instead**, because there the inspector holds the ONLY copy of History, Terminal and
+// Run: the dashboard header gave those up on the grounds that they act on the project
+// rather than on what is on the stage, so hiding the panel would hide real verbs.
+export function toggleInsp() {
+  const app = $("app");
+  if (dashMirror()) {
+    const mini = app.classList.toggle("insp-mini");
+    $("inspBtn").classList.toggle("on", !mini);
+  } else {
+    app.classList.remove("insp-mini");
+    app.classList.toggle("insp-off");
+    $("inspBtn").classList.toggle("on", !app.classList.contains("insp-off"));
+  }
+  refit();
+}
 // The effective theme = an explicit data-theme override, else the OS preference.
 export function effectiveTheme(): "dark" | "light" {
   const a = document.documentElement.getAttribute("data-theme");
