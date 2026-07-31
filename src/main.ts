@@ -27,9 +27,9 @@ import {
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, noteDrift, noteGitCommand, openPlainTerminal, refreshGitViews, refreshSessionStats, renderHeader,
-  requestLaunch, runGit, scheduleDismiss, setActive, setPanesRenderAll,
-  syncStageButtons,
+  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal,
+  refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -49,8 +49,8 @@ import {
   setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession,
-  setWtHandToTerminal, setWtLaunch, setWtRenderAll, setWtSetActive,
+  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal, setWtLaunch,
+  setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
@@ -187,11 +187,11 @@ setPaletteHost({
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder,
 });
-// Same reasoning, six callees: a context-menu row starts panes and edits the project
+// Same reasoning, seven callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
 setProjMenuHost({
-  renderAll, requestLaunch, launchShell, openProjectFolder, addProjectPath,
-  removeFavorite,
+  renderAll, requestLaunch, launchWorktree, launchShell, openProjectFolder,
+  addProjectPath, removeFavorite,
 });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
 setTaskRunSetActive(setActive);
@@ -228,6 +228,8 @@ setWtCloseSession(closeSession);
 setWtSetActive(setActive);
 setWtRenderAll(renderAll);
 setWtHandToTerminal(handToTerminal);
+// …and removing one changes what checkouts exist, which only a git re-read notices.
+setWtRefreshGit(refreshGitViews);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -467,7 +469,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-launch],[data-wtlaunch],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-pal],[data-rail],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -482,15 +484,11 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  // A launch into one specific checkout. Unlike data-launch this keeps colorKey pinned
+  // to the repo root (data-root), so the new session joins the project it belongs to
+  // rather than becoming a project of its own — the same contract the ⑃ dialog uses.
+  else if (el.dataset.wtadd) launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || "");
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
-  // A session-less worktree row. Unlike data-launch this keeps colorKey pinned to the
-  // repo root, so the new session joins the project it belongs to rather than becoming
-  // a project of its own — the same contract the ⑃ dialog's worktree rows use.
-  else if (el.dataset.wtlaunch) {
-    const branch = el.dataset.wtbranch || "";
-    launch(el.dataset.proj || basename(el.dataset.wtlaunch), el.dataset.wtlaunch,
-      { colorKey: el.dataset.key || el.dataset.wtlaunch, worktree: branch, branch });
-  }
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
   else if (el.dataset.toast) toast(el.dataset.toast);

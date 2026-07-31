@@ -186,8 +186,12 @@ html.win .wctl { display: flex; }
 .rail-add::after { width: 1.6px; height: 10px; }
 
 .pgroup { margin-bottom: 3px; }
-/* While reordering (pointer-driven), suppress text selection across the whole list. */
+/* While reordering (pointer-driven), suppress text selection across the whole list —
+   and hold the grabbing cursor over every row the pointer crosses, since the buttons
+   and rows below are pointer/default the rest of the time. The #id beats their classes,
+   so no !important is needed. */
 #projects.reordering { user-select: none; }
+#projects.reordering, #projects.reordering * { cursor: grabbing; }
 /* The dragged group fades in place; a .dropmark separator line shows where it lands. */
 .pgroup.dragging { opacity: .38; }
 .pgroup.dragging .phead { cursor: grabbing; }
@@ -220,11 +224,13 @@ html.win .wctl { display: flex; }
 .pcount { flex: none; margin-left: auto; font: 600 10px var(--font-mono); color: var(--muted-2); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
 /* project has uncommitted changes in one of its folders — sits right after the name */
 .pdirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
-.padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; }
+/* The header body is the drag handle (cursor: grab), but its buttons are not — they
+   click, so they say so. Same for every other interactive bit nested in a .pgroup. */
+.padd { flex: none; font-size: 13px; color: var(--muted-2); padding: 0 2px; cursor: pointer; }
 .padd:hover { color: var(--text); }
 .phead.empty-p .pname { color: var(--muted-2); font-weight: 550; }
 .phead.empty-p .pdot { opacity: .5; }
-.plaunch { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); opacity: 0; transition: opacity .12s; }
+.plaunch { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); opacity: 0; cursor: pointer; transition: opacity .12s; }
 .phead.empty-p:hover .plaunch { opacity: 1; }
 .premove { flex: none; margin-left: 7px; opacity: 0; color: var(--muted-2); font-size: 10px; cursor: pointer; transition: opacity .12s, color .12s; }
 .phead.empty-p:hover .premove { opacity: .75; }
@@ -250,12 +256,34 @@ html.win .wctl { display: flex; }
 /* subheader mode: a ⑃-branch cluster header, its sessions nested under a tinted rule */
 /* padding-left 0 + a 13px glyph box centres the ⑃ (box centre 6.5px) on the
    .wtsessions border-left below it (margin-left 6px + 0.5px half-border) */
-.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; }
+/* `cursor: default`, not `text` and not `pointer`: the header body does nothing on a
+   left click (the ＋ and the right-click menu are what act), so an I-beam invites a
+   selection nobody wants and a hand would promise a click that isn't there.
+   `user-select: none` for the same reason — dragging across it only ever highlighted
+   the branch name. The reorder's `#projects.reordering *` still outspecifies both. */
+.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; border-radius: 7px; cursor: default; user-select: none; }
+/* The whole header lights, not just the ＋ — it is one hover target (right-click menu,
+   ＋, and the rows it names), so lighting only the ＋ made the rest look inert. */
+.wthead:hover { background: var(--surface); }
 .wtglyph { flex: none; width: 13px; text-align: center; font-size: 11px; line-height: 1; }
 .wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
+/* Per-cluster ＋ — a session straight into that checkout, no dialog. Hidden until the
+   header is hovered, the same way .plaunch is: a repo with five worktrees is five
+   headers, and a standing ＋ on each turns the list into a column of plus signs.
+   Opacity, not display — the count sits on `margin-left: auto`, so removing the ＋
+   from flow would slide it right every time the pointer left the row. */
+.wtadd { flex: none; margin-left: 5px; padding: 0 2px; font-size: 12px; line-height: 1; color: var(--muted-2); opacity: 0; cursor: pointer; border-radius: 5px; transition: opacity .12s, color .12s; }
+.wthead:hover .wtadd { opacity: 1; }
+.wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
-/* a checkout with nothing running in it: present, but clearly not a session */
+/* A cluster with nothing running in it. The header is the whole row — it renders with
+   or without sessions, so an idle checkout costs one line instead of two. Dimmed, but
+   still hover-to-＋ like every other header: it is one of a list, and the one thing it
+   must do unprompted is say the checkout is there. */
+.wthead.wtvacant .wtglyph, .wthead.wtvacant .wtname { opacity: .55; }
+/* chip mode has no cluster headers, so an idle checkout still needs a row of its own:
+   present, but clearly not a session */
 .srow.wtempty .sbranch { font-style: italic; color: var(--muted-2); }
 .srow.wtempty .sglyph { color: var(--muted-2); }
 .srow.wtempty:hover .sbranch, .srow.wtempty:hover .sglyph { color: var(--accent-ink); }
@@ -1117,6 +1145,10 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-chev { margin-left: auto; padding-left: 6px; color: var(--muted-2); font-size: 13px; }
 .ctxmenu .mp-item.sub-open { background: var(--surface); }
 .ctxmenu .mp-danger .mp-ic, .ctxmenu .mp-danger .mp-l { color: var(--st-attention); }
+/* A verb that cannot run stays listed and says why — dropping the row would read as
+   "Episko forgot how to do this". Same shape the branch popover uses for its own. */
+.ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }
+.ctxmenu .mp-item.dis:hover { background: transparent; }
 
 /* "x needs you" dropdown (multiple sessions awaiting attention) */
 .attn-badge.multi::after { content: "▾"; font-size: 8px; margin-left: 1px; opacity: .7; }
