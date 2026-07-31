@@ -11,11 +11,27 @@
 //   writes none. `read_transcript` mirrors one read-only, decoding the cwd -> <enc>
 //   path scheme.
 // - **The token ledger.** `scan_usage` folds every project's `.jsonl` into per-day
-//   totals by model family. It does **not** deduplicate messages — every line with a
-//   `message.usage` record is summed once, which is correct because `--resume`
-//   appends to the *same* transcript rather than replaying it. What is deduplicated
-//   is the *session count*: `file_days` counts one file once per day it touched,
-//   however many messages it holds.
+//   totals by model family, and it deduplicates on `message.id`, because **a line is
+//   not a request**: Claude Code writes one line per *content block* (text, thinking,
+//   tool_use) and repeats the whole `usage` object on each. Summing per line — which
+//   this scan did until it was measured — counted one API response up to four times,
+//   inflating every token figure the Usage tab shows by ~1.8x. It shipped that way
+//   because the reasoning was aimed at the wrong duplicate: `--resume` genuinely does
+//   append rather than replay, which is true and does not license per-line summing.
+//   Two other counts are deduplicated on their own axes and must stay that way: the
+//   *session count* (`file_days`, one file once per day it touched, however many
+//   messages it holds) and the *project label* (`project_label`, memoised per cwd).
+//
+//   `message.id` is deduplicated across the whole scan rather than per file, so a
+//   response that survives a `/compact` rotation into a second transcript is still
+//   billed once. A record with no id is counted unconditionally — it cannot be
+//   matched to anything, and dropping it would lose real tokens.
+//
+//   The remaining known gap is an *under*-count, and it is not fixable from here:
+//   compaction and title-generation requests bill but never land as assistant
+//   records, so the deduped total runs ~20% below what `claude -p "/usage"` reports
+//   as the request count for the same window. The $ figures do not share this gap —
+//   they come from the statusLine's own `total_cost_usd`, not from this scan.
 //
 // **Every reader here takes its base directory as an argument.** `~/.claude` is
 // resolved once, by `claude_dir()`, and only the three `#[tauri::command]` wrappers
@@ -417,7 +433,21 @@ struct LineUsage {
     day: String,           // YYYY-MM-DD from the line's own ISO timestamp (UTC)
     tokens: [u64; 4],      // [input, output, cache_read, cache_write]
     family: &'static str,  // opus | sonnet | haiku | other
-    project: String,       // basename of the line's cwd ("by working directory")
+    cwd: String,           // the line's cwd verbatim; `project_label` groups it
+    /// `message.id` — the id of the API response this line belongs to, and the
+    /// only thing that makes the scan's arithmetic correct. Claude Code writes
+    /// **one transcript line per content block** (text, thinking, tool_use), and
+    /// every one of them repeats the *same* `usage` object in full. Summing per
+    /// line therefore counts one response two, three or four times over: measured
+    /// against this machine's corpus, 4,381 usage lines in 24h carried only 2,066
+    /// distinct ids, and `/usage` independently reported 2,561 requests for the
+    /// same window — so the per-line total was ~1.8x the truth and the deduped one
+    /// is close to it (the remainder is compaction and title-generation calls,
+    /// which bill but never land as assistant records).
+    ///
+    /// `None` for a record with no id, which is then counted unconditionally: it
+    /// cannot be matched to anything, and dropping it would lose real tokens.
+    id: Option<String>,
 }
 
 /// Parse one transcript line into a `LineUsage`, or `None` for the many lines with no
@@ -443,12 +473,16 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
         .and_then(|m| m.get("model"))
         .and_then(|x| x.as_str())
         .unwrap_or("");
-    let project = v
+    let cwd = v
         .get("cwd")
         .and_then(|x| x.as_str())
-        .and_then(|c| c.rsplit(['/', '\\']).find(|s| !s.is_empty()))
-        .unwrap_or("unknown")
+        .unwrap_or("")
         .to_string();
+    let id = v
+        .get("message")
+        .and_then(|m| m.get("id"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
     Some(LineUsage {
         day,
         tokens: [
@@ -458,8 +492,38 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
             g("cache_creation_input_tokens"),
         ],
         family: model_family(model),
-        project,
+        cwd,
+        id,
     })
+}
+
+/// What to file a transcript line's tokens under, keyed by the line's own `cwd`.
+///
+/// The **repo root**, not the cwd's own basename: a worktree is a sibling
+/// directory, so a basename splits `…/.cc-worktrees/cc-launcher-spike/dev` off
+/// its own repo and files it under `dev`. That disagreed with the $ split, which
+/// rides on the frontend's `Sess.project` and groups worktrees under the repo —
+/// so the same day's work landed under two different names depending on which
+/// half of the Usage tab you read.
+///
+/// `repo_root_of` walks the `.git` layout without spawning git, but it is still
+/// filesystem I/O per call, hence `memo` — a scan touches a few dozen distinct
+/// cwds across thousands of lines. A cwd that is gone, or was never a repo,
+/// falls back to its own basename rather than being dropped.
+fn project_label(cwd: &str, memo: &mut std::collections::HashMap<String, String>) -> String {
+    if let Some(hit) = memo.get(cwd) {
+        return hit.clone();
+    }
+    let root = repo_root_of(cwd);
+    let label = root
+        .as_deref()
+        .unwrap_or(cwd)
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    memo.insert(cwd.to_string(), label.clone());
+    label
 }
 
 /// One calendar day, aggregated across every transcript: token totals by type, token
@@ -518,6 +582,13 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
         .checked_sub(std::time::Duration::from_secs(days.saturating_mul(86_400)));
 
     let mut acc: HashMap<String, DayUsage> = HashMap::new();
+    // Every `message.id` already counted, across the whole scan rather than per
+    // file: one API response is billed once no matter how many lines — or how
+    // many transcripts, after a `/compact` rotation — happen to carry it.
+    let mut seen: HashSet<String> = HashSet::new();
+    // cwd -> repo-root basename, so `repo_root_of` runs per distinct directory
+    // rather than per line. See `project_label`.
+    let mut projects_memo: HashMap<String, String> = HashMap::new();
     let projects = match std::fs::read_dir(&root) {
         Ok(e) => e,
         Err(_) => return Ok(vec![]), // no transcripts yet — not an error
@@ -550,7 +621,19 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
             let mut file_days: HashSet<String> = HashSet::new();
             for line in BufReader::new(file).lines().map_while(Result::ok) {
                 let Some(lu) = parse_usage_line(&line) else { continue };
-                let LineUsage { day, tokens, family, project } = lu;
+                let LineUsage { day, tokens, family, cwd, id } = lu;
+                // The session was active on this day whether or not this
+                // particular line is a repeat of a message already counted, so
+                // the per-day roster is claimed before the dedupe gate — else a
+                // day whose every line is a duplicate would stop counting as a
+                // session at all.
+                file_days.insert(day.clone());
+                if let Some(id) = id {
+                    if !seen.insert(id) {
+                        continue; // another content block of a response already counted
+                    }
+                }
+                let project = project_label(&cwd, &mut projects_memo);
                 let tot: u64 = tokens.iter().sum();
                 let e = acc.entry(day.clone()).or_default();
                 if e.day.is_empty() {
@@ -567,7 +650,6 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
                     _ => e.other += tot,
                 }
                 *e.projects.entry(project).or_insert(0) += tot;
-                file_days.insert(day);
             }
             for d in file_days {
                 let e = acc.entry(d.clone()).or_default();
@@ -1081,13 +1163,69 @@ mod tests {
         assert_eq!(lu.day, "2026-07-21");
         assert_eq!(lu.tokens, [10, 20, 300, 4]);
         assert_eq!(lu.family, "opus");
-        assert_eq!(lu.project, "episko"); // basename of cwd
-        // Missing token fields default to 0; unknown model → "other"; no cwd → "unknown".
+        assert_eq!(lu.cwd, "/Users/tim/dev/episko"); // verbatim; grouped by project_label
+        // Missing token fields default to 0; unknown model → "other"; no cwd → empty
+        // (which `project_label` renders as "unknown"); no message.id → None, so the
+        // line is counted rather than deduped away.
         let partial = r#"{"timestamp":"2026-07-21T10:00:00Z","message":{"usage":{"output_tokens":7}}}"#;
         let lu = parse_usage_line(partial).expect("should parse");
         assert_eq!(lu.tokens, [0, 7, 0, 0]);
         assert_eq!(lu.family, "other");
-        assert_eq!(lu.project, "unknown");
+        assert_eq!(lu.cwd, "");
+        assert_eq!(lu.id, None);
+        assert_eq!(project_label("", &mut std::collections::HashMap::new()), "unknown");
+    }
+
+    /// The bug this scan shipped with: Claude Code writes one transcript line per
+    /// content block and repeats the whole `usage` object on each, so summing per
+    /// line counted a single API response once per block. Three lines sharing a
+    /// `message.id` are one response; a fourth without an id can't be matched to
+    /// anything and is counted on its own.
+    #[test]
+    fn scan_usage_counts_each_message_once_however_many_lines_carry_it() {
+        let base = scratch_dir();
+        let d = base.join("projects").join("-work-alpha");
+        std::fs::create_dir_all(&d).unwrap();
+        let block = |id: &str| {
+            format!(
+                concat!(
+                    r#"{{"type":"assistant","timestamp":"2026-07-20T10:00:00.000Z","cwd":"/work/alpha","#,
+                    r#""message":{{"id":"{}","model":"claude-opus-4-8","#,
+                    r#""usage":{{"input_tokens":10,"output_tokens":1}}}}}}"#,
+                    "\n"
+                ),
+                id
+            )
+        };
+        // One response written as three blocks, a second response, and an
+        // id-less record. Naive per-line summing would report 5 × 11 = 55.
+        let idless = concat!(
+            r#"{"type":"assistant","timestamp":"2026-07-20T10:00:00.000Z","cwd":"/work/alpha","#,
+            r#""message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n"
+        );
+        std::fs::write(
+            d.join("s1.jsonl"),
+            format!("{}{}{}{}{}", block("msg_a"), block("msg_a"), block("msg_a"), block("msg_b"), idless),
+        )
+        .unwrap();
+
+        let days = scan_usage_in(&base, 3650).unwrap();
+        assert_eq!(days.len(), 1);
+        let d20 = &days[0];
+        assert_eq!((d20.input, d20.output), (30, 3), "3 counted responses, not 5 lines");
+        assert_eq!(d20.opus, 33);
+        assert_eq!(d20.projects.get("alpha"), Some(&33));
+        assert_eq!(d20.sessions, 1);
+
+        // The same response appearing in a second transcript — what a `/compact`
+        // rotation produces — is still one response, so dedupe spans files.
+        std::fs::write(d.join("s2.jsonl"), block("msg_a")).unwrap();
+        let days = scan_usage_in(&base, 3650).unwrap();
+        assert_eq!((days[0].input, days[0].output), (30, 3), "cross-file duplicate not re-counted");
+        assert_eq!(days[0].sessions, 2, "but the second file is still a session active that day");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
