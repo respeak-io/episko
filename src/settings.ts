@@ -27,6 +27,9 @@ import {
 import { usagePanelHtml } from "./usageview";
 import { setUsageRange } from "./usage";
 import { setTrailRange, setTrailSummaries, trailRange, trailSummaries } from "./trailui";
+import { allowFor, claimPrefs, setClaimPrefs } from "./threadsui";
+import { resolveClaim } from "./claim";
+import { activeProjectCtx } from "./panes";
 
 // What this dialog changes but does not own. Every entry is somebody else's
 // setter; main.ts hands them over at startup and until then they do nothing.
@@ -157,6 +160,38 @@ const SET_TABS: SetTab[] = [
     id: "usage", label: "Usage", glyph: "▦",
     controls: () => [],
     render: () => usagePanelHtml(),
+  },
+  {
+    id: "collab", label: "Collaboration", glyph: "⚑",
+    controls: () => {
+      // Resolved against the project on screen, so the hints can say *why* something
+      // is off. A switch that silently does nothing when you flip it is worse than an
+      // absent one — the tab has to name the level that decided.
+      const root = activeProjectCtx()?.path ?? "";
+      const allow = allowFor(root);
+      const eff = resolveClaim(claimPrefs, allow);
+      const vetoed = (k: "assign" | "comment" | "pushBranch") =>
+        eff[k].source === "project" ? " · withheld by this project's .episko/episko.toml" : "";
+      return [
+        { kind: "toggle", set: "claimassign", label: "Assign yourself when you dispatch",
+          hint: "The native \u201cI\u2019m on this\u201d — one call, reversible, and visible in GitHub\u2019s own UI as well as in a colleague\u2019s Episko." + vetoed("assign"),
+          on: () => eff.assign.value },
+        { kind: "toggle", set: "claimcomment", label: "Leave a comment on the issue",
+          hint: "ONE comment per thread, edited in place rather than appended — the difference between a useful bot and an annoying one." + vetoed("comment"),
+          on: () => eff.comment.value },
+        { kind: "toggle", set: "claimpush", label: "Push the branch immediately",
+          hint: "Makes the claim and the presence signal the same mechanism — nothing new for a colleague to read. Off by default: whether a bare branch push starts CI is repo-dependent." + vetoed("pushBranch"),
+          on: () => eff.pushBranch.value },
+        { kind: "seg", set: "claimlabel", label: "Label while an agent is running",
+          hint: "A label says a MACHINE is on it right now; assignment says a HUMAN owns it. Worth separating if your team uses assignment for planning.",
+          active: () => eff.label.value || "",
+          segs: () => [
+            { value: "", label: "None" },
+            { value: "agent: running", label: "agent: running" },
+            { value: "in progress", label: "in progress" },
+          ] },
+      ];
+    },
   },
   {
     id: "trail", label: "Trail", glyph: "◷",
@@ -317,6 +352,12 @@ function applySetting(set: string, val: string) {
   // screen, so a change here is visible at once rather than at the next open.
   else if (set === "trailrange") setTrailRange(+val);
   else if (set === "trailsum") setTrailSummaries(val === "1");
+  // Personal preferences only. The project's ceiling lives in its own committed file
+  // and is never written from here — a machine must not edit a team's policy.
+  else if (set === "claimassign") setClaimPrefs({ assign: val === "1" });
+  else if (set === "claimcomment") setClaimPrefs({ comment: val === "1" });
+  else if (set === "claimpush") setClaimPrefs({ pushBranch: val === "1" });
+  else if (set === "claimlabel") setClaimPrefs({ label: val });
   renderSettings();
 }
 function setFontFromSettings(cmd: string) {

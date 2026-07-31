@@ -1396,3 +1396,9 @@ select.in-ctl { cursor: pointer; }
 .mini-act.ans { color: var(--st-attention); border-color: color-mix(in srgb, var(--st-attention) 34%, transparent); background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
 .mini-act[disabled] { opacity: .4; cursor: default; }
 .th-empty { padding: 22px 12px; max-width: 52ch; font-size: 11.5px; line-height: 1.55; color: var(--muted-2); }
+/* Whose thread it is. Initials, never an avatar: GitHub knows who was assigned and
+ * git who pushed — neither is presence, and a face would imply liveness we cannot see. */
+.th-who { flex: none; display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 5px; font: 700 8.5px var(--font-mono); color: #9fd8ff; background: color-mix(in srgb, #7cc7ff 16%, transparent); border: 1px solid color-mix(in srgb, #7cc7ff 34%, transparent); }
+.th-who.me { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.th-src.issue { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 28%, transparent); }
+.th-src.pr { color: var(--accent-ink); border-color: var(--accent-line); }

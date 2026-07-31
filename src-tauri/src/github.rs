@@ -1,0 +1,493 @@
+// GitHub, through the `gh` CLI — issues and PRs as threads, and the claim Episko
+// writes when you dispatch an agent at one.
+//
+// WHY `gh` AND NOT THE API. Auth. `gh` already holds the user's token, refreshes it,
+// honours enterprise hosts and `GH_TOKEN`, and is the thing they already trust with
+// this repo. Shipping our own OAuth flow to duplicate that would be a worse product
+// and a much larger attack surface, so Episko borrows the credential rather than
+// asking for one. The cost is a process per call, which is why reads are cached.
+//
+// DEGRADE, NEVER FAIL. `gh` may be missing, logged out, or pointed at a folder that
+// is not a GitHub repo. None of those is an error the user needs to see as breakage:
+// every read answers with `available: false` and a reason the UI can show as a single
+// quiet row, exactly like a blocked runnable. Only an explicit *write* the user asked
+// for reports failure loudly.
+//
+// The write half is deliberately small — assign, one edited-in-place comment, an
+// optional label — because a claim is a hint, never a lock. See ./claim.ts for the
+// rules that shape it.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::platform::{augmented_path, sys_command};
+
+/// How long a read stays fresh. Long enough that opening a board twice costs one
+/// round trip, short enough that a colleague's push shows up on the timescale the
+/// rest of the collaborator signals do.
+const TTL: Duration = Duration::from_secs(60);
+
+/// One issue or PR, flattened to what a thread row needs. Deliberately not the whole
+/// GitHub object: the board shows a title, who has it, and how stale it is.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhThread {
+    pub number: i64,
+    pub kind: String, // "issue" | "pr"
+    pub title: String,
+    pub url: String,
+    /// Login names. Empty means nobody has claimed it.
+    pub assignees: Vec<String>,
+    pub labels: Vec<String>,
+    /// The PR's head branch — the link between a PR and a checkout we can see locally.
+    pub branch: Option<String>,
+    pub author: Option<String>,
+    pub draft: bool,
+    /// ISO-8601, straight from gh. Parsed by the frontend, which already formats time.
+    pub updated_at: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub(crate) struct GhResult {
+    /// False when gh is absent, unauthenticated, or this folder is not a GitHub repo.
+    pub available: bool,
+    /// Why not — shown as one quiet row rather than an error dialog.
+    pub reason: Option<String>,
+    pub threads: Vec<GhThread>,
+    /// Who `gh` thinks you are, so the UI can tell your claims from a colleague's.
+    pub viewer: Option<String>,
+}
+
+impl GhResult {
+    fn unavailable(reason: impl Into<String>) -> Self {
+        Self { available: false, reason: Some(reason.into()), threads: vec![], viewer: None }
+    }
+}
+
+struct Cached { at: Instant, result: GhResult }
+
+// Keyed by repo root. A Mutex rather than a channel because every access is a short
+// map lookup, and the same reasoning as `discover_cached` in tasks.rs: the cheap thing
+// is to remember, not to coordinate.
+static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None);
+
+fn gh(root: &str, args: &[&str]) -> Result<String, String> {
+    let out = sys_command("gh")
+        .env("PATH", augmented_path())
+        // gh infers the repo from the working directory; there is no -C equivalent.
+        .current_dir(root)
+        .args(args)
+        // Never let gh try to open a browser or prompt: this runs with no terminal.
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .map_err(|e| format!("gh not available: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed");
+        return Err(first.trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Map gh's own failure text to something a person can act on.
+///
+/// This is the one place we look at gh's stderr prose, and only to *classify* — the
+/// data paths all parse `--json`. Worth the exception because "gh: command not found"
+/// and "you are not logged in" need very different responses from the user, and gh
+/// gives no distinguishing exit code.
+fn classify(err: &str) -> String {
+    let e = err.to_lowercase();
+    if e.contains("not found") && e.contains("gh") { return "GitHub CLI (gh) is not installed".into(); }
+    if e.contains("auth") || e.contains("logged in") || e.contains("token") {
+        return "gh is not authenticated — run `gh auth login`".into();
+    }
+    if e.contains("not a git repository") || e.contains("no git remotes") || e.contains("could not determine") {
+        return "not a GitHub repository".into();
+    }
+    err.to_string()
+}
+
+// ---------- parsing ----------
+// Split out from the fetch so it can be tested against fixtures without a network,
+// a token, or a repo — the parsing is where the bugs live, not the process spawn.
+
+pub(crate) fn parse_issues(json: &str) -> Vec<GhThread> {
+    parse_list(json, "issue")
+}
+pub(crate) fn parse_prs(json: &str) -> Vec<GhThread> {
+    parse_list(json, "pr")
+}
+
+fn parse_list(json: &str, kind: &str) -> Vec<GhThread> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = v.as_array() else { return vec![] };
+    arr.iter()
+        .filter_map(|o| {
+            let number = o.get("number")?.as_i64()?;
+            Some(GhThread {
+                number,
+                kind: kind.to_string(),
+                title: o.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                url: o.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                assignees: o
+                    .get("assignees")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|u| u.get("login").and_then(|l| l.as_str()).map(String::from)).collect())
+                    .unwrap_or_default(),
+                labels: o
+                    .get("labels")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
+                    .unwrap_or_default(),
+                branch: o.get("headRefName").and_then(|x| x.as_str()).map(String::from),
+                author: o.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).map(String::from),
+                draft: o.get("isDraft").and_then(|x| x.as_bool()).unwrap_or(false),
+                updated_at: o.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+// ---------- reads ----------
+
+/// Open issues and PRs for the repo at `root`, cached for TTL.
+///
+/// Two `gh` calls, never one per item. `force` bypasses the cache for an explicit
+/// refresh; everything else — opening the board, switching altitude, a repaint — is
+/// served from memory, which is what stops a render loop becoming a network loop.
+#[tauri::command]
+pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !force {
+            if let Ok(guard) = CACHE.lock() {
+                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&root)) {
+                    if hit.at.elapsed() < TTL {
+                        return hit.result.clone();
+                    }
+                }
+            }
+        }
+
+        let issues = gh(&root, &[
+            "issue", "list", "--state", "open", "--limit", "60",
+            "--json", "number,title,url,assignees,labels,updatedAt",
+        ]);
+        let result = match issues {
+            Err(e) => GhResult::unavailable(classify(&e)),
+            Ok(issue_json) => {
+                let mut threads = parse_issues(&issue_json);
+                // A PR failure is not fatal: issues alone are still a useful board.
+                if let Ok(pr_json) = gh(&root, &[
+                    "pr", "list", "--state", "open", "--limit", "60",
+                    "--json", "number,title,url,assignees,labels,updatedAt,headRefName,author,isDraft",
+                ]) {
+                    threads.extend(parse_prs(&pr_json));
+                }
+                let viewer = gh(&root, &["api", "user", "--jq", ".login"])
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                GhResult { available: true, reason: None, threads, viewer }
+            }
+        };
+
+        if let Ok(mut guard) = CACHE.lock() {
+            guard.get_or_insert_with(HashMap::new)
+                .insert(root.clone(), Cached { at: Instant::now(), result: result.clone() });
+        }
+        result
+    })
+    .await
+    .unwrap_or_else(|e| GhResult::unavailable(format!("gh task failed: {e}")))
+}
+
+/// Drop a repo's cached reads so the next call goes to the network.
+#[tauri::command]
+pub(crate) fn gh_invalidate(root: String) {
+    if let Ok(mut guard) = CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+}
+
+// ---------- writes ----------
+
+/// The marker that makes the sticky comment ours to edit.
+///
+/// `gh issue comment --edit-last` edits the last comment *by you*, which is not
+/// necessarily this one — you may have replied since. The marker lets us check we are
+/// about to overwrite our own note rather than a real reply, and it also tells a
+/// reader on GitHub that a machine wrote it.
+const MARKER: &str = "<!-- episko:claim -->";
+
+#[derive(serde::Serialize)]
+pub(crate) struct ClaimOutcome {
+    pub assigned: bool,
+    pub commented: bool,
+    pub labeled: bool,
+    /// Everything that did not work, in the user's words rather than gh's.
+    pub problems: Vec<String>,
+}
+
+/// Claim a thread: assign yourself, and/or leave one comment that is edited in place.
+///
+/// Every part is independent and best-effort — a repo where you cannot assign (no
+/// write access) should still get the comment, and a failure of either is reported
+/// without undoing the other. Nothing here refuses: this records a claim, it does not
+/// enforce one.
+#[tauri::command]
+pub(crate) async fn gh_claim(
+    root: String,
+    number: i64,
+    kind: String,
+    assign: bool,
+    comment: bool,
+    label: String,
+    body: String,
+) -> ClaimOutcome {
+    tauri::async_runtime::spawn_blocking(move || {
+        let noun = if kind == "pr" { "pr" } else { "issue" };
+        let n = number.to_string();
+        let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
+
+        if assign {
+            match gh(&root, &[noun, "edit", &n, "--add-assignee", "@me"]) {
+                Ok(_) => out.assigned = true,
+                Err(e) => out.problems.push(format!("assign: {}", classify(&e))),
+            }
+        }
+        if !label.is_empty() {
+            match gh(&root, &[noun, "edit", &n, "--add-label", &label]) {
+                Ok(_) => out.labeled = true,
+                Err(e) => out.problems.push(format!("label: {}", classify(&e))),
+            }
+        }
+        if comment {
+            let text = format!("{MARKER}\n{body}");
+            // --edit-last --create-if-none: ONE comment per thread, updated. Appending
+            // a new comment per dispatch is the behaviour that makes bots unwelcome.
+            let edited = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            match edited {
+                Ok(_) => out.commented = true,
+                Err(e) => {
+                    // Older gh has no --create-if-none; fall back to a plain comment so
+                    // the claim still lands rather than being silently skipped.
+                    match gh(&root, &[noun, "comment", &n, "--body", &text]) {
+                        Ok(_) => out.commented = true,
+                        Err(_) => out.problems.push(format!("comment: {}", classify(&e))),
+                    }
+                }
+            }
+        }
+
+        gh_invalidate(root);
+        out
+    })
+    .await
+    .unwrap_or(ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec!["claim task failed".into()] })
+}
+
+/// Release a claim — the agent ended without pushing, so the thread is free again.
+///
+/// The failure mode this exists to prevent is a graveyard of dead claims: a claim that
+/// is never released is worse than no claim, because it tells a colleague someone is
+/// working on something nobody is.
+#[tauri::command]
+pub(crate) async fn gh_release(
+    root: String,
+    number: i64,
+    kind: String,
+    label: String,
+    body: String,
+) -> ClaimOutcome {
+    tauri::async_runtime::spawn_blocking(move || {
+        let noun = if kind == "pr" { "pr" } else { "issue" };
+        let n = number.to_string();
+        let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
+
+        if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
+            out.problems.push(format!("unassign: {}", classify(&e)));
+        }
+        if !label.is_empty() {
+            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-label", &label]) {
+                out.problems.push(format!("label: {}", classify(&e)));
+            }
+        }
+        if !body.is_empty() {
+            let text = format!("{MARKER}\n{body}");
+            let _ = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+        }
+        gh_invalidate(root);
+        out
+    })
+    .await
+    .unwrap_or(ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec!["release task failed".into()] })
+}
+
+// ---------- the project's own policy ----------
+
+/// What a project permits, from `.episko/episko.toml`:
+///
+/// ```toml
+/// [claim]
+/// assign = false     # this team uses assignment for planning
+/// comment = true
+/// ```
+///
+/// **Absent means everything is allowed.** A repo that has never heard of Episko must
+/// not silently disable features, and a missing file is not a policy. Only keys that
+/// are present and `false` take anything away — the file is a ceiling, never a default.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct ClaimAllow {
+    pub assign: bool,
+    pub comment: bool,
+    pub push_branch: bool,
+    pub label: bool,
+}
+
+impl Default for ClaimAllow {
+    fn default() -> Self {
+        Self { assign: true, comment: true, push_branch: true, label: true }
+    }
+}
+
+/// Every field is `Option`, and that is the whole design: absent must mean "allowed",
+/// not "false". A serde `Default` on a bool would silently deny everything the file
+/// forgot to mention, turning an incomplete policy into a total lockout.
+#[derive(serde::Deserialize, Default)]
+struct RawFile { claim: Option<RawClaim> }
+#[derive(serde::Deserialize, Default)]
+struct RawClaim {
+    assign: Option<bool>,
+    comment: Option<bool>,
+    push_branch: Option<bool>,
+    label: Option<bool>,
+}
+
+pub(crate) fn parse_allow(toml_text: &str) -> ClaimAllow {
+    let mut a = ClaimAllow::default();
+    // A malformed file must not lock a team out of their own claims — the same
+    // forgiving-on-read stance tasks.rs takes with a broken tasks.toml.
+    let Ok(file) = toml::from_str::<RawFile>(toml_text) else { return a };
+    let Some(c) = file.claim else { return a };
+    if let Some(x) = c.assign { a.assign = x; }
+    if let Some(x) = c.comment { a.comment = x; }
+    if let Some(x) = c.push_branch { a.push_branch = x; }
+    if let Some(x) = c.label { a.label = x; }
+    a
+}
+
+/// The project's claim policy. Reads `<root>/.episko/episko.toml`; a missing or
+/// unreadable file is "everything allowed", not an error.
+#[tauri::command]
+pub(crate) fn claim_policy(root: String) -> ClaimAllow {
+    std::path::Path::new(&root)
+        .join(".episko")
+        .join("episko.toml")
+        .pipe_read()
+        .map(|t| parse_allow(&t))
+        .unwrap_or_default()
+}
+
+/// Tiny helper so the command above reads as one expression.
+trait PipeRead { fn pipe_read(&self) -> Option<String>; }
+impl PipeRead for std::path::PathBuf {
+    fn pipe_read(&self) -> Option<String> { std::fs::read_to_string(self).ok() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Captured from `gh issue list --json …` against respeak-io/episko, trimmed.
+    const ISSUES: &str = r#"[
+      {"assignees":[],"labels":[{"name":"performance"},{"name":"prio: high"}],
+       "number":33,"title":"renderAll() runs per telemetry event","updatedAt":"2026-07-30T07:48:37Z",
+       "url":"https://github.com/respeak-io/episko/issues/33"},
+      {"assignees":[{"login":"FAbrahamDev"}],"labels":[],
+       "number":24,"title":"RFC: project board","updatedAt":"2026-07-27T12:26:45Z",
+       "url":"https://github.com/respeak-io/episko/issues/24"}
+    ]"#;
+
+    const PRS: &str = r#"[
+      {"assignees":[],"labels":[],"number":42,"title":"sidebar: a + on each worktree cluster header",
+       "updatedAt":"2026-07-30T13:39:37Z","url":"https://github.com/respeak-io/episko/pull/42",
+       "headRefName":"feat/worktree-quick-launch","author":{"login":"FAbrahamDev"},"isDraft":false}
+    ]"#;
+
+    #[test]
+    fn parses_issues_including_who_already_has_them() {
+        let t = parse_issues(ISSUES);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].number, 33);
+        assert_eq!(t[0].kind, "issue");
+        assert_eq!(t[0].labels, vec!["performance", "prio: high"]);
+        assert!(t[0].assignees.is_empty());
+        // The whole point of reading assignees: knowing a colleague already has it.
+        assert_eq!(t[1].assignees, vec!["FAbrahamDev"]);
+    }
+
+    #[test]
+    fn parses_prs_with_the_branch_that_links_them_to_a_local_checkout() {
+        let t = parse_prs(PRS);
+        assert_eq!(t[0].kind, "pr");
+        assert_eq!(t[0].branch.as_deref(), Some("feat/worktree-quick-launch"));
+        assert_eq!(t[0].author.as_deref(), Some("FAbrahamDev"));
+        assert!(!t[0].draft);
+    }
+
+    #[test]
+    fn malformed_output_yields_nothing_rather_than_panicking() {
+        // gh can print a warning, an empty body, or HTML from a proxy. None of those
+        // may take the board down — they degrade to "no threads".
+        for bad in ["", "not json", "{}", "null", "[{\"no\":\"number\"}]", "<html>"] {
+            assert!(parse_issues(bad).is_empty(), "should be empty for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn tolerates_missing_optional_fields() {
+        // Fields differ between issue and pr payloads, and between gh versions; a row
+        // must survive on `number` alone.
+        let t = parse_issues(r#"[{"number":7}]"#);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].title, "");
+        assert!(t[0].branch.is_none());
+        assert!(!t[0].draft);
+    }
+
+    #[test]
+    fn a_project_with_no_policy_permits_everything() {
+        // The load-bearing default: a repo that never heard of Episko must not
+        // silently disable features.
+        assert_eq!(parse_allow(""), ClaimAllow::default());
+        assert_eq!(parse_allow("[other]\nkey = 1"), ClaimAllow::default());
+        assert_eq!(parse_allow("not { valid toml"), ClaimAllow::default());
+    }
+
+    #[test]
+    fn a_project_can_withhold_one_thing_without_withholding_the_rest() {
+        // Tim's case exactly: "we don't use assignments for planning, but people might".
+        let a = parse_allow("[claim]\nassign = false\n");
+        assert!(!a.assign);
+        assert!(a.comment && a.push_branch && a.label);
+    }
+
+    #[test]
+    fn present_and_true_is_still_allowed() {
+        let a = parse_allow("[claim]\nassign = true\ncomment = false\n");
+        assert!(a.assign);
+        assert!(!a.comment);
+    }
+
+    #[test]
+    fn classifies_the_failures_that_need_different_answers() {
+        assert!(classify("gh: command not found").contains("not installed"));
+        assert!(classify("error: not logged in to any GitHub hosts").contains("gh auth login"));
+        assert!(classify("fatal: not a git repository").contains("not a GitHub repository"));
+        // Anything unrecognised is passed through rather than mangled into a guess.
+        assert_eq!(classify("API rate limit exceeded"), "API rate limit exceeded");
+    }
+}

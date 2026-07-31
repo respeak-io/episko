@@ -14,14 +14,71 @@ import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, relTime, uUsd2 } from "./format";
 import { noteList, removeNote } from "./notes";
+import {
+  ALLOW_ALL, claimForSession, claimText, DEFAULT_POLICY, dropClaim, recordClaim,
+  resolveClaim, type ClaimAllow, type ClaimPolicy,
+} from "./claim";
 import { launch, setActive } from "./panes";
 import {
   accentFor, dirtyByFolder, FAVORITES, sessions, setActiveId, setMirror,
   threadsOpen, threadsProject,
 } from "./state";
 import {
-  BAND_META, bandsOf, buildThreads, dispatchable, inProject, threadStatusKey, type Thread,
+  BAND_META, bandsOf, buildThreads, dispatchable, inProject, threadStatusKey,
+  type GhThread, type Thread,
 } from "./thread";
+
+// ---------- the GitHub layer ----------
+// Cached per project root and refreshed on a slow leash, never on a repaint: the board
+// re-renders on every telemetry tick, and a fetch per render would turn a render loop
+// into a network loop. `gh_threads` caches in Rust too; this map is what keeps the
+// synchronous render path from having to await anything at all.
+interface GhState { threads: GhThread[]; viewer: string | null; available: boolean; reason: string | null }
+const ghByRoot = new Map<string, GhState>();
+let ghFetchedAt = 0;
+const GH_TTL = 60_000;
+
+/// Personal claim preferences (`cc-claim-prefs`) — what YOU do on dispatch.
+export let claimPrefs: ClaimPolicy = (() => {
+  try { return { ...DEFAULT_POLICY, ...JSON.parse(localStorage.getItem("cc-claim-prefs") || "{}") }; }
+  catch { return { ...DEFAULT_POLICY }; }
+})();
+export function setClaimPrefs(p: Partial<ClaimPolicy>) {
+  claimPrefs = { ...claimPrefs, ...p };
+  localStorage.setItem("cc-claim-prefs", JSON.stringify(claimPrefs));
+}
+/// What each project permits (`.episko/episko.toml`). Read once per root, alongside
+/// the threads — a ceiling that can only lower what `claimPrefs` asks for.
+const allowByRoot = new Map<string, ClaimAllow>();
+export function allowFor(root: string): ClaimAllow { return allowByRoot.get(root) ?? ALLOW_ALL; }
+
+async function refreshGh(force = false): Promise<void> {
+  if (!force && Date.now() - ghFetchedAt < GH_TTL) return;
+  ghFetchedAt = Date.now();
+  const roots = new Set<string>(FAVORITES.map((f) => f.path));
+  for (const s of sessions.values()) roots.add(s.colorKey);
+  await Promise.all([...roots].map(async (root) => {
+    try {
+      const r = await invoke<{ available: boolean; reason: string | null; threads: GhThread[]; viewer: string | null }>(
+        "gh_threads", { root, force });
+      ghByRoot.set(root, { threads: r.threads, viewer: r.viewer, available: r.available, reason: r.reason });
+      allowByRoot.set(root, await invoke<ClaimAllow>("claim_policy", { root }).catch(() => ALLOW_ALL));
+    } catch (e) {
+      // gh missing, logged out, or not a GitHub repo — a quiet absence, not breakage.
+      ghByRoot.set(root, { threads: [], viewer: null, available: false, reason: String(e) });
+    }
+  }));
+  if (threadsOpen()) { renderThreads(); renderThreadsInspector(); }
+}
+
+/// The reason line shown when no project has a working GitHub layer, so the band reads
+/// as *withheld* rather than empty — a missing row reads as "Episko didn't find it".
+function ghReason(): string | null {
+  const states = [...ghByRoot.values()];
+  if (!states.length) return null;
+  if (states.some((s) => s.available)) return null;
+  return states.find((s) => s.reason)?.reason ?? null;
+}
 
 const GLYPH: Record<string, string> = {
   attention: "◆", error: "✕", done: "✓", working: "◐", thinking: "◐",
@@ -40,12 +97,19 @@ function projectName(colorKey: string): string {
   return colorKey.split(/[/\\]/).pop() || colorKey;
 }
 
+function ghMap(): Map<string, { threads: GhThread[]; viewer: string | null }> {
+  const m = new Map<string, { threads: GhThread[]; viewer: string | null }>();
+  for (const [root, st] of ghByRoot) if (st.available) m.set(root, { threads: st.threads, viewer: st.viewer });
+  return m;
+}
+
 function current(): Thread[] {
   const all = buildThreads({
     sessions: sessions.values(),
     notes: noteList(),
     dirty: dirtyByFolder,
     projectName,
+    gh: ghMap(),
   });
   return all.filter((t) => inProject(t, threadsProject()));
 }
@@ -80,11 +144,17 @@ function rowHtml(t: Thread, showProject: boolean): string {
   const hot = key === "attention" || key === "error";
   const src = t.source === "note" ? `<span class="th-src note">note</span>`
     : t.source === "task" ? `<span class="th-src">task</span>`
-    : t.source === "branch" ? `<span class="th-src">git</span>` : "";
+    : t.source === "branch" ? `<span class="th-src">git</span>`
+    : t.number ? `<span class="th-src ${t.source}">#${t.number}</span>` : "";
+  // Initials, deliberately not an avatar: GitHub tells us who was *assigned* and git
+  // who *pushed* — neither is presence, and a face would imply liveness we cannot see.
+  const who = t.whoShort
+    ? `<span class="th-who${t.who?.isMe ? " me" : ""}" title="${esc(t.who!.login)}">${esc(t.whoShort)}</span>`
+    : "";
   return `<tr class="th-row${hot ? " hot" : ""}" data-open="${esc(t.id)}">
     <td class="th-g ${GCLS[key] ?? "g-idle"}">${GLYPH[key] ?? "·"}</td>
     ${showProject ? `<td class="th-p"><span class="th-pc"><i style="background:${esc(accentFor(t.colorKey))}"></i>${esc(t.project)}</span></td>` : ""}
-    <td><div class="th-t">${src}<span class="th-txt">${esc(t.title)}</span></div></td>
+    <td><div class="th-t">${src}${who}<span class="th-txt">${esc(t.title)}</span></div></td>
     <td class="th-w">${esc(t.where)}</td>
     <td class="th-s">${esc(t.state)}</td>
     <td class="th-n">${esc(t.since ? relTime(t.since) : "—")}</td>
@@ -123,7 +193,7 @@ export function renderThreads(): void {
       g.threads.map((t) => rowHtml(t, showProject)).join("");
   }).join("");
 
-  $("threadsTbl").innerHTML = colgroup + head + `<tbody>${body || emptyRow(cols)}</tbody>`;
+  $("threadsTbl").innerHTML = colgroup + head + `<tbody>${ghRow(cols)}${body || emptyRow(cols)}</tbody>`;
 }
 
 function emptyRow(cols: number): string {
@@ -131,14 +201,37 @@ function emptyRow(cols: number): string {
     Sessions, failed runs, notes and branches behind their remote all appear here.</td></tr>`;
 }
 
+/// One quiet row when the GitHub layer cannot answer — the same reasoning as a blocked
+/// runnable: withheld has to read differently from empty, or the user concludes Episko
+/// simply didn't find their issues.
+function ghRow(cols: number): string {
+  const reason = ghReason();
+  if (!reason) return "";
+  return `<tr class="th-band"><th colspan="${cols}"><span class="th-blbl b-open">Issues &amp; PRs` +
+    `<span class="th-bx">${esc(reason)}</span></span></th></tr>`;
+}
+
 // ---------- actions ----------
 function find(id: string): Thread | undefined {
   return current().find((t) => t.id === id);
 }
 
+/// Threads someone else holds that we have already warned about once. A claim is a
+/// hint, never a lock — so the second press goes through.
+const warned = new Set<string>();
+
 async function dispatchThread(id: string): Promise<void> {
   const t = find(id);
   if (!t || !dispatchable(t)) return;
+
+  // Someone else's claim: say so once, then get out of the way. Two people may well
+  // both want a go at a hard bug, and a lock you cannot override is worse than none.
+  if (t.who && !t.who.isMe && !warned.has(t.id)) {
+    warned.add(t.id);
+    toast(`${claimText(t.who.login, t.since)} — press again to start an agent anyway`);
+    return;
+  }
+
   const sid = await launch(t.project || projectName(t.colorKey), t.colorKey, { colorKey: t.colorKey });
   // A note becomes the session's brief and stops being a note — it is the same work
   // item, one stage later, not a copy.
@@ -149,10 +242,65 @@ async function dispatchThread(id: string): Promise<void> {
       setTimeout(() => { void invoke("write_pty", { sessionId: sid, data: brief }).catch(() => {}); }, 1400);
       toast("Dispatched — prefilled, press Enter to send");
     }
+  } else if (t.number) {
+    void claimThread(t, typeof sid === "string" ? sid : "");
   } else {
     toast(`Started a session in ${t.project}`);
   }
   renderThreads();
+}
+
+/// Write the claim down, so a colleague's Episko can see this dispatch before the
+/// first push does. Best-effort and never blocking: the agent is already running, and
+/// a claim that failed to land is a smaller problem than a dispatch that did not.
+async function claimThread(t: Thread, sessionId: string): Promise<void> {
+  const eff = resolveClaim(claimPrefs, allowFor(t.colorKey));
+  const body = `Episko dispatched an agent at this from \`${t.project}\`. `
+    + `This comment is updated in place, not appended.`;
+  if (!eff.assign.value && !eff.comment.value && !eff.label.value) {
+    toast(`Started an agent on #${t.number} — no claim written (see Settings › Collaboration)`);
+    return;
+  }
+  try {
+    const out = await invoke<{ assigned: boolean; commented: boolean; labeled: boolean; problems: string[] }>(
+      "gh_claim", {
+        root: t.colorKey, number: t.number, kind: t.source,
+        assign: eff.assign.value, comment: eff.comment.value, label: eff.label.value, body,
+      });
+    recordClaim({
+      threadId: t.id, root: t.colorKey, number: t.number!,
+      kind: t.source === "pr" ? "pr" : "issue", sessionId, at: Date.now(),
+    });
+    const did = [out.assigned && "assigned", out.commented && "commented", out.labeled && "labelled"].filter(Boolean);
+    toast(out.problems.length
+      ? `Started on #${t.number} — ${out.problems[0]}`
+      : `Started on #${t.number} · ${did.join(", ") || "claimed"} — visible to your team within one fetch`);
+    void refreshGh(true);
+  } catch (e) {
+    dlog("warn", `claim on #${t.number} failed — ${e}`);
+    toast(`Started on #${t.number} — could not write the claim`);
+  }
+}
+
+/// Release the claim a session was holding, when it ends without pushing.
+///
+/// The failure this prevents: a graveyard of dead claims. A claim nobody releases is
+/// worse than no claim, because it tells a colleague someone is working on something
+/// nobody is.
+export async function releaseClaimFor(sessionId: string): Promise<void> {
+  const rec = claimForSession(sessionId);
+  if (!rec) return;
+  dropClaim(rec.threadId);
+  const eff = resolveClaim(claimPrefs, allowFor(rec.root));
+  try {
+    await invoke("gh_release", {
+      root: rec.root, number: rec.number, kind: rec.kind, label: eff.label.value,
+      body: eff.comment.value ? "Episko released this — the agent finished without pushing." : "",
+    });
+    void refreshGh(true);
+  } catch (e) {
+    dlog("warn", `release of #${rec.number} failed — ${e}`);
+  }
 }
 
 function openThread(id: string): void {
@@ -184,6 +332,8 @@ export function openThreads(project: string | null = null): void {
   // chip and the inspector's counts are both scoped to the altitude. Repainting only
   // the rows left them describing the view you just left.
   renderThreadsHeader(); renderThreadsInspector(); renderThreads();
+  // On a leash: cached for GH_TTL, so switching altitude or repainting costs nothing.
+  void refreshGh(false);
 }
 
 export function closeThreads(): void {

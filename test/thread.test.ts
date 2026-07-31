@@ -5,7 +5,8 @@ import type { Note } from "../src/notes";
 import { urgencyRank } from "../src/grouping";
 import {
   bandsOf, buildThreads, dispatchable, fromBranchBehind, fromNote, fromSession,
-  inProject, sortThreads, threadBand, threadRank, type Thread,
+  fromGh, initials, inProject, sortThreads, threadBand, threadRank,
+  type GhThread, type Thread,
 } from "../src/thread";
 
 // A Sess is large and mostly irrelevant here; only the fields the adapters read are
@@ -172,5 +173,77 @@ describe("the two altitudes are one list and one predicate", () => {
     expect(api.map((t) => t.id).sort()).toEqual(["note:n", "session:a"]);
     // Banding is unchanged by the filter — the component really is the same one.
     expect(bandsOf(api).map((g) => g.band)).toEqual(["open"]);
+  });
+});
+
+describe("issues and pull requests", () => {
+  const gh = (over: Partial<GhThread> & { number: number }): GhThread => ({
+    kind: "issue", title: "a thing", url: "u", assignees: [], labels: [],
+    branch: null, author: null, draft: false, updated_at: "2026-07-30T07:48:37Z", ...over,
+  });
+
+  it("turns a login into initials, not an avatar", () => {
+    // Deliberately initials: the API tells us who was *assigned*, never who is at
+    // their desk, and a face would imply liveness we cannot see.
+    expect(initials("FAbrahamDev")).toBe("FA");
+    expect(initials("tr-evo")).toBe("TR");
+    expect(initials("octocat")).toBe("OC");
+  });
+
+  it("says who already has it, and distinguishes that from you", () => {
+    const mine = fromGh(gh({ number: 1, assignees: ["tr-evo"] }), "/w/e", "e", "tr-evo");
+    expect(mine.who).toEqual({ login: "tr-evo", isMe: true });
+    expect(mine.state).toBe("Assigned to you");
+
+    const theirs = fromGh(gh({ number: 2, assignees: ["FAbrahamDev"] }), "/w/e", "e", "tr-evo");
+    expect(theirs.who).toEqual({ login: "FAbrahamDev", isMe: false });
+    expect(theirs.state).toMatch(/already on it/);
+    expect(theirs.whoShort).toBe("FA");
+  });
+
+  it("lands unclaimed — GitHub knows about assignees, not about agents", () => {
+    const t = fromGh(gh({ number: 3 }), "/w/e", "e", "tr-evo");
+    expect(t.phase).toBe("unclaimed");
+    expect(threadBand(t)).toBe("open");
+    expect(dispatchable(t)).toBe(true);
+  });
+
+  it("survives a malformed timestamp instead of poisoning the sort with NaN", () => {
+    // NaN compares false against everything and would make the order non-deterministic.
+    const t = fromGh(gh({ number: 4, updated_at: "not a date" }), "/w/e", "e", null);
+    expect(t.since).toBe(0);
+    expect(sortThreads([t]).length).toBe(1);
+  });
+
+  it("shows a PR's head branch, which is what links it to a local checkout", () => {
+    const t = fromGh(gh({ number: 42, kind: "pr", branch: "feat/x", author: "FAbrahamDev" }), "/w/e", "e", "tr-evo");
+    expect(t.source).toBe("pr");
+    expect(t.where).toBe("⎇ feat/x");
+    expect(t.id).toBe("pr:/w/e:42");
+  });
+
+  it("hides a PR whose branch a live session is already on", () => {
+    // Two rows for one piece of work, and the pane is the more truthful of the two.
+    const ghMap = new Map([["/w/episko", {
+      threads: [gh({ number: 42, kind: "pr", branch: "feat/x" }), gh({ number: 7 })],
+      viewer: "tr-evo",
+    }]]);
+    const threads = buildThreads({
+      sessions: [sess({ id: "s", branch: "feat/x" })], notes: [], dirty: new Map(),
+      projectName: names, gh: ghMap,
+    });
+    expect(threads.filter((t) => t.source === "pr")).toHaveLength(0);
+    expect(threads.filter((t) => t.source === "issue")).toHaveLength(1);
+  });
+
+  it("keeps a PR whose branch nothing is checked out on", () => {
+    const ghMap = new Map([["/w/episko", {
+      threads: [gh({ number: 42, kind: "pr", branch: "feat/other" })], viewer: null,
+    }]]);
+    const threads = buildThreads({
+      sessions: [sess({ id: "s", branch: "feat/x" })], notes: [], dirty: new Map(),
+      projectName: names, gh: ghMap,
+    });
+    expect(threads.filter((t) => t.source === "pr")).toHaveLength(1);
   });
 });

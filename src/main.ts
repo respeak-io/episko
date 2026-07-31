@@ -78,7 +78,8 @@ import {
 } from "./state";
 import { closeTrail, openTrail, renderTrailHeader, renderTrailInspector, wireTrail } from "./trailui";
 import {
-  closeThreads, openThreads, renderThreads, renderThreadsHeader, renderThreadsInspector, wireThreads,
+  closeThreads, openThreads, releaseClaimFor, renderThreads, renderThreadsHeader,
+  renderThreadsInspector, wireThreads,
 } from "./threadsui";
 import { orderedSessions } from "./grouping";
 import {
@@ -409,6 +410,15 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   } else {
     s.phase = "ended";
     s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+    // An agent that ended without pushing must give its claim back, or the issue
+    // stays assigned to someone who is no longer working on it — a dead claim is
+    // worse than none, because it tells a colleague the work is taken. Only when the
+    // branch has nothing on it: once there are commits, the branch itself is the
+    // signal and the claim has become true.
+    if (isAgent(s)) {
+      const behindPush = !s.git || (s.git.ahead === 0 && s.git.files === 0 && s.git.untracked === 0);
+      if (behindPush) void releaseClaimFor(s.id);
+    }
   }
   renderAll();
 });

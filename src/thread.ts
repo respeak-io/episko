@@ -22,7 +22,7 @@ import { isAgent, type DiffStat, type Phase, type Sess } from "./types";
 
 /// Where a thread came from. Deliberately open-ended: stage 3 adds `issue` and `pr`
 /// and stage 4 adds `card`, and neither should need to touch the band logic.
-export type ThreadSource = "session" | "task" | "note" | "branch";
+export type ThreadSource = "session" | "task" | "note" | "branch" | "issue" | "pr";
 
 /// A thread's phase is a session `Phase` plus one state no session can be in:
 /// nobody has started it. That is the whole "unclaimed" band.
@@ -50,6 +50,24 @@ export interface Thread {
   /// is what lets a row show a real tool and a real context percentage.
   sess?: Sess;
   note?: Note;
+  /// GitHub's number, when this came from there — what a claim writes against.
+  number?: number;
+  url?: string;
+  /// Who already has it. `isMe` separates "I claimed this" from "a colleague did",
+  /// which is the difference between a reminder and a collision.
+  who?: { login: string; isMe: boolean };
+  /// Short label for the row's chip: initials, not an avatar. Git and the API can
+  /// tell us who *pushed* or *was assigned*, never who is present — a face would
+  /// imply liveness we cannot see.
+  whoShort?: string;
+}
+
+/// One issue or PR, exactly as `gh_threads` returns it.
+export interface GhThread {
+  number: number; kind: string; title: string; url: string;
+  assignees: string[]; labels: string[];
+  branch: string | null; author: string | null; draft: boolean;
+  updated_at: string;
 }
 
 /// The four bands, most urgent first. These are the phases the app already ships,
@@ -161,6 +179,55 @@ export function fromBranchBehind(colorKey: string, project: string, g: DiffStat)
   };
 }
 
+/// Initials from a GitHub login: the first two letters, uppercased.
+///
+/// Deliberately the dumbest rule that works — `FAbrahamDev` → FA, `tr-evo` → TR,
+/// `octocat` → OC. Splitting on separators looks smarter and is worse: it turns
+/// `tr-evo` into "TE", because it assumes the segments are given-name/surname when
+/// they are usually nothing of the kind. A chip you can predict beats a chip that is
+/// occasionally cleverer.
+export function initials(login: string): string {
+  return login.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase();
+}
+
+/// An issue or PR. Unclaimed by definition — GitHub knows nothing about whether an
+/// *agent* is on it, only whether a human has been assigned, and those are different
+/// questions. An assignee becomes `who`, which the row shows and dispatch warns about.
+export function fromGh(g: GhThread, colorKey: string, project: string, viewer: string | null): Thread {
+  const owner = g.assignees[0] ?? null;
+  const isMe = !!owner && !!viewer && owner === viewer;
+  const when = Date.parse(g.updated_at);
+  const isPr = g.kind === "pr";
+  return {
+    id: `${g.kind}:${colorKey}:${g.number}`,
+    source: isPr ? "pr" : "issue",
+    title: g.title,
+    project,
+    colorKey,
+    where: isPr && g.branch ? `⎇ ${g.branch}` : g.labels.slice(0, 2).join(" · ") || `#${g.number}`,
+    state: ghState(g, owner, isMe),
+    phase: "unclaimed",
+    // `updated_at`, because for an unstarted thread the useful age is "how long has
+    // this been sitting", and NaN from a malformed date must not poison the sort.
+    since: Number.isFinite(when) ? when : 0,
+    cost: null,
+    number: g.number,
+    url: g.url,
+    who: owner ? { login: owner, isMe } : undefined,
+    whoShort: owner ? initials(owner) : undefined,
+  };
+}
+
+function ghState(g: GhThread, owner: string | null, isMe: boolean): string {
+  if (g.kind === "pr") {
+    if (g.draft) return "Draft";
+    return owner && !isMe ? `${owner} has this — review requested` : "Open PR — wants a review";
+  }
+  if (isMe) return "Assigned to you";
+  if (owner) return `${owner} is already on it`;
+  return "Nobody is on this yet";
+}
+
 // ---------- assembly ----------
 
 export interface ThreadInputs {
@@ -170,6 +237,9 @@ export interface ThreadInputs {
   dirty: Map<string, DiffStat | null>;
   /// colorKey → display name, so this module needn't know about FAVORITES.
   projectName: (colorKey: string) => string;
+  /// Issues and PRs per project root, and who `gh` says you are. Absent simply means
+  /// no GitHub layer — the board is complete without it.
+  gh?: Map<string, { threads: GhThread[]; viewer: string | null }>;
 }
 
 /**
@@ -199,6 +269,19 @@ export function buildThreads(inp: ThreadInputs): Thread[] {
     // a second row for the same folder would double-count the same piece of work.
     if (out.some((t) => t.sess && t.colorKey === root)) continue;
     out.push(fromBranchBehind(root, inp.projectName(root), g));
+  }
+
+  for (const [root, g] of inp.gh ?? []) {
+    for (const t of g.threads) {
+      // A PR whose head branch is checked out in a live session is that session's
+      // work — showing both would be two rows for one piece of work, and the pane
+      // is the more truthful of the two.
+      if (t.kind === "pr" && t.branch &&
+          out.some((x) => x.sess && x.colorKey === root && (x.sess.branch === t.branch || x.sess.worktree === t.branch))) {
+        continue;
+      }
+      out.push(fromGh(t, root, inp.projectName(root), g.viewer));
+    }
   }
 
   return sortThreads(out);

@@ -9,6 +9,7 @@
 
 mod external;
 mod git;
+mod github;
 mod icons;
 mod platform;
 mod pty;
@@ -411,6 +412,11 @@ pub fn run() {
             git::switch_branch,
             git::git_commit_info,
             git::git_log_days,
+            github::gh_threads,
+            github::gh_invalidate,
+            github::gh_claim,
+            github::gh_release,
+            github::claim_policy,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,
