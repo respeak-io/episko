@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **408 vitest + cargo (89 on macOS, 86 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **431 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -202,7 +202,8 @@ opens Episko.
 ## Project tasks panel (`openTaskManager`)
 
 Pin / hide / create / edit / delete / **override**, reached from ⌘K.
-**`.episko/tasks.toml` is the only file Episko writes** — a discovered VS Code task
+**`.episko/tasks.toml` is the only file Episko writes** (in a user's repo — the one
+other place it writes is `~/.claude`, and only when you press *Move session*; see Drift) — a discovered VS Code task
 or justfile belongs to another tool, so editing one writes an `[override."<id>"]`
 into `tasks.toml` keyed by its discovered id, **never** a mutation of
 `.vscode/tasks.json`. Writes go through `toml_edit`, not a serialize-the-whole-struct
@@ -245,11 +246,11 @@ Four smaller P4 affordances, all in the frontend:
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 456 | `run()`, `AppState`/`Session`, the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `lib.rs` | 494 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
-| `git.rs` | 1,903 | worktrees, branches (local **and** remote-only), the working-set diff, the toolbar's fetch/pull/push, commit info |
-| `usage.rs` | 1,286 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
-| `telemetry.rs` | 857 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `git.rs` | 2,067 | worktrees, branches (local **and** remote-only), the working-set diff, the toolbar's fetch/pull/push, commit info |
+| `usage.rs` | 1,475 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `telemetry.rs` | 926 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | 743 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
 | `pty.rs` | 803 | the four launch engines, `stream_pty_session`, the PTY lifecycle |
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
@@ -271,11 +272,11 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 37 modules
 
-**No framework, and no longer one file.** ~8,100 lines across 37 modules; `main.ts` is 686 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~8,580 lines across 37 modules; `main.ts` is 726 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
-What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
+What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the nine `setInterval`s.
 
-**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 408 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 431 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -289,7 +290,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for |
+| `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -338,8 +339,20 @@ And the things that hold however the files are arranged:
   handled separately in `winClaudePaste`, alongside it, via
   `attachCustomKeyEventHandler` — note xterm keeps only **one** such handler, so a
   new key rule belongs in that function or in `claudeInput`, never in a second
-  `attachCustomKeyEventHandler` call. (`macShellKeys`, also in `terminal.ts`, is the
-  *shell* pane's handler; no pane is both, so the two never collide.)
+  `attachCustomKeyEventHandler` call. A shell pane's one handler is `shellKeys` and a
+  task pane's is `clipboardKeys`, both also in `terminal.ts`; no pane is more than one
+  kind, so the three never collide.
+- **Copy/paste in a shell or task pane is Ctrl+Shift+C/V, and it is ours.** The
+  unshifted chords aren't available: Ctrl+C is the interrupt those panes exist to send,
+  and xterm eats Ctrl+V into a dead `^V`. So `clipboardKeys` claims the shifted pair —
+  the same chords Windows Terminal, GNOME Terminal and VS Code's terminal use — while
+  macOS's ⌘C/⌘V still reach the WebView's native copy/paste untouched. It reads and
+  writes through **`tauri-plugin-clipboard-manager`, not `navigator.clipboard`**:
+  `readText()` in the WebView is behind the `clipboard-read` permission, which wry only
+  auto-grants for a webview built with `enable_clipboard_access()` (Tauri leaves it
+  off), so the browser path would raise a WebView2 permission prompt on Windows and
+  WKWebView's paste-confirmation button on macOS. Pasting goes through `term.paste`
+  rather than `write_pty` so bracketed-paste mode and `\r\n`→`\r` still apply.
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
@@ -389,6 +402,86 @@ with the `--numstat` walk skipped entirely on a clean tree.
 Everything lands through `refreshGitViews` → `renderAll()`, so the sidebar, the header's
 branch chip and the open ⑃ dialog cannot disagree about what is checked out where.
 
+## Drift — the agent left the checkout it was launched in
+
+The section above answers "what is checked out where". This answers the other half,
+which it cannot: **which checkout is this agent's work actually landing in?** The
+worktree roster notices a new checkout (the toast fires, the row appears); it is the
+*session → checkout* link that goes stale.
+
+**There are two ways an agent changes checkout, they behave as opposites, and each is
+invisible to the signal that catches the other.** Both were verified against the real
+CLI (2.1.220) and against real sessions — guessing here produced a first cut that
+covered one and read as broken in the other.
+
+| | **out of** the project dir | **into** the project dir |
+| --- | --- | --- |
+| how | `git worktree add ../x` via Bash | Claude Code's `EnterWorktree` tool |
+| where | a sibling, e.g. `.cc-worktrees/…` | `<repo>/.claude/worktrees/<name>` |
+| hook `cwd` | **pinned** — every `cd` out is undone (`Shell cwd was reset to …`) | **follows** |
+| the transcript | stays where it was | **Claude re-homes it itself** |
+| `gitMutates` | fires | never — no Bash command ran |
+| the signal | a write's `file_path` | `cwd` |
+
+One real session had 42 `Shell cwd was reset to …` and 622 records all naming the folder
+it had already left; another used `EnterWorktree`, made **zero** writes, and had its
+transcript moved out from under Episko by Claude. Neither signal alone covers both.
+
+Hence two signals with different standing, and the asymmetry is the whole design
+(`driftUpdate`):
+
+- **`cwd` may only ever *set* a drift, never clear a write-derived one.** A `cwd` reading
+  "home" proves nothing about where the writes are going — that is exactly the left-hand
+  column, where it reads "home" for the entire life of the drift. Letting it clear would
+  delete the answer on the next hook. It retires only a drift `cwd` itself reported.
+- **Writes latch**, because an agent working in another checkout still reads its original
+  one constantly (usually *why* it moved). Cleared only by a write home.
+- **Both sides resolve to a checkout before being compared**, never the path against
+  `workdir` directly. That is what keeps `cd src/` (not a move), a session launched in a
+  subfolder (not a move) and a nested worktree (a move) all straight at once, and why the
+  longest match wins — `EnterWorktree`'s worktrees live *inside* the repo that contains
+  them.
+- **The target must be a checkout the roster already knows.** Unlike `gitMutates`, a
+  false positive is not a wasted re-read — it puts a wrong branch on screen and offers to
+  relocate a live session into `$TMPDIR`.
+
+Display is the same either way and **the row does not move**: it stays under the checkout
+that owns its identity, carrying a `⤳ branch` marker, with `old ⤳ ⑃ new` on the header
+chip and a card at the top of the inspector, above the working set and git buttons it
+contradicts.
+
+**`Drift.via` is not decoration — it decides the repair**, and conflating the two would
+be wrong in both directions:
+
+- **`via: "cwd"`** → *Follow it here.* The process is already running there and the
+  conversation is already there. Episko is merely behind, so `followSessionDrift` adopts
+  the directory **in place** — no confirm, no kill, no file move, no relaunch; the pane
+  never blinks. It re-points `workdir`/`branch`, drops the stale `git` working set, marks
+  the new folder for a re-read and re-saves the roster (restore must target the folder
+  the transcript is in).
+- **`via: "write"`** → *Move session here.* Nothing has re-homed anything. `claude
+  --resume` takes a session id and **no path** (there is no path-based resume flag) and
+  looks the conversation up under `<enc(cwd)>/<id>.jsonl`, so *no sequence of commands a
+  user could type* relocates a session. **Kill, wait, move, relaunch** — and the
+  *wait* is not the `invoke` returning. `kill_session` sends a signal and returns, so
+  awaiting it proves only that the signal was sent; the process is reaped on a backend
+  thread that emits `pty-exit` **after** `child.wait()`, and that event is the only
+  evidence the transcript handle is closed. Renaming before it lands is the bug the
+  ordering exists to prevent (Windows refuses to rename an open file; POSIX succeeds and
+  leaves the dying session writing into the moved file). The wait is bounded, so a wedged
+  process cannot strand the pane. `move_session_transcript`
+  renames rather than copies (two files with one id would double-list in History and leave
+  `--resume` ambiguous), carries the `<id>/tool-results` sidecar, refuses to overwrite, and
+  restricts the id to uuid characters before it reaches a filename (no dot, no separator, so nothing escapes the projects tree). A failed move still
+  relaunches — in the *original* folder — so the cost is a restarted pane.
+
+`move_session_transcript` is the only thing Episko ever writes inside `~/.claude`, and the
+second exception to "Episko only writes `.episko/tasks.toml`".
+
+Known wart: a moved transcript's first user record still names the old cwd, so
+`transcript_origin` grafts its History row onto the old project. Defensible (the
+conversation did start there) and not worth rewriting records to fix.
+
 ## Four launch engines, one telemetry path
 
 `termEngine` selects where the terminal lives; the instrumentation (and thus the cockpit's telemetry) is identical for all:
@@ -398,6 +491,54 @@ branch chip and the open ⑃ dialog cannot disagree about what is checked out wh
 - **terminal / iterm** — `spawn_external_terminal` writes an executable `.command` wrapper and hands it to `open -a`.
 
 `available_terminals` reports which are installed so the UI only offers working ones.
+
+## One title bar, and it is the header
+
+The app draws its own header, so a native title bar above it was a second bar
+saying less. It is gone on both platforms, but by different routes, and the
+difference is the point:
+
+- **macOS keeps its decorations.** `titleBarStyle: "Overlay"` + `hiddenTitle` hide
+  the bar while floating the *real* traffic lights over `.top`;
+  `trafficLightPosition` centres them in its 40px and `html.mac`'s `padding-left`
+  leaves them room. Drawing our own would lose the green button, which zooms or
+  goes fullscreen depending on how you hold it. In fullscreen the OS takes the
+  lights back into its own sliding overlay, so `html.fs` closes that gap.
+- **Windows has no such style**, so the frame goes entirely (`decorations: false`)
+  and `#winCtl` draws minimize / maximize / close.
+- **A browser gets neither.** The same HTML opens on vite's port in dev, where
+  there is no window behind it — and `IS_WIN` is a *user-agent* read, so it is
+  still true in Chrome. Everything that acts on the native window is therefore
+  gated on **`IS_TAURI`** (`dom.ts`, from the `isTauri` global tauri defines
+  before any page script), including the platform class itself: no class, so the
+  CSS shows no controls and reserves no traffic-light gap.
+
+Four things about that split are easy to get wrong:
+
+- **The window is built in `setup()`, not by the config** (`"create": false`).
+  `decorations` is not a per-platform config key, and a `tauri.windows.conf.json`
+  would replace the whole `windows` array (json merge-patch), so every shared key
+  would exist twice and drift. **Flipping it after creation is not the same
+  thing:** tauri attaches its undecorated-resize child window only when the webview
+  is created over an *already* undecorated window, so a late flip yields a window
+  whose edges cannot be dragged at all — the WebView2 child swallows the hit test
+  and nothing behind it answers. `from_config` keeps one definition and cfg-gates
+  the single flag that differs. (What tao does *not* do is drop `WS_CAPTION`: it
+  zeroes the non-client area instead, which is what keeps the shadow, the rounded
+  corners and snap. So a style-bit check reads "decorated" either way — measure
+  `GetClientRect` against `GetWindowRect` instead. It was 1px inset here, 30 on a
+  build with the bar.)
+- **Dragging is `data-tauri-drag-region="deep"` on the header**, which excludes
+  clickable elements for us — but only what the DOM calls clickable. `#kbar` is a
+  `<div>` that listens for a click, so it opts out explicitly (`="false"`); without
+  that the drag swallows the mouseup its click needs and ⌘K stops opening, with
+  nothing in any log to say so.
+- **Close goes through the OS close request** (`win.close()`), so it lands in the
+  same `quit-requested` confirm as Ctrl+Q instead of stepping around the guard.
+- **Maximize is only *asked* for.** The glyph flips on the `onResized` that comes
+  back, which is also what catches Win+↑, a snap, and the double-click the drag
+  region handles itself. The same listener is what tells macOS it entered
+  fullscreen.
 
 ## External (non-Episko) sessions
 

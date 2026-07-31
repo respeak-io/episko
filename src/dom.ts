@@ -40,6 +40,15 @@ export function dropScrim() {
 const UA = typeof navigator === "undefined" ? "" : navigator.userAgent;
 export const IS_MAC = UA.includes("Mac");
 export const IS_WIN = UA.includes("Windows");
+// Which OS is a different question from whether there is a *window* — in dev the
+// frontend is plain HTML on vite's port, so it opens in a browser too, and there
+// the user-agent still says "Windows" while nothing exists to minimize, maximize
+// or drag. Anything that acts on the native window has to ask this as well (see
+// the title-bar block in main.ts), or a browser tab grows controls that only
+// throw. Tauri defines `isTauri` from an initialization script that runs before
+// any page script, so reading it at module scope is honest; the `window` guard is
+// vitest's node environment again, exactly like the UA read above.
+export const IS_TAURI = typeof window !== "undefined" && "isTauri" in window;
 export const MOD = IS_MAC ? "⌘" : "Ctrl";
 /** Where "open folder" actually lands, so a row, shortcut or command can name it. */
 export const FILE_MANAGER = IS_WIN ? "Explorer" : IS_MAC ? "Finder" : "file manager";
