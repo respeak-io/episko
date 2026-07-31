@@ -685,9 +685,12 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
 ///   conversation with the same id (or this move already happened); either way it is
 ///   refused, not overwritten.
 ///
-/// The caller must have stopped the session first. Nothing here can tell whether a
-/// `claude` process still holds the source open, and on a live one the rename would
-/// leave it appending to a path that no longer resolves where anyone will look.
+/// The caller must have stopped the session **and waited for it to actually exit**.
+/// Nothing here can tell whether a `claude` process still holds the source open, and on
+/// a live one the rename would leave it appending to a path that no longer resolves
+/// where anyone will look. Note that killing is not the same as having exited: the
+/// frontend waits for `pty-exit`, which the reaper emits only after `child.wait()`
+/// returns, because `kill_session` merely sends the signal and returns.
 #[tauri::command(async)]
 pub(crate) fn move_session_transcript(
     session_id: String,
@@ -704,9 +707,11 @@ fn move_session_transcript_in(
     from_workdir: &str,
     to_workdir: &str,
 ) -> Result<String, String> {
-    // A session id reaches us from the frontend and is pasted into a filename. Anything
-    // that isn't the uuid shape it should be would let `..` or a separator escape the
-    // projects tree, so it is rejected outright rather than sanitised.
+    // A session id reaches us from the frontend and is pasted into a filename, so it is
+    // restricted to the characters a uuid is made of. That is a character-class test,
+    // not a shape test — `abc` passes — but it is the part that matters here: no dot, no
+    // separator, so no `..` or path fragment can escape the projects tree. Rejected
+    // outright rather than sanitised, because a sanitised id would name the wrong file.
     if session_id.is_empty()
         || !session_id
             .chars()

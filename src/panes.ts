@@ -408,7 +408,9 @@ export function noteDrift(s: Sess, tool: string, data: any) {
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
   const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);
-  if (next?.dir === s.drift?.dir && next?.via === s.drift?.via) return;
+  // All three fields, not just the identity of the checkout: the branch on a drifted-into
+  // checkout can be switched underneath us, and it is what every drift surface spells out.
+  if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;
   dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
   renderAll();
@@ -429,10 +431,11 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
-  const hb = $("hBranch"); hb.classList.remove("ext-chip");
+  // Reset every attribute a previous session may have left on the shared chip — the
+  // drift branch below sets `title`, and only one of the arms after it would clear it.
+  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
-  hb.classList.remove("drifted");
   if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
   // A drifted session gets BOTH branches, in the order they happened: the chip is the
   // only thing on screen that says which checkout the work is landing in, and showing
@@ -442,7 +445,7 @@ export function renderHeader(s: Sess | null) {
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
     hb.hidden = false; hb.classList.add("drifted");
   }
-  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.title = ""; hb.hidden = false; } else hb.hidden = true;
+  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   // The path follows the work for the same reason — it is the answer to "where am I?".
   $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);

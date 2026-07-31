@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **429 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **431 vitest + cargo (91 on macOS, 88 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nine those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -276,7 +276,7 @@ Four conventions hold across them:
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, and the nine `setInterval`s.
 
-**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 429 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (eleven — no DOM, no Tauri, no render imports; these are what the 431 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -450,13 +450,17 @@ be wrong in both directions:
 - **`via: "write"`** → *Move session here.* Nothing has re-homed anything. `claude
   --resume` takes a session id and **no path** (there is no path-based resume flag) and
   looks the conversation up under `<enc(cwd)>/<id>.jsonl`, so *no sequence of commands a
-  user could type* relocates a session. **Kill, then move, then relaunch**: `closeSession`
-  fires `kill_session` without awaiting it, so the await is what makes this a move of a
-  *dead* session (a live one holds the file open — Windows refuses the rename outright;
-  POSIX would succeed and leave it writing into the moved file). `move_session_transcript`
+  user could type* relocates a session. **Kill, wait, move, relaunch** — and the
+  *wait* is not the `invoke` returning. `kill_session` sends a signal and returns, so
+  awaiting it proves only that the signal was sent; the process is reaped on a backend
+  thread that emits `pty-exit` **after** `child.wait()`, and that event is the only
+  evidence the transcript handle is closed. Renaming before it lands is the bug the
+  ordering exists to prevent (Windows refuses to rename an open file; POSIX succeeds and
+  leaves the dying session writing into the moved file). The wait is bounded, so a wedged
+  process cannot strand the pane. `move_session_transcript`
   renames rather than copies (two files with one id would double-list in History and leave
   `--resume` ambiguous), carries the `<id>/tool-results` sidecar, refuses to overwrite, and
-  rejects any id that isn't uuid-shaped before it reaches a filename. A failed move still
+  restricts the id to uuid characters before it reaches a filename (no dot, no separator, so nothing escapes the projects tree). A failed move still
   relaunches — in the *original* folder — so the cost is a restarted pane.
 
 `move_session_transcript` is the only thing Episko ever writes inside `~/.claude`, and the

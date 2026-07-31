@@ -131,13 +131,46 @@ describe("driftTarget", () => {
 
   it("does not mistake a sibling with a shared name prefix for a match", () => {
     // `/w/overview-old` starts with `/w/overview` as a *string*; only a path-boundary
-    // test keeps them apart.
+    // test keeps them apart. The roster must include the session's own checkout, as a
+    // real one from `worktree_heads` always does — without it there is no home to
+    // compare against and the answer is (correctly) nothing at all.
     const sib = [
+      { path: launched, branch: "exp/overview", exists: true, is_main: false },
       { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
       { path: `${WT}/overview-old`, branch: "old/overview", exists: true, is_main: false },
     ];
     expect(driftTarget(launched, "Write", `${WT}/overview-old/a.ts`, sib))
       .toEqual({ dir: `${WT}/overview-old`, branch: "old/overview", via: "write" });
+    expect(driftTarget(launched, "Write", `${WT}/overview/a.ts`, sib))
+      .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
+  });
+
+  // The regression guard for the review finding: the roster is resolved and normalised
+  // in Rust, while `workdir` is however the user spelled the folder they picked. When
+  // the two cannot be reconciled, the old code compared the target against `undefined`
+  // and every write into the session's OWN checkout read as a move — permanently.
+  it("says nothing at all when the session's own folder isn't in the roster", () => {
+    const elsewhere = [
+      { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
+    ];
+    expect(driftTarget("/some/symlinked/spelling", "Write", `${WT}/overview/a.ts`, elsewhere)).toBeNull();
+    expect(driftUpdate(null, "/some/symlinked/spelling", "Write", `${WT}/overview/a.ts`, `${WT}/overview`, elsewhere)).toBeNull();
+    // …and an unplaceable home must not retire a drift either, in the other direction.
+    const held = { dir: `${WT}/overview`, branch: "feat/overview", via: "write" as const };
+    expect(driftUpdate(held, "/some/symlinked/spelling", "Write", "/some/symlinked/spelling/a.ts", undefined, elsewhere))
+      .toEqual(held);
+  });
+
+  it("compares paths case-insensitively, as norm_path and the filesystem both do", () => {
+    // `worktree_heads` upper-cases a Windows drive letter; Claude Code may report it
+    // lower-case. Left case-sensitive, the whole feature goes dark on Windows.
+    const win = [
+      { path: "C:/r/main", branch: "main", exists: true, is_main: true },
+      { path: "C:/r/feat", branch: "feat/x", exists: true, is_main: false },
+    ];
+    expect(driftTarget("c:/r/main", "Write", "c:/r/feat/src/a.ts", win))
+      .toEqual({ dir: "C:/r/feat", branch: "feat/x", via: "write" });
+    expect(driftTarget("c:/r/main", "Write", "c:/R/MAIN/src/a.ts", win)).toBeNull();
   });
 
   it("treats a session launched in a subfolder of a checkout as being in it", () => {

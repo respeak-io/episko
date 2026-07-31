@@ -123,10 +123,13 @@ export interface Sess {
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
   apiErr: ApiErr | null;
-  // Set when the agent's writes land in a *different* checkout of this repo than the
-  // one the session was launched in — see driftTarget in ./gitwatch for why writes are
-  // the only signal that can say so. Display-only: `workdir` stays the folder Claude
-  // actually runs in (and that `--resume` needs) until the user moves the session.
+  // Set when the agent's work has moved to a *different* checkout of this repo than the
+  // one the session was launched in — by either route, see `Drift.via` above and
+  // ./gitwatch for the two signals. Display-only either way: nothing here changes
+  // `workdir`, so the pane keeps acting on its launch folder until the user follows the
+  // drift. Which of the two it is decides what "following" means, and note that for
+  // `via: "cwd"` the process has *already* left `workdir` — that is the gap the
+  // inspector's button closes, not one Episko opened.
   drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   curTool: string; curArg: string; todos: Todo[];

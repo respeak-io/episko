@@ -65,12 +65,25 @@ export function gitMutates(cmd: unknown): boolean {
 //   a flag recomputed per tool call would flicker off on every such read.
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
-// Path containment, tolerant of the two spellings a path reaches us in: Windows
-// backslashes, and a trailing separator on a directory. Case is left alone — the
-// comparison is between two paths git itself reported, so they already agree.
+// The two sides of every comparison here come from different places and are spelled
+// differently, which is the trap this codebase has already fallen into once (see
+// History's `norm_path`, where skipping it made a repo's own checkout unequal to its own
+// root and 135 of 219 rows read as worktrees). The roster side is resolved and
+// normalised in Rust — `worktree_heads` returns `norm_path(physical_cwd(…))`. The other
+// side is raw: `cwd` and `file_path` as Claude Code reports them, and `Sess.workdir` as
+// the user spelled it when they picked the folder.
+//
+// So separators and a trailing slash are levelled here, and case with them: `norm_path`
+// upper-cases a Windows drive letter that Claude may well send lower-case, and both
+// mainstream desktop filesystems are case-insensitive by default anyway. The cost is
+// that two checkouts differing only in case would read as one — on a case-sensitive
+// volume, and vanishingly unlikely for checkouts of the same repo. Symlinks cannot be
+// resolved from here at all, which is what `checkoutDrift` failing closed is for.
+function norm(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
 function under(dir: string, path: string): boolean {
-  const d = dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const p = path.replace(/\\/g, "/");
+  const d = norm(dir), p = norm(path);
   return d !== "" && (p === d || p.startsWith(d + "/"));
 }
 
@@ -102,11 +115,19 @@ function checkoutOf(path: string, roster: readonly Checkout[]): Checkout | null 
 /// session started in a *subfolder* of a checkout has not drifted when it works
 /// elsewhere in that same checkout (and `cd src/` is not a checkout change), while one
 /// started in a nested worktree has drifted the moment it touches the enclosing repo.
+/// **Fails closed**, and that is the whole of its safety. If the session's *own* folder
+/// cannot be placed in the roster — a spelling git resolved and we cannot (a symlinked
+/// project path), a roster read before the checkout existed — then nothing here is
+/// knowable and the answer is "no drift". Comparing against a missing home instead would
+/// make every write into the session's own checkout read as a move, permanently, which
+/// is worse than saying nothing: the card would offer to relocate a session that never
+/// went anywhere.
 function checkoutDrift(workdir: string, path: unknown, roster: readonly Checkout[]) {
   if (typeof path !== "string" || !path.trim()) return null;
+  const home = checkoutOf(workdir, roster);
+  if (!home) return null;
   const target = checkoutOf(path, roster);
-  if (!target) return null;                      // not in any checkout of this repo
-  if (target.path === checkoutOf(workdir, roster)?.path) return null;
+  if (!target || target.path === home.path) return null;
   return { dir: target.path, branch: target.branch };
 }
 
@@ -145,7 +166,11 @@ export function driftUpdate(
 
   const byWrite = driftTarget(workdir, tool, filePath, roster);
   if (byWrite) return byWrite;
+  // Not drift. Only a write that landed squarely in the session's own checkout retires
+  // one — and, as above, only when we can actually place that checkout. An unplaceable
+  // home clears nothing rather than clearing everything.
   if (!WRITE_TOOLS.has(tool) || typeof filePath !== "string" || !filePath.trim()) return prev;
+  const home = checkoutOf(workdir, roster);
   const wrote = checkoutOf(filePath, roster);
-  return wrote && wrote.path === checkoutOf(workdir, roster)?.path ? null : prev;
+  return home && wrote && wrote.path === home.path ? null : prev;
 }

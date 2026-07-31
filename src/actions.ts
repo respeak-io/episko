@@ -17,6 +17,7 @@ import { refit } from "./terminal";
 import { activeCwd, closeSession, launch } from "./panes";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
+import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
   FAVORITES, markWorkdirStale, saveFavorites, sessions, setFavorites, setSortMode,
@@ -121,10 +122,23 @@ export function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" :
 // **via "write"** — the session is still running where it was launched and only its
 // writes moved. Following it therefore means relocating the conversation, and
 // `claude --resume` finds one only under `<enc(cwd)>/<id>.jsonl` and takes no path — so
-// *no sequence of commands a user could type* does this. Kill, move, relaunch: the await
-// on the kill is what makes it a move of a dead session (a live one holds the file open,
-// which Windows refuses to rename outright). A failed move still relaunches, in the
-// original folder, so the cost is a restarted pane and nothing else.
+// *no sequence of commands a user could type* does this. Kill, wait, move, relaunch.
+//
+// The **wait** is load-bearing and is not the `invoke` returning: `kill_session` sends a
+// signal (SIGHUP / TerminateProcess) and returns immediately, so awaiting it proves only
+// that the signal was sent. The process is reaped on a backend thread, which emits
+// `pty-exit` *after* `child.wait()` returns — that event, and only that event, means the
+// transcript handle is closed. Renaming before it lands is the bug the ordering exists
+// to prevent: Windows refuses to rename an open file, and POSIX cheerfully succeeds and
+// leaves the dying session appending into the moved file. Bounded, because a wedged
+// process must not strand the pane forever; past the bound we proceed and the move
+// either works or reports why. A failed move still relaunches, in the original folder,
+// so the cost is a restarted pane and nothing else.
+// How long to give a killed session to actually die before moving its transcript
+// anyway. Generous, because the alternative to waiting is the corruption above, and
+// cheap, because it is only ever reached by a process that ignored its signal.
+const KILL_WAIT_MS = 5000;
+
 export async function followSessionDrift(id: string) {
   const s = sessions.get(id);
   if (!s?.drift) return;
@@ -156,7 +170,12 @@ export async function followSessionDrift(id: string) {
   // Captured before the close, because the fallback path has to be able to rebuild the
   // session exactly as it was — same labels, not the drift's.
   const { project, colorKey, workdir, resumeId, worktree: wasWt, branch: wasBranch } = s;
+  // Register the waiter *before* the kill, or a fast exit resolves into nothing. Note
+  // `closeSession` also settles pending waiters (with -1, so a dependency chain can't
+  // deadlock), which is exactly why this awaits first and closes second.
+  const dead = waitForExit(id);
   await invoke("kill_session", { sessionId: id }).catch(() => {});
+  await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
   closeSession(id);
 
   let moved = true;
