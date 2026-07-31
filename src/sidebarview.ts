@@ -64,13 +64,24 @@ export function groupBody(p: ProjGroup): string {
     const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) return cl.map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
-      const body = n
-        ? c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("")
-        : wtEmptyRow(p, c);
-      return `<div class="wthead"><span class="wtglyph" style="color:${col}">⑃</span>`
+      const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
+      // The cluster header already answers the only question the worktree dialog
+      // would ask — which checkout — so its ＋ launches straight into `c.key`.
+      // `data-root` carries the repo root separately: it is the colorKey every
+      // session in this project groups by, and a worktree's own path is not it.
+      //
+      // This is also what makes an *empty* cluster carry its own weight: the header
+      // renders whether or not anything runs in the checkout, so a worktree nobody has
+      // started a session in is still visible — and startable — without spending a
+      // whole row on saying so.
+      const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
+      return `<div class="wthead${n ? "" : " wtvacant"}"><span class="wtglyph" style="color:${col}">⑃</span>`
         + `<span class="wtname" style="color:${col}" title="${esc(c.branch)}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n || ""}</span></div>`
-        + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
+        + `<span class="wtcount">${n || ""}</span>${add}</div>`
+        // No rows, no rail: an empty `.wtsessions` would draw a stub of left border
+        // under a header that has nothing beneath it.
+        + (n ? `<div class="wtsessions" style="--wtc:${col}">${body}</div>` : "");
     }).join("");
   } else if (wtGroup === "chip") {
     const cl = clusterByWorktree(p, true);
@@ -78,7 +89,7 @@ export function groupBody(p: ProjGroup): string {
       const byKey = new Map(cl.map((c) => [c.key, c]));
       return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
         + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("")
-        + cl.filter((c) => !c.sessions.length && !c.externals.length).map((c) => wtEmptyRow(p, c, c)).join("");
+        + cl.filter((c) => !c.sessions.length && !c.externals.length).map((c) => wtEmptyRow(p, c)).join("");
     }
   }
   return flat();
@@ -87,18 +98,22 @@ export function groupBody(p: ProjGroup): string {
 // dropped for the same reason a blocked task is: a missing row reads as "Episko didn't
 // notice my worktree", which is exactly the gap this path was built to close.
 //
+// **chip mode only.** In subheader mode the ⑃ cluster header renders whether or not
+// anything runs in the checkout and carries its own ＋, so a whole row saying "no
+// session" was a second, bulkier way of stating what the header already showed. Chip
+// mode has no headers at all — a flat list of rows each wearing a branch chip — so
+// without this row an empty checkout would have nowhere to appear.
+//
 // Clicking it launches into that checkout while keeping the repo's identity — colorKey
-// stays the repo root, so the new session joins this project group instead of
-// splintering into one of its own. That is why it is `data-wtlaunch` and not the plain
-// `data-launch` a project header uses.
-function wtEmptyRow(p: ProjGroup, c: WtCluster, chip?: WtCluster): string {
-  const chipHtml = chip
-    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
-    : "";
+// stays the repo root (`data-root`), so the new session joins this project group
+// instead of splintering into one of its own. That is the same `data-wtadd` contract
+// the cluster header's ＋ uses.
+function wtEmptyRow(p: ProjGroup, c: WtCluster): string {
   // `o3` widens the grid for the chip and arms its hover-expand, exactly as sessionRow does.
-  return `<div class="srow wtempty${chip ? " o3" : ""}" data-wtlaunch="${esc(c.key)}" data-key="${esc(p.path)}" data-proj="${esc(p.name)}" data-wtbranch="${esc(c.branch)}" title="No session here yet — start one in ${esc(tilde(c.key))}">
+  return `<div class="srow wtempty o3" data-wtadd="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}" data-branch="${esc(c.branch)}" title="No session here yet — start one in ${esc(tilde(c.key))}">
     <span class="sglyph g-idle">＋</span>
-    <span class="sbranch">no session</span>${chipHtml}</div>`;
+    <span class="sbranch">no session</span>
+    <span class="chip" style="--wtc:${branchHue(c)}"><span class="fork">⑃</span><span class="lbl">${esc(c.branch)}</span></span></div>`;
 }
 // Dormant rows always sit below the live ones, outside any worktree cluster.
 export function dormantRows(p: ProjGroup): string {
