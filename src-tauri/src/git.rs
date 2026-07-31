@@ -80,10 +80,29 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
         }
     }
 
+    // A start-point that IS a remote-tracking ref means "check out what's on the remote",
+    // so the branch we cut must follow it: without an upstream, `git push`/`git pull` in
+    // the new worktree need arguments, and the picker's ahead/behind for it reads empty
+    // forever. Git already does this when `branch.autoSetupMerge` is at its default —
+    // which is exactly why it must be said outright, since a user who turned that off
+    // would otherwise get a silently untracked branch. Detected rather than passed as a
+    // flag so the rule holds for any caller, and so `base` keeps its one meaning.
+    let track = !branch_exists
+        && base.as_deref().is_some_and(|b| {
+            git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{b}")])
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        });
+
     let add = if branch_exists {
         git(&["-C", &root, "worktree", "add", &wt_str, &safe])
     } else if let Some(b) = base.as_deref() {
-        git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str, b])
+        let mut args = vec!["-C", &root, "worktree", "add"];
+        if track {
+            args.push("--track");
+        }
+        args.extend_from_slice(&["-b", &safe, &wt_str, b]);
+        git(&args)
     } else {
         git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str])
     }.map_err(|e| e.to_string())?;
@@ -597,18 +616,31 @@ pub(crate) struct BranchInfo {
     /// An upstream is configured but no longer exists on the remote (branch deleted
     /// after a merge, typically). `upstream` still names it.
     gone: bool,
+    /// This row is a remote-tracking ref with no local branch of the same name —
+    /// someone else pushed it and nothing here points at it yet. The fields are then
+    /// read one level over: `name` is the local branch a checkout would CREATE and
+    /// `upstream` the ref it would track, which is exactly the pair the row will hold
+    /// a second after it is picked. `current`/`checked_out` are always false (there is
+    /// no local ref to be either) and so are `ahead`/`behind`/`gone` — the branch has
+    /// nothing to be ahead of yet.
+    remote: bool,
     rel: String,
     unix: i64,
 }
 
-/// Local branches for the worktree picker, most-recently-committed first, each with
+/// Branches for the worktree picker, most-recently-committed first, each with
 /// staleness + upstream context (see `BranchInfo`). Nothing is filtered here — the
 /// frontend hides `current` and `checked_out` from the pickable list; returning them
 /// with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP so a
 /// repo with hundreds of refs can't blow the list up.
 ///
-/// Everything comes out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
+/// Local branches come out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
 /// ahead/behind arithmetic itself, so this no longer spawns a `rev-list` per branch.
+/// A second pass adds **remote-only** branches (`remote: true`) — a colleague's branch
+/// that exists on a remote and nowhere locally is a destination you'd want, and before
+/// this it wasn't merely hidden: typing its name fell through to the create path and
+/// made a *new, unrelated* branch off HEAD under the same name. Remote rows are capped
+/// separately so a fork with hundreds of them can't crowd out the local list.
 #[tauri::command(async)]
 pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     const BRANCH_LIST_CAP: usize = 80;
@@ -647,6 +679,16 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     };
     let text = String::from_utf8_lossy(&out.stdout);
 
+    // Every local branch name, uncapped. The remote pass below asks "is there already a
+    // local branch called this?", and `res` stops being able to answer that the moment
+    // BRANCH_LIST_CAP truncates it — which would resurrect a checked-out branch as a
+    // remote-only row in exactly the repos big enough to hit the cap.
+    let local_names: std::collections::HashSet<&str> = text
+        .lines()
+        .filter_map(|l| l.split('\t').next())
+        .filter(|n| !n.is_empty())
+        .collect();
+
     let mut res = Vec::new();
     for line in text.lines().take(BRANCH_LIST_CAP) {
         let mut parts = line.split('\t');
@@ -678,7 +720,83 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
             current: current.as_deref() == Some(name.as_str()),
+            remote: false,
             name, upstream, ahead, behind, gone, rel, unix,
+        });
+    }
+
+    // ---- remote-only branches ------------------------------------------------------
+    // The remote names are read rather than assumed, because the short ref is the only
+    // thing `for-each-ref` gives us and "origin/feature/x" has to be split back into
+    // remote + branch. Nothing here can guess where that boundary is.
+    let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    if remotes.is_empty() {
+        return res;
+    }
+    let rout = match git(&[
+        "-C", &repo_dir,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)",
+        "refs/remotes",
+    ]) {
+        Ok(o) if o.status.success() => o,
+        _ => return res,
+    };
+    let rtext = String::from_utf8_lossy(&rout.stdout);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in rtext.lines() {
+        if seen.len() >= BRANCH_LIST_CAP {
+            break;
+        }
+        let mut parts = line.split('\t');
+        let short = match parts.next() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        // Longest matching prefix wins: git permits a remote named `a` alongside one
+        // named `a/b`, and only the longer one splits `a/b/topic` where it really joins.
+        // The empty remainder is what drops `refs/remotes/<remote>/HEAD` — the symbolic
+        // pointer at the remote's default branch, which would otherwise duplicate
+        // whatever it points at. Worth spelling out because it does NOT shorten to
+        // `origin/HEAD` as you'd expect: git renders it as a bare `origin`, so no test
+        // on the name would have caught it. (The `HEAD` check below is a belt for any
+        // git that does spell it out.)
+        let local = match remotes
+            .iter()
+            .filter_map(|r| short.strip_prefix(r.as_str()).and_then(|s| s.strip_prefix('/')))
+            .filter(|s| !s.is_empty())
+            .min_by_key(|s| s.len())
+        {
+            Some(l) => l,
+            None => continue,
+        };
+        // A name that already exists locally isn't remote-*only*, and two remotes
+        // carrying the same branch is one destination, not two.
+        if local == "HEAD" || local_names.contains(local) || !seen.insert(local.to_string()) {
+            continue;
+        }
+        let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let rel = parts.next().unwrap_or("").to_string();
+        res.push(BranchInfo {
+            name: local.to_string(),
+            current: false,
+            checked_out: false,
+            upstream: short.to_string(),
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            remote: true,
+            rel,
+            unix,
         });
     }
     res
@@ -1852,6 +1970,78 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A branch that exists on a remote and nowhere locally is a destination too. Both
+    /// halves matter and the second is the one with teeth: picking such a row must cut a
+    /// branch from the remote's tip and TRACK it, not mint a same-named stranger off
+    /// HEAD — which is precisely what the create path did before these rows existed.
+    #[test]
+    fn git_branch_list_offers_remote_only_branches_and_their_worktrees_track() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        let theirs = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "dev"]);
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "dev"]);
+
+        // A colleague pushes from their own clone; ours only ever fetches, so these two
+        // branches exist under refs/remotes and nowhere else.
+        git(&theirs, &["clone", "-q", remote.to_str().unwrap(), "."]);
+        git(&theirs, &["checkout", "-q", "-b", "their-feature"]);
+        commit(&theirs, "their work");
+        git(&theirs, &["push", "-q", "-u", "origin", "their-feature"]);
+        git(&theirs, &["checkout", "-q", "-b", "nested/topic"]);
+        commit(&theirs, "nested work");
+        git(&theirs, &["push", "-q", "-u", "origin", "nested/topic"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "dev"]);   // creates origin/HEAD
+
+        let bs = git_branch_list(dir.to_str().unwrap().to_string());
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+
+        let f = by("their-feature");
+        assert!(f.remote, "their-feature exists only on the remote: {bs:?}");
+        assert_eq!(f.upstream, "origin/their-feature", "name is the local branch to create, upstream the ref it tracks: {bs:?}");
+        assert!(!f.current && !f.checked_out, "a remote-only branch has no local checkout: {bs:?}");
+        assert!(!f.gone && (f.ahead, f.behind) == (0, 0), "nothing to be ahead of yet: {bs:?}");
+
+        // The short ref has to be split back into remote + branch, and a branch name
+        // containing a slash must not be split at the first one it happens to hold.
+        assert_eq!(by("nested/topic").upstream, "origin/nested/topic", "{bs:?}");
+
+        // dev has a local branch, so it is not remote-*only*; origin/HEAD is a symbolic
+        // pointer at the default branch rather than a branch. Neither may appear. Both
+        // spellings are asserted because git shortens that ref to a bare `origin`, so a
+        // filter that only looked for "HEAD" would let it through as a phantom row.
+        assert!(!by("dev").remote, "dev has a local branch: {bs:?}");
+        assert!(!bs.iter().any(|b| b.name == "HEAD" || b.name == "origin"),
+            "the remote's HEAD pointer is not a branch: {bs:?}");
+
+        // Picking the row is `create_worktree(name, base = upstream)`.
+        let path = create_worktree(dir.to_str().unwrap().to_string(), "their-feature".into(), Some("origin/their-feature".into()))
+            .expect("worktree on a remote-only branch");
+        let out = |args: &[&str]| String::from_utf8_lossy(
+            &Command::new("git").current_dir(&path).args(args).output().unwrap().stdout
+        ).trim().to_string();
+        assert_eq!(out(&["rev-parse", "--abbrev-ref", "HEAD"]), "their-feature");
+        assert_eq!(out(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]), "origin/their-feature",
+            "the new branch must track the remote ref it was cut from");
+        assert_eq!(out(&["log", "-1", "--format=%s"]), "their work",
+            "it must hold THEIR commit, not a fresh branch off our HEAD");
+
+        // And having become local, it must stop being offered as remote-only.
+        let bs2 = git_branch_list(dir.to_str().unwrap().to_string());
+        let f2 = bs2.iter().find(|b| b.name == "their-feature").expect("still listed");
+        assert!(!f2.remote && f2.checked_out, "it is a local, checked-out branch now: {bs2:?}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&theirs);
         let _ = std::fs::remove_dir_all(&remote);
     }
     /// Without a start-point, `worktree add -b` cuts from HEAD — which makes whatever

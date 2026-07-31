@@ -715,9 +715,11 @@ mod tests {
         // lets it run without a UI to answer the permission prompt.
         let mut child = std::process::Command::new(&claude)
             .arg("-p")
-            .arg("Run the shell command `echo pong` using the Bash tool, then reply with nothing else.")
+            .arg("Do exactly two things and reply with nothing else: run the shell \
+                  command `echo pong` using the Bash tool, then use the Write tool to \
+                  create a file named pong.txt containing the word pong.")
             .arg("--allowedTools")
-            .arg("Bash")
+            .arg("Bash,Write")
             .arg("--session-id")
             .arg(&sid)
             .arg("--settings")
@@ -819,6 +821,36 @@ mod tests {
                 .is_some_and(|c| c.contains("echo")),
             "PostToolUse no longer carries `tool_input.command`; the sidebar's git \
              invalidation reads it to know a checkout may have moved: {tool_hook}"
+        );
+
+        // --- 3c. `file_path`, absolute — the only signal that an agent changed checkout ---
+        // Claude Code pins a session's `cwd` to its launch directory and actively undoes
+        // any `cd` that leaves it ("Shell cwd was reset to …"), verified against 2.1.220.
+        // So when an agent creates a worktree and moves into it, `cwd` never changes and
+        // the sidebar would go on naming the checkout it left. What *does* name the new
+        // one is a write's `file_path` — which is why `driftTarget` reads it, and why it
+        // has to be absolute: a path relative to a cwd that never moved would resolve
+        // back into the old checkout and the drift would be invisible.
+        let write_hook = events
+            .iter()
+            .find(|e| e["kind"] == "hook"
+                && e["data"]["hook_event_name"] == "PostToolUse"
+                && e["data"]["tool_name"] == "Write")
+            .unwrap_or_else(|| panic!(
+                "no PostToolUse hook for a Write arrived, though the prompt asked for \
+                 one. Got tools: {:?}",
+                events.iter().filter_map(|e| e["data"]["tool_name"].as_str()).collect::<Vec<_>>()
+            ));
+        let fp = write_hook["data"]["tool_input"]["file_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!(
+                "Write's PostToolUse no longer carries `tool_input.file_path`; drift \
+                 detection has no other signal that an agent changed checkout: {write_hook}"
+            ));
+        assert!(
+            std::path::Path::new(fp).is_absolute(),
+            "Write's `file_path` is no longer absolute ({fp:?}); driftTarget matches it \
+             against checkout roots, which only works for an absolute path"
         );
 
         // `cwd` is how a hook is correlated with the pane's workdir.

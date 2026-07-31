@@ -9,9 +9,16 @@
   </head>
   <body>
     <div class="app" id="app">
-      <header class="top">
+      <!--
+        This header IS the title bar — there is no native one behind it (see the
+        window block in lib.rs). `deep` makes the whole strip draggable except its
+        clickable elements, which tauri's drag script excludes for us; the ⌘K bar
+        opts out explicitly because it is a <div> that listens for a click, and a
+        drag would eat the mouseup that click needs.
+      -->
+      <header class="top" data-tauri-drag-region="deep">
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
-        <div class="kbar" id="kbar"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+        <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
@@ -33,6 +40,25 @@
           <button class="ibtn" id="histBtn" title="Session history — every past conversation, all projects" aria-label="Session history">◷</button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
+        </div>
+        <!--
+          Window controls. Windows only (html.win) — macOS keeps its real traffic
+          lights, which float over this header instead. A child of the header
+          rather than of .top-right, because only there can it stretch to the full
+          40px and sit flush in the corner, which is where a thrown pointer lands.
+          The middle button swaps glyph via .maxed.
+        -->
+        <div class="wctl" id="winCtl">
+          <button class="wc" id="winMin" title="Minimize" aria-label="Minimize">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
+          </button>
+          <button class="wc" id="winMax" title="Maximize" aria-label="Maximize">
+            <svg class="ic-max" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" /></svg>
+            <svg class="ic-restore" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5v-2h7v7h-2" /><rect x=".5" y="2.5" width="7" height="7" /></svg>
+          </button>
+          <button class="wc wclose" id="winClose" title="Close" aria-label="Close">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
+          </button>
         </div>
       </header>
 

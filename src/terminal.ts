@@ -12,6 +12,7 @@
 // Nerd Font arrives — the WebGL renderer bakes tofu boxes into it otherwise.
 
 import { invoke } from "@tauri-apps/api/core";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { IS_WIN, toast } from "./dom";
@@ -32,13 +33,69 @@ export function loadWebgl(term: Terminal) {
   } catch { /* WebGL unavailable — DOM renderer is fine */ }
 }
 
+// The whole custom key rule for a shell pane, in one handler — xterm keeps only the
+// *last* `attachCustomKeyEventHandler`, so a second call anywhere silently discards
+// the first. Task panes take `clipboardKeys` alone: the ⌥/⌘ word-nav below is a login
+// shell's business, and a task pane is running a program, not a prompt.
+export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boolean {
+  const clip = clipboardKeys(term), nav = macShellKeys(id);
+  return (e) => clip(e) && nav(e);
+}
+
+// Ctrl+Shift+C / Ctrl+Shift+V — copy and paste for the panes that cannot have the
+// plain chords. Ctrl+C is the interrupt a shell or task pane exists to send, and xterm
+// turns Ctrl+V into a dead ^V (see `winClaudePaste`), so the shifted pair is the only
+// copy/paste a terminal has left — which is exactly why Windows Terminal, GNOME
+// Terminal and VS Code's terminal all use it. Unshifted ⌘C/⌘V on macOS are untouched:
+// xterm passes them to the WebView, which copies and pastes natively.
+//
+// Both halves go through the Tauri clipboard plugin rather than `navigator.clipboard`.
+// Writing would work either way, but `readText()` in the WebView sits behind the
+// `clipboard-read` permission — a WebView2 prompt on Windows, WKWebView's paste-
+// confirmation button on macOS — because Tauri does not build the webview with wry's
+// `enable_clipboard_access()`. The host side has no such gate, so paste stays silent
+// and immediate on both.
+export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
+  return (e) => {
+    if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
+    const k = e.key.toLowerCase();
+    if (k !== "c" && k !== "v") return true;
+    // Returning false only stops *xterm* from handling the key; the WebView still gets
+    // its own default (devtools' inspect-element on Ctrl+Shift+C), hence both.
+    e.preventDefault();
+    if (k === "c") void copySelection(term);
+    else void pasteClipboard(term);
+    return false;
+  };
+}
+
+async function copySelection(term: Terminal) {
+  const sel = term.getSelection();
+  if (!sel) return; // nothing selected — a no-op, as in every other terminal
+  try { await writeText(sel); toast("Copied"); }
+  catch (e) { dlog("error", `clipboard write failed: ${e}`); toast("Couldn't copy — clipboard unavailable"); }
+}
+
+// `term.paste` rather than a direct `write_pty`: it is xterm's own paste path, so the
+// text gets \r\n→\r normalisation and bracketed-paste wrapping when the program asked
+// for it, then leaves through `onData` — the same route typing takes, whichever spawner
+// owns the pane. A read that throws is nearly always an empty clipboard or one holding
+// something that isn't text (arboard reports both as unavailable), so the toast says
+// that rather than crying failure; the real error still reaches the debug console.
+async function pasteClipboard(term: Terminal) {
+  let text = "";
+  try { text = await readText(); }
+  catch (e) { dlog("error", `clipboard read failed: ${e}`); toast("Nothing to paste — no text on the clipboard"); return; }
+  if (text) term.paste(text);
+}
+
 // macOS terminal key conventions for the embedded shell. xterm.js emits xterm's
 // modified-arrow sequences (Option+Left = \e[1;3D etc.), which a plain login zsh
 // doesn't bind by default — so word-nav keys self-insert garbage like ";3D".
 // Terminal.app instead maps them to the Meta/emacs sequences zsh binds out of the
 // box; we do the same here so the embedded shell navigates like a normal terminal.
 // Only plain-shell PTYs get this (Claude's REPL handles its own key input).
-export function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
+function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
   const send = (data: string, e: KeyboardEvent): boolean => { e.preventDefault(); invoke("write_pty", { sessionId: id, data }); return false; };
   return (e: KeyboardEvent) => {
     if (e.type !== "keydown") return true;
@@ -106,8 +163,8 @@ export function claudeInput(id: string): (d: string) => void {
 //
 // NOTE: xterm keeps only **one** custom key-event handler per terminal, so a new key
 // rule for a claude pane belongs in here or in `claudeInput` above — never in a second
-// `attachCustomKeyEventHandler` call. (`macShellKeys` is safe: it is the *shell* pane's
-// handler, and no pane is both.)
+// `attachCustomKeyEventHandler` call. (`shellKeys` is safe: it is the *shell* pane's
+// one handler, and no pane is both.)
 export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
   if (!IS_WIN) return;
   term.attachCustomKeyEventHandler((e) =>
