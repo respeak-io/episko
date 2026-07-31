@@ -21,6 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
+import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
@@ -70,6 +71,19 @@ const WT_GROUPS: WtGroup[] = ["off", "subheader", "toplevel", "chip"];
 export let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGroup) || "subheader";
 if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
 export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "subheader"; }
+
+// --- sidebar peek ---------------------------------------------------------------
+// Whether resting on a project reveals the checkouts nothing is running in, and for
+// how long. The rules (and the clamping below) live in ./peek, which is pure and
+// tested; this only holds the value. Persisted under cc-peek as one JSON blob rather
+// than three keys, because the three are only ever read together.
+export let peekPrefs: PeekPrefs = clampPeekPrefs(safeParse(localStorage.getItem("cc-peek")));
+export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
+function safeParse(raw: string | null): Partial<PeekPrefs> | null {
+  // A corrupt or hand-edited value must not take the app down during module import,
+  // the same stance ./tasks and ./notes take with their own stores.
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
 
 // A hand-picked accent per project path, overriding the hash below. A `const` map
 // mutated in place (like `sessions`), so it needs no setter; the colour picker in

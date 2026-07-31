@@ -15,16 +15,18 @@ import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";
 import { activeCwd, closeSession, launch } from "./panes";
-import { renderMini, renderSidebar } from "./sidebar";
+import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  FAVORITES, markWorkdirStale, permMode, permModeDef, saveFavorites, sessions,
-  setFavorites, setPermMode as setPermModeState, setSortMode, SORT_META, SORT_MODES,
+  FAVORITES, markWorkdirStale, peekPrefs, permMode, permModeDef, saveFavorites, sessions,
+  setFavorites, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  setSortMode, SORT_META, SORT_MODES,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import type { PeekPrefs } from "./peek";
 import type { PermMode } from "./types";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
@@ -82,6 +84,20 @@ export function setWtGroup(m: WtGroup) {
 }
 // Dev affordance until the settings window ships: episkoWtGroup("chip") in the console.
 (window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
+
+// The same shape again for the sidebar's peek timings. `renderSidebar` rather than
+// `renderAll`: switching peek off has to drop the collapsed rows *and* clear whatever
+// is currently expanded, and neither the tray nor the inspector shows any of this.
+export function setPeekPrefs(p: PeekPrefs) {
+  setPeekPrefsState(p);
+  localStorage.setItem("cc-peek", JSON.stringify(peekPrefs));
+  // Drop whatever is expanded before repainting. Without this, switching peek off
+  // leaves a stale open path behind that would re-apply itself the moment it is
+  // switched back on, expanding a group the pointer is nowhere near.
+  closePeek();
+  renderSidebar();
+  renderSettings(); // the live preview in the Worktrees tab reads these values
+}
 
 // Which permission mode the NEXT session launches in — the same shape as the sort and
 // the grouping above (state assigns, this persists and announces). Announced rather
