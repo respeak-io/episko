@@ -147,34 +147,59 @@ function wtUpstreamHtml(b: BranchInfo): string {
     + (b.behind ? ` · ↓${b.behind} unpulled` : "");
 }
 
-// `focusDir` opens the dialog **at** a checkout rather than at the repo: the row for
-// that directory is selected, so the detail pane is about it from the first frame.
-// That is also what makes this the worktree view rather than the launcher — the one
-// caller that passes it (a ⑃ cluster's context menu) already knows where a session
-// would go, so what it wants is the list itself: what exists, what's dirty, what can
-// be pruned. Retitled to say so, because a dialog headed "New session" reads as a
-// launcher whatever is highlighted in it.
-export async function openWt(project: string, repoDir: string, knownBranch?: string | null, focusDir?: string) {
+// One dialog, two doors. **launch** is the original: "where should this session
+// start?", so every branch in the repo is a row, because starting on one is the whole
+// point. **manage** is what a ⑃ cluster's context menu opens — the caller already knows
+// where a session would go, so what it wants is the checkouts themselves: what exists,
+// what's dirty, what can be pruned.
+//
+// The difference is framing, not machinery. The detail pane was always a management
+// surface (folder, HEAD, working tree, merged-or-not, the removal flow and every
+// warning about a locked / detached / vanished checkout); what made it read as a
+// launcher is what surrounds it. So manage mode drops the three pieces that are about
+// *starting* something and keeps the rest:
+//
+//   - **Branches only once you type.** With an empty query the list is the repo plus
+//     its worktrees — a couple of rows. In launch mode that same list is padded with
+//     every branch, which in a real repo buries the four checkouts you came to look
+//     at. Typing still surfaces them, because creating a worktree on a branch is
+//     management and a manager that can't add one is a viewer.
+//   - **No engine chip.** "New sessions open in Embedded" answers a question nobody
+//     asked here.
+//   - **"N checkouts", not "N destinations"** — a destination is somewhere you launch.
+//
+// ⏎ still starts a session, and the row's own `verb` still says so. Changing what
+// Enter does between two modes of one dialog is a worse trap than a verb that is
+// occasionally not what you came for, and the detail pane's buttons are right there.
+type WtMode = "launch" | "manage";
+let wtMode: WtMode = "launch";
+export async function openWt(project: string, repoDir: string, knownBranch?: string | null, opts: { manage?: boolean; focusDir?: string } = {}) {
   wtCtx = { project, repoDir };
   wtSel = 0; wtArmed = ""; wtBusy = false; wtBase = ""; wtSwitchTo = ""; wtFetchedAt = 0;
   wtRepoBranch = knownBranch || "";   // seeded by requestLaunch, which already asked
-  ($("wtQ") as HTMLInputElement).value = "";
-  const title = focusDir ? "Worktrees" : "New session";
-  $("wtTitle").textContent = title;   // one dialog, two doors — reset it every open
+  wtMode = opts.manage ? "manage" : "launch";
+  const manage = wtMode === "manage";
+  const q = $("wtQ") as HTMLInputElement;
+  q.value = "";
+  q.placeholder = manage ? "Filter checkouts, or type a branch to add one…" : "Filter, or type a new branch name…";
+  const title = manage ? "Worktrees" : "New session";
+  $("wtTitle").textContent = title;   // every one of these resets: the element is shared
   $("wtDlg").setAttribute("aria-label", title);
+  $("wtList").setAttribute("aria-label", manage ? "Checkouts" : "Session destinations");
   $("wtProj").textContent = project;
   $("wtPath").textContent = repoDir;
   const eng = engineDef(termEngine);
   $("wtEng").textContent = `${termEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
   ($("wtEng") as HTMLElement).title = `New sessions open in ${eng.label}`;
+  ($("wtEng") as HTMLElement).style.display = manage ? "none" : "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
-  setTimeout(() => ($("wtQ") as HTMLInputElement).focus(), 30);
+  setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
   await wtLoad();
   // After the first read, since that is what builds the rows to search. A checkout git
   // no longer lists (removed under us) simply leaves the repo row selected.
-  if (focusDir && wtCtx) {   // …and not if it was closed while the read was in flight
-    const i = wtRows.findIndex((d) => d.dir === focusDir);
+  if (opts.focusDir && wtCtx) {   // …and not if it was closed while the read was in flight
+    const i = wtRows.findIndex((d) => d.dir === opts.focusDir);
     if (i > 0) { wtSel = i; wtRender(); }
   }
 }
@@ -324,8 +349,14 @@ function wtBuild(): Dest[] {
   // Branches you could start a NEW worktree on. The current branch (the repo row) and
   // any already checked out (the worktrees above) are excluded — git refuses either a
   // second time, so offering them would only produce an error.
+  //
+  // In manage mode they wait for a query: unfiltered, every branch in the repo sits
+  // below the handful of checkouts you opened this to look at. Gated on `q` rather than
+  // dropped, because "add a worktree on an existing branch" is management too — and
+  // dropping them would strand it, since the create row suppresses itself for a name
+  // that is already a branch.
   const STALE = 45 * 86400, now = Date.now() / 1000;
-  for (const b of wtBranches) {
+  for (const b of wtMode === "manage" && !q ? [] : wtBranches) {
     if (b.current || b.checked_out || !hit(b.name)) continue;
     const clash = wtWts.find((w) => !w.is_main && basename(w.path) === wtSlug(b.name));
     out.push({
@@ -370,7 +401,8 @@ function wtRender() {
     html += `<div class="wt-empty"><b>Nothing matches that</b>Clear the filter, or type a branch name to create one</div>`;
   }
   $("wtList").innerHTML = html;
-  $("wtCount").textContent = wtLoading ? "" : wtRows.length ? `${wtRows.length} destinations` : "";
+  $("wtCount").textContent = wtLoading || !wtRows.length ? ""
+    : `${wtRows.length} ${wtMode === "manage" ? (wtRows.length === 1 ? "checkout" : "checkouts") : "destinations"}`;
   $("wtVerb").textContent = cur ? cur.verb : "—";
   $("wtDetail").innerHTML = wtDetailHtml(cur);
   $("wtList").querySelector(".wt-item.on")?.scrollIntoView({ block: "nearest" });

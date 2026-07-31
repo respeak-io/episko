@@ -245,10 +245,10 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "wtfolder": host.openProjectFolder(t.dir); break;
     case "wtcopy": copyPath(t.dir); break;
     // The dialog is the repo's, not the checkout's — it opens on the root, which is
-    // also the only cwd `git worktree add` can be driven from. But it opens *at* this
-    // checkout (4th arg): reached from a cluster header it is the worktree list, not
-    // the launcher, and landing on the repo row would make it read as the latter.
-    case "wtdialog": openWt(t.project, t.root, null, t.dir); break;
+    // also the only cwd `git worktree add` can be driven from. But in *manage* mode
+    // and focused at this checkout: reached from a cluster header it is the worktree
+    // list, not the launcher, and every difference between the two is in `openWt`.
+    case "wtdialog": openWt(t.project, t.root, null, { manage: true, focusDir: t.dir }); break;
     case "wtremove": void removeWorktreeAt(t.project, t.root, t.dir, t.branch); break;
   }
 });

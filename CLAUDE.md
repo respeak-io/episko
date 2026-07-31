@@ -403,9 +403,22 @@ dialog, and remove. That menu shares `#ctxMenu` with the project one: `data-wt` 
 matched *ahead* of `data-key` in the `contextmenu` handler, because a cluster sits inside
 a project group and a combined `closest()` would be decided by tree distance rather than
 by what was clicked. Chip mode has no headers, so the "no session" row survives there
-alone. Opening the ⑃ dialog from that menu passes `openWt`'s `focusDir`, which selects
-the checkout's row *and* retitles the dialog `Worktrees` — headed "New session" it reads
-as the launcher whatever is highlighted in it.
+alone.
+
+**`openWt` has two modes, and the difference is framing, not machinery.** `launch` is
+the original — "where should this session start?", so every branch in the repo is a row.
+`manage` is what a ⑃ cluster's context menu opens (`{ manage: true, focusDir }`): the
+caller already knows where a session would go, so what it wants is the checkouts. The
+detail pane was *always* a management surface — folder, HEAD, working tree, merged-or-
+not, the removal flow, every warning about a locked/detached/vanished checkout — so
+manage mode only drops what surrounds it: **branches wait for a query** (unfiltered they
+bury the handful of checkouts you came for, but gating rather than dropping keeps "add a
+worktree on an existing branch" reachable, which the create row can't offer for a name
+that is already a branch), the **engine chip** goes, and the count reads `N checkouts`
+rather than `N destinations`. The title is load-bearing on its own: headed "New session"
+it reads as the launcher whatever is highlighted in it. **⏎ still starts a session in
+both** — changing what Enter does between two modes of one dialog is a worse trap than a
+verb that is occasionally not what you came for.
 
 **The main checkout is not a worktree, and says so twice.** `clusterGlyph` gives it `⌂`
 — the glyph the dialog's Repo row and the project menu's "Open project folder" already
