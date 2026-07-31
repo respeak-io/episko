@@ -253,6 +253,26 @@
       <div class="diff-body" id="diffBody"></div>
     </div>
 
+    <!--
+      Project history. Opened from a project's right-click menu, and paged: the list
+      holds the newest 60 commits and asks for the next 60 only when you scroll to the
+      end of it (graphview.ts). Head and detail strip are pinned; the list scrolls.
+    -->
+    <div class="graphdlg" id="graphDlg" role="dialog" aria-modal="true" aria-label="Commit graph">
+      <div class="graph-head">
+        <div class="diff-title-wrap"><b id="graphTitle"></b><span class="diff-sub" id="graphSub"></span></div>
+        <span class="graph-path" id="graphPath"></span>
+        <div class="gseg" id="graphScope"></div>
+        <button class="graph-ref" id="graphRefresh" type="button" title="Re-read history from git">⟳</button>
+        <button class="diff-x" id="graphClose" title="Close (Esc)">✕</button>
+      </div>
+      <div class="graph-body" id="graphBody" tabindex="0"></div>
+      <div class="graph-detail" id="graphDetail"></div>
+      <!-- One commit, in full. Lives inside the dialog and covers its list, because the
+           strip below can only ever show a subject and a commit message is prose. -->
+      <div class="gcommit" id="graphCommit" tabindex="0" hidden></div>
+    </div>
+
     <div class="setdlg" id="setDlg" role="dialog" aria-modal="true" aria-label="Settings">
       <nav class="set-rail">
         <div class="set-title">Settings</div>

@@ -34,6 +34,10 @@
   --m-opus:#8f74ee; --m-sonnet:#c07d1e; --m-haiku:#149a73; --m-other:#8a8394; --m-unattr:#6b6478;
   --u-g0:#191622; --u-g1:#372e57; --u-g2:#544499; --u-g3:#7d63d8; --u-g4:#a78bfa;
   --u-t1:#2c2740; --u-t2:#4a3d7a; --u-t3:#7159c4; --u-t4:#a78bfa;
+  /* commit-graph lanes: eight hues that must stay apart from EACH OTHER (they carry no
+     meaning, only identity) and off the accent, which the selection already uses */
+  --gl-0:#7aa2f7; --gl-1:#f7768e; --gl-2:#9ece6a; --gl-3:#e0af68;
+  --gl-4:#bb9af7; --gl-5:#2ac3de; --gl-6:#ff9e64; --gl-7:#73daca;
   --radius:11px; --radius-sm:8px; --radius-lg:13px;
   --font-ui: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", "Berkeley Mono", Menlo, monospace;
@@ -50,6 +54,10 @@
   --m-opus:#7c5cf0; --m-sonnet:#b8760f; --m-haiku:#0c8f68; --m-other:#8a8598; --m-unattr:#b8b2c6;
   --u-g0:#eceaf2; --u-g1:#d8cff2; --u-g2:#b7a4ee; --u-g3:#9575e8; --u-g4:#7c5cf0;
   --u-t1:#e4def3; --u-t2:#c3b0ee; --u-t3:#9878e6; --u-t4:#7c5cf0;
+  /* lane hues re-stepped for the light ground — the dark set's pastels vanish on white
+     at 1.6px of stroke, which is the whole width a lane line has to work with */
+  --gl-0:#2563eb; --gl-1:#dc2626; --gl-2:#15803d; --gl-3:#b45309;
+  --gl-4:#7c3aed; --gl-5:#0e7490; --gl-6:#c2410c; --gl-7:#0f766e;
   color-scheme: light;
 }
 
@@ -531,6 +539,154 @@ html.win .wctl { display: flex; }
 .dline.add .dsign { color: var(--st-done); }
 .dline.del { background: color-mix(in srgb, var(--st-attention) 11%, transparent); }
 .dline.del .dsign { color: var(--st-attention); }
+
+/* --- project commit graph (modal) ---
+   Row height is the one number shared with TypeScript: .grow's height MUST equal
+   ROW_H in graph.ts, because the lane lines are drawn edge-to-edge per row and a
+   half-pixel of disagreement shows up as a break at every single boundary. Nothing
+   here may add to a row's box either — no padding, no border, hence the selection
+   being a background and the "current" marker an inset box-shadow. */
+.graphdlg { container-type: inline-size; position: fixed; top: 7vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985); width: min(1120px, 95vw); height: 80vh; z-index: 41; display: flex; flex-direction: column; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
+.graphdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+.graph-head { display: flex; align-items: center; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--hair); flex: none; }
+.graph-head .diff-x { margin-left: 0; }
+.graph-path { font: 11px var(--font-mono); color: var(--muted-2); margin-left: auto; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-ref { width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; flex: none; }
+.graph-ref:hover { color: var(--text); border-color: var(--hair-strong); }
+.gseg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--hair); flex: none; }
+.gseg-b { border: 0; background: none; color: var(--muted); font: 600 10.5px var(--font-ui); padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.gseg-b:hover { color: var(--text); }
+.gseg-b.on { background: var(--surface-2); color: var(--text); }
+.graph-body { flex: 1; min-height: 0; overflow-y: auto; outline: none; padding: 5px 0; }
+/* A summary, not the commit: two single lines of fixed height — the commit, then its
+   metadata. It changes with the *selection*, so a strip that grew for a commit with a body
+   would make the list jump under the cursor mid-arrow-walk, and prose in a 40px box left
+   half the width empty anyway. `⤢` opens the whole thing. */
+/* 64px is not arbitrary: 9 + 17 (subject line) + 6 (gap) + 22 (the button's line) + 9.
+   At 58 the content overflowed by 3px and the ⤢ button sat 3px off the overlay's close
+   button — which has to land on the same pixels, so this height is load-bearing. */
+.graph-detail { flex: none; border-top: 1px solid var(--hair); padding: 9px 13px; height: 64px; display: flex; flex-direction: column; justify-content: center; gap: 6px; font-size: 11.5px; overflow: hidden; }
+.g-dim { color: var(--muted-2); }
+.g-err { color: var(--st-error); }
+
+/* `minmax(0, …)` on the graph+chips block and a floor under the subject: an `fr` track
+   yields space before any fixed one, so with a rigid left block the *message* was the
+   column that vanished in a narrow window — exactly backwards. The left block gives way
+   first, and the collapse rules below drop the sha and the author before the subject is
+   squeezed further. */
+.grow { display: grid; grid-template-columns: minmax(0, var(--gleft-w, auto)) minmax(90px, 1fr) auto auto auto; align-items: center; column-gap: 10px; height: 26px; padding: 0 13px 0 0; cursor: default; }
+.grow:hover { background: var(--lift); }
+.grow.on { background: var(--accent-wash); box-shadow: inset 2px 0 0 var(--accent); }
+/* Graph and chips are ONE cell of a fixed (measured) width, with the SVG sized to the
+   row's own lanes — so the chips sit against the graph's real silhouette instead of past
+   the widest row in the page, and the subject column still starts at one x. */
+.gleft { display: flex; align-items: center; gap: 3px; min-width: 0; overflow: hidden; }
+.gcol { flex: none; }
+.gsvg { display: block; }
+.gsvg .gline { fill: none; stroke-width: 1.7; }
+.gsvg .gnode { stroke: none; }
+.gsvg .ghead { stroke: var(--panel); stroke-width: 2.2; }
+/* Refs get a column of their own, between the graph and the subject: a label belongs to
+   the LINE, so it reads correctly beside the lanes and as message-clutter inside the
+   subject. Chips are shrinkable and ellipsis individually — the container must never
+   clip, which is what produced half-words like "igin/main". Width is measured once per
+   render (sizeRefColumn) rather than left `auto`, which would be per-row and stagger. */
+.grefs { display: flex; align-items: center; justify-content: flex-start; gap: 4px; overflow: hidden; min-width: 0; flex: 1 1 auto;
+  /* Whatever still doesn't fit fades out instead of being sliced. Chips are sorted by
+     importance, so the far end is the cheapest thing to lose — and a hard cut mid-name
+     ("igin/main") reads as breakage where a fade reads as "more, over there". */
+  mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent); }
+.gsubj { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow:not(.on) .gsubj { color: color-mix(in srgb, var(--text) 88%, transparent); }
+/* Every row is its own grid, so the three trailing columns need FIXED widths — with
+   `auto` each row sizes to its own author name and the columns stagger down the list.
+   (A single grid with `subgrid` rows would do it too, and cost a CSS feature for the
+   sake of three numbers.) */
+.gsha { width: 62px; text-align: right; font: 11px var(--font-mono); color: var(--muted-2); }
+.gwho { width: 132px; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gwhen { width: 92px; text-align: right; font-size: 11px; color: var(--muted-2); overflow: hidden; white-space: nowrap; }
+.gwhen .w-s { display: none; }
+
+/* ref chips — kind is the colour, so a remote never reads as a local branch */
+/* Never shrink: flex shrinks proportionally, which turns a 3-character `dev` into
+   `dev…` to buy a long neighbour a few pixels it also can't use. Each chip instead has
+   its own ceiling and ellipsises there; the column fades out the rest (above). */
+.gchip { display: inline-flex; align-items: center; flex: none; max-width: 190px; font: 600 10px var(--font-mono); padding: 1px 5px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap; overflow: hidden; }
+/* Only the NAME truncates. With the marker inside the ellipsised text, a long branch
+   loses the very thing the collapse added. */
+.gchip .gn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* "⇡" — this branch is also on its remote, so one chip stands for both refs */
+.gr { flex: none; margin-left: 3px; font-size: 9px; opacity: .65; }
+.gc-more { flex: none; color: var(--muted-2); background: var(--surface-2); }
+.gc-head { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.gc-branch { color: var(--tool-read); background: color-mix(in srgb, var(--tool-read) 13%, transparent); }
+.gc-remote { color: var(--muted); background: color-mix(in srgb, var(--muted) 13%, transparent); }
+.gc-tag { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
+
+/* What a narrow panel gives up, in order of what it can afford to lose. The full forms
+   stay in the title attributes and the detail strip, so nothing here loses information —
+   only width. Keyed off the dialog (container queries), not the viewport: the panel's
+   width is what the table actually has to live in. */
+@container (max-width: 1040px) {
+  .gwhen { width: 44px; }
+  .gwhen .w-l { display: none; }
+  .gwhen .w-s { display: inline; }
+}
+@container (max-width: 940px) { .gsha { display: none; } }
+@container (max-width: 830px) { .gwho { display: none; } .graph-path { display: none; } }
+@container (max-width: 700px) { .graph-head { gap: 7px; } }
+
+.gmore { display: flex; justify-content: center; padding: 10px; font-size: 11px; }
+.gmore-b { border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font: 600 11px var(--font-ui); padding: 5px 12px; border-radius: 7px; cursor: pointer; }
+.gmore-b:hover { border-color: var(--accent-ink); }
+
+.gd-l1 { display: flex; align-items: center; gap: 7px; flex: none; min-width: 0; }
+/* which line the selection is on — the coloured tick ties the words to the lane */
+.gd-lane { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.gd-lane::before { content: ""; width: 9px; height: 2px; border-radius: 1px; background: var(--lc, var(--muted-2)); }
+.gd-sha { font: 11px var(--font-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.gd-b { border: 1px solid var(--hair); background: var(--surface); color: var(--muted); font: 600 10.5px var(--font-ui); padding: 2px 7px; border-radius: 6px; cursor: pointer; flex: none; }
+.gd-b:hover { color: var(--text); border-color: var(--hair-strong); }
+.gd-l2 { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; color: var(--muted); overflow: hidden; }
+.gd-subj { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The strip's "⤢ Full message" and the overlay's "✕ Close" share one footprint: same
+   width, same height, both hard right on the last line of their bar. Opening a message
+   therefore puts the button that closes it exactly where the pointer already is —
+   that only works if the two rectangles match, hence the min-width. */
+.gswap { flex: none; margin-left: auto; min-width: 116px; height: 22px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.gd-sep { color: var(--muted-2); opacity: .6; }
+/* The short sha IS the copy control — one thing instead of a label plus a button. */
+.gd-sha-b { flex: none; border: 1px solid transparent; background: none; color: var(--muted-2); font: 11px var(--font-mono); padding: 1px 4px; border-radius: 5px; cursor: pointer; }
+.gd-sha-b:hover { color: var(--text); border-color: var(--hair-strong); background: var(--surface); }
+.gd-par { display: flex; align-items: center; gap: 5px; color: var(--muted-2); flex: none; white-space: nowrap; }
+.gp { font: 11px var(--font-mono); border: 1px solid var(--hair); background: var(--surface); color: var(--muted); padding: 1px 5px; border-radius: 5px; cursor: pointer; }
+.gp:hover { color: var(--text); border-color: var(--accent-ink); }
+.gp-off { opacity: .5; cursor: default; }
+
+/* One commit, over the list. NOTE the `gco-` prefix: `gc-` is taken by the ref-chip
+   kinds (gc-head / gc-branch / …), and naming this header `.gc-head` gave every HEAD chip
+   in the panel the header's padding — a bug you could see but not explain. */
+/* One commit, over the list. Inside the dialog (not a second modal) so the graph stays
+   behind it and Esc steps back rather than closing everything. */
+.gcommit { position: absolute; inset: 44px 0 0 0; z-index: 2; display: flex; flex-direction: column; background: color-mix(in srgb, var(--panel) 97%, transparent); backdrop-filter: blur(8px); }
+.gcommit[hidden] { display: none; }
+.gco-head { display: flex; align-items: center; gap: 8px; padding: 9px 13px; border-bottom: 1px solid var(--hair); flex: none; }
+.gco-sha { font: 11px var(--font-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.gco-sp { margin-left: auto; }
+.gco-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; }
+.gco-refs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+.gco-refs:empty { display: none; }
+.gco-subj { margin: 0 0 10px; font-size: 15px; font-weight: 650; line-height: 1.35; }
+/* A commit message is preformatted text — wrapping it is fine, reflowing its structure
+   (lists, indented blocks, trailers) is not. */
+.gco-msg { margin: 0; font: 12px/1.65 var(--font-mono); color: var(--text); white-space: pre-wrap; overflow-wrap: break-word; }
+.gco-nobody { color: var(--muted-2); font-size: 12px; }
+.gco-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 9px 13px; border-top: 1px solid var(--hair); flex: none; font-size: 11.5px; color: var(--muted); }
+/* The bottom-right twin of the header's ✕ — pinned below the scrolling message, so a long
+   commit ends next to a close button instead of a trip back to the top. Padding here
+   matches the detail strip's bottom line so the two buttons land on the same pixels. */
+.gco-x2 { margin-left: 12px; }
 
 /* --- timeline (colour by tool, latency bar) --- */
 .tl2 { display: flex; flex-direction: column; }
