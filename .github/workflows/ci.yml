@@ -19,6 +19,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Every release describes itself. The gate is on the dev → main pull request rather
+  # than on the tag, because a tag that fails has already had the decision to ship made
+  # behind it — this fails while the fix is still one command.
+  changelog:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - name: CHANGELOG.md has an Unreleased section
+        run: node scripts/changelog.mjs check
+
   build-check:
     strategy:
       fail-fast: false
