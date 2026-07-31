@@ -1851,3 +1851,62 @@ select.in-ctl { cursor: pointer; }
 .sw.off { opacity: .4; cursor: not-allowed; }
 .dsh code { font: 10px var(--font-mono); color: var(--accent-ink); }
 @media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .sw i, .sw i::after { transition: none; } }
+
+/* ═══ What's new — the changelog screen ════════════════════════════════════════
+   Opened once after an update, and by the ✦ beside the version number. Content is
+   CHANGELOG.md, bundled at build time; ./changelog parses it, ./changelogui owns
+   this markup. Shares #scrim with #wtDlg / #setDlg / #palette. */
+.clbtn { display:inline-flex; align-items:center; justify-content:center; width:18px; height:16px; padding:0; border-radius:5px; cursor:pointer; border:1px solid transparent; background:none; color: var(--muted-2); }
+.clbtn:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.clbtn .spark { font-size:10px; line-height:1; }
+/* Lit until the running version has been read once — the only signal that there is
+   something new, which is why it sits ON the version number rather than in the top bar. */
+.clbtn.fresh { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+@media (prefers-reduced-motion: no-preference) { .clbtn.fresh .spark { animation: cl-sp 2.4s ease-in-out infinite; } }
+@keyframes cl-sp { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+
+.cl-dlg { position: fixed; z-index: 61; top: 7%; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985);
+  width: min(760px, 92vw); height: min(560px, 82vh); display: flex; flex-direction: column; overflow: hidden;
+  border-radius: var(--radius-lg); opacity: 0; pointer-events: none;
+  transition: opacity .2s ease, transform .24s cubic-bezier(.32,.72,0,1);
+  background: linear-gradient(180deg, rgba(255,255,255,.05), transparent 34%), color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong);
+  box-shadow: 0 44px 110px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.07); }
+.cl-dlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+.cl-head { display: flex; align-items: center; gap: 11px; padding: 13px 15px; border-bottom: 1px solid var(--hair); flex: none; }
+.cl-head h3 { margin: 0; font-size: 15px; font-weight: 800; letter-spacing: -.02em; }
+.cl-sub { font: 10.5px var(--font-mono); color: var(--muted-2); }
+.cl-head .rt, .cl-foot .rt { margin-left: auto; display: flex; gap: 6px; }
+.cl-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 158px minmax(0, 1fr); }
+/* The rail is what turns a one-shot notice into a history you can walk. */
+.cl-rail { border-right: 1px solid var(--hair); overflow-y: auto; padding: 8px 7px 12px; background: color-mix(in srgb, var(--bg-2) 45%, transparent); }
+.cl-railh { padding: 8px 9px 5px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.cl-v { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.cl-v:hover { background: var(--surface); }
+.cl-v.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.cl-v .n { font: 700 11px var(--font-mono); color: var(--muted); }
+.cl-v.on .n { color: var(--accent-ink); }
+.cl-v .d { margin-left: auto; font: 9px var(--font-mono); color: var(--muted-2); }
+.cl-v .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: transparent; }
+.cl-v.running .dot { background: var(--st-done); box-shadow: 0 0 7px -1px var(--st-done); }
+.cl-v.unrel .n { color: var(--st-working); }
+.cl-v.unrel .dot { background: var(--st-working); }
+.cl-main { overflow-y: auto; padding: 16px 20px 26px; }
+.cl-vh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.cl-vh h4 { margin: 0; font-size: 19px; font-weight: 800; letter-spacing: -.025em; }
+.cl-vh .when { font: 10px var(--font-mono); color: var(--muted-2); }
+.cl-lede { margin: 0 0 16px; font-size: 13.5px; line-height: 1.6; color: var(--muted); max-width: 60ch; }
+.cl-group { margin-bottom: 15px; }
+.cl-gh { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cl-gh .t { font: 700 8.5px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+.cl-gh::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+.cl-item { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 10px; padding: 5px 0; align-items: baseline; }
+.cl-item .m { font: 10px var(--font-mono); text-align: center; line-height: 1.5; }
+.cl-item.new .m { color: var(--st-done); }
+.cl-item.fixed .m { color: var(--st-working); }
+.cl-item.changed .m { color: #7cc7ff; }
+.cl-item .tx { font-size: 13px; line-height: 1.55; color: var(--muted); }
+.cl-item .tx b { color: var(--text); font-weight: 600; }
+.cl-item .tx code { font: 11.5px var(--font-mono); color: var(--accent-ink); }
+.cl-foot { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 15px; border-top: 1px solid var(--hair); background: var(--bg-2); font: 10.5px var(--font-mono); color: var(--muted-2); }
+@media (max-width: 640px) { .cl-body { grid-template-columns: 1fr; } .cl-rail { display: none; } }

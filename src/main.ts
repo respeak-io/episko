@@ -65,6 +65,7 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview
 // context menu (./projmenu) and owns its own handlers; this file only has to close it
 // with the shared scrim and Esc, like every other dialog.
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
+import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import {
   closeDashboard, dashEscape, openDashboard, releaseClaimFor, renderDash,
   renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
@@ -598,7 +599,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); });
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
@@ -619,6 +620,7 @@ window.addEventListener("keydown", (e) => {
   // step out of that first.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
+  else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   // dashEscape, not closeDashboard: an enlarge overlay can be up over the pane and
   // Esc has to take that first. Same rule as graphEscape above.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
@@ -766,6 +768,7 @@ void refreshGitViews(); // seed the roster so the first paint isn't a checkout s
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
 initSidebarPeek();
+initChangelog();
 initFileDrop();
 // caffeinate always starts off — the assertion is bound to the last run's process
 // (`-w <pid>` on macOS, the parked thread on Windows) and died with it; renderAll's

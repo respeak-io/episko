@@ -129,6 +129,7 @@
 
       <footer class="foot">
         <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko — open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
+        <button class="clbtn" id="clBtn" title="What's new"><span class="spark">✦</span></button>
         <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg"><span id="fSessions">0</span> sessions</span>
@@ -329,5 +330,21 @@
          Lives out here with its siblings, not inside #wtDlg: that dialog is
          overflow:hidden, so an in-dialog popover would be clipped. -->
     <div class="menupop bpop" id="bPop"></div>
+  <!-- What's new. Content comes from CHANGELOG.md, bundled at build time — this
+       reaches no network, and a build can only ever describe itself. -->
+  <div class="cl-dlg" id="clDlg">
+    <div class="cl-head">
+      <h3>What's new</h3><span class="cl-sub" id="clSub"></span>
+      <span class="rt"><button class="act icon" id="clClose" title="Close (Esc)">✕</button></span>
+    </div>
+    <div class="cl-body">
+      <div class="cl-rail" id="clRail"></div>
+      <div class="cl-main" id="clMain"></div>
+    </div>
+    <div class="cl-foot">
+      <span>Shipped with this build — no network needed.</span>
+      <span class="rt"><button class="act" id="clGh">↗ On GitHub</button></span>
+    </div>
+  </div>
   </body>
 </html>
