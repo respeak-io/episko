@@ -82,6 +82,15 @@
             </div>
             <div class="th-scroll"><table class="th-tbl" id="threadsTbl"></table></div>
           </div>
+          <!-- The board: RFC #24's committable cards. Its own pane because the
+               middle columns hold live panes, not summaries of them. -->
+          <div class="board-view" id="boardPane" hidden>
+            <div class="b-bar">
+              <span class="b-proj" id="boardProj"></span>
+              <span class="b-sub">one markdown file per card, committed with the repo</span>
+            </div>
+            <div class="b-cols" id="boardCols"></div>
+          </div>
           <!-- The Trail. Its own pane rather than more of #extPane: that one is a
                transcript mirror (one scrolling column of messages), this is a two-pane
                derived/typed layout, and sharing a container would make both sets of

@@ -7,6 +7,7 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod board;
 mod external;
 mod git;
 mod github;
@@ -417,6 +418,12 @@ pub fn run() {
             github::gh_claim,
             github::gh_release,
             github::claim_policy,
+            board::list_cards,
+            board::create_card,
+            board::move_card,
+            board::update_card,
+            board::delete_card,
+            board::create_board,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,

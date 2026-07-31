@@ -27,6 +27,7 @@ import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
 import { openTrail } from "./trailui";
 import { openThreads } from "./threadsui";
+import { openBoard } from "./boardui";
 import {
   askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
 } from "./taskui";
@@ -114,6 +115,7 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:trail", label: "Trail — what you've been working on, and what's next", glyph: "◷", run: () => { openTrail(); }, sc: [MOD, "⇧", "T"] },
   { key: "cmd:threads", label: "Threads — everything that wants you, ranked", glyph: "▤", run: () => { openThreads(null); }, sc: [MOD, "⇧", "O"] },
   { key: "cmd:threadsproj", label: "Threads in this project…", glyph: "▤", run: () => { openThreads(activeProjectCtx()?.path ?? null); } },
+  { key: "cmd:board", label: "Board — this project's committed cards", glyph: "▦", run: () => { const c = activeProjectCtx(); if (c) openBoard(c.path); }, sc: [MOD, "⇧", "K"] },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },

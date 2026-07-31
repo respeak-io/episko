@@ -1402,3 +1402,41 @@ select.in-ctl { cursor: pointer; }
 .th-who.me { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .th-src.issue { color: #7cc7ff; border-color: color-mix(in srgb, #7cc7ff 28%, transparent); }
 .th-src.pr { color: var(--accent-ink); border-color: var(--accent-line); }
+
+/* ── the board (src/boardui.ts) ─────────────────────────────────────────────
+ * The middle columns hold LIVE panes, not summaries of them — a card in flight
+ * shows the tool running now, the context used and the spend, because Episko
+ * owns the process. That link is never committed (RFC rule 3). */
+.board-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.b-bar { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 7px 13px; background: var(--panel); border-bottom: 1px solid var(--hair); }
+.b-proj { font: 800 13px var(--font-ui); letter-spacing: -.02em; color: var(--accent-ink); }
+.b-sub { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.b-cols { flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 8px; padding: 11px 12px; overflow: auto; align-items: start; }
+.b-empty { padding: 26px 20px; max-width: 52ch; display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+.b-empty p { margin: 0; font-size: 12.5px; line-height: 1.55; }
+.b-empty .b-dim { color: var(--muted); }
+.b-empty code { font: 11.5px var(--font-mono); color: var(--accent-ink); background: var(--accent-wash); padding: 1px 4px; border-radius: 4px; }
+
+.bcol { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.bcol-h { display: flex; align-items: center; gap: 7px; padding: 0 3px 2px; }
+.bcol-n { font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+.bcol-k { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.bcol-k.full { color: var(--st-working); }
+.bcol-body { display: flex; flex-direction: column; gap: 6px; min-height: 78px; padding: 6px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--hair); }
+.bcol-body.over { border-color: var(--accent-line); background: var(--accent-wash); }
+.bcol-empty { padding: 6px; font: 10px var(--font-mono); color: var(--muted-2); }
+.bcol-add { align-self: flex-start; padding: 2px 8px; border-radius: 6px; cursor: pointer; font: 12px var(--font-ui); color: var(--muted-2); background: none; border: 1px solid transparent; }
+.bcol-add:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+
+.bcard { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border-radius: 8px; cursor: grab; background: var(--surface); border: 1px solid var(--hair); }
+.bcard:hover { border-color: var(--hair-strong); }
+.bcard.dragging { opacity: .45; cursor: grabbing; }
+.bcard.live { border-color: color-mix(in srgb, var(--st-working) 32%, transparent); background: linear-gradient(180deg, color-mix(in srgb, var(--st-working) 8%, transparent), transparent 60%), var(--surface); }
+.bcard.blocked { border-color: color-mix(in srgb, var(--st-attention) 36%, transparent); background: linear-gradient(180deg, color-mix(in srgb, var(--st-attention) 9%, transparent), transparent 60%), var(--surface); }
+.bc-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.bc-title { font-size: 11.5px; font-weight: 600; line-height: 1.32; }
+.bc-now { font: 9.5px var(--font-mono); color: var(--st-working); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-foot { display: flex; align-items: center; gap: 7px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.bc-foot .mini-act { margin-left: auto; }
+.bc-disp { display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; height: 22px; border-radius: 6px; cursor: pointer; font: 650 10px var(--font-ui); color: var(--accent-ink); background: transparent; border: 1px dashed var(--accent-line); }
+.bc-disp:hover { background: var(--accent-wash); border-style: solid; }

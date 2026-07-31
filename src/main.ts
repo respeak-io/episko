@@ -74,13 +74,17 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dormants, externals, extMirrorId, FAVORITES,
   markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines, setTermEngine,
-  setTermFontSize, sortMode, termEngine, threadsOpen, trailOpen,
+  setTermFontSize, sortMode, termEngine, threadsOpen, trailOpen, boardOpen,
 } from "./state";
 import { closeTrail, openTrail, renderTrailHeader, renderTrailInspector, wireTrail } from "./trailui";
 import {
   closeThreads, openThreads, releaseClaimFor, renderThreads, renderThreadsHeader,
   renderThreadsInspector, wireThreads,
 } from "./threadsui";
+import {
+  boardSessionEnded, closeBoard, openBoard, renderBoard, renderBoardHeader,
+  renderBoardInspector, wireBoard,
+} from "./boardui";
 import { orderedSessions } from "./grouping";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
@@ -320,7 +324,9 @@ function renderAll() {
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
   // external header/inspector ~1s after clicking it.
-  if (threadsOpen()) {
+  if (boardOpen()) {
+    renderBoardHeader(); renderBoardInspector(); renderBoard();
+  } else if (threadsOpen()) {
     // Unlike the Trail this IS derived from live state, so it repaints with the fleet
     // — that is the point of it, and renderAll is already the app's one repaint.
     renderThreadsHeader(); renderThreadsInspector(); renderThreads();
@@ -419,6 +425,9 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
       const behindPush = !s.git || (s.git.ahead === 0 && s.git.files === 0 && s.git.untracked === 0);
       if (behindPush) void releaseClaimFor(s.id);
     }
+    // The exit code is the verdict for a card too — green to review, red to the
+    // blocked column. The cheap half of RFC #24's P3 loop, out of parts already here.
+    void boardSessionEnded(s.id, code);
   }
   renderAll();
 });
@@ -538,6 +547,7 @@ initHistoryEvents();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 wireTrail();
 wireThreads();
+wireBoard();
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 $("btnClose").addEventListener("click", () => { if (activeId) closeSession(activeId); });
@@ -560,9 +570,11 @@ window.addEventListener("keydown", (e) => {
   else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); trailOpen() ? closeTrail() : openTrail(); renderAll(); }
   else if (meta && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); threadsOpen() ? closeThreads() : openThreads(null); renderAll(); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); const c = activeProjectCtx(); if (boardOpen()) closeBoard(); else if (c) openBoard(c.path); else toast("Open a project first"); renderAll(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && trailOpen()) { e.preventDefault(); closeTrail(); renderAll(); }
   else if (e.key === "Escape" && threadsOpen()) { e.preventDefault(); closeThreads(); renderAll(); }
+  else if (e.key === "Escape" && boardOpen()) { e.preventDefault(); closeBoard(); renderAll(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }

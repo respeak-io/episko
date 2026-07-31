@@ -175,6 +175,7 @@ export function closeExternalView() {
   // import cycle (trailui → panes → mirror).
   ($("trailPane") as HTMLElement).hidden = true;
   ($("threadsPane") as HTMLElement).hidden = true;
+  ($("boardPane") as HTMLElement).hidden = true;
 }
 // ---------- dormant (restorable) sessions ----------
 // Clicking a dormant row mirrors its transcript read-only — the same pane an
