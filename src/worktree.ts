@@ -147,11 +147,21 @@ function wtUpstreamHtml(b: BranchInfo): string {
     + (b.behind ? ` · ↓${b.behind} unpulled` : "");
 }
 
-export async function openWt(project: string, repoDir: string, knownBranch?: string | null) {
+// `focusDir` opens the dialog **at** a checkout rather than at the repo: the row for
+// that directory is selected, so the detail pane is about it from the first frame.
+// That is also what makes this the worktree view rather than the launcher — the one
+// caller that passes it (a ⑃ cluster's context menu) already knows where a session
+// would go, so what it wants is the list itself: what exists, what's dirty, what can
+// be pruned. Retitled to say so, because a dialog headed "New session" reads as a
+// launcher whatever is highlighted in it.
+export async function openWt(project: string, repoDir: string, knownBranch?: string | null, focusDir?: string) {
   wtCtx = { project, repoDir };
   wtSel = 0; wtArmed = ""; wtBusy = false; wtBase = ""; wtSwitchTo = ""; wtFetchedAt = 0;
   wtRepoBranch = knownBranch || "";   // seeded by requestLaunch, which already asked
   ($("wtQ") as HTMLInputElement).value = "";
+  const title = focusDir ? "Worktrees" : "New session";
+  $("wtTitle").textContent = title;   // one dialog, two doors — reset it every open
+  $("wtDlg").setAttribute("aria-label", title);
   $("wtProj").textContent = project;
   $("wtPath").textContent = repoDir;
   const eng = engineDef(termEngine);
@@ -161,6 +171,12 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   setTimeout(() => ($("wtQ") as HTMLInputElement).focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
   await wtLoad();
+  // After the first read, since that is what builds the rows to search. A checkout git
+  // no longer lists (removed under us) simply leaves the repo row selected.
+  if (focusDir && wtCtx) {   // …and not if it was closed while the read was in flight
+    const i = wtRows.findIndex((d) => d.dir === focusDir);
+    if (i > 0) { wtSel = i; wtRender(); }
+  }
 }
 
 // Both lists cost several git calls (a status probe per checkout, a rev-list per ref),

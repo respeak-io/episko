@@ -237,7 +237,15 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 /* subheader mode: a ⑃-branch cluster header, its sessions nested under a tinted rule */
 /* padding-left 0 + a 13px glyph box centres the ⑃ (box centre 6.5px) on the
    .wtsessions border-left below it (margin-left 6px + 0.5px half-border) */
-.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; }
+/* `cursor: default`, not `text` and not `pointer`: the header body does nothing on a
+   left click (the ＋ and the right-click menu are what act), so an I-beam invites a
+   selection nobody wants and a hand would promise a click that isn't there.
+   `user-select: none` for the same reason — dragging across it only ever highlighted
+   the branch name. The reorder's `#projects.reordering *` still outspecifies both. */
+.wthead { display: flex; align-items: center; gap: 7px; padding: 4px 8px 2px 0; margin-top: 1px; border-radius: 7px; cursor: default; user-select: none; }
+/* The whole header lights, not just the ＋ — it is one hover target (right-click menu,
+   ＋, and the rows it names), so lighting only the ＋ made the rest look inert. */
+.wthead:hover { background: var(--surface); }
 .wtglyph { flex: none; width: 13px; text-align: center; font-size: 11px; line-height: 1; }
 .wtname { min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
