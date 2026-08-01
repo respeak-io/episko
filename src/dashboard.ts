@@ -125,6 +125,25 @@ let openView: "checkouts" | "notes" | "work" | "triage" | null = null;
 const root = () => dashMirror()?.root ?? "";
 const name = () => dashMirror()?.name ?? "";
 
+/**
+ * What ＋ Session needs to know, when the dashboard is what's on stage.
+ *
+ * `requestLaunch` opens the worktree dialog only for a folder it can already tell is a
+ * repo, and its two zero-IPC signals — a live session's `branch`, `dirtyByFolder` —
+ * both only cover folders something is *running* in. A dashboard is the opposite case:
+ * you opened it precisely because nothing is. But it has already paid for
+ * `project_facts` and `worktree_heads` for this exact folder, so the answer is on
+ * screen; asking git a third time would be a second answer to a settled question.
+ *
+ * `null` while the first load is still in flight (`openDashboard` clears `facts` on a
+ * project change, so this can never be the *previous* project's answer) — the caller
+ * then falls back to what it did before, which is a plain launch in the project root.
+ */
+export function dashLaunchHint(): { branch: string } | null {
+  if (!dashMirror() || !facts?.is_repo) return null;
+  return { branch: heads.find((h) => h.is_main)?.branch ?? "" };
+}
+
 // ---------- data ----------
 async function loadDash(): Promise<void> {
   const r = root();

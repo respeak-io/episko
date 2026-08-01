@@ -142,9 +142,9 @@ export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) +
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is
 // unreachable from that header. **On the dashboard it collapses to a 44px icon rail
-// instead**, because there the inspector holds the ONLY copy of History, Terminal and
-// Run: the dashboard header gave those up on the grounds that they act on the project
-// rather than on what is on the stage, so hiding the panel would hide real verbs.
+// instead**: History, Terminal and Run are in the header there too now, but the
+// worktree dialog, the commit graph, the folder and the live-session strip are not,
+// so hiding the panel would still hide real verbs.
 export function toggleInsp() {
   const app = $("app");
   if (dashMirror()) {

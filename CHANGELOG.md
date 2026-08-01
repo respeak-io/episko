@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+The project dashboard stops being a page you can only read.
+
+~ **The stage header's buttons work on a project dashboard.** ◷ History, ❯ Terminal and
+  ▶ Run were greyed out there and ＋ Session opened ⌘K to ask which project — while the
+  project's name sat in the header beside them. All four now act on the project on
+  screen: History opens scoped to it, Terminal and Run start in its root, and ＋ Session
+  opens the same new-session dialog you get from one of its sessions. ⌘T, ⌘⇧R, ⌘⇧H and
+  ⌘⏎ follow.
+
 ## 0.13.6 — 2026-08-01
 
 Housekeeping on the surfaces 0.13 added, plus two in History.

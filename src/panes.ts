@@ -40,7 +40,7 @@ import { nextAfterClose } from "./grouping";
 import { probeIcon } from "./icons";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
+  accentFor, activeId, dashMirror, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
   ioAll, pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants,
   termEngine, termFontSize, worktreesByRepo, wtSig,
 } from "./state";
@@ -131,7 +131,12 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
 //   • an external session carries the branch the registry reported
 //   • dirtyByFolder holds a non-null diffstat for anything that IS a git repo
 // so repo-ness and the branch label both come for free, with zero IPC.
-export function requestLaunch(project: string, path: string) {
+//
+// All three of those only cover a folder something is *running* in, which is exactly
+// what a project dashboard is not — so a caller that already knows better passes
+// `known`. It is still not an await: the dashboard bought that answer when it opened.
+export function requestLaunch(project: string, path: string, known?: { branch: string } | null) {
+  if (known) { openWt(project, path, known.branch); return; }
   // "Is anything already running here?" must include EXTERNAL sessions: they live in
   // their own array, not in `sessions`, so checking only the map sent a click straight
   // to a bare launch in the repo root even when the dialog was the obvious answer.
@@ -475,8 +480,17 @@ export function renderHeader(s: Sess | null) {
   $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }
 
-// The active project context is either an Episko session or an external one.
+// The active project context is an Episko session, an external one, or — when the
+// dashboard is on stage — the project the dashboard is *about*. That last case is the
+// whole reason these two resolvers are shared: a dashboard names its project more
+// plainly than any session does, so ＋ Session, ❯ Terminal, ▶ Run and ◷ History should
+// act on it exactly as they act on a session's project rather than greying out (or,
+// in ＋ Session's case, falling back to ⌘K and asking a question already answered).
 export function activeProjectCtx(): { project: string; path: string } | null {
+  // The dashboard's root *is* the repo key — the sidebar groups by it — so it needs no
+  // resolution, and it is checked first because all three mirror kinds share one pointer.
+  const dm = dashMirror();
+  if (dm) return { project: dm.name, path: dm.root };
   // For an external session use its repo root, not the worktree cwd, so launching a
   // session / opening a worktree from it operates on the repo (and groups under it).
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
@@ -488,6 +502,9 @@ export function activeProjectCtx(): { project: string; path: string } | null {
 // The active session's *actual* cwd (the worktree dir for worktree sessions, not
 // the color-grouping repo key) — used when opening a plain terminal there.
 export function activeCwd(): string | null {
+  // A dashboard is about a repo, not a checkout, so its root is both answers at once.
+  const dm = dashMirror();
+  if (dm) return dm.root;
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); return e ? e.cwd : null; }
   if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); return d ? d.workdir : null; }
   const s = activeId ? sessions.get(activeId) : null;
@@ -507,10 +524,13 @@ export function openPlainTerminal() {
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
   // A dormant session can also own the stage; it already stores the repo key.
   const d = pastMirrorId() ? dormants.find((x) => x.id === pastMirrorId()) : undefined;
+  // …and so can a dashboard, whose root is the repo key and whose name is the label
+  // the sidebar already uses — better than basename(), which is what the fallback gives.
+  const dm = dashMirror();
   const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : d ? d.colorKey : wd;
   const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : d ? d.worktree : null;
   const branch = s ? s.branch : (e?.branch || d?.branch || "");
-  launchShell(s ? s.project : (d?.project ?? basename(colorKey)), wd, { colorKey, worktree, branch });
+  launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch });
 }
 
 // terminal and put the command on the clipboard — honest about the extra paste.

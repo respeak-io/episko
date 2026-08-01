@@ -67,7 +67,7 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import {
-  closeDashboard, dashEscape, openDashboard, releaseClaimFor, renderDash,
+  closeDashboard, dashEscape, dashLaunchHint, openDashboard, releaseClaimFor, renderDash,
   renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
 } from "./dashboard";
 import {
@@ -578,10 +578,14 @@ $("inspBtn").addEventListener("click", toggleInsp);
 
 
 // "+ Session" starts a session in the current project (offering a worktree if it
-// already has one). With no active session there's no project context → palette.
+// already has one). With nothing on stage there's no project context → palette.
+// A dashboard IS a project context — and the one place the question "which repo?"
+// is already answered on screen — so it gets the same dialog a session would, with
+// the repo-ness the dashboard has already read rather than the palette it used to
+// open, which asked again for something it had just been told.
 $("btnNew").addEventListener("click", () => {
   const c = activeProjectCtx();
-  if (c) requestLaunch(c.project, c.path); else openPalette();
+  if (c) requestLaunch(c.project, c.path, dashLaunchHint()); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
 // Two doors into History: the stage-header button opens it scoped to the project on
