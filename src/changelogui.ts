@@ -21,7 +21,8 @@ import {
 const LOG: Release[] = parseChangelog(raw);
 /// Every version this machine has had *What's new* opened for, newest last. A list
 /// rather than a single last-seen string so that returning to a version already read
-/// stays quiet — see `SeenState`.
+/// stays quiet — `parseSeen` / `recordSeen` / `shouldAnnounce` in ./changelog own the
+/// rules, and this module only owns where the list is kept.
 const SEEN = "cc-seen-versions";
 /// 0.13.0's single-value key, folded into the list above by `parseSeen`.
 const SEEN_LEGACY = "cc-seen-version";

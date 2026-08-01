@@ -292,7 +292,9 @@ html.win .wctl { display: flex; }
 .phead { position: relative; }
 .parm { position: absolute; left: 7px; right: 7px; bottom: 1px; height: 1.5px; border-radius: 2px;
   background: var(--accent-line); transform: scaleX(0); transform-origin: left; opacity: 0; pointer-events: none; }
-.pgroup.arming .parm { opacity: 1; animation: peek-arm var(--peek-open, 1000ms) linear forwards; }
+/* The negative --peek-arm-delay is how a repaint mid-countdown resumes the fill instead
+   of restarting it; applyPeek sets it to the elapsed time. */
+.pgroup.arming .parm { opacity: 1; animation: peek-arm var(--peek-open, 1000ms) linear var(--peek-arm-delay, 0ms) forwards; }
 @keyframes peek-arm { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 /* Reduced motion gets no sweep — the delay still applies, it just isn't animated. */
 @media (prefers-reduced-motion: reduce) { .pgroup.arming .parm { animation: none; opacity: 0; } }
@@ -1318,7 +1320,9 @@ select.in-ctl { cursor: pointer; }
    most distracting thing on the page. */
 .peekdemo { margin: 0; min-height: 210px; cursor: default; }
 .peekdemo .pgroup { padding-bottom: 2px; }
-.peekdemo .p-phead { border-radius: 7px; }
+/* Positioned so the shared .parm anchors to this head the way it does to a real .phead —
+   the hairline is drawn by the sidebar's own rule, not by a copy of it. */
+.peekdemo .p-phead { border-radius: 7px; position: relative; }
 .peekdemo .pgroup:hover .p-phead { background: var(--surface); }
 /* The demo's rows are preview-scale, so the sidebar's own sizes are stepped down. */
 .peekdemo .pgpeek-in { padding-left: 6px; margin-left: 5px; }

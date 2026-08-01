@@ -388,7 +388,7 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       // The shipped bug, end to end. `Move session` (and restore, and a History
       // reopen) closes the pane and launches a new `Sess` — `cost: null` — for the
       // same conversation, which Claude resumes with its running total intact. The
-      // day used to gain that whole total a second time: $28 spent, $56 recorded.
+      // day used to gain that whole total a second time: $30 spent, $58 recorded.
       const before = sess({ resumeId: "conv", model: "Opus 4.8" });
       applyStatusline(before, { cost: { total_cost_usd: 28 } });
       const after = sess({ id: "relaunched", resumeId: "conv", model: "Opus 4.8" });

@@ -81,6 +81,43 @@ describe("costDelta — what a running total owes the day", () => {
     expect(costDelta("conv", 0.5)).toBe(0.5);
     expect(costDelta("conv", 1.5)).toBeCloseTo(1, 10);
   });
+  it("persists the baseline, so quitting and restoring doesn't re-book the total", () => {
+    // The half a run-scoped map couldn't cover. `cc-usage` is localStorage and survives
+    // the quit; a baseline that didn't meant the restored pane's first reading met an
+    // empty map and paid the day twice — the same bug, by the commonest route to it.
+    costDelta("conv", 28);
+    expect(store.get("cc-cost-base")).toContain("conv");
+    const fresh = new Map(Object.entries(JSON.parse(store.get("cc-cost-base")!)));
+    expect((fresh.get("conv") as { t: number }).t).toBe(28);
+  });
+  it("re-reads a persisted baseline on the next boot", async () => {
+    // A real restart, as far as a unit test can stage one: seed the key, then evaluate
+    // the module again. `conv` owes the increment, not the carried-over total.
+    store.set("cc-cost-base", JSON.stringify({ conv: { t: 28, at: Date.now() } }));
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 30)).toBeCloseTo(2, 10);
+  });
+  it("ignores a corrupt baseline key rather than failing to boot", async () => {
+    store.set("cc-cost-base", "{not json");
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 5)).toBe(5); // no baseline, so the whole reading — never a throw
+  });
+  it("caps the persisted map, evicting the conversations touched longest ago", async () => {
+    vi.resetModules();
+    const { costDelta: booted, resetCostBaselines: reset } = await import("../src/usage");
+    reset();
+    // 501 conversations, each stamped a minute apart, so "oldest" is unambiguous.
+    for (let i = 0; i <= 500; i++) {
+      vi.setSystemTime(new Date(2027, 2, 14, 12, 0, 0).getTime() + i * 60_000);
+      booted(`c${i}`, 1);
+    }
+    const saved = JSON.parse(store.get("cc-cost-base")!) as Record<string, unknown>;
+    expect(Object.keys(saved)).toHaveLength(500);
+    expect(saved.c0).toBeUndefined();   // the first one touched fell off
+    expect(saved.c500).toBeDefined();   // the most recent survived
+  });
 });
 
 describe("modelFamily — collapsing display names to a tier", () => {

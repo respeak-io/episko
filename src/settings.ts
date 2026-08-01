@@ -277,7 +277,10 @@ function peekDemoHtml(): string {
   const groups = PEEK_DEMO.map((p) =>
     `<div class="pgroup" data-peekdemo="${esc(p.path)}">`
     + `<div class="p-phead"><span class="p-pdot" style="background:${p.hue}"></span>`
-    + `<span class="p-pname">${esc(p.name)}</span><span class="p-pcount">${p.rows.length}</span></div>`
+    + `<span class="p-pname">${esc(p.name)}</span><span class="p-pcount">${p.rows.length}</span>`
+    // The same `.parm` the sidebar uses, wearing the same rules — the arming hairline is
+    // a *timing*, so it is exactly the kind of thing this preview exists to let you feel.
+    + `<span class="parm"></span></div>`
     + `<div class="p-rows">${p.rows.map((r) =>
         `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
         + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>`
@@ -403,15 +406,30 @@ let demoPeek: PeekState = PEEK_IDLE;
 let demoTimer: number | null = null;
 let demoHover: string | null = null;
 
+/// Mirrors ./sidebar's `applyPeek` deliberately, hairline included — a preview that
+/// showed the expansion but not the countdown would be previewing the wrong half of
+/// the setting the steppers change.
 function demoApply() {
   for (const el of document.querySelectorAll<HTMLElement>("#peekDemo .pgroup")) {
     el.classList.toggle("peek", el.dataset.peekdemo === demoPeek.open);
+    const arming = !!demoPeek.arming && el.dataset.peekdemo === demoPeek.arming.path;
+    if (arming) {
+      const elapsed = Math.max(0, peekPrefs.openMs - (demoPeek.arming!.at - Date.now()));
+      el.classList.remove("arming");
+      void el.offsetWidth;
+      el.style.setProperty("--peek-open", `${peekPrefs.openMs}ms`);
+      el.style.setProperty("--peek-arm-delay", `${-elapsed}ms`);
+    }
+    el.classList.toggle("arming", arming);
   }
 }
+/// Both fields are on screen here too, so both decide whether to repaint. Comparing
+/// `open` alone is the bug ./sidebar's `peekAdvance` documents: entering a group changes
+/// `arming` only, nothing repaints, and the bar never appears.
 function demoAdvance(next: PeekState) {
-  const was = demoPeek.open;
+  const was = demoPeek.open + "|" + (demoPeek.arming?.path ?? "");
   demoPeek = next;
-  if (demoPeek.open !== was) demoApply();
+  if (demoPeek.open + "|" + (demoPeek.arming?.path ?? "") !== was) demoApply();
   if (demoTimer !== null) { clearTimeout(demoTimer); demoTimer = null; }
   const at = peekNextDeadline(demoPeek);
   if (at === null) return;

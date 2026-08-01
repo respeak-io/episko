@@ -21,7 +21,11 @@ Two things 0.13.0 shipped that had never been clicked.
   unreachable and the whole feature was dead on arrival.
 ! **The sidebar shows a hairline filling under a project while it counts down** to
   revealing that project's idle checkouts. Without it the panel appeared a second after
-  you stopped moving, which read as a glitch rather than as a deliberate pause.
+  you stopped moving, which read as a glitch rather than as a deliberate pause. It fills
+  in step with the real timer rather than restarting whenever the sidebar repaints, it
+  is drawn on every kind of project row rather than only the two with saved sessions,
+  and the preview in Settings › Worktrees shows it too — the timing you are setting
+  there is the thing it is previewing.
 ! **What's new opens by itself after an update again.** It skipped 0.13.0 entirely: the
   release that introduced the screen is the one where nobody has a record of having read
   it, and that empty record was being read as "brand new install, stay quiet". It now
@@ -36,9 +40,12 @@ Two things 0.13.0 shipped that had never been clicked.
   a restore, a History reopen — inherited a total that had already been counted and
   booked all of it again. One worktree move put $28 into the day a second time, so the
   day read $68 while the session that earned it read $39. The day's increment is now
-  measured against the conversation rather than against the pane showing it. Days
-  already recorded stay inflated — nothing stored says by how much — so
-  `scripts/reconcile-usage.mjs` rebuilds them from the transcripts instead.
+  measured against the conversation rather than against the pane showing it, and that
+  measurement now survives quitting the app — restoring a session after a restart was
+  the commonest way to hit this and the last one still open. Days already recorded stay
+  inflated — nothing stored says by how much — so `scripts/reconcile-usage.mjs` rebuilds
+  them from the transcripts instead. It leaves a day alone rather than guessing at it
+  when the records behind it can't all be priced, and says which ones and why.
 ~ **The release-notes button is a document icon, and sits to the right of the version
   number** it explains rather than the left. It was also sharing a CSS class with the
   usage sparkline, which gave an 18px button a 24px-tall glyph.

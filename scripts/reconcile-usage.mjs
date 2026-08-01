@@ -47,7 +47,7 @@
 // app is overwritten by its stale copy within seconds. The script refuses to run while
 // it can see the process.
 
-import { readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -90,10 +90,10 @@ if (dbFlag >= 0 && !DB_ARG) { console.error("--db needs a path."); process.exit(
 // The installed app, always. A dev build is a *different* store: `pnpm tauri dev` runs
 // the bare `episko` binary, so WebKit keys its localStorage under ~/Library/WebKit/
 // episko rather than the bundle id — separate file, separate rollup (this machine's
-// held $1.11 across one day, against five weeks in the installed one). They do not
-// share, whatever CLAUDE.md says. An earlier draft picked whichever store was written
-// most recently, which meant a dev run an hour before pointed the repair at the wrong
-// history and reported it as a success. One identifier, no guessing; --db overrides.
+// held $1.11 across one day, against five weeks in the installed one). An earlier draft
+// picked whichever store was written most recently, which meant a dev run an hour before
+// pointed the repair at the wrong history and reported it as a success. One identifier,
+// no guessing; --db overrides.
 const APP_ID = "io.respeak.episko";
 // WebKit hashes the origin into the path, so the file is found by walking rather than
 // constructed. Several origins can exist under one app; newest write wins among them.
@@ -128,9 +128,17 @@ const readKey = (db, key) => {
   if (!hex) return null;
   return JSON.parse(Buffer.from(hex, "hex").toString("utf16le"));
 };
+// INSERT OR REPLACE, not UPDATE. A bare `UPDATE ... WHERE key='x'` against a key with
+// no row matches nothing and *succeeds*, so the script would print "wrote cc-usage-detail"
+// having written nothing at all. That is reachable rather than theoretical: the detail
+// split records forward from when it shipped, so an install older than it legitimately
+// has a `cc-usage` row and no detail row. `changes()` is the belt to that braces — it
+// reports what the statement actually touched, and anything but one row is a failure
+// however it came about.
 const writeKey = (db, key, value) => {
   const hex = Buffer.from(JSON.stringify(value), "utf16le").toString("hex");
-  sql(db, `UPDATE ItemTable SET value = x'${hex}' WHERE key='${key}';`);
+  const n = sql(db, `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${key}', x'${hex}'); SELECT changes();`);
+  if (n !== "1") throw new Error(`writing ${key} affected ${n || 0} row(s), expected 1 — nothing was saved.`);
 };
 
 // ---------- rebuild from transcripts ----------
@@ -143,11 +151,12 @@ const dayKey = (iso) => {
 
 async function scan() {
   const root = join(homedir(), ".claude", "projects");
-  const days = new Map();  // dayKey -> { cost, models:{}, projects:{}, sessions:Set }
+  const days = new Map();  // dayKey -> { cost, models:{}, projects:{}, sessions:Set, unpriced }
   let files = 0, unpriced = 0;
+  const unknown = new Set();
   const bump = (k) => {
     let d = days.get(k);
-    if (!d) days.set(k, (d = { cost: 0, models: {}, projects: {}, sessions: new Set() }));
+    if (!d) days.set(k, (d = { cost: 0, models: {}, projects: {}, sessions: new Set(), unpriced: 0 }));
     return d;
   };
   for (const proj of readdirSync(root, { withFileTypes: true })) {
@@ -172,8 +181,28 @@ async function scan() {
         if (!u || !r.timestamp) continue;
         const id = r.message?.id;
         if (id) { if (seen.has(id)) continue; seen.add(id); }
+        // A record carrying no tokens costs nothing whatever model it names, so it can
+        // never move a total and must not hold a day back from being rebuilt. Not a
+        // tidy-up: Claude Code writes its own notices — "You've hit your session limit",
+        // "API Error: Connection closed mid-response" — as assistant records with
+        // `model: "<synthetic>"` and an all-zero usage block. Counting those as unpriced
+        // withheld the single most inflated day in the corpus this script exists to
+        // repair, which is precisely backwards. Only a *token-bearing* record with a
+        // model we cannot price is a real gap.
+        const toks = (u.input_tokens || 0) + (u.output_tokens || 0) +
+                     (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+        if (!toks) continue;
         const fam = family(r.message?.model);
-        if (!fam) { unpriced++; continue; }
+        if (!fam) {
+          // Attribute the skip to its *day*, not just to a global tally. A day that
+          // lost records cannot be rebuilt, and the run below has to be able to tell
+          // it apart from a day this script correctly deflated — by total alone the
+          // two are identical, and both wear the same "inflated" mark.
+          unpriced++;
+          unknown.add(r.message?.model || "(no model on the record)");
+          bump(dayKey(r.timestamp)).unpriced++;
+          continue;
+        }
         const p = PRICES[fam];
         const cost =
           ((u.input_tokens || 0) * p.in +
@@ -190,7 +219,7 @@ async function scan() {
       }
     }
   }
-  return { days, files, unpriced };
+  return { days, files, unpriced, unknown };
 }
 
 // ---------- run ----------
@@ -206,14 +235,8 @@ const running = (() => {
       .join("\n");
   } catch { return ""; }
 })();
-if (running && WRITE) {
-  console.error("Episko looks like it is running:\n  " + running.split("\n").join("\n  "));
-  console.error("\nQuit it first — it holds the rollup in memory and rewrites the key on every");
-  console.error("statusLine, so anything written now is overwritten within seconds.");
-  process.exit(1);
-}
-
-const db = DB_ARG || findStore();
+const appStore = findStore();
+const db = DB_ARG || appStore;
 if (!db) {
   console.error(`No installed-app localStorage found under ~/Library/WebKit/${APP_ID}.`);
   const dev = join(homedir(), "Library/WebKit/episko");
@@ -226,26 +249,77 @@ if (!db) {
 }
 console.log(`store    ${db}${DB_ARG ? "  (--db override)" : `  (installed app, ${APP_ID})`}`);
 
+// The running guard belongs *here*, after the store is known, and not before it. A live
+// Episko holds the rollup in memory and rewrites the whole key on every statusLine, so
+// anything written underneath it is gone within seconds — but that is only true of the
+// store the app is actually using. `--db` pointed at a copy is the rehearsal this
+// script's own usage text recommends, and checked earlier the guard refused exactly
+// that: it taught the one safe way to try this that it was the dangerous one. Compare
+// resolved paths, so `--db` aimed at the real store is still caught.
+const samePath = (a, b) => {
+  const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+  return !!a && !!b && real(a) === real(b);
+};
+if (WRITE && running && samePath(db, appStore)) {
+  console.error("\nEpisko looks like it is running:\n  " + running.split("\n").join("\n  "));
+  console.error("\nQuit it first — it holds the rollup in memory and rewrites the key on every");
+  console.error("statusLine, so anything written now is overwritten within seconds.");
+  console.error("(To rehearse against a copy while it runs, pass --db <copy>.)");
+  process.exit(1);
+}
+
 const stored = readKey(db, "cc-usage") || {};
-const { days, files, unpriced } = await scan();
+const { days, files, unpriced, unknown } = await scan();
 console.log(`scanned  ${files} transcripts${unpriced ? `, ${unpriced} records skipped (unrecognised model)` : ""}\n`);
 
 const all = [...new Set([...Object.keys(stored), ...(BACKFILL ? days.keys() : [])])].sort();
 const rebuilt = {};
+const kept = new Set();
 let sOld = 0, sNew = 0;
 console.log("day           stored     rebuilt        delta");
 console.log("─".repeat(48));
 for (const k of all) {
   const oldV = stored[k] ?? 0;
-  const newV = days.get(k)?.cost ?? 0;
+  const d = days.get(k);
+  // Two ways a day cannot be rebuilt, and by total alone neither is distinguishable
+  // from a day this script correctly deflated — all three are simply a smaller number,
+  // duly marked "inflated". So neither is written: the day keeps what it had and says
+  // why, because replacing a real figure with a partial one is the failure that cannot
+  // be undone once the backup is gone.
+  //
+  //   * skipped records — a family missing from PRICES. `claude-fable-5` was missing
+  //     from the first draft and took 837M cache-read tokens out of the rebuild, which
+  //     then read as if the old rollup had been more inflated than it was.
+  //   * nothing scanned at all — the transcripts have been pruned or deleted, so there
+  //     is no longer anything to recompute *from*.
+  const why = d?.unpriced ? `${d.unpriced} unpriced record(s)` : (!d && oldV > 0 ? "no transcripts found" : "");
+  if (why) {
+    rebuilt[k] = oldV;
+    kept.add(k);
+    sOld += oldV; sNew += oldV;
+    console.log(`${k}  ${oldV.toFixed(2).padStart(9)}  ${"kept".padStart(10)}  ${"—".padEnd(7)}← ${why}`);
+    continue;
+  }
+  const newV = d?.cost ?? 0;
   rebuilt[k] = newV;
   sOld += oldV; sNew += newV;
-  const d = newV - oldV;
+  const delta = newV - oldV;
   const flag = oldV > 0 && newV < oldV * 0.75 ? "  ← inflated" : "";
-  console.log(`${k}  ${oldV.toFixed(2).padStart(9)}  ${newV.toFixed(2).padStart(10)}  ${(d >= 0 ? "+" : "") + d.toFixed(2)}${flag}`);
+  console.log(`${k}  ${oldV.toFixed(2).padStart(9)}  ${newV.toFixed(2).padStart(10)}  ${(delta >= 0 ? "+" : "") + delta.toFixed(2)}${flag}`);
 }
 console.log("─".repeat(48));
 console.log(`total     ${sOld.toFixed(2).padStart(9)}  ${sNew.toFixed(2).padStart(10)}  ${(sNew - sOld >= 0 ? "+" : "") + (sNew - sOld).toFixed(2)}`);
+
+if (kept.size) {
+  console.log(`\n${kept.size} day(s) kept their stored value — marked above. A day whose records could not`);
+  console.log("all be priced is not a day this script can correct, so it is left alone rather than");
+  console.log("replaced by a partial total.");
+}
+if (unknown.size) {
+  console.log(`\nUnrecognised model(s): ${[...unknown].sort().join(", ")}`);
+  console.log("Add the tier to PRICES at the top of this script and re-run; until then every day");
+  console.log("those records fall in is kept rather than rebuilt.");
+}
 
 const extra = [...days.keys()].filter((k) => !(k in stored));
 if (extra.length && !BACKFILL) {
@@ -268,9 +342,14 @@ console.log("wrote    cc-usage");
 if (DETAIL) {
   // The telemetry-fed split carries the same inflation, and leaving it while the totals
   // are corrected would make the Usage panel disagree with itself. Rebuilt from the same
-  // records, which also backfills days that predate the split shipping.
+  // records, which also backfills days that predate the split shipping — except for the
+  // days kept above, which keep their stored split for the same reason they kept their
+  // stored total. Rebuilding one half of a day we declined to rebuild would put the two
+  // numbers into exactly the disagreement this clause exists to avoid.
+  const storedDetail = readKey(db, "cc-usage-detail") || {};
   const detail = {};
   for (const k of all) {
+    if (kept.has(k)) { if (storedDetail[k]) detail[k] = storedDetail[k]; continue; }
     const d = days.get(k);
     if (d) detail[k] = { models: d.models, projects: d.projects, sessions: [...d.sessions] };
   }

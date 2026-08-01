@@ -97,7 +97,7 @@ export function renderSidebar() {
       const tail = p.externals.length
         ? `<span class="pcount ext">${p.externals.length} ext</span>`
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span></div>`;
+      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
     }
     return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
   }).join("");
@@ -136,11 +136,20 @@ function applyPeek() {
     // you cannot tell the app is counting unless it shows you.
     const arming = !!peek.arming && el.dataset.path === peek.arming.path;
     if (arming) {
-      // Restart the fill from zero. The class alone won't re-run the animation on a
-      // group that was already armed, cancelled and re-entered.
+      // Re-run the fill, but from where the *timer* is rather than from zero. The class
+      // alone won't restart it on a group that was armed, cancelled and re-entered — and
+      // a plain restart is wrong the rest of the time, because this also runs after every
+      // repaint that changed the markup. renderAll() fires on each telemetry event, and a
+      // project with a live session repaints several times a second, so a bar that
+      // restarted here would crawl back to empty under the pointer while the timeout it
+      // depicts ran on to its original deadline: the one thing worse than no countdown is
+      // one that lies about how much is left. A negative delay offsets into the animation
+      // by however much has already elapsed.
+      const elapsed = Math.max(0, peekPrefs.openMs - (peek.arming!.at - Date.now()));
       el.classList.remove("arming");
       void el.offsetWidth;
       el.style.setProperty("--peek-open", `${peekPrefs.openMs}ms`);
+      el.style.setProperty("--peek-arm-delay", `${-elapsed}ms`);
     }
     el.classList.toggle("arming", arming);
   }
