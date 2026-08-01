@@ -129,8 +129,21 @@
 
       <footer class="foot">
         <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko — open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
-        <button class="clbtn" id="clBtn" title="What's new"><span class="spark">✦</span></button>
-        <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
+        <!-- Release notes sit to the RIGHT of the version number and hug it: the glyph
+             explains that number, and at the footer's own 15px gap it would read as one
+             more independent segment. Inline SVG rather than a character — no document
+             glyph renders on both macOS and Windows, and ▤ already means "embedded
+             pane" everywhere else in the app. -->
+        <span class="fvern">
+          <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
+          <button class="clbtn" id="clBtn" title="What's new">
+            <svg class="clico" viewBox="0 0 14 14" aria-hidden="true">
+              <path class="cl-pg" d="M3.6 1.6h4L10.4 4.4v8H3.6z"/>
+              <path class="cl-pg" d="M7.6 1.7V4.4h2.7"/>
+              <path class="cl-tx" d="M5.5 6.9h3.3M5.5 8.9h3.3M5.5 10.9h2"/>
+            </svg>
+          </button>
+        </span>
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv"></span>

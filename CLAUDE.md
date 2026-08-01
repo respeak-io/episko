@@ -267,10 +267,22 @@ GitHub release body, and `ci.yml` refuses a `dev → main` pull request whose
   demanding generated prose would make writing your own notes a CI failure.
 - **Three markers, not six headings**: `+` new, `~` changed, `!` fixed. Keep-a-Changelog's
   sections force a judgement call per line and leave headings with one bullet under them.
-- **`shouldAnnounce` is deliberately narrow.** It opens only when the running version
-  differs from `cc-seen-version` *and* the file has a section for it — so a fresh install,
-  a downgrade and a local dev build are all silent. Opening a changelog over an app
-  somebody has never run is noise before it is information.
+- **`shouldAnnounce` opens once per released version, and the record is a set.**
+  `cc-seen-versions` lists every version *What's new* has been opened for here (0.13.0's
+  single-value `cc-seen-version` is still read once and folded in), so a version already
+  read stays shut even after running a newer one, and a build with no section — a local
+  dev build — is silent because the screen would open on nothing.
+- **It used to have a fresh-install guard, and that guard is why 0.13.0 shipped silent.**
+  It keyed on the seen-record being absent — but the release that *introduces* a
+  seen-record is precisely the one where every existing install has none, so the version
+  that shipped the feature was the version nobody was shown. Rescuing it means guessing
+  whether the rest of `localStorage` looks "used", and that guess was measured wrong
+  twice: `cc-icons`, `cc-icons-v` and `cc-restore` are all written during a first boot,
+  `cc-restore` before `changelogui` is even imported. It also cannot be unit-tested — it
+  depends on module import order across the whole app graph — so it would rot silently,
+  in the direction of hiding the feature. **Don't reintroduce it.** The cost of living
+  without it is that a first-time user sees the notes for the version they installed,
+  once, which reads as an introduction and is one Esc away.
 - **The release body is assembled in a step, not inlined in YAML.** A multi-line `${{ }}`
   inside a literal block indents only its first line and silently mangles the rest, which
   is why the install text lives in `.github/release-install.md` and is concatenated.
@@ -633,7 +645,7 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the sidebar's `cc-peek`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 
