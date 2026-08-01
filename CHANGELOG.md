@@ -13,6 +13,8 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.13.7 — 2026-08-01
+
 The project dashboard stops being a page you can only read.
 
 ~ **The stage header's buttons work on a project dashboard.** ◷ History, ❯ Terminal and
