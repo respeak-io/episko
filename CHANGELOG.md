@@ -13,6 +13,35 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+Housekeeping on the surfaces 0.13 added, plus two in History.
+
+! **The project dashboard's top strip reads as five figures again.** It was printing
+  the raw markup of its own commit sparkline as text, and stacking the five tiles into
+  a column one per row instead of laying them across. Two separate faults that arrived
+  looking like one.
+! **⌘K's project swatches lost the grey dot beside them.** Every coloured square in the
+  list had a second, larger circle spilling out of its corner — a switch knob it had
+  inherited from an unrelated control that happened to share its name.
+! **The stage header runs the full width of the window.** The title, ◷ History,
+  ❯ Terminal, ▶ Run and ＋ Session had to share the space left over beside the
+  inspector; the inspector now starts below the header instead of beside it, which is
+  where it was always acting from anyway.
+! **The *Reveal idle checkouts on hover* switch sits beside its label**, not on its own
+  line underneath it, matching every other switch in Settings.
+! **⌘I on a project dashboard collapses the inspector to its 44px rail.** It was
+  documented and drawn that way but the panel never actually narrowed, so the rail was
+  a row of glyphs adrift in a full-width empty panel.
+! **The macOS traffic lights have room to breathe.** The Episko logo sat close enough to
+  them to read as a fourth button in the row.
+! **History no longer lists Episko's own summariser.** The one-line summary the Trail
+  writes for each day is a real Claude session, so it left a transcript behind — and
+  History, which reads every transcript on the machine, listed all of them. Dozens of
+  identical rows reading "Below is a factual record of one day of…", crowding out the
+  conversations you were looking for.
+! **A transcript with nothing to preview says so in a box, not over the whole dialog.**
+  Picking a session that turned out to be tool calls only replaced the entire list with
+  one centred sentence, which read as the dialog breaking rather than as an answer.
+
 ## 0.13.5 — 2026-08-01
 
 Two things 0.13.0 shipped that had never been clicked.

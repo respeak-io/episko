@@ -69,8 +69,11 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .app {
   height: 100dvh; display: grid;
   grid-template-columns: 232px minmax(0,1fr) 296px;
-  grid-template-rows: 40px minmax(0,1fr) 25px;
-  grid-template-areas: "top top top" "rail stage insp" "foot foot foot";
+  /* `head` is a row of its own spanning stage AND insp, so the stage header runs to
+     the right edge and the inspector starts underneath it. It is `auto` because the
+     header sizes itself from its buttons; only the row below it takes the slack. */
+  grid-template-rows: 40px auto minmax(0,1fr) 25px;
+  grid-template-areas: "top top top" "rail head head" "rail stage insp" "foot foot foot";
   background: radial-gradient(1000px 460px at 80% -10%, var(--accent-wash), transparent 60%), var(--bg);
   color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.45;
   -webkit-font-smoothing: antialiased; overflow: hidden; transition: background .5s ease, grid-template-columns .22s ease;
@@ -79,6 +82,12 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .app.insp-off .insp { display: none; }
 .app.rail-mini { grid-template-columns: 54px minmax(0,1fr) 296px; }
 .app.rail-mini.insp-off { grid-template-columns: 54px minmax(0,1fr) 0; }
+/* ⌘I on the dashboard collapses to the 44px rail rather than to nothing (see
+   .insp-strip). The class alone only swapped the panel's contents — without these the
+   column stayed 296px wide and the "rail" was a row of glyphs floating in the middle
+   of an empty panel. */
+.app.insp-mini { grid-template-columns: 232px minmax(0,1fr) 44px; }
+.app.rail-mini.insp-mini { grid-template-columns: 54px minmax(0,1fr) 44px; }
 
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .label { font-size: 9px; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
@@ -116,7 +125,10 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
    flush into the corner and full height, because that corner is where a thrown
    pointer lands. .wclose alone takes the OS's red, the one colour a user should
    never have to aim for twice. */
-html.mac .top { padding-left: 78px; }
+/* The lights end at x=68 — `trafficLightPosition.x` is 14 and AppKit spaces the three
+   14px buttons 20px apart — so this is 68 + the gutter. 78px left a 10px one, tight
+   enough that the logo read as a fourth button in the row. */
+html.mac .top { padding-left: 94px; }
 html.mac.fs .top { padding-left: 12px; }
 .wctl { display: none; align-self: stretch; margin-right: -12px; }
 html.win .wctl { display: flex; }
@@ -369,7 +381,7 @@ html.win .wctl { display: flex; }
 
 /* center: terminal */
 .stage { grid-area: stage; display: flex; flex-direction: column; min-width: 0; }
-.stage-head { display: flex; flex-wrap: nowrap; align-items: center; gap: 11px; padding: 8px 14px; min-width: 0; background: linear-gradient(180deg, var(--accent-wash), transparent 90%), var(--panel); border-bottom: 1px solid var(--hair); }
+.stage-head { grid-area: head; display: flex; flex-wrap: nowrap; align-items: center; gap: 11px; padding: 8px 14px; min-width: 0; background: linear-gradient(180deg, var(--accent-wash), transparent 90%), var(--panel); border-bottom: 1px solid var(--hair); }
 .st-title { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .st-title .proj { flex: 0 1 auto; min-width: 0; max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; font-weight: 800; color: var(--accent-ink); letter-spacing: -.02em; }
 .chip { flex: none; white-space: nowrap; font-size: 9.5px; color: var(--muted); padding: 2px 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--hair); font-family: var(--font-mono); }
@@ -803,7 +815,10 @@ html.win .wctl { display: flex; }
 .pal-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; }
 .pal-item.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .pal-ic { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; flex: none; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
-.pal-ic .sw { width: 8px; height: 8px; border-radius: 3px; }
+/* NOT `.sw` — that name belongs to the settings toggle further down, whose `::after`
+   knob is a 15px grey circle. Shared, it drew that knob spilling out of every 8px
+   project swatch in ⌘K. Its own name, its own box, like `.clico`. */
+.pal-sw { display: block; width: 8px; height: 8px; border-radius: 3px; }
 .pal-icimg { width: 18px; height: 18px; border-radius: 5px; object-fit: cover; }
 .pal-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .pal-main .pm { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -902,6 +917,9 @@ select.in-ctl { cursor: pointer; }
 .s-ctl .opt { font: 10px var(--font-mono); border: 1px solid var(--hair-strong); border-radius: 6px; padding: 3px 7px; color: var(--muted-2); background: var(--surface); cursor: pointer; white-space: nowrap; }
 .s-ctl .opt:hover { color: var(--text); background: var(--surface-2); }
 .s-ctl .opt.on { background: var(--accent); border-color: var(--accent); color: #17121f; font-weight: 700; }
+/* The settings window's toggle, and nothing else — a bare <button> whose knob is its
+   own `::after`, so any element that borrows the name inherits a 15px grey circle it
+   never asked for. The dashboard's switches are `.dsw`; ⌘K's project swatch `.pal-sw`. */
 .sw { width: 34px; height: 19px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--hair-strong); position: relative; flex: none; cursor: pointer; padding: 0; transition: background .14s, border-color .14s; }
 .sw::after { content: ""; position: absolute; top: 1px; left: 1px; width: 15px; height: 15px; border-radius: 50%; background: var(--muted-2); transition: transform .14s, background .14s; }
 .sw.on { background: var(--accent); border-color: var(--accent); }
@@ -1101,7 +1119,12 @@ select.in-ctl { cursor: pointer; }
    column: enough to recognise a conversation, not enough to read it here. */
 .hist-tv { display: flex; flex-direction: column; gap: 9px; max-height: 34vh; overflow-y: auto; padding: 10px 11px; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--terminal-bg); }
 .hist-tv .tvtext { font-size: 11px; line-height: 1.55; }
-.hist-tv.empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
+/* `tv-empty`, NOT a bare `empty` modifier — `.empty` is the stage's "No sessions
+   running" splash, which is `position: absolute; inset: 0`. This element never set
+   `position`, so it inherited that and stretched to fill the whole dialog, covering the
+   list with one centred sentence. Every other placeholder in the app is prefixed
+   (`wt-empty`, `db-empty`, `set-empty`, `insp-empty`); this one was the exception. */
+.hist-tv.tv-empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
 
 @media (max-width: 900px) { .histdlg .wt-body { grid-template-columns: minmax(0, 1fr); } }
 
@@ -1131,8 +1154,13 @@ select.in-ctl { cursor: pointer; }
    MUST stay after `.set-group` or its `flex-direction: column` wins on source order
    alone and the row lays out as a column. That is not hypothetical: it shipped that
    way, with the label and the switch stacked and centred, because `align-items:
-   center` below still applied and centres cross-axis in a column. Keep them adjacent. */
-.set-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+   center` below still applied and centres cross-axis in a column. Keep them adjacent.
+   It declares `display: flex` itself rather than borrowing `.set-group`'s, because the
+   peek control puts the two classes on *different* elements (the switch shares a row
+   with the label, the steppers and the preview sit below) — inheriting the display
+   only worked on the elements that happened to be both, and there the switch dropped
+   onto its own line under the hint. */
+.set-inline { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
 .set-itxt { flex: 1; min-width: 0; }
 .set-inline .set-hint { margin-bottom: 0; }
 .set-inline > .sw { flex: none; }
@@ -1612,14 +1640,21 @@ select.in-ctl { cursor: pointer; }
 .dash-view[hidden] { display: none; }
 .dash { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-/* the pulse strip — five numbers before any detail, so the window answers itself */
-.db-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) auto; gap: 1px; background: var(--hair); border-bottom: 1px solid var(--hair); flex: none; }
-.db-tile { padding: 9px 13px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* the pulse strip — five numbers before any detail, so the window answers itself.
+   Flex, not grid: the tiles are equal shares with one content-sized tile (the range
+   picker) on the end, and grid cannot say that in an auto-repeat track list. It was
+   `repeat(auto-fit, minmax(112px,1fr)) auto`, which is invalid — every track beside an
+   auto-repeat must be a <fixed-size>, and `auto` is not one — so the whole declaration
+   was dropped and all five tiles stacked as rows in a single implicit column. */
+.db-pulse { display: flex; align-items: stretch; gap: 1px; background: var(--hair); border-bottom: 1px solid var(--hair); flex: none; }
+.db-tile { flex: 1 1 0; padding: 9px 13px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .db-tile .k { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
 .db-tile .v { font: 700 19px var(--font-mono); letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
 .db-tile .d { font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.db-tile.win { flex-direction: row; align-items: center; padding: 9px 12px; }
-.db-spark { font-size: 12px; line-height: 1; color: var(--accent-ink); letter-spacing: -1px; }
+.db-tile.win { flex: none; flex-direction: row; align-items: center; padding: 9px 12px; }
+/* A wrapper around format.ts's `.spark` SVG (108×24, display:block), so it needs no
+   type of its own — `line-height: 0` only stops the line box padding the tile out. */
+.db-spark { display: block; line-height: 0; color: var(--accent-ink); }
 .dim { color: var(--muted-2); }
 /* Its own picker — `.seg` belongs to the settings window and is a flex column. */
 .db-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--hair); gap: 1px; flex: none; }
@@ -1855,18 +1890,20 @@ select.in-ctl { cursor: pointer; }
 .dsh .opts { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--hair); }
 .dsh .foot { display: flex; gap: 7px; padding: 11px 15px; border-top: 1px solid var(--hair); background: color-mix(in srgb, var(--bg-2) 60%, transparent); }
 .dsh .foot .sp { margin-left: auto; }
-/* the claim switches */
-.sw { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font: 10.5px var(--font-mono); color: var(--muted-2); }
-.sw i { width: 24px; height: 14px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--hair-strong); position: relative; transition: background .18s, border-color .18s; flex: none; }
-.sw i::after { content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--muted-2); transition: transform .18s cubic-bezier(.32,.72,0,1), background .18s; }
-.sw.on i { background: var(--accent-wash); border-color: var(--accent-line); }
-.sw.on i::after { transform: translateX(10px); background: var(--accent-ink); }
-.sw.on { color: var(--accent-ink); }
+/* The claim switches — `.dsw`, NOT `.sw`, which is the settings window's own toggle
+   (a bare 34×19 button whose knob is an `::after`). Sharing the name gave every one of
+   these label-plus-`<i>` switches that button's pill as a second background. */
+.dsw { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font: 10.5px var(--font-mono); color: var(--muted-2); }
+.dsw i { width: 24px; height: 14px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--hair-strong); position: relative; transition: background .18s, border-color .18s; flex: none; }
+.dsw i::after { content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--muted-2); transition: transform .18s cubic-bezier(.32,.72,0,1), background .18s; }
+.dsw.on i { background: var(--accent-wash); border-color: var(--accent-line); }
+.dsw.on i::after { transform: translateX(10px); background: var(--accent-ink); }
+.dsw.on { color: var(--accent-ink); }
 /* A switch the project has turned off is shown greyed, never hidden: "why can't I
    assign?" needs an answer, and an absent control gives none. */
-.sw.off { opacity: .4; cursor: not-allowed; }
+.dsw.off { opacity: .4; cursor: not-allowed; }
 .dsh code { font: 10px var(--font-mono); color: var(--accent-ink); }
-@media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .sw i, .sw i::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .dsw i, .dsw i::after { transition: none; } }
 
 /* ═══ What's new — the changelog screen ════════════════════════════════════════
    Opened once after an update, and by the notes icon beside the version number. Content

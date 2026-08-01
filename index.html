@@ -70,22 +70,29 @@
         <div class="railmini" id="railmini"></div>
       </aside>
 
-      <main class="stage">
-        <div class="stage-head">
-          <div class="st-title">
-            <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
-            <span class="stitle" id="hTitle"></span>
-            <span class="path" id="hPath"></span>
-          </div>
-          <div class="st-actions">
-            <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
-            <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
-            <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
-            <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
-            <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
-            <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
-          </div>
+      <!--
+        A sibling of .stage rather than a child of it, so it can own a grid row of its
+        own that spans the stage AND the inspector (see the `head` area in styles.css).
+        The title and the six verbs all act on what is on the stage, so the panel beside
+        it starts underneath — and the row gets the whole width to lay them out in.
+      -->
+      <div class="stage-head">
+        <div class="st-title">
+          <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
+          <span class="stitle" id="hTitle"></span>
+          <span class="path" id="hPath"></span>
         </div>
+        <div class="st-actions">
+          <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
+          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
+          <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
+          <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
+          <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
+          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
+        </div>
+      </div>
+
+      <main class="stage">
         <div id="terminals">
           <div class="empty" id="empty">
             <div class="empty-card">
