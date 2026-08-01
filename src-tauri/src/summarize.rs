@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
-use crate::platform::{augmented_path, resolve_claude, sys_command};
+use crate::platform::{augmented_path, physical_cwd, resolve_claude, sys_command};
 
 /// Long enough for a small prompt on a slow link, short enough that a wedged CLI is
 /// noticed rather than leaking a blocked thread for the life of the app.
@@ -67,11 +67,26 @@ fn write_cache(app: &AppHandle, map: &serde_json::Map<String, serde_json::Value>
 }
 
 /// A scratch cwd for the summariser's own transcripts, kept out of every real project.
-fn scratch_cwd() -> PathBuf {
-    let mut d = std::env::temp_dir();
+///
+/// Keeping them out of a project folder is only half the job: they are still real
+/// transcripts under `~/.claude/projects/<enc(this)>`, so History's whole-machine scan
+/// finds them and lists one "Below is a factual record of one day of …" row per day
+/// summarised. `scan_history_in` skips this directory by name, which is why this is
+/// `pub(crate)` and why it must NOT create anything — the scan calls it too, and a
+/// read-only listing has no business making directories. `run_claude` creates it.
+///
+/// It resolves through `physical_cwd` at the **temp dir**, not at the leaf, and that is
+/// what makes the skip hold. Claude writes the transcript under an encoding of the
+/// child's `getcwd()`, which is always the resolved spelling (macOS `$TMPDIR` is
+/// `/var/folders/…`, a symlink to `/private/var/folders/…`) — so an unresolved path
+/// here encodes to a different folder than the one the transcripts are in. The leaf
+/// cannot do the resolving: `physical_cwd` passes a path that does not exist straight
+/// through, and the OS purges `/var/folders` while `~/.claude` keeps the transcripts,
+/// which is exactly the state where the rows would come back.
+pub(crate) fn scratch_cwd() -> PathBuf {
+    let mut d = PathBuf::from(physical_cwd(&std::env::temp_dir().to_string_lossy()));
     d.push("cc-launcher");
     d.push("trail-summary");
-    let _ = std::fs::create_dir_all(&d);
     d
 }
 
@@ -96,9 +111,11 @@ FACTS\n{facts}"
 /// more than one pipe buffer, and "the summariser hung the app" is a far worse failure
 /// than "there is no summary today".
 fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
+    let cwd = scratch_cwd();
+    let _ = std::fs::create_dir_all(&cwd); // `scratch_cwd` only names it — see above
     let mut child = sys_command(resolve_claude())
         .env("PATH", augmented_path())
-        .current_dir(scratch_cwd())
+        .current_dir(cwd)
         .args(["-p", prompt, "--model", model])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -1119,7 +1119,12 @@ select.in-ctl { cursor: pointer; }
    column: enough to recognise a conversation, not enough to read it here. */
 .hist-tv { display: flex; flex-direction: column; gap: 9px; max-height: 34vh; overflow-y: auto; padding: 10px 11px; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--terminal-bg); }
 .hist-tv .tvtext { font-size: 11px; line-height: 1.55; }
-.hist-tv.empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
+/* `tv-empty`, NOT a bare `empty` modifier — `.empty` is the stage's "No sessions
+   running" splash, which is `position: absolute; inset: 0`. This element never set
+   `position`, so it inherited that and stretched to fill the whole dialog, covering the
+   list with one centred sentence. Every other placeholder in the app is prefixed
+   (`wt-empty`, `db-empty`, `set-empty`, `insp-empty`); this one was the exception. */
+.hist-tv.tv-empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
 
 @media (max-width: 900px) { .histdlg .wt-body { grid-template-columns: minmax(0, 1fr); } }
 

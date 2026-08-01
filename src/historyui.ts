@@ -173,8 +173,8 @@ function histDetailHtml(h: HistEntry | undefined): string {
             const user = m.role === "user";
             return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(abbr(m.text, 420))}</div></div>`;
           }).join("")}</div>`
-        : `<div class="hist-tv empty">No prose in this transcript — it's tool traffic only.</div>`)
-    : `<div class="hist-tv empty">Reading the transcript…</div>`;
+        : `<div class="hist-tv tv-empty">No prose in this transcript — it's tool traffic only.</div>`)
+    : `<div class="hist-tv tv-empty">Reading the transcript…</div>`;
   return `
     <div class="wt-dhead">
       <div class="wt-dkind">past session</div>

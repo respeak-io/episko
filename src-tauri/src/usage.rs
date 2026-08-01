@@ -324,12 +324,21 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
         Err(_) => return vec![], // no transcripts yet — not an error
     };
 
+    // The Trail summariser is a `claude -p` like any other, so it leaves a transcript
+    // per day summarised. Those are Episko talking to itself — not a conversation the
+    // user had — and they are skipped by DIRECTORY, here in pass 1, rather than
+    // filtered out of the results: they are the newest thing on disk after any Trail
+    // view, so filtering later would let them take the top `limit` slots and push real
+    // sessions off the end of a list they never appear in.
+    let summariser = crate::summarize::scratch_cwd();
+    let summariser_dir = project_transcript_dir(base, &summariser.to_string_lossy());
+
     // Pass 1 — metadata only, no file contents. This is what keeps the scan bounded:
     // ranking by mtime here means the expensive pass never sees the old 95%.
     let mut files: Vec<(u64, u64, PathBuf)> = Vec::new();
     for proj in projects.flatten() {
         let pdir = proj.path();
-        if !pdir.is_dir() {
+        if !pdir.is_dir() || pdir == summariser_dir {
             continue;
         }
         let Ok(entries) = std::fs::read_dir(&pdir) else {
@@ -1122,6 +1131,69 @@ mod tests {
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].session_id, "newest");
         assert!(scan_history_in(&dir.join("nope"), 0).is_empty(), "a missing base is empty, not an error");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Trail summariser is a `claude -p`, so it leaves a transcript per day it
+    /// summarises — 27 of them on the machine this was found on, all reading "Below is
+    /// a factual record of one day of …". They are Episko talking to itself and must
+    /// not appear in History.
+    ///
+    /// The assertion that matters is the second one: the skip is computed from
+    /// `summarize::scratch_cwd()`, and it only lines up with what is on disk because
+    /// that function resolves `$TMPDIR` before appending. Encode the unresolved
+    /// spelling and this test still passes its first assertion on Linux while silently
+    /// missing every real transcript on a Mac, where `/var/folders` is a symlink.
+    #[test]
+    fn scan_history_hides_the_trail_summarisers_own_transcripts() {
+        let dir = scratch_dir();
+        let base = dir.join("claude");
+        let root = base.join("projects");
+
+        let scratch = crate::summarize::scratch_cwd();
+        let scratch_s = scratch.to_string_lossy().replace('\\', "\\\\");
+        let enc: String = scratch
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        std::fs::create_dir_all(root.join(&enc)).unwrap();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+
+        let live = dir.join("live-project");
+        std::fs::create_dir_all(&live).unwrap();
+        let live_s = live.to_string_lossy().replace('\\', "\\\\");
+
+        // The summariser's row is the NEWER of the two, which is the case that matters:
+        // it is skipped in pass 1, so it must not consume the single `limit` slot below
+        // and push the real session off a list it never appears in.
+        std::fs::write(
+            root.join(&enc).join("summary.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{scratch_s}","message":{{"content":"Below is a factual record of one day of a developer's work"}}}}"#) + "\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("real").join("mine.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{live_s}","message":{{"content":"a real conversation"}}}}"#) + "\n",
+        )
+        .unwrap();
+
+        let out = scan_history_in(&base, 0);
+        let ids: Vec<&str> = out.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["mine"], "the summariser's transcripts are not sessions the user had");
+
+        // The directory really was the one on disk — otherwise the line above passes
+        // for the wrong reason (nothing matched, nothing was skipped).
+        assert_eq!(
+            project_transcript_dir(&base, &scratch.to_string_lossy()),
+            root.join(&enc),
+            "the skip must name the folder Claude actually writes into",
+        );
+
+        let capped = scan_history_in(&base, 1);
+        assert_eq!(capped.len(), 1, "the skipped rows never took the limit slot");
+        assert_eq!(capped[0].session_id, "mine");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
