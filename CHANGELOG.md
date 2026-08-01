@@ -13,6 +13,8 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.13.6 — 2026-08-01
+
 Housekeeping on the surfaces 0.13 added, plus two in History.
 
 ! **The project dashboard's top strip reads as five figures again.** It was printing
@@ -43,7 +45,6 @@ Housekeeping on the surfaces 0.13 added, plus two in History.
   one centred sentence, which read as the dialog breaking rather than as an answer.
 
 ## 0.13.5 — 2026-08-01
-
 Two things 0.13.0 shipped that had never been clicked.
 
 ! **Clicking a project opens its dashboard.** It did nothing at all in 0.13.0 — the
