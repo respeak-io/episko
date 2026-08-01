@@ -13,6 +13,8 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.13.5 — 2026-08-01
+
 Two things 0.13.0 shipped that had never been clicked.
 
 ! **Clicking a project opens its dashboard.** It did nothing at all in 0.13.0 — the
@@ -51,7 +53,6 @@ Two things 0.13.0 shipped that had never been clicked.
   usage sparkline, which gave an 18px button a 24px-tall glyph.
 
 ## 0.13.0 — 2026-07-31
-
 A project is a place you arrive at now, not a session you fall into.
 
 + **Clicking a project opens a dashboard.** The last week of that project's commits and
