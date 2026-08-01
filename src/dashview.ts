@@ -28,8 +28,9 @@ function tile(k: string, v: string, d = ""): string {
 export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: number[]): string {
   const tiles: string[] = [];
   if (tier !== "none") {
+    // `sparkline` returns an inline SVG, not text — escaping it printed the markup.
     tiles.push(`<div class="db-tile"><span class="k">Commits</span><span class="v">${p.commits}</span>`
-      + `<span class="db-spark mono" aria-hidden="true">${esc(sparkline(dense))}</span></div>`);
+      + `<span class="db-spark" aria-hidden="true">${sparkline(dense)}</span></div>`);
   }
   tiles.push(tile("Sessions", String(p.sessions), `${range} days`));
   // Spend is per-project and only exists from the day the detail rollup started. A
@@ -42,7 +43,7 @@ export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: num
       : `<span class="dim">—</span>`;
     tiles.push(tile("Contributors", String(p.authors.length), who));
   }
-  return `<div class="db-pulse" data-tiles="${tiles.length + 1}">${tiles.join("")}
+  return `<div class="db-pulse">${tiles.join("")}
     <div class="db-tile win"><span class="db-seg">
       ${[7, 14, 30].map((r) => `<button${r === range ? ` class="on"` : ""} data-dashrange="${r}">${r}d</button>`).join("")}
     </span></div></div>`;
@@ -288,7 +289,7 @@ export function notesOverlay(
         <span class="mt"><span>${esc(relTime(n.created))}</span></span>
         <span class="bar"><button class="act" data-dashdispatch="${esc(n.id)}">▶ Start an agent</button>
           <button class="act" data-dashdrop="${esc(n.id)}">✕</button>
-          ${canShare ? `<span class="sw${sharedIds.has(n.id) ? " on" : ""}" data-dashshare="${esc(n.id)}"
+          ${canShare ? `<span class="dsw${sharedIds.has(n.id) ? " on" : ""}" data-dashshare="${esc(n.id)}"
             title="Write this into .episko/notes.toml so the team can read it"><i></i>shared</span>` : ""}
         </span></div>`).join("")}</div>`
     : `<div class="ac-empty">Nothing queued yet.</div>`;
@@ -460,7 +461,7 @@ export function closeSheet(t: GhThread, comment: string, slug: string): string {
 
 export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null): string {
   const sw = (k: string, on: boolean, permitted: boolean, label: string) =>
-    `<span class="sw${on && permitted ? " on" : ""}${permitted ? "" : " off"}" data-dashclaim="${k}"
+    `<span class="dsw${on && permitted ? " on" : ""}${permitted ? "" : " off"}" data-dashclaim="${k}"
       ${permitted ? "" : `title="This project's .episko/episko.toml switches it off for everyone"`}><i></i>${label}</span>`;
   return `<h4>Start an agent on #${t.number}</h4>
     <div class="body">

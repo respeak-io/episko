@@ -190,7 +190,7 @@ function renderPal() {
   const html = palGroups.map((g) => {
     const rows = g.items.map((it) => {
       const i = idx++;
-      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
+      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="pal-sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
       const sh = it.shortcut ? `<span class="pal-sh">${it.shortcut.map((k) => `<span class="k">${esc(k)}</span>`).join("")}</span>`
         : it.session ? `<span class="pal-sh actions"><span class="k">${chord("K")}</span></span>` : "";
       return `<div class="pal-item ${i === palSel ? "on" : ""}" data-i="${i}"><span class="pal-ic">${ic}</span><span class="pal-main"><span class="pm">${it.labelHtml}</span>${it.sub ? `<span class="ps">${esc(it.sub)}</span>` : ""}</span>${sh}</div>`;
