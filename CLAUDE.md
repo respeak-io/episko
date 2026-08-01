@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **604 vitest + cargo (140 on macOS, 137 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **608 vitest + cargo (140 on macOS, 137 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -538,7 +538,7 @@ Four conventions hold across them:
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 604 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 608 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -623,6 +623,13 @@ And the things that hold however the files are arranged:
   off), so the browser path would raise a WebView2 permission prompt on Windows and
   WKWebView's paste-confirmation button on macOS. Pasting goes through `term.paste`
   rather than `write_pty` so bracketed-paste mode and `\r\n`→`\r` still apply.
+- **A `[data-*]` branch is only reachable if its attribute is ALSO in the dispatcher's
+  `closest()` selector.** One selector decides what `el` is; an unlisted attribute means
+  `el` is null and the handler returns before the branch written for it. `tsc` is happy
+  and every unit test passes — the feature is simply dead, and only clicking it finds
+  out. That is how the dashboard shipped in 0.13.0 with its entry point disconnected.
+  `test/dispatch.test.ts` now compares the two halves in both directions (an unlisted
+  branch is unreachable; a listed attribute with no branch silently swallows clicks).
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.

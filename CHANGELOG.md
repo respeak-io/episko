@@ -13,6 +13,16 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+Two things 0.13.0 shipped that had never been clicked.
+
+! **Clicking a project opens its dashboard.** It did nothing at all in 0.13.0 — the
+  header carried the right attribute and the handler had the right branch, but the
+  attribute was missing from the delegated click selector, so the branch was
+  unreachable and the whole feature was dead on arrival.
+! **The sidebar shows a hairline filling under a project while it counts down** to
+  revealing that project's idle checkouts. Without it the panel appeared a second after
+  you stopped moving, which read as a glitch rather than as a deliberate pause.
+
 ## 0.13.0 — 2026-07-31
 
 A project is a place you arrive at now, not a session you fall into.

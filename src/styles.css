@@ -285,6 +285,18 @@ html.win .wctl { display: flex; }
 .wthead:hover .wtadd { opacity: 1; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* The arming hairline: fills under the project name while the open timer runs, so a
+   panel that appears a second later reads as deliberate rather than as a glitch. The
+   duration is the real preference (--peek-open, set by applyPeek), not a constant —
+   a bar that finishes before or after the panel opens is worse than no bar. */
+.phead { position: relative; }
+.parm { position: absolute; left: 7px; right: 7px; bottom: 1px; height: 1.5px; border-radius: 2px;
+  background: var(--accent-line); transform: scaleX(0); transform-origin: left; opacity: 0; pointer-events: none; }
+.pgroup.arming .parm { opacity: 1; animation: peek-arm var(--peek-open, 1000ms) linear forwards; }
+@keyframes peek-arm { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+/* Reduced motion gets no sweep — the delay still applies, it just isn't animated. */
+@media (prefers-reduced-motion: reduce) { .pgroup.arming .parm { animation: none; opacity: 0; } }
+
 /* ---------- peek: the checkouts nothing is running in ----------------------------
    Collapsed until the pointer rests on the project group (./peek owns the timing,
    ./sidebar drives it, ./sidebarview renders the rows). Always in the DOM — hover
