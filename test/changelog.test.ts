@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  grouped, parseChangelog, releaseFor, shouldAnnounce, type Release,
+  grouped, parseChangelog, parseSeen, recordSeen, releaseFor, shouldAnnounce, type Release,
 } from "../src/changelog";
 
 const SAMPLE = `# Changelog
@@ -80,21 +80,80 @@ describe("parseChangelog", () => {
 
 describe("shouldAnnounce — when What's new opens by itself", () => {
   const log = parseChangelog(SAMPLE);
-  it("opens when the running version differs from the last one acknowledged", () => {
-    expect(shouldAnnounce("0.12.0", "0.11.1", log)).toBe(true);
+
+  it("opens for a version this machine has never had it opened for", () => {
+    expect(shouldAnnounce("0.12.0", ["0.11.1"], log)).toBe(true);
   });
-  it("stays shut on a fresh install — nothing is new to someone who never ran it", () => {
-    expect(shouldAnnounce("0.12.0", null, log)).toBe(false);
-  });
-  it("stays shut when it has already been seen", () => {
-    expect(shouldAnnounce("0.12.0", "0.12.0", log)).toBe(false);
+  it("stays shut when that version has already been read", () => {
+    expect(shouldAnnounce("0.12.0", ["0.12.0"], log)).toBe(false);
   });
   it("stays shut for a version the file has no section for", () => {
-    // A local dev build, or a downgrade: the screen would open on nothing.
-    expect(shouldAnnounce("9.9.9", "0.12.0", log)).toBe(false);
+    // A local dev build: the screen would open on nothing.
+    expect(shouldAnnounce("9.9.9", ["0.12.0"], log)).toBe(false);
   });
   it("never announces Unreleased, which is not a version anyone runs", () => {
-    expect(shouldAnnounce("Unreleased", "0.12.0", log)).toBe(false);
+    expect(shouldAnnounce("Unreleased", ["0.12.0"], log)).toBe(false);
+  });
+
+  // THE REGRESSION. 0.13.0 introduced this screen, so on every existing install the
+  // seen-record was absent — the same state a fresh install is in. The old rule read an
+  // absent record as "never been here" and stayed shut, so the release that shipped the
+  // feature was the one release nobody was shown it for.
+  it("opens on an empty record — an absent record is not evidence of anything", () => {
+    expect(shouldAnnounce("0.12.0", [], log)).toBe(true);
+  });
+
+  // Why a set and not a last-seen string: with one value, going back to a version
+  // already read differs from it and would announce a second time.
+  it("stays shut on a version read before, even after running a newer one", () => {
+    expect(shouldAnnounce("0.11.1", ["0.11.1", "0.12.0"], log)).toBe(false);
+  });
+  it("still opens for a skipped version reached later", () => {
+    expect(shouldAnnounce("0.11.1", ["0.12.0"], log)).toBe(true);
+  });
+});
+
+describe("the seen record", () => {
+  it("reads the list", () => {
+    expect(parseSeen('["0.12.0","0.13.0"]', null)).toEqual(["0.12.0", "0.13.0"]);
+  });
+  it("migrates 0.13.0's single-value key when the list is absent", () => {
+    // The whole reason the legacy key is still read: a machine that has opened the
+    // screen once must not be told about that version a second time.
+    expect(parseSeen(null, "0.13.0")).toEqual(["0.13.0"]);
+  });
+  it("prefers the list once it exists, and ignores the stale legacy key", () => {
+    expect(parseSeen('["0.13.1"]', "0.13.0")).toEqual(["0.13.1"]);
+  });
+  it("is empty when neither key is set — a genuinely unrecorded machine", () => {
+    expect(parseSeen(null, null)).toEqual([]);
+  });
+  it("falls back rather than throwing on a mangled list", () => {
+    expect(parseSeen("{not json", "0.13.0")).toEqual(["0.13.0"]);
+    expect(parseSeen('"a string"', null)).toEqual([]);
+    expect(parseSeen('["ok", 7, null]', null)).toEqual(["ok"]);
+  });
+
+  it("appends, newest last", () => {
+    expect(recordSeen(["0.12.0"], "0.13.0")).toEqual(["0.12.0", "0.13.0"]);
+  });
+  it("never duplicates, and re-reading moves it to the end", () => {
+    expect(recordSeen(["0.12.0", "0.13.0"], "0.12.0")).toEqual(["0.13.0", "0.12.0"]);
+  });
+  it("is bounded, dropping the oldest", () => {
+    expect(recordSeen(["a", "b", "c"], "d", 3)).toEqual(["b", "c", "d"]);
+  });
+  it("records nothing for an empty version", () => {
+    expect(recordSeen(["0.12.0"], "")).toEqual(["0.12.0"]);
+  });
+
+  it("survives a round trip, which is what the footer handle depends on", () => {
+    // Read 0.13.0 under the old key, then read 0.13.1: neither may announce again.
+    const after = recordSeen(parseSeen(null, "0.13.0"), "0.13.1");
+    const log = parseChangelog(SAMPLE);
+    expect(after).toEqual(["0.13.0", "0.13.1"]);
+    expect(shouldAnnounce("0.13.1", after, log)).toBe(false);
+    expect(shouldAnnounce("0.13.0", after, log)).toBe(false);
   });
 });
 

@@ -22,6 +22,14 @@ Two things 0.13.0 shipped that had never been clicked.
 ! **The sidebar shows a hairline filling under a project while it counts down** to
   revealing that project's idle checkouts. Without it the panel appeared a second after
   you stopped moving, which read as a glitch rather than as a deliberate pause.
+! **What's new opens by itself after an update again.** It skipped 0.13.0 entirely: the
+  release that introduced the screen is the one where nobody has a record of having read
+  it, and that empty record was being read as "brand new install, stay quiet". It now
+  remembers every version it has shown you, so each one announces once and going back to
+  an older build stays silent.
+~ **The release-notes button is a document icon, and sits to the right of the version
+  number** it explains rather than the left. It was also sharing a CSS class with the
+  usage sparkline, which gave an 18px button a 24px-tall glyph.
 
 ## 0.13.0 — 2026-07-31
 

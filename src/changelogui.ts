@@ -14,25 +14,32 @@ import { $, dropScrim } from "./dom";
 import { dlog } from "./debug";
 import { esc } from "./format";
 import {
-  grouped, MARK_GLYPH, MARK_LABEL, parseChangelog, releaseFor, shouldAnnounce,
-  type Release,
+  grouped, MARK_GLYPH, MARK_LABEL, parseChangelog, parseSeen, recordSeen, releaseFor,
+  shouldAnnounce, type Release,
 } from "./changelog";
 
 const LOG: Release[] = parseChangelog(raw);
-/// The last version this machine acknowledged. Absent on a fresh install, which is
-/// what keeps the screen shut for someone who has never run Episko.
-const SEEN = "cc-seen-version";
+/// Every version this machine has had *What's new* opened for, newest last. A list
+/// rather than a single last-seen string so that returning to a version already read
+/// stays quiet — see `SeenState`.
+const SEEN = "cc-seen-versions";
+/// 0.13.0's single-value key, folded into the list above by `parseSeen`.
+const SEEN_LEGACY = "cc-seen-version";
 
 let version = "";
 let sel = 0;
 
 export const changelogOpen = () => $("clDlg").classList.contains("show");
 
+/// Read fresh each time rather than cached: it is a handful of calls a session, and a
+/// stale copy would leave the footer handle lit after the screen had been opened.
+const seenVersions = () => parseSeen(localStorage.getItem(SEEN), localStorage.getItem(SEEN_LEGACY));
+
 /// The footer handle stays lit until the running version has been read once. It is the
-/// only signal that there is something new — which is why it sits ON the version
+/// only signal that there is something new — which is why it sits beside the version
 /// number rather than in the top bar: that number is the thing it explains.
 function syncHandle() {
-  const unread = !!version && localStorage.getItem(SEEN) !== version;
+  const unread = !!version && !seenVersions().includes(version);
   $("clBtn").classList.toggle("fresh", unread);
   $("clBtn").title = unread ? `What's new in ${version}` : "What's new";
 }
@@ -40,7 +47,8 @@ function syncHandle() {
 /// Mark the running version read. Called on open, not on close: opening it *is* the
 /// reading, and a user who closes with Esc has still seen it.
 function markSeen() {
-  if (version) localStorage.setItem(SEEN, version);
+  if (!version) return;
+  localStorage.setItem(SEEN, JSON.stringify(recordSeen(seenVersions(), version)));
   syncHandle();
 }
 
@@ -109,7 +117,7 @@ export function initChangelog() {
     syncHandle();
     // The one moment it opens by itself. Deliberately after the version resolves
     // rather than on a timer: opening over a half-painted app reads as a glitch.
-    if (shouldAnnounce(v, localStorage.getItem(SEEN), LOG)) {
+    if (shouldAnnounce(v, seenVersions(), LOG)) {
       dlog("info", `changelog: first run of v${v}`);
       openChangelog(v);
     }
