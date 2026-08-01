@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addUsage, modelFamily, setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt,
-  uBuckets, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type DayUsage, type UDay,
+  addUsage, costDelta, modelFamily, resetCostBaselines, setTokenDays, setUsageRange,
+  todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
+  usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
 
 // Local wall-clock, not an epoch: every key here is a *calendar* day in the user's
@@ -19,6 +20,7 @@ beforeEach(() => {
   for (const k of Object.keys(usageDetail)) delete usageDetail[k];
   setTokenDays([]);
   setUsageRange(30);
+  resetCostBaselines();
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -48,6 +50,36 @@ describe("todayKey / uDkey — the calendar-day key both stores are keyed by", (
     // 00:30 local is still "today" even where that is yesterday in UTC.
     vi.setSystemTime(new Date(2027, 11, 31, 0, 30, 0));
     expect(todayKey()).toBe("2027-12-31");
+  });
+});
+
+describe("costDelta — what a running total owes the day", () => {
+  it("books the whole first reading, since nothing was counted before it", () => {
+    expect(costDelta("conv", 1.25)).toBe(1.25);
+  });
+  it("books only the increment while the counter climbs", () => {
+    costDelta("conv", 1.25);
+    expect(costDelta("conv", 3)).toBeCloseTo(1.75, 10);
+    expect(costDelta("conv", 3)).toBe(0); // a repeated reading owes nothing
+  });
+  it("keeps one baseline per conversation, not one per app", () => {
+    costDelta("a", 10);
+    expect(costDelta("b", 4)).toBe(4); // b's first reading, not b minus a
+    expect(costDelta("a", 12)).toBeCloseTo(2, 10);
+  });
+  it("survives the relaunch that resume performs — the pane changes, the total doesn't", () => {
+    // The regression: a drift `Move session` kills the pane and relaunches it seconds
+    // later, and Claude carries its running total across. Keyed by the pane this read
+    // as $28 of fresh spend; keyed by the conversation it reads as the $2 it was.
+    costDelta("conv", 28);
+    expect(costDelta("conv", 30)).toBeCloseTo(2, 10);
+  });
+  it("treats a drop as the counter restarting, and follows it down", () => {
+    // /clear, /compact, or a cold start: the new reading is all fresh spend, and the
+    // next increment must be measured from there rather than from the stale high.
+    costDelta("conv", 40);
+    expect(costDelta("conv", 0.5)).toBe(0.5);
+    expect(costDelta("conv", 1.5)).toBeCloseTo(1, 10);
   });
 });
 

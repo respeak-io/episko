@@ -31,6 +31,14 @@ Two things 0.13.0 shipped that had never been clicked.
   edge and 21px from the bottom of a 40px bar — `trafficLightPosition.y` is not the gap
   above the buttons but the height tao gives the titlebar container, so the number that
   reads as "centred" is 22, not 14.
+! **Resuming a session no longer charges the day twice for it.** Claude's cost counter
+  keeps running across a `--resume`, so the pane a relaunch creates — *Move session*,
+  a restore, a History reopen — inherited a total that had already been counted and
+  booked all of it again. One worktree move put $28 into the day a second time, so the
+  day read $68 while the session that earned it read $39. The day's increment is now
+  measured against the conversation rather than against the pane showing it. Days
+  already recorded stay inflated — nothing stored says by how much — so
+  `scripts/reconcile-usage.mjs` rebuilds them from the transcripts instead.
 ~ **The release-notes button is a document icon, and sits to the right of the version
   number** it explains rather than the left. It was also sharing a CSS class with the
   usage sparkline, which gave an 18px button a 24px-tall glyph.

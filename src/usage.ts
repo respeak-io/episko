@@ -56,6 +56,35 @@ export function addUsage(delta: number, s?: Sess) {
   localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
 }
 
+// What the statusLine reports is a running total, so the day only wants the increment
+// — and the thing that total belongs to is the *conversation*, not the pane showing it.
+// Claude's counter survives a relaunch: `--resume` hands the new process a figure that
+// already includes everything the old one spent. Diffing against the pane therefore
+// books that carried-over total a second time, because a fresh `Sess` starts at
+// `cost: null`. It is not hypothetical — one drift `Move session` (kill, move the
+// transcript, relaunch seconds later) put ~$28 into the day twice, so the day read $68
+// while the pane that had earned all of it read $39. Restore and a History reopen take
+// the same path and had the same bug.
+//
+// So the baseline is keyed by Claude's runtime session id, which `--resume` preserves
+// and which main.ts keeps on `Sess.resumeId`. A reading *below* the baseline means the
+// counter itself restarted — `/clear`, `/compact`, or a cold start hours later — so the
+// whole new reading is fresh spend and the baseline follows it down.
+//
+// In memory for the run, deliberately. Persisting it would also cover quitting and
+// resuming (Claude was observed resetting over a ten-hour gap but not over a
+// twenty-five-second one, and nothing documents where that line is), but a baseline
+// that outlives the counter it describes *swallows* real spend silently — and of the
+// two ways to be wrong, that is the one nobody can see.
+const costBaseline = new Map<string, number>();
+export function costDelta(conv: string, total: number): number {
+  const prev = costBaseline.get(conv);
+  costBaseline.set(conv, total);
+  return prev === undefined || total < prev ? total : total - prev;
+}
+// Module-level state for the app's whole run; only a test needs to clear it.
+export function resetCostBaselines() { costBaseline.clear(); }
+
 // ---------- Usage analytics (the Usage settings tab) ----------
 // Money comes from the rollup above: full history for the daily *totals*, plus the
 // per-model / per-project split from cc-usage-detail (recorded going forward). Tokens
