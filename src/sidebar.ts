@@ -88,16 +88,16 @@ export function renderSidebar() {
     const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
+      head = `<div class="phead" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
     } else if (isFav) {
       const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-      head = `<div class="phead empty-p" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
+      head = `<div class="phead empty-p" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
     } else {
       // discovered via an external session or a restorable one only — not a saved project
       const tail = p.externals.length
         ? `<span class="pcount ext">${p.externals.length} ext</span>`
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span></div>`;
+      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
     }
     return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
   }).join("");
@@ -131,6 +131,27 @@ let peekHover: string | null = null;
 function applyPeek() {
   for (const el of $("projects").querySelectorAll<HTMLElement>(".pgroup")) {
     el.classList.toggle("peek", el.dataset.path === peek.open);
+    // The arming hairline. Without it the group expands out of nowhere a second after
+    // you stopped moving, which reads as a glitch rather than as a deliberate delay —
+    // you cannot tell the app is counting unless it shows you.
+    const arming = !!peek.arming && el.dataset.path === peek.arming.path;
+    if (arming) {
+      // Re-run the fill, but from where the *timer* is rather than from zero. The class
+      // alone won't restart it on a group that was armed, cancelled and re-entered — and
+      // a plain restart is wrong the rest of the time, because this also runs after every
+      // repaint that changed the markup. renderAll() fires on each telemetry event, and a
+      // project with a live session repaints several times a second, so a bar that
+      // restarted here would crawl back to empty under the pointer while the timeout it
+      // depicts ran on to its original deadline: the one thing worse than no countdown is
+      // one that lies about how much is left. A negative delay offsets into the animation
+      // by however much has already elapsed.
+      const elapsed = Math.max(0, peekPrefs.openMs - (peek.arming!.at - Date.now()));
+      el.classList.remove("arming");
+      void el.offsetWidth;
+      el.style.setProperty("--peek-open", `${peekPrefs.openMs}ms`);
+      el.style.setProperty("--peek-arm-delay", `${-elapsed}ms`);
+    }
+    el.classList.toggle("arming", arming);
   }
 }
 function peekSchedule() {
@@ -144,10 +165,15 @@ function peekSchedule() {
 }
 /// Commit a new state: repaint only when what's on screen actually changed, then
 /// re-arm the timer.
+///
+/// **Both fields are on screen**, which is easy to forget: `open` is the expansion and
+/// `arming` is the hairline counting down to it. Comparing only `open` meant entering a
+/// group changed `arming` alone, no repaint happened, and the bar never appeared — the
+/// panel then opened a second later out of nowhere.
 function peekAdvance(next: PeekState) {
-  const wasOpen = peek.open;
+  const before = peek.open + "|" + (peek.arming?.path ?? "");
   peek = next;
-  if (peek.open !== wasOpen) applyPeek();
+  if (peek.open + "|" + (peek.arming?.path ?? "") !== before) applyPeek();
   peekSchedule();
 }
 

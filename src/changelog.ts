@@ -89,19 +89,67 @@ function splitHeading(h: string): [string, string] {
 /**
  * Should *What's new* open by itself?
  *
- * Only when the running version differs from the last one this machine acknowledged —
- * i.e. you just updated. Three cases are deliberately silent:
+ * Once per released version, on the machine that runs it. Three cases are silent:
  *
- * - **A fresh install** (`seen` is null). There is nothing new to someone who has never
- *   run it; opening a changelog over an empty app is noise before it is information.
- * - **A version with no section.** The screen would open on nothing.
- * - **A downgrade or a dev build.** Only a version we can find in the file counts, so
- *   running a local build with an unpublished version stays quiet.
+ * - **A version already read.** Including one read and then returned to — going back to
+ *   0.13.1 after trying 0.14.0 must not re-announce it. That is why `seen` is a set and
+ *   not a last-seen string.
+ * - **A version with no section.** A local dev build; the screen would open on nothing.
+ * - **`Unreleased`**, which describes something nobody is running.
+ *
+ * **There is deliberately no fresh-install exception, and that is a reversal.** 0.13.0
+ * had one, keyed on the seen-record being absent — but the release that *introduces* a
+ * seen-record is exactly the release where every existing install has none, so the one
+ * version the guard silenced was the one that shipped the feature. Rescuing it needs a
+ * guess at whether the rest of `localStorage` looks "used", and that guess was measured
+ * wrong twice: `cc-icons`, `cc-icons-v` and `cc-restore` are all written during a first
+ * boot, some of them before this module is even imported. It cannot be unit-tested
+ * either — it depends on import order across the whole app graph — so it would rot
+ * silently, in the direction of hiding the feature.
+ *
+ * The cost of dropping it is that a first-time user is shown the notes for the version
+ * they just installed, once. For someone who has never seen the app that reads as an
+ * introduction, and it is one Esc away.
  */
-export function shouldAnnounce(current: string, seen: string | null, log: Release[]): boolean {
-  if (!current || !seen || seen === current) return false;
+export function shouldAnnounce(current: string, seen: readonly string[], log: Release[]): boolean {
+  if (!current || seen.includes(current)) return false;
   return log.some((r) => r.released && r.version === current);
 }
+
+// ---------- the seen record ----------
+// Where it is *stored* is ./changelogui's business; what it MEANS is here, so the
+// migration path is covered by a test rather than by opening the app on a machine that
+// happens to hold the old key.
+
+/**
+ * Read the record, folding in 0.13.0's single-value key when the list is absent.
+ *
+ * The legacy fallback runs on the *value*, not on a version check — a machine that
+ * skipped a release still has the old key and nothing else, and there is no other
+ * evidence of what it has read.
+ */
+export function parseSeen(list: string | null, legacy: string | null): string[] {
+  if (list) {
+    try {
+      const a: unknown = JSON.parse(list);
+      // Anything hand-edited into the key is ignored rather than trusted: the cost of a
+      // bad entry is a missed announcement, which is silent.
+      if (Array.isArray(a)) return a.filter((x): x is string => typeof x === "string");
+    } catch { /* truncated or hand-mangled — fall through to the legacy key */ }
+  }
+  return legacy ? [legacy] : [];
+}
+
+/// Add a version, newest last, deduped and bounded. Re-adding one already present moves
+/// it to the end rather than duplicating it, so the cap can never evict a live version.
+export function recordSeen(seen: readonly string[], version: string, cap = SEEN_CAP): string[] {
+  if (!version) return [...seen];
+  return [...seen.filter((v) => v !== version), version].slice(-cap);
+}
+
+/// Bounded so the key can't grow forever — one entry per release actually run here, so
+/// the cap is decades away, and what falls off the front is versions nobody can reach.
+const SEEN_CAP = 50;
 
 /// The release to open on: the running version if the file knows it, else the newest
 /// released one, else whatever is first (an Unreleased-only file on a dev build).

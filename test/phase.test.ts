@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { apiErrText, phaseText, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
-import { usage, usageDetail } from "../src/usage";
+import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, permCmd,
   pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
@@ -46,6 +46,7 @@ beforeEach(() => {
   fcLog.length = 0; midSnap.h5 = midSnap.d7 = null;
   for (const k of Object.keys(usage)) delete usage[k];
   for (const k of Object.keys(usageDetail)) delete usageDetail[k];
+  resetCostBaselines();
   setOnTurnEnd(() => {});
   store.clear();
 });
@@ -382,6 +383,30 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       applyStatusline(s, { cost: { total_cost_usd: 2 } });
       applyStatusline(s, { cost: { total_cost_usd: 2 } });
       expect(Object.values(usage)[0]).toBe(2);
+    });
+    it("does not re-book the running total when a resume replaces the pane", () => {
+      // The shipped bug, end to end. `Move session` (and restore, and a History
+      // reopen) closes the pane and launches a new `Sess` — `cost: null` — for the
+      // same conversation, which Claude resumes with its running total intact. The
+      // day used to gain that whole total a second time: $30 spent, $58 recorded.
+      const before = sess({ resumeId: "conv", model: "Opus 4.8" });
+      applyStatusline(before, { cost: { total_cost_usd: 28 } });
+      const after = sess({ id: "relaunched", resumeId: "conv", model: "Opus 4.8" });
+      applyStatusline(after, { cost: { total_cost_usd: 28 } });
+      applyStatusline(after, { cost: { total_cost_usd: 30 } });
+      expect(after.cost).toBe(30);
+      expect(Object.values(usage)[0]).toBeCloseTo(30, 10); // not 58
+      // Both panes are still named — the money moved once, the attribution didn't.
+      expect(Object.values(usageDetail)[0].sessions).toEqual(["sid", "relaunched"]);
+    });
+    it("counts a rotated conversation from scratch, since its counter restarted too", () => {
+      // /clear mints a new runtime id *and* zeroes the total. main.ts re-points
+      // resumeId before the statusLine lands, so the new id starts its own baseline.
+      const s = sess({ resumeId: "conv" });
+      applyStatusline(s, { cost: { total_cost_usd: 5 } });
+      s.resumeId = "conv2";
+      applyStatusline(s, { cost: { total_cost_usd: 0.25 } });
+      expect(Object.values(usage)[0]).toBeCloseTo(5.25, 10);
     });
     it("keeps a history for the sparkline, capped", () => {
       const s = sess();

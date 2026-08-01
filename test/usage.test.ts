@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addUsage, modelFamily, setTokenDays, setUsageRange, todayKey, tokenDays, tokenScanAt,
-  uBuckets, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type DayUsage, type UDay,
+  addUsage, costDelta, modelFamily, resetCostBaselines, setTokenDays, setUsageRange,
+  todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
+  usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
 
 // Local wall-clock, not an epoch: every key here is a *calendar* day in the user's
@@ -19,6 +20,7 @@ beforeEach(() => {
   for (const k of Object.keys(usageDetail)) delete usageDetail[k];
   setTokenDays([]);
   setUsageRange(30);
+  resetCostBaselines();
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -48,6 +50,73 @@ describe("todayKey / uDkey — the calendar-day key both stores are keyed by", (
     // 00:30 local is still "today" even where that is yesterday in UTC.
     vi.setSystemTime(new Date(2027, 11, 31, 0, 30, 0));
     expect(todayKey()).toBe("2027-12-31");
+  });
+});
+
+describe("costDelta — what a running total owes the day", () => {
+  it("books the whole first reading, since nothing was counted before it", () => {
+    expect(costDelta("conv", 1.25)).toBe(1.25);
+  });
+  it("books only the increment while the counter climbs", () => {
+    costDelta("conv", 1.25);
+    expect(costDelta("conv", 3)).toBeCloseTo(1.75, 10);
+    expect(costDelta("conv", 3)).toBe(0); // a repeated reading owes nothing
+  });
+  it("keeps one baseline per conversation, not one per app", () => {
+    costDelta("a", 10);
+    expect(costDelta("b", 4)).toBe(4); // b's first reading, not b minus a
+    expect(costDelta("a", 12)).toBeCloseTo(2, 10);
+  });
+  it("survives the relaunch that resume performs — the pane changes, the total doesn't", () => {
+    // The regression: a drift `Move session` kills the pane and relaunches it seconds
+    // later, and Claude carries its running total across. Keyed by the pane this read
+    // as $28 of fresh spend; keyed by the conversation it reads as the $2 it was.
+    costDelta("conv", 28);
+    expect(costDelta("conv", 30)).toBeCloseTo(2, 10);
+  });
+  it("treats a drop as the counter restarting, and follows it down", () => {
+    // /clear, /compact, or a cold start: the new reading is all fresh spend, and the
+    // next increment must be measured from there rather than from the stale high.
+    costDelta("conv", 40);
+    expect(costDelta("conv", 0.5)).toBe(0.5);
+    expect(costDelta("conv", 1.5)).toBeCloseTo(1, 10);
+  });
+  it("persists the baseline, so quitting and restoring doesn't re-book the total", () => {
+    // The half a run-scoped map couldn't cover. `cc-usage` is localStorage and survives
+    // the quit; a baseline that didn't meant the restored pane's first reading met an
+    // empty map and paid the day twice — the same bug, by the commonest route to it.
+    costDelta("conv", 28);
+    expect(store.get("cc-cost-base")).toContain("conv");
+    const fresh = new Map(Object.entries(JSON.parse(store.get("cc-cost-base")!)));
+    expect((fresh.get("conv") as { t: number }).t).toBe(28);
+  });
+  it("re-reads a persisted baseline on the next boot", async () => {
+    // A real restart, as far as a unit test can stage one: seed the key, then evaluate
+    // the module again. `conv` owes the increment, not the carried-over total.
+    store.set("cc-cost-base", JSON.stringify({ conv: { t: 28, at: Date.now() } }));
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 30)).toBeCloseTo(2, 10);
+  });
+  it("ignores a corrupt baseline key rather than failing to boot", async () => {
+    store.set("cc-cost-base", "{not json");
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 5)).toBe(5); // no baseline, so the whole reading — never a throw
+  });
+  it("caps the persisted map, evicting the conversations touched longest ago", async () => {
+    vi.resetModules();
+    const { costDelta: booted, resetCostBaselines: reset } = await import("../src/usage");
+    reset();
+    // 501 conversations, each stamped a minute apart, so "oldest" is unambiguous.
+    for (let i = 0; i <= 500; i++) {
+      vi.setSystemTime(new Date(2027, 2, 14, 12, 0, 0).getTime() + i * 60_000);
+      booted(`c${i}`, 1);
+    }
+    const saved = JSON.parse(store.get("cc-cost-base")!) as Record<string, unknown>;
+    expect(Object.keys(saved)).toHaveLength(500);
+    expect(saved.c0).toBeUndefined();   // the first one touched fell off
+    expect(saved.c500).toBeDefined();   // the most recent survived
   });
 });
 

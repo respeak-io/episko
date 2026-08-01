@@ -285,6 +285,20 @@ html.win .wctl { display: flex; }
 .wthead:hover .wtadd { opacity: 1; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* The arming hairline: fills under the project name while the open timer runs, so a
+   panel that appears a second later reads as deliberate rather than as a glitch. The
+   duration is the real preference (--peek-open, set by applyPeek), not a constant —
+   a bar that finishes before or after the panel opens is worse than no bar. */
+.phead { position: relative; }
+.parm { position: absolute; left: 7px; right: 7px; bottom: 1px; height: 1.5px; border-radius: 2px;
+  background: var(--accent-line); transform: scaleX(0); transform-origin: left; opacity: 0; pointer-events: none; }
+/* The negative --peek-arm-delay is how a repaint mid-countdown resumes the fill instead
+   of restarting it; applyPeek sets it to the elapsed time. */
+.pgroup.arming .parm { opacity: 1; animation: peek-arm var(--peek-open, 1000ms) linear var(--peek-arm-delay, 0ms) forwards; }
+@keyframes peek-arm { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+/* Reduced motion gets no sweep — the delay still applies, it just isn't animated. */
+@media (prefers-reduced-motion: reduce) { .pgroup.arming .parm { animation: none; opacity: 0; } }
+
 /* ---------- peek: the checkouts nothing is running in ----------------------------
    Collapsed until the pointer rests on the project group (./peek owns the timing,
    ./sidebar drives it, ./sidebarview renders the rows). Always in the DOM — hover
@@ -1306,7 +1320,9 @@ select.in-ctl { cursor: pointer; }
    most distracting thing on the page. */
 .peekdemo { margin: 0; min-height: 210px; cursor: default; }
 .peekdemo .pgroup { padding-bottom: 2px; }
-.peekdemo .p-phead { border-radius: 7px; }
+/* Positioned so the shared .parm anchors to this head the way it does to a real .phead —
+   the hairline is drawn by the sidebar's own rule, not by a copy of it. */
+.peekdemo .p-phead { border-radius: 7px; position: relative; }
 .peekdemo .pgroup:hover .p-phead { background: var(--surface); }
 /* The demo's rows are preview-scale, so the sidebar's own sizes are stepped down. */
 .peekdemo .pgpeek-in { padding-left: 6px; margin-left: 5px; }
@@ -1853,17 +1869,26 @@ select.in-ctl { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .sw i, .sw i::after { transition: none; } }
 
 /* ═══ What's new — the changelog screen ════════════════════════════════════════
-   Opened once after an update, and by the ✦ beside the version number. Content is
-   CHANGELOG.md, bundled at build time; ./changelog parses it, ./changelogui owns
+   Opened once after an update, and by the notes icon beside the version number. Content
+   is CHANGELOG.md, bundled at build time; ./changelog parses it, ./changelogui owns
    this markup. Shares #scrim with #wtDlg / #setDlg / #palette. */
+/* Version + notes icon as one unit, so the footer's 15px gap falls either side of the
+   pair rather than between them — the icon explains that number. */
+.foot .fvern { display: flex; align-items: center; gap: 4px; }
 .clbtn { display:inline-flex; align-items:center; justify-content:center; width:18px; height:16px; padding:0; border-radius:5px; cursor:pointer; border:1px solid transparent; background:none; color: var(--muted-2); }
 .clbtn:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
-.clbtn .spark { font-size:10px; line-height:1; }
+/* NOT `.spark` — that class is format.ts's sparkline SVG (108×24, display:block), and
+   sharing it gave this 18×16 button a 24px-tall child. Its own name, its own box. */
+.clico { display: block; width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.clico .cl-pg { stroke-width: 1.1; }
+/* The text lines carry the "notes" reading but must not muddy into a block at 11px, so
+   they are thinner and dimmer than the page outline. */
+.clico .cl-tx { stroke-width: .9; opacity: .62; }
 /* Lit until the running version has been read once — the only signal that there is
-   something new, which is why it sits ON the version number rather than in the top bar. */
+   something new, which is why it sits beside the version number rather than in the top bar. */
 .clbtn.fresh { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
-@media (prefers-reduced-motion: no-preference) { .clbtn.fresh .spark { animation: cl-sp 2.4s ease-in-out infinite; } }
-@keyframes cl-sp { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+@media (prefers-reduced-motion: no-preference) { .clbtn.fresh .clico { animation: cl-sp 2.4s ease-in-out infinite; } }
+@keyframes cl-sp { 0%,100%{opacity:1;} 50%{opacity:.45;} }
 
 .cl-dlg { position: fixed; z-index: 61; top: 7%; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985);
   width: min(760px, 92vw); height: min(560px, 82vh); display: flex; flex-direction: column; overflow: hidden;
