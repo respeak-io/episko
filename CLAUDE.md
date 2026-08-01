@@ -898,6 +898,14 @@ difference is the point:
   leaves them room. Drawing our own would lose the green button, which zooms or
   goes fullscreen depending on how you hold it. In fullscreen the OS takes the
   lights back into its own sliding overlay, so `html.fs` closes that gap.
+  **`trafficLightPosition.y` is not the gap above the buttons**, which is why the
+  first number looked plausible and shipped top-heavy: tao resizes the titlebar
+  *container* to `button_height + y` and pins it to the window top, but never moves
+  the button within it, and AppKit leaves that at `origin.y = 9` of a 14pt button.
+  So the visible gap is `y - 9`, and centring wants `9 + (H - 14) / 2` — **22** for
+  today's 40px `.top`. Change that height and this number moves with it; the
+  arithmetic is checkable in a ten-line `swift` script against a bare `NSWindow`,
+  which is cheaper than a rebuild per guess.
 - **Windows has no such style**, so the frame goes entirely (`decorations: false`)
   and `#winCtl` draws minimize / maximize / close.
 - **A browser gets neither.** The same HTML opens on vite's port in dev, where
@@ -953,6 +961,7 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 - **Verified against the real CLI:** resume preserves the id and appends to the *same* transcript; it must run in the **original cwd** (else `No conversation found with session ID: …`); and resuming an **already-live** session silently interleaves both transcripts (Claude takes no lock). Hence `dormantBusy()` gates Resume, and spawners refuse a vanished workdir (deleted worktrees are real).
 - `list_past_sessions(workdir)` supplies labels from Claude's `ai-title` record — **last occurrence wins** — falling back `ai-title` → `last-prompt` → first user message. That layout is internal to Claude Code and documented as unstable across releases, so the chain is load-bearing, not padding. Only the 512KB tail is scanned. Entries with **no transcript are dropped** (a session launched but never prompted writes none).
 - **The transcript folder is keyed by the *physical* workdir**, so `project_transcript_dir` canonicalizes before encoding (`physical_cwd`). This is not Claude being clever: `getcwd()` reports the resolved path however the process got there, so a session launched in a symlinked folder writes under the resolved encoding and under no other — encode the spelling the user picked and `list_past_sessions` returns empty, which reads as "no past sessions" rather than as a failure. On Windows the canonical form is verbatim (`\\?\C:\…`) and **must** have that prefix stripped or a currently-working path breaks; `strip_verbatim` is separated out precisely so that half is testable on a machine that can't produce one. Both live in **`platform.rs`**, not here: `repo_root_of` needs the same resolution for the same underlying reason, so the encoder is no longer the only caller.
+- **Claude's cost counter survives the relaunch, so the day's baseline must too.** `total_cost_usd` (and `total_duration_ms`) come back from a `--resume` still carrying what the previous process spent — observed continuing across a 25-second kill-and-relaunch, and resetting across a ten-hour gap; nothing documents where that line falls. A relaunch builds a *new* `Sess` with `cost: null`, so diffing the running total against the pane booked the whole carried-over figure into `cc-usage` a second time. That shipped: a drift *Move session* put ~$28 into one day twice, and the day read $68 beside a pane reading $39. `costDelta` (usage.ts) keys the baseline by **Claude's runtime session id**, which resume preserves, and treats a *drop* as the counter restarting. Anything that adds a resume path inherits the fix; anything that diffs a cumulative telemetry figure against a `Sess` field repeats the bug.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
 

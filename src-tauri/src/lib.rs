@@ -279,6 +279,14 @@ pub fn run() {
             // style, so there the frame goes entirely and the header draws its own
             // minimize/maximize/close (`#winCtl`).
             //
+            // `trafficLightPosition.y` is *not* the gap above the buttons, which is
+            // why 14 looked top-heavy for a year: tao resizes the titlebar container
+            // to `button_height + y` and pins it to the window top, but never moves
+            // the button inside it — and AppKit leaves it at `origin.y = 9` of a
+            // 14pt-tall button. So the visible gap is `y - 9`, and centring in a
+            // 40px header wants `9 + (40 - 14) / 2` = **22**. Change `.top`'s height
+            // and this number moves with it.
+            //
             // Hence this window is built here rather than by the config (`create:
             // false` above): `decorations` is not a per-platform config key, and a
             // `tauri.windows.conf.json` would replace the whole `windows` array —

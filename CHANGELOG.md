@@ -27,6 +27,10 @@ Two things 0.13.0 shipped that had never been clicked.
   it, and that empty record was being read as "brand new install, stay quiet". It now
   remembers every version it has shown you, so each one announces once and going back to
   an older build stays silent.
+! **The macOS traffic lights sit centred in the header.** They were 5px from the top
+  edge and 21px from the bottom of a 40px bar — `trafficLightPosition.y` is not the gap
+  above the buttons but the height tao gives the titlebar container, so the number that
+  reads as "centred" is 22, not 14.
 ~ **The release-notes button is a document icon, and sits to the right of the version
   number** it explains rather than the left. It was also sharing a CSS class with the
   usage sparkline, which gave an 18px button a 24px-tall glyph.
