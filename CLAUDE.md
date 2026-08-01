@@ -333,10 +333,22 @@ Three things that are easy to get wrong:
   nothing happened on (a column of blank rows reads as broken); `densePerDay` fills
   them back in, because two busy days a week apart otherwise render as two adjacent
   bars and read as "constantly busy".
-- **⌘I collapses to a 44px rail here, not to nothing.** The dashboard header carries
-  only `＋ Session`, `✕` and `◨` — History, Terminal and Run act on the *project* and
-  live in the inspector — so hiding the panel outright would hide real verbs. On a
-  session ⌘I still hides it completely.
+- **The header's four verbs act on the dashboard's project, not on a session.**
+  `activeProjectCtx`/`activeCwd` (panes.ts) answer for the dash mirror as well as for a
+  session, external or dormant one, so ＋ Session, ❯ Terminal, ▶ Run and ◷ History —
+  and everything else keyed off those two, ⌘T/⌘⇧R/⌘⇧H/⌘⏎ included — treat the project on
+  screen exactly as they treat a session's. `＋ Session` opening ⌘K instead was the odd
+  one out: it asked which project when the answer was the header it was in.
+  `requestLaunch` decides "repo, so offer the worktree dialog" from three **zero-IPC**
+  signals, and all three only cover a folder something is *running* in — which a
+  dashboard is precisely not. Hence `dashLaunchHint()`: the dashboard already bought
+  `project_facts` and `worktree_heads` for this folder, so the answer is passed in
+  rather than asked for again, and the click stays synchronous (see the comment on
+  `requestLaunch` for why nothing may be awaited before that dialog is on screen).
+- **⌘I collapses to a 44px rail here, not to nothing.** The dashboard's own verbs — the
+  worktree dialog, the commit graph, the folder, the live-session strip — exist only in
+  the inspector, so hiding the panel outright would hide real verbs. On a session ⌘I
+  still hides it completely.
 
 ### The GitHub half
 
