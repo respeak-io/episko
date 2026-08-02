@@ -33,6 +33,14 @@ Markers: `+` new · `~` changed · `!` fixed
   committable file in your repo still needs an explicit yes; adding your days to one a
   colleague has already committed does not, or the file quietly becomes one person's
   diary.
+! ***What's new* shows its formatting instead of its asterisks.** Emphasis rendered as
+  literal `*` and `**` throughout the release notes — every italic in the file, and any
+  entry that put an italic inside a bold phrase, which came out with no bold either. The
+  one-line summary at the top of each release was rendered as plain text as well.
+! ***What's new* no longer opens on a blank "next release".** Cutting a release leaves an
+  empty section behind for the next one, and every build shipped with that section
+  showing in the sidebar — a row that opened on a heading, "not released yet", and
+  nothing else.
 ! **A project's day summaries appear straight away.** Every past day's sentence was
   already on disk from the first time you looked, but the timeline asked for today's
   first — and today is the one day that has to be re-written, so a week of summaries

@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **636 vitest + cargo (144 on macOS, 141 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **644 vitest + cargo (144 on macOS, 141 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -267,6 +267,21 @@ GitHub release body, and `ci.yml` refuses a `dev → main` pull request whose
   demanding generated prose would make writing your own notes a CI failure.
 - **Three markers, not six headings**: `+` new, `~` changed, `!` fixed. Keep-a-Changelog's
   sections force a judgement call per line and leave headings with one bullet under them.
+- **A section with no entries and no lede is dropped at parse time**, and that is not
+  tidiness: `changelog release` opens a fresh empty `## Unreleased` and the tag builds
+  from that state, so **every released build ships one**. Kept, it rendered as a "next"
+  row in the rail that opened on a heading, the words "not released yet", and nothing
+  else. Whether `## Unreleased` is non-empty stays a *branch* policy enforced by
+  `changelog.mjs check` on the PR — that script has its own parser, so this does not
+  weaken the gate.
+- **`inlineMd` renders bold, italic and code, and the ordering is load-bearing.** Bold
+  runs first and must tolerate a `*` inside it, or an entry with italics nested in bold
+  is skipped entirely — 0.13.6 shipped one and it showed raw asterisks with no bold.
+  Italic then runs *inside* what bold produced, anchored on a run with no `*` so an
+  unpaired marker (`2 * 3`) is left alone. It lives in `changelog.ts`, not the DOM
+  module, because it is string-in-string-out and therefore the half of the dialog that
+  can be tested — where it used to live, the missing italic rule went unnoticed through
+  nine releases of a file that uses italics constantly. The lede goes through it too.
 - **`shouldAnnounce` opens once per released version, and the record is a set.**
   `cc-seen-versions` lists every version *What's new* has been opened for here (0.13.0's
   single-value `cc-seen-version` is still read once and folded in), so a version already
@@ -591,7 +606,7 @@ Four conventions hold across them:
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 636 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 644 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -612,7 +627,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
-| `changelog.ts` | CHANGELOG.md → releases, and the one moment *What's new* opens by itself |
+| `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
 | `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).

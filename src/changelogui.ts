@@ -14,7 +14,7 @@ import { $, dropScrim } from "./dom";
 import { dlog } from "./debug";
 import { esc } from "./format";
 import {
-  grouped, MARK_GLYPH, MARK_LABEL, parseChangelog, parseSeen, recordSeen, releaseFor,
+  grouped, inlineMd, MARK_GLYPH, MARK_LABEL, parseChangelog, parseSeen, recordSeen, releaseFor,
   shouldAnnounce, type Release,
 } from "./changelog";
 
@@ -89,24 +89,17 @@ function render() {
     `<div class="cl-vh"><h4>${esc(r.released ? `Episko ${r.version}` : "Next release")}</h4>
       ${r.date ? `<span class="when">${esc(r.date)}</span>` : `<span class="when">not released yet</span>`}
       ${running ? `<span class="chip ok">you're running this</span>` : ""}</div>`
-    + (r.lede ? `<p class="cl-lede">${esc(r.lede)}</p>` : "")
+    // A lede carries the same markup an entry does — 0.10.0's and 0.11.0's both open on
+    // a bold clause — so it goes through the same renderer rather than plain `esc`.
+    + (r.lede ? `<p class="cl-lede">${inlineMd(r.lede)}</p>` : "")
     + grouped(r).map((g) => `<div class="cl-group">
         <div class="cl-gh"><span class="t">${esc(MARK_LABEL[g.mark])}</span></div>
         ${g.entries.map((e) => `<div class="cl-item ${g.mark}">
           <span class="m">${MARK_GLYPH[g.mark]}</span>
-          <span class="tx">${inline(e.text)}</span></div>`).join("")}
+          <span class="tx">${inlineMd(e.text)}</span></div>`).join("")}
       </div>`).join("");
 
   ($("clGh") as HTMLButtonElement).hidden = !r.released;
-}
-
-/// The only markup an entry may carry: `**bold**` and `` `code` ``. Escaped first, so
-/// this can never inject — the file is in our repo, but it is also the thing a
-/// contributor edits, and a changelog is not a place to trust input.
-function inline(s: string): string {
-  return esc(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
 }
 
 const shortDate = (d: string) => (d ? d.slice(5).replace("-", "/") : "—");

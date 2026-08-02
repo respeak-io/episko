@@ -1986,5 +1986,10 @@ select.in-ctl { cursor: pointer; }
 .cl-item .tx { font-size: 13px; line-height: 1.55; color: var(--muted); }
 .cl-item .tx b { color: var(--text); font-weight: 600; }
 .cl-item .tx code { font: 11.5px var(--font-mono); color: var(--accent-ink); }
+/* A lede carries the same markup an entry does (0.10.0's and 0.11.0's both open on a
+   bold clause), so it gets the same treatment — it was rendered as plain text, which is
+   why those two showed their asterisks. */
+.cl-lede b { color: var(--text); font-weight: 600; }
+.cl-lede code { font: 12px var(--font-mono); color: var(--accent-ink); }
 .cl-foot { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 15px; border-top: 1px solid var(--hair); background: var(--bg-2); font: 10.5px var(--font-mono); color: var(--muted-2); }
 @media (max-width: 640px) { .cl-body { grid-template-columns: 1fr; } .cl-rail { display: none; } }
