@@ -245,7 +245,11 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 - [ ] **An external session appears.** Start `claude` in a plain terminal; it shows in
       the sidebar within ~3s as a read-only mirror. Then `/clear` inside it and confirm
       it does **not** duplicate or vanish (pid-based filtering, not id-based).
-- [ ] **macOS only:** clicking it fronts its terminal window.
+- [ ] **↗ fronts its terminal.** macOS picks the exact *tab* (Terminal.app / iTerm2);
+      Windows picks the *window*, so check it with two windows of one app open — two VS
+      Code windows on different projects, or two Windows Terminal windows — and confirm
+      the jump lands on the one running that session, not merely on the app. That
+      tiebreak reads the window title, so it is the half no unit test can hold.
 
 ### The OS edge
 

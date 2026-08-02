@@ -203,9 +203,11 @@ pub(crate) fn sh_quote(s: &str) -> String {
 /// **Not compiled on Windows at all**, and that is now load-bearing rather than tidy.
 /// There used to be a `cfg(windows)` stub returning None, because `session_resources`
 /// called this on every platform for per-session CPU/RAM; that reader now measures disk
-/// I/O through `sysinfo` instead, which leaves `focus_external_session` — itself
-/// macOS-only — as the sole caller. A stub with no callers is `dead_code`, which is a
-/// **CI failure** under `-D warnings`, and one only the Windows leg can see.
+/// I/O through `sysinfo` instead, which leaves the *macOS half* of
+/// `focus_external_session` as the sole caller — the Windows half now exists too, but
+/// finds its window through the win32 window APIs and never asks `ps` anything. A stub
+/// with no callers is `dead_code`, which is a **CI failure** under `-D warnings`, and
+/// one only the Windows leg can see.
 ///
 /// The general shape of that trap: removing the last cross-platform caller of a
 /// cfg-gated helper breaks the *other* platform's build, invisibly from this one. The

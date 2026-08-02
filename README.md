@@ -115,7 +115,7 @@ cd src-tauri && cargo test
 | Ghostty / Terminal / iTerm2 | ✅ | — | — |
 | Telemetry, permissions, usage | ✅ | ✅ | — |
 | External-session discovery | ✅ | ✅ | untested |
-| Jump to a session's terminal | ✅ | — | — |
+| Jump to a session's terminal | ✅ tab | ✅ window | — |
 
 Release builds target Apple silicon (`aarch64`) and Windows x64. Intel Macs aren't covered; Linux isn't packaged, though the non-`ps` paths are written to be OS-agnostic.
 
