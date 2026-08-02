@@ -330,7 +330,14 @@ from one `project_facts` call):
 - **git** — the commit half of the timeline, the checkouts card, and *everything
   shared*: `.episko/` only means anything if it can be committed, so **sharing needs
   git, not GitHub**. A GitLab or self-hosted remote is this tier, which is why
-  `parse_remote` mints a slug for `github.com` and nothing else.
+  `parse_remote` mints a slug for `github.com` and nothing else — but **the host in a
+  remote URL is not necessarily a hostname**. Someone with two GitHub accounts keeps
+  them apart with an `~/.ssh/config` `Host github.com-work` alias, and it is the alias
+  that lands in the URL, so a string match files a GitHub repo under "no GitHub" for
+  exactly the people with the most repos. `ssh -G <name>` answers it (config only, no
+  connection; an unknown name echoes back), memoised for the process. That is also a
+  test trap: `git remote get-url` applies the developer's `url.*.insteadOf` rewrites, so
+  a fixture naming a real owner can come back rewritten — fixtures use `example-org`.
 - **neither** — sessions, spend and personal notes. None of those ever cared about git.
 
 A card with nothing to say is **absent, not empty** — an "Issues" panel in a folder

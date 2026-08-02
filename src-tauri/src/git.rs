@@ -15,6 +15,9 @@
 // out first. `same_path` came here too — one consumer module, so it belongs to it.
 
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use tauri::State;
 
 use crate::platform::{augmented_path, norm_path, physical_cwd, sys_command};
@@ -1633,21 +1636,25 @@ pub(crate) struct ProjectFacts {
     /// `origin`'s URL verbatim, for display. None for a repo with no remote — a normal
     /// local-only project, not an error.
     pub origin: Option<String>,
-    /// The host, lowercased (`github.com`, `gitlab.com`, `git.example.internal`).
+    /// The host as the remote spells it, lowercased (`github.com`, `gitlab.com`,
+    /// `git.example.internal`) — an `~/.ssh/config` alias included, since that is the
+    /// name the user chose and the only place this is shown is the "not on GitHub" card.
     pub host: Option<String>,
     /// `owner/repo`, only when the host is GitHub — it is what `gh` needs, and naming it
-    /// for any other host would imply a capability Episko doesn't have there.
+    /// for any other host would imply a capability Episko doesn't have there. An ssh
+    /// alias that resolves to `github.com` counts; see [`parse_remote_with`].
     pub slug: Option<String>,
 }
 
-/// Host and `owner/repo` out of a git remote URL.
+/// Host and `owner/repo` out of a git remote URL, before anything decides what that host
+/// *is*.
 ///
 /// Pure and separated out because the spellings git accepts all appear in the wild and
 /// only some are URIs: `git@host:owner/repo.git` has no scheme and a colon where a slash
 /// belongs, while `ssh://git@host/owner/repo` and `https://host/owner/repo.git` are
 /// ordinary URLs. Getting this wrong does not error — it silently files a GitHub project
 /// under "no GitHub" and drops two cards, which is the failure this test-covers against.
-pub(crate) fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
+fn split_remote(url: &str) -> (Option<String>, Option<String>) {
     let u = url.trim();
     if u.is_empty() {
         return (None, None);
@@ -1673,13 +1680,98 @@ pub(crate) fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
     }
     let path = path.trim_matches('/').trim_end_matches(".git");
     let mut seg = path.split('/').filter(|s| !s.is_empty());
-    let slug = match (seg.next(), seg.next()) {
-        // Only GitHub gets a slug: it is what `gh` is handed, and producing one for a
-        // GitLab remote would promise a capability that does not exist.
-        (Some(o), Some(r)) if host == "github.com" => Some(format!("{o}/{r}")),
+    let owner_repo = match (seg.next(), seg.next()) {
+        (Some(o), Some(r)) => Some(format!("{o}/{r}")),
         _ => None,
     };
-    (Some(host), slug)
+    (Some(host), owner_repo)
+}
+
+/// [`split_remote`], plus the one question a parser cannot answer on its own: **is the
+/// name in this URL a hostname at all?**
+///
+/// Only GitHub gets a slug — it is what `gh` is handed, and producing one for a GitLab
+/// remote would promise a capability that does not exist. But `github.com-work` *is*
+/// GitHub: an `~/.ssh/config` `Host` alias is how one machine keeps two GitHub identities
+/// apart, and it is the alias, not the hostname, that lands in the remote URL. Matching
+/// the string alone therefore drops the issues-and-pull-requests half of the dashboard
+/// for exactly the people who have two accounts. `gh` resolves those aliases itself
+/// (which is why `gh repo view` answers in such a checkout), so Episko was the only link
+/// in the chain that could not read the remote.
+///
+/// `resolve` is the seam for that — see [`ssh_hostname`] — and it is consulted only after
+/// the plain match has failed, so the ordinary case still costs nothing.
+fn parse_remote_with(url: &str, resolve: impl Fn(&str) -> Option<String>) -> (Option<String>, Option<String>) {
+    let (host, owner_repo) = split_remote(url);
+    let Some(h) = host else { return (None, None) };
+    if h == "github.com" {
+        return (Some(h), owner_repo);
+    }
+    // Only an ssh-ish remote can carry an alias: an https host is a real hostname, and
+    // asking ssh about one would spend a process on every GitLab dashboard.
+    let aliased = owner_repo.is_some()
+        && !url.trim_start().to_ascii_lowercase().starts_with("http")
+        && resolve(&h).as_deref() == Some("github.com");
+    // The host stays as written. It is only shown when there is no slug, and a user who
+    // typed an alias should be told back the name they typed.
+    (Some(h), owner_repo.filter(|_| aliased))
+}
+
+/// Host and GitHub `owner/repo` out of a git remote URL.
+pub(crate) fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
+    parse_remote_with(url, ssh_hostname)
+}
+
+// Resolved aliases, for the life of the process. `~/.ssh/config` is config, and nobody
+// edits it mid-session — the same reasoning as github.rs's `VIEWER`.
+static SSH_HOSTS: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
+/// The real hostname behind an `~/.ssh/config` `Host` alias, or `None` if there is none.
+///
+/// `ssh -G <name>` prints the config that *would* apply to a connection without making
+/// one, so this costs a process and no network; a name that is not an alias comes back as
+/// itself, which is what makes the answer always safe to compare. Asking ssh rather than
+/// reading the file ourselves is the whole point: `Include`, wildcards and `Match` are
+/// its grammar, and a half-parser would be wrong precisely on the configs elaborate
+/// enough to have an alias in them.
+///
+/// No ssh on PATH → `None`, which is exactly the behaviour before this existed.
+fn ssh_hostname(alias: &str) -> Option<String> {
+    // The name reaches ssh as an argument, so it must not be able to read as a flag —
+    // the same guard `git_commit_message` puts on a sha before handing it to git.
+    if alias.starts_with('-')
+        || alias.is_empty()
+        || !alias.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return None;
+    }
+    if let Ok(g) = SSH_HOSTS.lock() {
+        if let Some(hit) = g.as_ref().and_then(|m| m.get(alias)) {
+            return hit.clone();
+        }
+    }
+    let found = sys_command("ssh")
+        .env("PATH", augmented_path())
+        .args(["-G", alias])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| ssh_hostname_in(&String::from_utf8_lossy(&o.stdout), alias));
+    if let Ok(mut g) = SSH_HOSTS.lock() {
+        g.get_or_insert_with(HashMap::new).insert(alias.to_string(), found.clone());
+    }
+    found
+}
+
+/// The `hostname` line out of `ssh -G` output, if it names something other than the alias
+/// itself. Split from the process call because this is the half that can break silently:
+/// the answer sits in ~60 lines of `key value` pairs, `ssh -G` always prints one whatever
+/// it was asked about, and a `hostname` echoing the alias back means "not an alias" —
+/// which is indistinguishable, at the call site, from a correct resolution.
+fn ssh_hostname_in(out: &str, alias: &str) -> Option<String> {
+    out.lines()
+        .find_map(|l| l.strip_prefix("hostname ").map(|h| h.trim().to_ascii_lowercase()))
+        .filter(|h| !h.is_empty() && !h.eq_ignore_ascii_case(alias))
 }
 
 /// The one probe the dashboard makes before deciding what it can show.
@@ -1709,42 +1801,105 @@ mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
 
+    /// A machine with no ssh config at all. Every assertion below that uses it is also
+    /// asserting the alias lookup was **not** needed to reach the answer.
+    fn no_aliases(_: &str) -> Option<String> { None }
+
     #[test]
     fn parse_remote_reads_every_spelling_git_accepts() {
+        let p = |u| parse_remote_with(u, no_aliases);
         // scp-like: not a URI at all, and the most common form for an SSH key setup.
-        assert_eq!(parse_remote("git@github.com:respeak-io/episko.git"),
+        assert_eq!(p("git@github.com:respeak-io/episko.git"),
                    (Some("github.com".into()), Some("respeak-io/episko".into())));
-        assert_eq!(parse_remote("https://github.com/respeak-io/episko.git"),
+        assert_eq!(p("https://github.com/respeak-io/episko.git"),
                    (Some("github.com".into()), Some("respeak-io/episko".into())));
-        assert_eq!(parse_remote("ssh://git@github.com/respeak-io/episko"),
+        assert_eq!(p("ssh://git@github.com/respeak-io/episko"),
                    (Some("github.com".into()), Some("respeak-io/episko".into())));
         // A token in the URL must not become the host.
-        assert_eq!(parse_remote("https://x-access-token:ghp_abc@github.com/respeak-io/episko.git"),
+        assert_eq!(p("https://x-access-token:ghp_abc@github.com/respeak-io/episko.git"),
                    (Some("github.com".into()), Some("respeak-io/episko".into())));
         // A port is legal on both forms and is not part of the host.
-        assert_eq!(parse_remote("ssh://git@github.com:2222/respeak-io/episko.git").0,
+        assert_eq!(p("ssh://git@github.com:2222/respeak-io/episko.git").0,
                    Some("github.com".into()));
     }
 
     #[test]
     fn a_slug_is_only_ever_produced_for_github() {
+        let p = |u| parse_remote_with(u, no_aliases);
         // The slug is what `gh` is handed. Producing one for another host would promise
         // issues and pull requests Episko cannot reach there.
-        assert_eq!(parse_remote("git@gitlab.com:team/thing.git"),
+        assert_eq!(p("git@gitlab.com:team/thing.git"),
                    (Some("gitlab.com".into()), None));
-        assert_eq!(parse_remote("git@git.respeak.internal:team/thing.git"),
+        assert_eq!(p("git@git.respeak.internal:team/thing.git"),
                    (Some("git.respeak.internal".into()), None));
         // Host case is normalised — GitHub URLs are written both ways.
-        assert_eq!(parse_remote("git@GitHub.com:o/r.git").1, Some("o/r".into()));
+        assert_eq!(p("git@GitHub.com:o/r.git").1, Some("o/r".into()));
+    }
+
+    #[test]
+    fn an_ssh_host_alias_is_still_github() {
+        // Two GitHub accounts on one machine means an `~/.ssh/config` `Host` alias per
+        // identity, and the alias is what the remote URL carries. Matching the string
+        // alone drops issues and pull requests for precisely those users.
+        let cfg = |h: &str| match h {
+            "github.com-work" | "gh-personal" => Some("github.com".to_string()),
+            "work-lab" => Some("gitlab.com".to_string()),
+            _ => None,
+        };
+        assert_eq!(parse_remote_with("github.com-work:respeak-io/episko.git", cfg),
+                   (Some("github.com-work".into()), Some("respeak-io/episko".into())));
+        // The alias need not look like a hostname at all.
+        assert_eq!(parse_remote_with("git@gh-personal:me/dotfiles.git", cfg).1,
+                   Some("me/dotfiles".into()));
+        assert_eq!(parse_remote_with("ssh://git@gh-personal/me/dotfiles", cfg).1,
+                   Some("me/dotfiles".into()));
+        // Resolving somewhere else is not GitHub, and neither is an unknown name.
+        assert_eq!(parse_remote_with("work-lab:team/thing.git", cfg).1, None);
+        assert_eq!(parse_remote_with("git@nowhere-known:team/thing.git", cfg).1, None);
+        // An https host is a real hostname — never an ssh alias, however it is spelled.
+        assert_eq!(parse_remote_with("https://github.com-work/respeak-io/episko.git", cfg).1, None);
+    }
+
+    #[test]
+    fn an_alias_lookup_never_hands_ssh_something_that_reads_as_a_flag() {
+        // The name comes out of a remote URL, and it goes to ssh as an argument.
+        assert_eq!(ssh_hostname("-oProxyCommand=touch pwned"), None);
+        assert_eq!(ssh_hostname("host name"), None);
+        assert_eq!(ssh_hostname(""), None);
+    }
+
+    #[test]
+    fn the_hostname_is_read_out_of_real_ssh_g_output() {
+        // Verbatim shape of `ssh -G`: ~60 `key value` lines, keys lowercased by ssh
+        // itself, in no order we may depend on. Captured from OpenSSH 9.x.
+        const OUT: &str = "\
+user git
+hostname github.com
+port 22
+addressfamily any
+identityfile ~/.ssh/respeak
+identityfile ~/.ssh/id_rsa
+hostkeyalias
+canonicalizehostname false
+";
+        assert_eq!(ssh_hostname_in(OUT, "github.com-work"), Some("github.com".into()));
+        // A name that is not an alias: ssh still prints a `hostname`, echoing it back.
+        // Accepting that would mint a slug for every host on earth.
+        assert_eq!(ssh_hostname_in("user git\nhostname gitlab.com\n", "gitlab.com"), None);
+        assert_eq!(ssh_hostname_in("hostname GitLab.com\n", "gitlab.com"), None);
+        // `hostkeyalias` must not be mistaken for it, nor an empty value accepted.
+        assert_eq!(ssh_hostname_in("hostkeyalias github.com\nhostname \n", "x"), None);
+        assert_eq!(ssh_hostname_in("", "x"), None);
     }
 
     #[test]
     fn a_local_path_is_not_a_remote_host() {
-        assert_eq!(parse_remote("/srv/git/thing.git"), (None, None));
-        assert_eq!(parse_remote("../sibling"), (None, None));
-        assert_eq!(parse_remote("C:/repos/thing"), (None, None));
-        assert_eq!(parse_remote(""), (None, None));
-        assert_eq!(parse_remote("   "), (None, None));
+        let p = |u| parse_remote_with(u, no_aliases);
+        assert_eq!(p("/srv/git/thing.git"), (None, None));
+        assert_eq!(p("../sibling"), (None, None));
+        assert_eq!(p("C:/repos/thing"), (None, None));
+        assert_eq!(p(""), (None, None));
+        assert_eq!(p("   "), (None, None));
     }
 
     #[test]
@@ -1762,9 +1917,14 @@ mod tests {
         assert_eq!(f.origin, None, "a repo with no remote is normal, not an error");
         assert_eq!(f.slug, None);
 
-        git(&repo, &["remote", "add", "origin", "git@github.com:respeak-io/episko.git"]);
+        // Deliberately NOT this repo's own remote. `git remote get-url` applies the
+        // developer's `url.<base>.insteadOf` rewrites, so a fixture naming a real
+        // owner can come back rewritten and the assertion then fails on the machine of
+        // whoever configured it rather than on anything this test is about — which is
+        // exactly what `respeak-io/episko` did here.
+        git(&repo, &["remote", "add", "origin", "git@github.com:example-org/thing.git"]);
         let f = project_facts(repo.to_string_lossy().to_string());
-        assert_eq!(f.slug, Some("respeak-io/episko".into()));
+        assert_eq!(f.slug, Some("example-org/thing".into()));
         assert_eq!(f.host, Some("github.com".into()));
     }
 

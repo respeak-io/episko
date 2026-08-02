@@ -52,6 +52,12 @@ Markers: `+` new · `~` changed · `!` fixed
   headlines for the whole visit even though every sentence was cached. A summary that
   lands after you have moved on also no longer files itself under the project you moved
   to.
+! **A repo cloned through an SSH host alias is on GitHub after all.** Two GitHub accounts
+  on one machine means an `~/.ssh/config` entry per identity — `github.com-work` pointing
+  at `github.com` — and that alias, not the hostname, is what the remote URL carries. The
+  dashboard read the name literally, decided the project was hosted somewhere it had
+  never heard of, and hid issues, pull requests and claims behind a card explaining that
+  the remote wasn't GitHub. `gh` had been resolving those aliases all along.
 
 ## 0.13.7 — 2026-08-01
 
