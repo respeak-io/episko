@@ -216,6 +216,23 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     expect(out[0].wtBranch).toBeUndefined();      // the root keeps the project's identity
     expect(out[1]).toMatchObject({ name: "epi", accent: "#fff", wtBranch: "feature" });
   });
+  it("carries the repo root onto every worktree group, and onto no other", () => {
+    // A checkout is not a project, and splitting is the only thing that severs the two.
+    // The sidebar's project header opens `repoRoot ?? path`, so losing it here keys a
+    // worktree's dashboard by its checkout dir — where `histProject` regrafts every
+    // history row onto the repo root, so the timeline matches no sessions at all.
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi", branch: "main" }),
+      sess({ id: "b", workdir: "/w/wt", branch: "feature" }),
+    ] });
+    const out = splitByWorktree([p]);
+    expect(out[0].repoRoot).toBeUndefined();   // the root group IS the project
+    expect(out[1].repoRoot).toBe("/w/epi");
+  });
+  it("leaves an unsplit project without a repoRoot, so `repoRoot ?? path` is its own path", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(splitByWorktree([p])[0].repoRoot).toBeUndefined();
+  });
   it("drops the phantom root of a worktree-only repo", () => {
     const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt", branch: "feature" })] });
     expect(names(splitByWorktree([p]))).toEqual(["/w/wt"]);

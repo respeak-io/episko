@@ -13,6 +13,37 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The project dashboard says when it is still reading.** Opening a project costs a
+  scan of every transcript on the machine, three git calls and — on a GitHub repo — two
+  more `gh` calls after those, and none of it used to show. The strip led with a
+  confident row of zeros, the aside was simply short a card or two, and a folder still
+  being read looked exactly like a folder with nothing in it. Every wait now draws the
+  shape of what is coming: the strip, the timeline, the aside's cards, and the issues
+  card that arrives last. A day whose sentence is still being written says *writing*
+  beside the plain headline it already has, rather than hiding a line you can read to
+  promise a better one.
+! **Every project in the sidebar opens its dashboard, not just the ones with a session
+  running.** A folder Episko knew about only from a session in another terminal, only
+  from past sessions, or from a worktree whose session had ended simply did not respond
+  to the click — with nothing greyed out to say why, because the header was built without
+  the handler rather than with a disabled one. A worktree's header now opens its
+  *project's* dashboard, too: keyed to the checkout it matched no sessions at all, so the
+  timeline showed commits nobody appeared to have worked on. Checkouts are a card inside
+  the project, which is where they belong.
+! **Clicking a session from the project dashboard opens it.** Picking an external or a
+  restorable session while the dashboard was on screen changed the header, the inspector
+  and the accent colour but left the dashboard itself sitting on top of the transcript it
+  had just loaded, so the click read as recolouring the page. Leaving a dashboard you had
+  collapsed to its icon rail (⌘I) also carried the rail onto the next session, where it
+  held the wrong buttons — and closing the dashboard with nothing else running left a
+  blank stage instead of the "no sessions" card. All three were the same missing
+  handover: what takes the stage now says so in one place, and everything else steps
+  aside.
+! **The dashboard no longer shows the last project's answers under the new project's
+  name.** Clicking from one project to another kept the previous one's tier for a beat,
+  so a repository could flash *not a repo* — losing the worktree and commit-graph verbs
+  with it — and a GitHub project's issues could appear briefly under a folder that has
+  none.
 + **A day now gets two sentences: yours, and the project's.** The one on the timeline is
   still your day — your sessions, your spend. Above it, on days more than one person
   committed, sits a second line describing what the *project* did, written from the

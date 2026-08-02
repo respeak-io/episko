@@ -86,18 +86,33 @@ export function renderSidebar() {
     const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
     const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
     const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
+    // **Every project header opens the dashboard, whatever put it in the list.** It used
+    // to depend on which of the three shapes below a project happened to land in, so a
+    // folder Episko only knew about from an external session, from a past one, or from a
+    // worktree whose session had ended was simply not clickable — with no disabled state
+    // to say so, because the attribute was absent rather than refused. "Has an Episko
+    // session or is a favourite" is not a fact about a project worth having a view gated
+    // on; the empty-but-real dashboard those folders get is the answer.
+    //
+    // Keyed to `repoRoot ?? path`: a checkout is not a project. `dashDays` filters
+    // history by `histProject().colorKey`, which regrafts every row onto the repo root —
+    // so a dashboard keyed by a worktree dir matches no sessions at all and renders a
+    // timeline of commits with nobody having worked on them. The checkouts are a card
+    // *inside* the project's dashboard, which is where a worktree belongs.
+    const dashRoot = p.repoRoot ?? p.path;
+    const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
+      head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
     } else if (isFav) {
       const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-      head = `<div class="phead empty-p" data-dash="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
+      head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
     } else {
       // discovered via an external session or a restorable one only — not a saved project
       const tail = p.externals.length
         ? `<span class="pcount ext">${p.externals.length} ext</span>`
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
+      head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
     }
     return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
   }).join("");

@@ -312,6 +312,22 @@ sorted first, so one gesture meant two different things depending on state, and 
 is going on in this repo" lived in a right-click menu nobody opens. The sessions are
 the rows directly beneath the header; this is the header's own answer.
 
+**Every header, whatever put the project in the list** — `renderSidebar` builds three
+shapes (has sessions / favourite / discovered) and for two releases only the first two
+carried `data-dash`, so a folder known only from an external session, only from past
+ones, or from a worktree whose session had ended was inert on click. Nothing refused it;
+the attribute was absent, so `closest()` returned null and the handler returned before
+the branch written for it — the same silent shape `test/dispatch.test.ts` guards the
+*other* half of. "Has an Episko session or is a favourite" is not a fact worth gating a
+view on, and the empty-but-real dashboard those folders get is the answer.
+
+**The key is `repoRoot ?? path`, because a checkout is not a project.** `splitByWorktree`
+mints one group per worktree keyed by its checkout dir, and `dashDays` filters history
+through `histProject`, which regrafts every row onto the repo root — so a dashboard keyed
+by a worktree dir matches no sessions at all and renders a timeline of commits nobody
+appears to have worked on. Splitting is the only thing that severs a group from its
+project, so `splitByWorktree` now carries `repoRoot` for whatever needs to get back.
+
 The split is `graph.ts`/`graphview.ts` again: **`dash.ts` is pure and tested**
 (`projectTier`, `dashDays`, `dashPulse`, `projectCost`, `densePerDay`), **`dashview.ts`
 takes data and returns a string**, **`dashboard.ts`** owns the pane, the IPC, the
@@ -343,6 +359,31 @@ from one `project_facts` call):
 A card with nothing to say is **absent, not empty** — an "Issues" panel in a folder
 that has no issues reads as breakage — and `missingCard` says once, plainly, what this
 folder cannot do instead.
+
+**And a card not read yet is neither**, which is what the skeletons are for. Opening a
+project is a whole-machine transcript scan, three git calls, and then two `gh` calls
+*after* those; every one of them used to land in silence, so "nothing here" and "not
+read yet" — opposite answers — looked identical, and the strip led with a confident row
+of zeros. Four things about that are worth keeping:
+
+- **The waits are separate flags on purpose.** `loading` (the local reads), `ghLoading`
+  (the GitHub half, which starts later and ends later) and `writing`/`stage` (the model
+  calls) each darken a different surface. One `isLoading` over the lot would skeleton
+  something that already has its answer.
+- **`factsKnown` is not `loading`.** It asks whether `project_facts` has answered *for
+  the project on screen*, and it is what the inspector's repo verbs and the `not a repo`
+  chip hang off — because `tier` defaults to `none`, which is an assertion, not an
+  absence. Keeping it separate is what stops a range change (which reloads the timeline
+  but settles nothing about the tier) blinking ⑃ and ⑂ off and on.
+- **Every write in `loadDash` is guarded by `root() !== r`, including `loading` itself.**
+  Two awaits, and a click on another project during either one leaves a continuation
+  that would otherwise land the previous folder's answers under the new folder's name —
+  or clear the new load's skeletons while it is still running.
+- **A pending sentence is not an absent one.** Your day already has a deterministic
+  headline that reads correctly, so waiting is a mark *beside* it; the shared box has no
+  such stand-in, so that one is a real skeleton. The shimmer and spinner are the usage
+  screen's `.u-skel`/`.u-spin` — a second loading vocabulary is a second thing to keep in
+  step.
 
 Three things that are easy to get wrong:
 
@@ -1029,6 +1070,7 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
   **The baseline is persisted (`cc-cost-base`), and it has to be**: held only in memory it covered a *Move session* and an in-session History reopen but not the commonest route of all — quit, reopen, restore. `cc-usage` is localStorage and survives that; a run-scoped map does not, so the restored pane's first statusLine met an empty baseline and booked the carried-over total into a day that already had it. The obvious worry about persisting — a baseline outliving the counter it describes would *swallow* real spend, the failure nobody can see — is what the **drop branch** answers: a restarted counter reads below its old baseline, so the whole new reading is booked as fresh. Retention is therefore deliberately generous and capped by count, not by age; the drop branch, not an expiry, is what makes a stale entry harmless.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
+- **And one function decides what is *on* it.** `takeStage(show)` in `dom.ts` — `"session" | "ext" | "dash" | "none"` — is the only thing that may touch `#extPane`, `#dashPane`, `#empty` or `insp-mini`. It lives in the leaf module so every opener can call it without an import edge (it is why `mirror.ts` still needs no `./dashboard` dependency). Each opener used to hide its rivals by hand and **only two of four did it completely**, which is not a class of bug the type checker or a unit test can see: `#extPane` and `#dashPane` are both `position:absolute; inset:0` with **no `z-index`**, so DOM order alone decides and `#dashPane` is second — an opener that shows the mirror without hiding the dashboard puts it *behind* a fully opaque pane. Nothing errors, nothing logs, and the header, inspector and `--accent` all update correctly, so the click reads as "it only changed the colours". `insp-mini` rides along because the 44px rail is a **dashboard-only** mode; anything else taking the stage must clear it or the next session inherits a rail holding the wrong buttons. Add a fourth pane by extending `Stage`, never by poking `hidden` at the call site.
 
 ## History (`◷ History`, ⌘⇧H, `list_session_history`)
 
