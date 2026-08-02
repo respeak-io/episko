@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **631 vitest + cargo (140 on macOS, 137 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **636 vitest + cargo (144 on macOS, 141 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -392,10 +392,39 @@ survives, all three refuse to create themselves without an explicit yes, and all
 need **git, not GitHub**: they are files, and a file only means anything to a team if
 it can be committed.
 
+**A day gets TWO generated sentences, and the split is what makes one of them
+committable.** They are not one prompt over different facts — `Scope` in `summarize.rs`
+picks a different instruction as well as a different record, because a model told it is
+reading a developer's day will narrate an afternoon out of a list of commit subjects:
+
+- **Yours** (`dayFacts`) — your session titles and your spend, read from *this* machine's
+  `~/.claude` and `cc-usage-detail`. Nobody else can reproduce it, so it never reaches a
+  file: it lives in `trail-summaries.json` in the app config dir, and it is the day's
+  headline.
+- **The project's** (`projectDayFacts`) — commit subjects, authors and PR events, which
+  everyone with the checkout has. Same facts for the whole team, therefore safe to
+  commit, and this is the half `.episko/digest.md` holds.
+
+Committing the *mixture* is the bug this split fixes, and it would never have looked like
+one: two people summarising the same day hand Haiku different records, `write_digest`
+replaces the day's key, and the committed line becomes whoever wrote last describing
+their own half. It reads perfectly well. It is just not the day. Keeping the private half
+out is also what keeps `spend: $58.23` out of a file that gets pushed.
+
+**Written for every day, shown for some.** Every closed day with commits is generated and
+committed — a colleague reading `digest.md` wants the project's whole history, solo days
+included. Display is the narrower question and `sharedDay` answers it: the box appears
+only when more than one *human* committed (`isBotAuthor` — a `[bot]` tagging a release is
+not company). On a solo day it would restate the line directly beneath it. `sharedDay`
+deliberately does **not** ask "did somebody *else* commit": that needs to know who you
+are, and `%an` against `git config user.name` breaks on a second machine, a different
+spelling of your own name, and every co-authored commit.
+
 **The work log is the one thing Episko generates and then commits.** `summarize_day`
-spends money (one `claude -p` per day, Haiku), so it is cached, opt-in, and **read
-before it is generated**: `read_digest` parses `.episko/digest.md` first, which means
-the second person to open a week pays nothing for it. Writing it is gated on an
+spends money (one `claude -p` per day per scope, Haiku), so it is cached, opt-in, and
+**read before it is generated**: `read_digest` parses `.episko/digest.md` first, which
+means the second person to open a week pays nothing for the shared half — so on a team
+repo the split is *cheaper* in aggregate than one sentence per person was. Writing it is gated on an
 explicit per-project yes (`cc-digest-ok`), because a new committable file in someone's
 repo is a real side effect — the same stance `tasks.rs` takes with `tasks.toml`. This
 is the **third** thing Episko writes outside its own config, after `.episko/tasks.toml`
@@ -525,7 +554,7 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 
 ## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12025 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12220 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
@@ -539,7 +568,7 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `github.rs` | 816 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
 | `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
-| `summarize.rs` | 446 | `summarize_day` (Haiku via `claude -p`) + the committed `.episko/digest.md` |
+| `summarize.rs` | 561 | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
@@ -558,11 +587,11 @@ Four conventions hold across them:
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 49 modules
 
-**No framework, and no longer one file.** ~12623 lines across 49 modules; `main.ts` is 777 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~13065 lines across 49 modules; `main.ts` is 777 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 631 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 636 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -579,7 +608,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
-| `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` |
+| `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |

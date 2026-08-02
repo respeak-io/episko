@@ -51,10 +51,22 @@ export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: num
 
 // ---------- the timeline ----------
 
-/// A generated sentence is marked, always. The reader has to be able to tell what the
-/// app observed from what a model wrote about it, and the mark is the only difference
-/// between a log and a claim.
-export function dayHtml(d: TrailDay, summary: string | null, headline: string, open: boolean): string {
+/**
+ * A generated sentence is marked, always. The reader has to be able to tell what the
+ * app observed from what a model wrote about it, and the mark is the only difference
+ * between a log and a claim.
+ *
+ * `summary` is **your** day and is the headline; `team` is the **project's**, and sits
+ * above it in a box of its own. The box is contained rather than plain because it is the
+ * one thing on the timeline that came out of the repo rather than out of this machine —
+ * a colleague's copy of Episko produced the same sentence, and it is the same sentence
+ * they are reading. `team` arrives already gated (see `sharedDay`): the caller decides
+ * whether it is worth showing, this only decides how.
+ */
+export function dayHtml(
+  d: TrailDay, summary: string | null, headline: string, open: boolean,
+  team: string | null = null, authors: string[] = [],
+): string {
   const dt = new Date(d.when);
   const rows = dayRows(d);
   const hidden = rows.length;
@@ -64,6 +76,11 @@ export function dayHtml(d: TrailDay, summary: string | null, headline: string, o
       ${d.cost > 0 ? `<span class="cc">${esc(uUsd2(d.cost))}</span>` : ""}
     </div>
     <div class="db-dbody">
+      ${team ? `<div class="db-team">
+        <span class="tl"><span class="sh">shared</span>The project${
+          authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
+        <p>${esc(team)}<span class="ai">· ai</span></p>
+      </div>` : ""}
       <p class="db-sum">${esc(summary || headline)}${summary ? `<span class="ai">· ai</span>` : ""}</p>
       <div class="db-facts">
         ${d.commits.length ? `<span>${d.commits.length} commit${d.commits.length === 1 ? "" : "s"}</span>` : ""}
@@ -167,6 +184,28 @@ export function notesCard(notes: Note[]): string {
     <div class="ac-b">${body}</div></div>`;
 }
 
+/**
+ * The one-time offer to start a shared work log, at the foot of the timeline.
+ *
+ * It lives *here*, under the sentences it is talking about, because that is the only
+ * place the offer explains itself. It was reachable from nowhere before this, which for
+ * a feature whose whole point is *sharing* meant nobody used it.
+ *
+ * Absent once the project has a digest: from then on every closed day is contributed
+ * automatically, because whoever committed the file already made the decision. `n` is
+ * how many days the first write would carry, so the offer never proposes to commit
+ * nothing — and it counts the **project's** lines, which are the only ones that go in.
+ */
+export function workLogOffer(n: number): string {
+  if (!n) return "";
+  return `<div class="miss db-share"><span class="t">Not written down anywhere</span>
+    <p>Episko has read ${n === 1 ? "one day" : `${n} days`} of this project's history and can keep the
+       result in <code>.episko/digest.md</code>. Committed, everyone who pulls gets the same account of
+       what the project did — instead of re-deriving, and paying for, their own.</p>
+    <p>Only the commits and pull requests go in. Your own sessions and spend stay on this machine.</p>
+    <button class="act" data-dashworklog>↑ Start the work log</button></div>`;
+}
+
 /// What this folder can't do, said once and plainly. Rendered *instead of* the cards
 /// it replaces, never alongside empty ones.
 export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
@@ -215,6 +254,8 @@ export function dashInspector(
       ${act("history", "◷", "History…", "reopen a session you closed")}
       ${act("folder", "⌂", "Open project folder")}
       ${act("copypath", "⧉", "Copy path")}
+      ${tier !== "none" && !shared
+        ? act("worklog", "↑", "Share the work log…", "commit each day's summary to .episko/") : ""}
     </div></div>
     ${chips ? `<div><span class="label">Repository</span><div class="db-chips">${chips}</div></div>` : ""}
     <p class="ihint">${esc(tilde(root))}</p>`;

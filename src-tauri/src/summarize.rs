@@ -90,18 +90,68 @@ pub(crate) fn scratch_cwd() -> PathBuf {
     d
 }
 
+/// Which of a day's two sentences is being asked for.
+///
+/// **`Me` and `Project` are not one prompt over different facts.** They describe
+/// different things and one of them gets committed, so they need different instructions
+/// as well as different records: told it is reading a developer's day, the model
+/// narrates an afternoon — "spent the morning on" — which is fair enough about your own
+/// sessions and is invention when all it has is a list of commit subjects. Getting that
+/// wrong is what makes generated prose in a repo embarrassing rather than useful.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scope {
+    /// Your day: your sessions, your spend. Cached locally, never written to a file.
+    Me,
+    /// The project's day: commits and pull requests, which everyone with the checkout
+    /// has. Reproducible, and therefore the half that can be committed.
+    Project,
+}
+
+impl Scope {
+    /// Anything unrecognised is `Me` — the private one. A typo must not promote a
+    /// sentence into a committed file.
+    fn parse(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("project") { Scope::Project } else { Scope::Me }
+    }
+}
+
 /// The instruction. Deliberately narrow: the model is labelling facts it is handed, not
 /// investigating anything, so it gets no tools, no context and no room to editorialise.
-fn prompt_for(facts: &str) -> String {
-    format!(
-        "Below is a factual record of one day of a developer's work — the sessions their \
+fn prompt_for(scope: Scope, facts: &str) -> String {
+    let preamble = match scope {
+        Scope::Me =>
+            "Below is a factual record of one day of a developer's work — the sessions their \
 AI coding agents ran, the commits that landed, and what it cost.\n\n\
 Write ONE plain sentence, at most 18 words, describing what the day was about. Name the \
-dominant project if one clearly dominates. Prefer concrete nouns from the facts over \
-generic words like \"various\" or \"development\". Output only the sentence: no preamble, \
-no bullet points, no markdown, no quotes.\n\n\
+dominant project if one clearly dominates.",
+        // No "they", no "the developer", no time of day: this sentence is read by a
+        // colleague months later and describes a repository, not a person's afternoon.
+        Scope::Project =>
+            "Below is one day of a software project's committed history — the commits that \
+landed and the pull requests that moved. It is the whole record: nobody's sessions, \
+notes or working hours are included, so do not describe how the work was done or who \
+spent time on what.\n\n\
+Write ONE plain sentence, at most 22 words, describing what changed in the project that \
+day. Name features, fixes and releases from the subjects themselves.",
+    };
+    format!(
+        "{preamble} Prefer concrete nouns from the facts over generic words like \
+\"various\" or \"development\". Output only the sentence: no preamble, no bullet points, \
+no markdown, no quotes.\n\n\
 FACTS\n{facts}"
     )
+}
+
+/// Where one day's sentence lives in the cache.
+///
+/// `Me` keeps the bare `root\0day` form it has always had, so every summary already
+/// bought stays valid; the shared one is a third segment rather than a different file,
+/// because they expire together and a second file is a second thing to keep consistent.
+fn cache_key(root: &str, day: &str, scope: Scope) -> String {
+    match scope {
+        Scope::Me => format!("{root}\u{0}{day}"),
+        Scope::Project => format!("{root}\u{0}{day}\u{0}project"),
+    }
 }
 
 /// Run `claude -p`, bounded. Returns the trimmed stdout.
@@ -267,9 +317,12 @@ pub(crate) fn write_digest(root: String, key: String, line: String, create: bool
 ///
 /// `root` scopes it to a project — the dashboard is per-project, and two projects on
 /// the same day are two different sentences. `key` is the calendar day (`YYYY-MM-DD`),
-/// `facts` the record built by `dayFacts` in the frontend — titles and commit subjects
-/// only, never transcript bodies. `force` re-asks for a day that is still being written
-/// (today); every other day is answered from disk forever after the first time.
+/// `facts` the record built in the frontend — titles and commit subjects only, never
+/// transcript bodies. `scope` picks which of the day's two sentences this is (`"me"` or
+/// `"project"`, see `Scope`), and the caller is responsible for handing over the record
+/// that matches: this end cannot tell a private fact from a shared one by looking.
+/// `force` re-asks for a day that is still being written (today); every other day is
+/// answered from disk forever after the first time.
 ///
 /// Runs on a blocking thread: a synchronous command would hold the main thread for the
 /// length of a model call and freeze the UI.
@@ -280,11 +333,13 @@ pub(crate) async fn summarize_day(
     key: String,
     facts: String,
     model: String,
+    scope: String,
     force: bool,
 ) -> Result<String, String> {
     // Project-scoped, so two dashboards can't answer each other's days. The old
     // day-only key is not migrated: it was never shipped outside the spike branch.
-    let cache_key = format!("{root}\u{0}{key}");
+    let scope = Scope::parse(&scope);
+    let cache_key = cache_key(&root, &key, scope);
     if !force {
         if let Some(hit) = read_cache(&app).get(&cache_key).and_then(|v| v.as_str()) {
             if !hit.is_empty() {
@@ -297,7 +352,7 @@ pub(crate) async fn summarize_day(
     }
 
     let model = if model.trim().is_empty() { "haiku".to_string() } else { model };
-    let prompt = prompt_for(&facts);
+    let prompt = prompt_for(scope, &facts);
     let text = tauri::async_runtime::spawn_blocking(move || run_claude(&model, &prompt))
         .await
         .map_err(|e| e.to_string())??;
@@ -349,8 +404,51 @@ fn first_sentence(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_sentence, parse_digest, render_digest, write_digest};
+    use super::{cache_key, first_sentence, parse_digest, prompt_for, render_digest, write_digest, Scope};
     use crate::testutil::scratch_dir;
+
+    #[test]
+    fn the_two_scopes_never_share_a_cache_entry() {
+        let (a, b) = (
+            cache_key("/w/episko", "2026-07-31", Scope::Me),
+            cache_key("/w/episko", "2026-07-31", Scope::Project),
+        );
+        assert_ne!(a, b);
+        // The private one keeps the shape it shipped with, so nothing already bought is
+        // re-bought when this lands.
+        assert_eq!(a, "/w/episko\u{0}2026-07-31");
+        // …and no root can ever collide with another root's project entry: the day
+        // segment sits between them.
+        assert_ne!(cache_key("/w/a", "2026-07-31\u{0}project", Scope::Me), b);
+    }
+
+    #[test]
+    fn an_unknown_scope_falls_back_to_the_private_one() {
+        // A typo must never promote a sentence into the half that gets committed.
+        assert_eq!(Scope::parse("project"), Scope::Project);
+        assert_eq!(Scope::parse("PROJECT"), Scope::Project);
+        assert_eq!(Scope::parse("me"), Scope::Me);
+        assert_eq!(Scope::parse("prject"), Scope::Me);
+        assert_eq!(Scope::parse(""), Scope::Me);
+    }
+
+    #[test]
+    fn the_shared_prompt_asks_for_a_repository_not_an_afternoon() {
+        let facts = "commit: fix: a thing";
+        let mine = prompt_for(Scope::Me, facts);
+        let theirs = prompt_for(Scope::Project, facts);
+        assert_ne!(mine, theirs);
+        // Both carry the record itself and the one-sentence clamp.
+        for p in [&mine, &theirs] {
+            assert!(p.contains(facts));
+            assert!(p.contains("ONE plain sentence"));
+        }
+        // The shared one must not invite the model to describe a person's day — that is
+        // the failure mode that reads as invention once it is committed.
+        assert!(theirs.contains("committed history"));
+        assert!(!theirs.contains("developer's work"));
+        assert!(mine.contains("developer's work"));
+    }
 
     #[test]
     fn digest_round_trips_through_markdown() {

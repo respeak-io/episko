@@ -26,7 +26,7 @@ import {
 import {
   checkoutsCard, checkoutsOverlay, closeSheet, dashInspector, dashStrip, dayHtml,
   dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay, pulseHtml,
-  triageCard, triageOverlay, workCard, workOverlay,
+  triageCard, triageOverlay, workCard, workLogOffer, workOverlay,
 } from "./dashview";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
@@ -39,7 +39,10 @@ import {
 import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, type SharedNote } from "./notes";
 import { GLYPH, GCLASS } from "./sidebarview";
-import { deterministicHeadline, dayFacts, dayIsClosed, type TrailCommit, type TrailDay } from "./trail";
+import {
+  deterministicHeadline, dayFacts, dayIsClosed, humanAuthors, projectDayFacts, sharedDay,
+  type TrailCommit, type TrailDay,
+} from "./trail";
 import { statusKey, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
@@ -115,7 +118,14 @@ let sheet: { kind: "close" | "dispatch"; t: GhThread } | null = null;
 let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: running" };
 /// Generated summaries for the open project, keyed by day. Separate from `days` so a
 /// reload doesn't drop sentences already paid for in this session.
+///
+/// **Your** day: built from your sessions and your spend, so it is not reproducible by
+/// anyone else and never reaches a file. See `teamSummaries` for the other half.
 const summaries = new Map<string, string>();
+/// The **project's** day, keyed by day: commits and pull requests only. This is the half
+/// that goes into `.episko/digest.md`, and the half a colleague's copy can hand back —
+/// which is why `loadDash` seeds it from the committed file before generating anything.
+const teamSummaries = new Map<string, string>();
 /// Which day rows are expanded. Survives a re-render because it is keyed by day, not
 /// by element — the pane rebuilds its innerHTML on every repaint.
 const openDays = new Set<string>();
@@ -150,6 +160,7 @@ async function loadDash(): Promise<void> {
   if (!r) return;
   loading = true;
   summaries.clear();
+  teamSummaries.clear();
   renderDash();
   try {
     // `project_facts` first and alone: it decides which of the calls below are even
@@ -184,7 +195,10 @@ async function loadDash(): Promise<void> {
       gh = { available: false, reason: null, threads: [], viewer: null };
       kept = [];
     }
-    for (const [k, v] of Object.entries(digest)) if (v) summaries.set(k, v);
+    // The digest carries the PROJECT's line, not yours — that is the whole point of the
+    // split, and seeding `summaries` from it would put a colleague's sentence where your
+    // own day belongs while suppressing the one you'd have generated.
+    for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
     hasDigest = Object.keys(digest).length > 0
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
     days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
@@ -217,40 +231,111 @@ async function loadGh(r: string, force = false): Promise<void> {
  * fourteen CLI processes on the machine at the moment the user clicked a project,
  * which is exactly the kind of thing that makes an app feel like it took the machine
  * away. Sequential is also self-throttling: navigating away stops the queue.
+ *
+ * A request that arrives while a pass is in flight is **deferred, never dropped**.
+ * Dropping it stranded a whole visit: open project A, click project B while A's live
+ * call is still awaiting, and B's call here returned at the guard — after which A's
+ * loop broke out on `root() !== r`, cleared the flag, and nothing ever restarted. B
+ * then showed deterministic headlines for the rest of the visit with a full cache
+ * sitting on disk.
  */
 let queueRunning = false;
+/// Set when a pass was asked for while one was running; the loop below re-runs for it.
+let queueAgain = false;
 async function runSummaryQueue(): Promise<void> {
-  if (queueRunning) return;
+  if (queueRunning) { queueAgain = true; return; }
   queueRunning = true;
-  const r = root();
   try {
-    for (const d of days) {
-      if (!dashMirror() || root() !== r || !dashSummaries) break;   // left, or switched off
-      if (summaries.has(d.key)) continue;                           // digest or cache already had it
-      const f = dayFacts(d);
-      if (!f.trim()) continue;
-      try {
-        const line = await invoke<string>("summarize_day", {
-          root: r, key: d.key, facts: f, model: "haiku", force: !dayIsClosed(d),
-        });
-        if (!line) continue;
-        summaries.set(d.key, line);
-        renderDash();
-        // Share it, if this project has said yes. A day still being written is not
-        // written to the repo — today's line changes as the day goes on, and each
-        // change would dirty a tracked file.
-        if (canShare(tier) && dayIsClosed(d) && digestOk().includes(r)) {
-          void invoke("write_digest", { root: r, key: d.key, line, create: true }).catch(() => {});
-        }
-      } catch (e) {
-        // No summary is a fine state — the deterministic headline already reads
-        // correctly — so a failure is logged and the loop moves on.
-        dlog("warn", `dash: summary for ${d.key} failed — ${e}`);
-      }
-    }
+    do {
+      // Cleared *before* the pass, so a request arriving during it is not swallowed by
+      // the pass that was already under way when it came in.
+      queueAgain = false;
+      await summaryPass();
+    } while (queueAgain && dashMirror() && dashSummaries);
   } finally {
     queueRunning = false;
   }
+}
+
+/**
+ * One pass over the open project's days, in two stages.
+ *
+ * **Stage 1 is your own line for every day; stage 2 is the project's.** That order is
+ * not cosmetic: yours is the day's headline, so filling it first is what makes the
+ * timeline look answered, and the project's line is usually already in hand — a pulled
+ * `digest.md` seeded it, so stage 2 costs nothing on a repo somebody has been keeping.
+ *
+ * Within each stage, **closed days first and the open one last** — the difference
+ * between a timeline that fills instantly and one that looks unsummarised. A closed day
+ * is answered from disk in about a millisecond, while today is `force`d and costs a real
+ * model call (up to `TIMEOUT`, and a wedged CLI spends all of it). `days` is newest
+ * first, so today led the queue and held six free sentences behind one paid one.
+ *
+ * `now` is pinned for the pass so the partition and each day's `force` cannot disagree
+ * about which day is today if the queue happens to cross midnight.
+ */
+async function summaryPass(): Promise<void> {
+  const r = root();
+  const now = Date.now();
+  const ordered = [...days.filter((d) => dayIsClosed(d, now)), ...days.filter((d) => !dayIsClosed(d, now))];
+  for (const d of ordered) if (!await summariseDay(d, r, now, "me")) return;
+  for (const d of ordered) if (!await summariseDay(d, r, now, "project")) return;
+}
+
+/**
+ * One day, one scope. Returns false when the pass should stop entirely.
+ *
+ * The two scopes differ in three ways and share everything else, which is why they are
+ * one function: what record is built, where the answer is kept, and whether it is
+ * written to the repo.
+ */
+async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "project"): Promise<boolean> {
+  if (!dashMirror() || root() !== r || !dashSummaries) return false;   // left, or switched off
+  const mine = scope === "me";
+  const into = mine ? summaries : teamSummaries;
+  if (into.has(d.key)) return true;                            // cache or digest already had it
+  const closed = dayIsClosed(d, now);
+  const allowed = digestOk().includes(r);
+  // **The project's line is only bought if something will do with it.** It is shown when
+  // the day had more than one human committer, and written when this project keeps a
+  // digest; a project that does neither would otherwise pay for a sentence nobody sees
+  // and nothing stores. Saying yes to the work log re-runs the queue, which is when the
+  // days skipped here get bought and written.
+  if (!mine && !sharedDay(d) && !(canShare(tier) && (allowed || hasDigest))) return true;
+  // The project's line is only ever about commits, so a day with none has nothing to
+  // say and must not be asked — an empty record would spend a call on "quiet day".
+  const f = mine ? dayFacts(d) : projectDayFacts(d);
+  if (!f.trim()) return true;
+  try {
+    const line = await invoke<string>("summarize_day", {
+      root: r, key: d.key, facts: f, model: "haiku", scope, force: !closed,
+    });
+    // The project can change while a call is in flight, and both maps are module state
+    // the new one has already cleared for itself. Checking only on entry lets this
+    // answer land in the *next* project's map under the same day key — where nothing
+    // overwrites it, because a pass skips a day it already has.
+    if (root() !== r) return false;
+    if (!line) return true;
+    into.set(d.key, line);
+    renderDash();
+    // Share it — and only ever this half. A day still being written is not written to
+    // the repo either: today's line changes as the day goes on, and each change would
+    // dirty a tracked file.
+    //
+    // **Creating the file needs a yes; contributing to one does not.** A digest already
+    // in the repo is a decision the project has taken — somebody wrote and committed it
+    // — so a teammate who pulls it should not have to re-consent before their days join
+    // it, or the file quietly becomes one person's diary. Hence `create` carries the
+    // consent and the condition does not.
+    if (!mine && canShare(tier) && closed && (allowed || hasDigest)) {
+      void invoke("write_digest", { root: r, key: d.key, line, create: allowed }).catch(() => {});
+    }
+  } catch (e) {
+    // No summary is a fine state — the deterministic headline already reads correctly —
+    // so a failure is logged and the loop moves on.
+    dlog("warn", `dash: ${scope} summary for ${d.key} failed — ${e}`);
+  }
+  return true;
 }
 
 // ---------- render ----------
@@ -270,8 +355,21 @@ export function renderDash(): void {
     spine.innerHTML = `<div class="db-empty">Nothing in the last ${dashRange} days.
       Sessions, commits and spend appear here on their own — there is nothing to fill in.</div>`;
   } else {
+    // The offer counts closed days with commits — what a work log *would* carry, not
+    // what has already been generated. The two differ on purpose: the project's line for
+    // a solo day is deliberately not bought until somebody wants a digest, so counting
+    // sentences in hand would hide the offer on exactly the projects that have never
+    // been asked. A project that has said yes, or already has a digest, is past the
+    // question — from there on the queue contributes on its own.
+    const unshared = canShare(tier) && !hasDigest && !digestOk().includes(root())
+      ? days.filter((d) => dayIsClosed(d) && d.commits.length > 0).length
+      : 0;
     spine.innerHTML = days.map((d) =>
-      dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key))).join("");
+      dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key),
+        // Written for every day, shown only where it says something your own line
+        // doesn't — see `sharedDay`.
+        sharedDay(d) ? teamSummaries.get(d.key) ?? null : null, humanAuthors(d))).join("")
+      + workLogOffer(unshared);
   }
 
   const now = Date.now();
@@ -392,6 +490,8 @@ export function wireDashboard(): void {
       renderDash();
       return;
     }
+    if (t.closest("[data-dashworklog]")) { void enableDigest(); return; }
+
     const view = t.closest<HTMLElement>("[data-dashopen-view]");
     if (view) { openView = view.dataset.dashopenView as typeof openView; renderDash(); return; }
     if (t.closest("[data-dashclose-view]")) { openView = null; renderDash(); return; }
@@ -476,6 +576,7 @@ function dashAction(act: string): void {
   else if (act === "history") host.openHistory(r);
   else if (act === "folder") host.openFolder(r);
   else if (act === "copypath") host.copyPath(r);
+  else if (act === "worklog") void enableDigest();
 }
 
 /// Turn a note into a running agent. The text is typed in **without a trailing
@@ -623,19 +724,51 @@ async function dispatchText(text: string): Promise<void> {
   toast("Dispatched — prefilled, press Enter to send");
 }
 
-/// Offer to start writing the shared work log. Called from the ⤢ notes overlay's
-/// footer and from Settings; asks once per project because it creates a committable
-/// file in someone's repo.
+/**
+ * Start writing the shared work log for this project.
+ *
+ * Reached from the offer at the foot of the timeline and from the inspector's *Share
+ * the work log…*. Asked once per project, because creating a committable file in
+ * someone's repo is a real side effect — the same stance `tasks.rs` takes with
+ * `tasks.toml`.
+ *
+ * Every closed day whose **project** line is already in hand is written at once, so the
+ * first commit carries the history instead of starting blank at today; the rest are
+ * bought by the re-run at the end, because a solo day's line is deliberately not
+ * generated until somebody wants a digest. `teamSummaries`, never `summaries`: your own
+ * line is built from facts nobody else has and does not go in a file — that split is the
+ * reason the digest is worth committing at all.
+ */
 export async function enableDigest(): Promise<void> {
   const r = root();
   if (!r || !canShare(tier)) return;
   allowDigest(r);
-  const done = [...summaries.entries()].filter(([k]) => days.some((d) => d.key === k && dayIsClosed(d)));
-  for (const [k, line] of done) {
-    await invoke("write_digest", { root: r, key: k, line, create: true }).catch((e) => dlog("warn", `digest: ${e}`));
+  const done = [...teamSummaries.entries()].filter(([k]) => days.some((d) => d.key === k && dayIsClosed(d)));
+  // Consent with nothing written yet is still consent: the re-run below buys and writes
+  // each remaining day, so this is a state to explain rather than a failure.
+  if (!done.length) {
+    toast("Work log on — .episko/digest.md is written as each day is summarised");
+    host.renderAll();
+    void runSummaryQueue();
+    return;
   }
+  let wrote = 0;
+  for (const [k, line] of done) {
+    const ok = await invoke("write_digest", { root: r, key: k, line, create: true })
+      .then(() => true)
+      .catch((e) => { dlog("warn", `digest: ${e}`); return false; });
+    if (ok) wrote++;
+  }
+  // Only claim the file exists once a write has landed. `hasDigest` drives both the
+  // `.episko/ shared` chip and whether the queue contributes without asking again, so
+  // setting it after a failed create would assert a file that isn't there.
+  if (!wrote) { toast("Could not write .episko/digest.md"); return; }
   hasDigest = true;
-  toast(`Work log written to .episko/digest.md — commit it to share`);
+  toast("Work log written to .episko/digest.md — commit it to share");
   host.renderAll();
+  // The days this project never bought a shared line for — the solo ones — now have a
+  // file to go in. The queue writes each as it lands rather than blocking the toast on
+  // a run of model calls.
+  void runSummaryQueue();
 }
 export const digestAllowed = (r: string) => digestOk().includes(r);

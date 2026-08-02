@@ -13,6 +13,38 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A day now gets two sentences: yours, and the project's.** The one on the timeline is
+  still your day — your sessions, your spend. Above it, on days more than one person
+  committed, sits a second line describing what the *project* did, written from the
+  commits and pull requests alone. A release tagged by a bot doesn't make a day a team
+  day, and on a day you worked alone the box is absent rather than repeating the line
+  beneath it.
++ **The shared work log can be found, and it holds the right half.** The project's line
+  can be written to `.episko/digest.md` and committed, so everyone who pulls gets the
+  same account instead of re-deriving — and paying for — their own; on a team repo that
+  makes it cheaper than a summary per person, not dearer. Nothing in the app offered it
+  before: the timeline now says so at its foot once there is something to share, and the
+  inspector carries *Share the work log…* beside the other project verbs.
+~ **Your own half never reaches a file.** It was one sentence blending both, which meant
+  a committed line was whoever generated it last describing the part of the day they
+  personally saw — and your session titles and daily spend went into a file that gets
+  pushed. Your line now stays in Episko's own cache.
+~ **A work log already in the repo is contributed to without asking.** Creating a
+  committable file in your repo still needs an explicit yes; adding your days to one a
+  colleague has already committed does not, or the file quietly becomes one person's
+  diary.
+! **A project's day summaries appear straight away.** Every past day's sentence was
+  already on disk from the first time you looked, but the timeline asked for today's
+  first — and today is the one day that has to be re-written, so a week of summaries
+  paid for days ago waited behind one live model call, and behind the full 45-second
+  timeout when that call wedged. The days that cost nothing now fill immediately and
+  today's arrives when it arrives.
+! **Opening a second project while the first is still summarising no longer leaves it
+  blank.** The request was dropped rather than queued, so that project showed its plain
+  headlines for the whole visit even though every sentence was cached. A summary that
+  lands after you have moved on also no longer files itself under the project you moved
+  to.
+
 ## 0.13.7 — 2026-08-01
 
 The project dashboard stops being a page you can only read.
