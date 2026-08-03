@@ -13,9 +13,6 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-## 0.14.0 — 2026-08-03
-A day's work becomes something the team can read, and the app gets quieter underneath.
-
 + **The project dashboard says when it is still reading.** Opening a project costs a
   scan of every transcript on the machine, three git calls and — on a GitHub repo — two
   more `gh` calls after those, and none of it used to show. The strip led with a
@@ -156,6 +153,7 @@ A day's work becomes something the team can read, and the app gets quieter under
   the remote wasn't GitHub. `gh` had been resolving those aliases all along.
 
 ## 0.13.7 — 2026-08-01
+
 The project dashboard stops being a page you can only read.
 
 ~ **The stage header's buttons work on a project dashboard.** ◷ History, ❯ Terminal and
@@ -166,6 +164,7 @@ The project dashboard stops being a page you can only read.
   ⌘⏎ follow.
 
 ## 0.13.6 — 2026-08-01
+
 Housekeeping on the surfaces 0.13 added, plus two in History.
 
 ! **The project dashboard's top strip reads as five figures again.** It was printing
