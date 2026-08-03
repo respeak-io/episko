@@ -22,7 +22,10 @@ import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
 import { engineDef, externals, permMode, permModeDef, sessions, termEngine } from "./state";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
-let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
+// Resolves to the new session id, or null if the spawn failed. Nothing in this module
+// uses it — the dialog starts a session and is done — but the type must match panes.ts's
+// so a caller that DOES need the id can't be handed a hook that quietly drops it.
+let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<string | null> = async () => null;
 export function setWtLaunch(fn: typeof launch) { launch = fn; }
 let closeSession: (id: string) => void = () => {};
 export function setWtCloseSession(fn: typeof closeSession) { closeSession = fn; }

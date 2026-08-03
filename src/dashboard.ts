@@ -54,7 +54,11 @@ import {
 // ./palui: a control surface that touches many things it isn't responsible for takes
 // one host rather than a dozen setters.
 export interface DashHost {
-  launch: (project: string, workdir: string, opts?: { colorKey?: string }) => Promise<unknown>;
+  // `string | null`, NOT `unknown`: three call sites below guard on `typeof sid !==
+  // "string"` to decide whether to type a prompt in and write a claim, so a host whose
+  // launch resolves to `undefined` makes all three permanently take the failure branch
+  // — which shipped, silently, because `unknown` accepted a `void`-returning launch.
+  launch: (project: string, workdir: string, opts?: { colorKey?: string }) => Promise<string | null>;
   openWorktreeDialog: (project: string, root: string) => void;
   openTerminal: (dir: string) => void;
   openRun: (root: string) => void;
@@ -66,7 +70,7 @@ export interface DashHost {
   renderAll: () => void;
 }
 let host: DashHost = {
-  launch: async () => {}, openWorktreeDialog: () => {}, openTerminal: () => {},
+  launch: async () => null, openWorktreeDialog: () => {}, openTerminal: () => {},
   openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
 };
@@ -693,9 +697,11 @@ async function dispatchNote(id: string): Promise<void> {
   const n = noteList(root()).find((x) => x.id === id);
   if (!n) return;
   const sid = await host.launch(name(), root(), { colorKey: root() });
+  // The note is consumed only if there is something to consume it into — a launch that
+  // failed has already toasted why, and eating the text on top of that would lose it.
+  if (typeof sid !== "string") return;
   removeNote(id);
   renderDash();
-  if (typeof sid !== "string") { toast("Dispatched — the note is now a session"); return; }
   // Claude's REPL needs a moment before it will accept input. Failing to type is
   // harmless: the session is open and the note text is in the toast.
   setTimeout(() => {
@@ -767,7 +773,9 @@ async function doDispatch(): Promise<void> {
   sheet = null;
   renderDash();
   const sid = await host.launch(n, r, { colorKey: r });
-  if (typeof sid !== "string") { toast("Could not start a session"); return; }
+  // No toast: `launch` already showed the actual spawn error, and a second one would
+  // replace the reason with a vaguer restatement of it. No claim either — see above.
+  if (typeof sid !== "string") return;
 
   const eff = resolveClaim(policy, allow);
   if (eff.assign.value || eff.comment.value || eff.label.value || eff.pushBranch.value) {

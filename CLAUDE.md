@@ -443,6 +443,13 @@ false` plus a reason, shown as one quiet row like a blocked runnable.
   human presses Enter" rule — deliberately, and only here: that rule exists so nothing
   is sent you did not read, and a dispatch confirmed in a sheet *is* the reading. A
   colleague's shared note is still prefilled-not-sent: that is somebody else's sentence.
+  **Both halves need the session id back from `launch`**, which is why `panes.ts`'s
+  returns `string | null` and `DashHost.launch` is typed to match rather than
+  `Promise<unknown>`. It returned nothing at all under that `unknown` for a release: the
+  pane opened, `typeof sid !== "string"` was permanently true, and every dispatch said
+  *Could not start a session* while starting one — no prompt, no claim, and a note eaten
+  on the way past. **A hook typed `unknown` whose callers narrow it is the whole bug**;
+  `tsc` is the only thing that can catch this class, so type the seam, not the call site.
 - **The viewer is cached for the process, not per repo.** `gh api user` returns the
   same login whichever folder it runs in, so keying it by root spent a process per
   project for an answer already in hand.

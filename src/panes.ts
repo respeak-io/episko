@@ -51,7 +51,13 @@ let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
 // ---------- launch ----------
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}) {
+// Returns the new session id, or null if the spawn failed. Most callers ignore it —
+// but the dashboard's dispatch paths need it to type the prompt in and to write the
+// claim, and "did this start?" is a question only this function can answer. It used to
+// return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
+// `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
+// the toast said it hadn't, and neither the prompt nor the claim was ever sent.
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
   const accent = accentFor(colorKey);
@@ -105,11 +111,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const mode = permMode === "default" ? null : permMode;
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permModeDef(permMode).label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
+  let spawned = true;
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
     else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
   } catch (e) {
+    spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
     toast("launch failed: " + e);
     if (term) term.writeln(`\r\n\x1b[31m[launch error] ${e}\x1b[0m`);
@@ -119,6 +127,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
+  return spawned ? id : null;
 }
 
 // Offer a worktree when launching into a repo that already has a session.

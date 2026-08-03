@@ -78,6 +78,11 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+! **Starting an agent on an issue works, and the claim gets written.** Every dispatch from
+  the dashboard reported *Could not start a session* — while starting one. The pane was
+  there and the agent was idle in it: what never arrived was the prompt naming the issue,
+  and the claim that tells a colleague somebody has this one. Dispatching a note had the
+  same hole, and consumed the note on the way through.
 ! **A project's day summaries appear straight away.** Every past day's sentence was
   already on disk from the first time you looked, but the timeline asked for today's
   first — and today is the one day that has to be re-written, so a week of summaries
