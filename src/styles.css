@@ -1727,6 +1727,12 @@ select.in-ctl { cursor: pointer; }
 /* A generated sentence is marked, always: the reader has to be able to tell what the
    app observed from what a model wrote about it. */
 .db-sum .ai { display: inline-block; margin-left: 7px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); vertical-align: 1px; }
+/* The ✨ is an emoji: it brings its own metrics, ignores `color`, and at the label's
+   8.5px would be a smudge. So it is sized and nudged on its own, and `white-space:
+   nowrap` on the label keeps the glyph from ever wrapping away from its word.
+   Scoped to the timeline — `ai` is too generic a class name to claim globally. */
+.db-day .ai { white-space: nowrap; }
+.db-day .ai i { font-style: normal; font-size: 9.5px; margin-right: 3px; vertical-align: -0.5px; }
 /* The project's own line, above your own. Contained rather than plain, because it is the
    one thing on the timeline that came out of the repo instead of out of this machine —
    a colleague reads the same sentence — and that difference is the whole point of it. */
@@ -1737,7 +1743,23 @@ select.in-ctl { cursor: pointer; }
 .db-team .sh { flex: none; font: 8.5px var(--font-mono); letter-spacing: 0; text-transform: none; padding: 0 5px; line-height: 14px; border-radius: 4px; border: 1px solid var(--accent-line); color: var(--accent-ink); background: var(--accent-wash); }
 /* The byline can be long on a busy day; it is the part that yields, not the label. */
 .db-team .au { margin-left: auto; min-width: 0; font: 9px var(--font-mono); letter-spacing: 0; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.db-team p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+/* Clamped to three lines. A generated paragraph has no length contract — one busy day
+   can produce five lines and push the next day off screen — and the timeline is a list
+   you scan, so every row has to stay roughly the same height. The whole box is the
+   toggle: at this size a "more" affordance would be bigger than what it reveals. */
+.db-team p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.db-team.open p { -webkit-line-clamp: unset; }
+/* Only a box with something folded away is a control — `.clamped` is added by
+   ./dashboard after measuring, so a two-line summary offers no pointer it can't honour. */
+.db-team.clamped { cursor: pointer; }
+.db-team.clamped:hover { border-color: var(--hair-strong); border-left-color: var(--accent); }
+/* The provenance mark, pinned to the box's bottom-right. Out of the text flow entirely:
+   inline it read as the end of the sentence, and landed wherever the words happened to
+   wrap. `align-self` rather than absolute so it can never overlap a third line. */
+.db-team .ai-cnr { align-self: flex-end; margin-top: -1px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); }
+.db-team.clamped .ai-cnr::after { content: " · more"; opacity: .8; }
+.db-team.clamped.open .ai-cnr::after { content: " · less"; }
 .db-facts { display: flex; align-items: center; gap: 9px; font: 9.5px var(--font-mono); color: var(--muted-2); }
 .db-facts .dot { opacity: .4; }
 .db-facts .who { color: var(--muted); }

@@ -78,6 +78,13 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+~ **The generated-by-a-model mark reads as a mark, not as the last word of the
+  sentence.** It is now ✨ and sits in the shared box's own bottom-right corner instead
+  of trailing the text wherever it happened to wrap. A long shared summary is folded to
+  three lines so one busy day can't push the next off screen — click the box for the rest.
+~ **Every action in the project inspector says what it does.** Four of them carried a
+  label and nothing else while the rest had a line underneath, so the list read as two
+  kinds of thing.
 ! **Removing a worktree that is already gone says so up front.** A checkout merged and
   deleted outside Episko still asked the full "the folder goes, its branch is deleted"
   warning, and only after you clicked through did it report that the folder had been gone

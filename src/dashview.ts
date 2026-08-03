@@ -6,6 +6,10 @@
 // mostly re-asserts itself.
 
 import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
+// A platform *constant*, not DOM access — the `*view` rule bars `$()`, `innerHTML` and
+// renderer calls, and ./dom is the shared leaf everything may import (it touches no DOM
+// at module scope, which is what keeps it safe in vitest's node environment).
+import { FILE_MANAGER } from "./dom";
 import type { Pulse, ProjectFacts, ProjectTier } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
@@ -14,6 +18,19 @@ import type { ClaimAllow, ClaimPolicy } from "./claim";
 import type { GhThread, Holder, KeptIssue } from "./ghwork";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// The provenance mark on anything a model wrote — on your line, on the project's, and
+/// on both of their waiting states. Declared once because a reader learns "a model wrote
+/// this" from the *shape* long before the word, so the shape must not vary.
+///
+/// The glyph is its own element: it is an emoji, so it carries its own metrics and
+/// ignores `color`, and at the 8.5px the label is set in it would be a smudge. The CSS
+/// sizes and aligns it separately for that reason — don't fold it back into the text.
+const aiMark = (text: string, cls = "") =>
+  `<span class="ai${cls ? " " + cls : ""}"><i>✨</i>${text}</span>`;
+/// The shared box's copy, pinned to its bottom-right corner rather than trailing the
+/// sentence. Kept outside the `<p>` so the clamp below measures the text alone.
+const AI_MARK = aiMark("ai", "ai-cnr");
 
 // ---------- the pulse strip ----------
 // Five numbers before any detail, so the window answers itself at a glance. Which five
@@ -162,10 +179,15 @@ export function dayHtml(
   // such stand-in: it is a block that would otherwise appear out of nothing, and its
   // heading is known (this day has more than one human committer, and who they were) long
   // before its sentence is, so only the sentence is a bar.
-  const teamBox = (body: string, cls = "") => `<div class="db-team${cls}">
+  // The `ai` mark sits in the box's own bottom-right rather than trailing the last word.
+  // Inline it read as part of the sentence — the one thing a provenance mark must never
+  // do — and landed wherever the text happened to wrap. `data-dashteam` makes the whole
+  // box the toggle for its own clamp; ./dashboard adds `.clamped` only when there is
+  // something folded away, so a short sentence offers no affordance it cannot honour.
+  const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}" data-dashteam="${esc(d.key)}">
         <span class="tl"><span class="sh">shared</span>The project${
           authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
-        <p>${body}</p>
+        <p>${body}</p>${mark}
       </div>`;
   return `<div class="db-day${open ? " open" : ""}" data-dashday="${esc(d.key)}">
     <div class="db-gut">
@@ -173,11 +195,11 @@ export function dayHtml(
       ${d.cost > 0 ? `<span class="cc">${esc(uUsd2(d.cost))}</span>` : ""}
     </div>
     <div class="db-dbody">
-      ${team ? teamBox(`${esc(team)}<span class="ai">· ai</span>`)
+      ${team ? teamBox(esc(team), "", AI_MARK)
         : pend.team ? teamBox(sk("84%", 10), " sk") : ""}
       <p class="db-sum">${esc(summary || headline)}${
-        summary ? `<span class="ai">· ai</span>`
-        : pend.mine ? `<span class="ai wr">· writing</span>` : ""}</p>
+        summary ? aiMark("ai")
+        : pend.mine ? aiMark("writing", "wr") : ""}</p>
       <div class="db-facts">
         ${d.commits.length ? `<span>${d.commits.length} commit${d.commits.length === 1 ? "" : "s"}</span>` : ""}
         ${d.commits.length && d.sessions.length ? `<span class="dot">·</span>` : ""}
@@ -351,13 +373,13 @@ export function dashInspector(
       ${act("launch", "＋", repo ? "New session…" : "New session",
         live.length ? `${live.length} already running here`
           : repo ? "here, or on a branch of its own" : "start Claude Code in this folder")}
-      ${act("terminal", "❯", "Open terminal here")}
-      ${act("run", "▶", "Run a task…")}
+      ${act("terminal", "❯", "Open terminal here", "a plain shell, no Claude")}
+      ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
       <div class="ip-sep"></div>
       ${repo ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
       ${act("history", "◷", "History…", "reopen a session you closed")}
-      ${act("folder", "⌂", "Open project folder")}
-      ${act("copypath", "⧉", "Copy path")}
+      ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
+      ${act("copypath", "⧉", "Copy path", "the full path, to the clipboard")}
       ${repo && !shared
         ? act("worklog", "↑", "Share the work log…", "commit each day's summary to .episko/") : ""}
     </div></div>
