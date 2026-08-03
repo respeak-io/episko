@@ -59,7 +59,11 @@ export interface DashHost {
   // launch resolves to `undefined` makes all three permanently take the failure branch
   // — which shipped, silently, because `unknown` accepted a `void`-returning launch.
   launch: (project: string, workdir: string, opts?: { colorKey?: string }) => Promise<string | null>;
-  openWorktreeDialog: (project: string, root: string) => void;
+  /// "Where should this session start?" — a plain launch in a folder that isn't a repo,
+  /// the new-session dialog in one that is. `launch` above is the unconditional verb and
+  /// is what a *dispatch* wants (it has already decided); this is what a **person**
+  /// clicking ＋ wants, which is why the two are separate host entries rather than one.
+  requestLaunch: (project: string, path: string, known: { branch: string } | null) => void;
   openTerminal: (dir: string) => void;
   openRun: (root: string) => void;
   openGraph: (root: string) => void;
@@ -70,7 +74,7 @@ export interface DashHost {
   renderAll: () => void;
 }
 let host: DashHost = {
-  launch: async () => null, openWorktreeDialog: () => {}, openTerminal: () => {},
+  launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
   openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
 };
@@ -719,8 +723,12 @@ export function wireDashboard(): void {
 
 function dashAction(act: string): void {
   const r = root(), n = name();
-  if (act === "launch") void host.launch(n, r, { colorKey: r });
-  else if (act === "worktree") host.openWorktreeDialog(n, r);
+  // ONE ＋, not two. It used to be a bare launch in the project root beside a separate
+  // "New worktree session…", which made the row you wanted depend on knowing whether the
+  // folder was a repo — a question the dashboard has already answered on screen. This is
+  // the same call the header's ＋ Session makes, so both ＋ in this view now mean the
+  // same thing: dialog on a repo, plain launch on a folder that has no branches to pick.
+  if (act === "launch") host.requestLaunch(n, r, dashLaunchHint());
   else if (act === "terminal") host.openTerminal(r);
   else if (act === "run") host.openRun(r);
   else if (act === "graph") host.openGraph(r);

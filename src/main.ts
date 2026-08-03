@@ -50,7 +50,7 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, openWt as openWtDlg, setWtCloseSession, setWtHandToTerminal,
+  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
   setWtLaunch, setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
@@ -230,7 +230,7 @@ setSettingsHost({
 // worktree dialog, the task picker, the graph and History all live elsewhere.
 setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
-  openWorktreeDialog: (project, root) => { void openWtDlg(project, root); },
+  requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },

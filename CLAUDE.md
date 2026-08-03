@@ -408,6 +408,15 @@ Three things that are easy to get wrong:
   `project_facts` and `worktree_heads` for this folder, so the answer is passed in
   rather than asked for again, and the click stays synchronous (see the comment on
   `requestLaunch` for why nothing may be awaited before that dialog is on screen).
+  **The inspector's ＋ is that same call**, and there is only one of it. It used to be a
+  bare launch in the project root sitting above a separate *New worktree session…*, so
+  which row you wanted depended on knowing whether the folder was a repo — a question
+  the dashboard has already answered on screen, and the dialog asks anyway. One ＋ that
+  means "start a session here" and opens the dialog when there is a branch to pick is
+  the whole verb; `dashInspector` keeps the ellipsis only on a repo, since on a plain
+  folder it launches outright and an ellipsis that opens nothing is a lie. `DashHost`
+  therefore carries **both** `launch` and `requestLaunch`: a dispatch has already decided
+  where it is going, a person clicking ＋ has not.
 - **⌘I collapses to a 44px rail here, not to nothing.** The dashboard's own verbs — the
   worktree dialog, the commit graph, the folder, the live-session strip — exist only in
   the inspector, so hiding the panel outright would hide real verbs. On a session ⌘I

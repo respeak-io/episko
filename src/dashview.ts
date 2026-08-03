@@ -348,8 +348,9 @@ export function dashInspector(
       `<div class="srow" data-sel="${esc(s.id)}"><span class="sglyph ${s.cls}">${s.glyph}</span>`
       + `<span class="sbranch">${esc(s.label)}</span><span class="sctx">${esc(s.ctx)}</span></div>`).join("")}</div></div>` : ""}
     <div><span class="label">Do something here</span><div class="ip-acts">
-      ${act("launch", "＋", "New session", live.length ? `${live.length} already running here` : "start Claude Code in this folder")}
-      ${repo ? act("worktree", "⑃", "New worktree session…", "on a branch of its own") : ""}
+      ${act("launch", "＋", repo ? "New session…" : "New session",
+        live.length ? `${live.length} already running here`
+          : repo ? "here, or on a branch of its own" : "start Claude Code in this folder")}
       ${act("terminal", "❯", "Open terminal here")}
       ${act("run", "▶", "Run a task…")}
       <div class="ip-sep"></div>
@@ -382,8 +383,7 @@ export function dashStrip(
       <span class="pglyph" style="background:${esc(accent)}">${esc(initial)}</span>
       ${live.map((s) => `<button class="isb live ${s.cls}" data-sel="${esc(s.id)}" title="${esc(s.label)}">${s.glyph}</button>`).join("")}
     </span>
-    ${b("launch", "＋", "New session")}
-    ${repo ? b("worktree", "⑃", "New worktree session…") : ""}
+    ${b("launch", "＋", repo ? "New session…" : "New session")}
     ${b("terminal", "❯", "Open terminal here")}
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>

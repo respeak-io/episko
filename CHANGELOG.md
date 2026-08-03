@@ -78,6 +78,11 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+~ **One ＋ on the project dashboard, not two.** *New session* and *New worktree session…*
+  sat one above the other, so picking the right row meant knowing whether the folder was
+  a repo — which is what the dialog asks about anyway. *New session* now opens that
+  dialog, exactly as ＋ Session in the header already did, and starts straight away in a
+  folder that has no branches to choose between.
 ! **The dashboard's buttons stop flickering under the pointer.** ▶ Start and everything
   beside it pulsed between their hover and resting colours while the mouse sat still on
   them — the whole pane was rebuilt on every telemetry event, so with a few agents
