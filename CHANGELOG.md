@@ -25,6 +25,12 @@ Markers: `+` new · `~` changed · `!` fixed
   makes it cheaper than a summary per person, not dearer. Nothing in the app offered it
   before: the timeline now says so at its foot once there is something to share, and the
   inspector carries *Share the work log…* beside the other project verbs.
++ **↗ Jump to its terminal works on Windows.** Clicking an external session used to
+  answer *"focusing external sessions isn't supported on Windows yet"*; it now brings
+  the hosting window forward — Windows Terminal, VS Code, or a plain console alike. With
+  several windows of one app open it picks the one running that session rather than
+  whichever was last in front. macOS still lands on the exact tab; Windows has no tty to
+  aim at, so it lands on the window.
 ~ **Your own half never reaches a file.** It was one sentence blending both, which meant
   a committed line was whoever generated it last describing the part of the day they
   personally saw — and your session titles and daily spend went into a file that gets
