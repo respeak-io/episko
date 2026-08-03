@@ -13,6 +13,34 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
+  written anything to GitHub. The call was one argument short, and a call that is one
+  argument short is not a partial call — it is no call at all, so no assignee, no label
+  and no comment have landed since the feature shipped, behind a toast that cheerfully
+  said *Started on #232*. Handing the issue back when the agent stops was broken the same
+  way and even quieter. Both write what they say they will now, and a claim that only
+  half lands says so on screen instead of in a log nobody opens.
+! **A dispatched prompt is sent, rather than left sitting in the box.** The Enter that
+  submits it travelled in the same keystroke burst as the prompt itself — and Claude
+  reads a burst as a *paste*, where a carriage return is a new line, not a send. So the
+  agent you started was still waiting for you to press Enter, which is the one thing the
+  button exists to spare you.
+~ **The dispatch sheet no longer promises a worktree it does not make**, and *push the
+  branch now* is gone with it. Nothing ever implemented that switch — there was no branch
+  to push and the command never took the argument — and a control that cannot act is
+  worse than one that is missing, because flipping it reads as a decision taken.
+~ **The disk-I/O total looks like something you can click, and says why clicking it
+  sometimes changes nothing.** The row cycles three windows — today, this run, everything
+  recorded — but it was pixel-identical to the two static rows above it until you happened
+  to hover, so there was nothing to suggest it did anything. It now carries a `⟳`. And on
+  a machine's first day all three windows genuinely read the same, because the only day
+  recorded *is* today and all of it *was* this run: correct, and indistinguishable from a
+  dead button, so the row now says so in a line that disappears the moment they diverge.
+! **"Everything recorded" no longer claims zero on a machine that has recorded nothing.**
+  An empty rollup rendered as `0 B read · 0 B written`, which says the disk sat idle
+  rather than that nothing was kept — the distinction the per-project spend strip already
+  makes with a dash. It reads *not recorded* now.
+
 ## 0.14.0 — 2026-08-03
 A day's work becomes something the team can read, and the app gets quieter underneath.
 

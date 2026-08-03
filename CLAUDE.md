@@ -52,9 +52,9 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **644 vitest + cargo (144 on macOS, 141 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **685 vitest + cargo (147 on macOS, 144 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -473,6 +473,23 @@ false` plus a reason, shown as one quiet row like a blocked runnable.
   *Could not start a session* while starting one — no prompt, no claim, and a note eaten
   on the way past. **A hook typed `unknown` whose callers narrow it is the whole bug**;
   `tsc` is the only thing that can catch this class, so type the seam, not the call site.
+- **The Enter that sends it must be its own `write_pty`.** Claude's REPL reads a burst
+  arriving in one chunk as a **paste**, and a `\r` inside a paste is a newline in the
+  buffer, not a submit — so `text + "\r"` in a single write left the prompt sitting in
+  the input box waiting for the human this path exists to spare. Verified against the
+  real CLI, not reasoned about: one write does not submit, text then a lone `\r` a beat
+  later does. Anything else that means to *send* rather than prefill inherits this.
+- **Pass every argument a `#[tauri::command]` declares, including the ones a flag turns
+  off.** Tauri rejects the whole invoke on one missing key, so an omitted argument is
+  never a partial call — it is no call. `gh_claim` went out without its `body` (and with
+  a `pushBranch` the command never took) for three releases: every dispatch was rejected
+  before `gh` ran, so no assignee, no label and no comment ever landed, while the
+  dashboard said *Started on #232* and the only trace was a `dlog` warning. `gh_release`
+  had the same defect behind a bare `.catch(() => {})`. **`test/ipc.test.ts` compares the
+  two halves in both directions** now, and the outcome is read rather than discarded — a
+  claim that half-lands says so on screen, because a claim that silently wrote nothing is
+  worse than none: the dispatcher believes the work is marked and a colleague takes it
+  anyway, which is the blind window `claim.ts` exists to close.
 - **The viewer is cached for the process, not per repo.** `gh api user` returns the
   same login whichever folder it runs in, so keying it by root spent a process per
   project for an answer already in hand.
@@ -682,7 +699,20 @@ poll's increment into a per-day rollup off the *same* sample the live bars are d
 from, and `ioDelta` clamps a drop to zero because a restart is the normal case here, not
 an edge one — the same reasoning as `costDelta`'s drop branch, reached independently.
 There is no back-fill: days before it shipped have no entry and render as "not
-recorded", never as zero.
+recorded", never as zero — and `ioTotal()` answers **null**, not `{r:0,w:0}`, for the
+same reason.
+
+**The three windows the row cycles genuinely coincide at first, and the row has to say
+so.** `all` equals `today` while one day is recorded — every install, for the first day
+after the rollup ships — and `run` equals `today` whenever the run's first poll is also
+the day's, because `ioDelta` banks the *whole* cumulative counter when there is no
+previous reading. Both are correct, and together they make a cycling control whose three
+positions carry identical numbers, which reads as a click that does nothing. `ioSameNote`
+(pure, tested) names the coincidence and returns null once they diverge, so the sentence
+is absent rather than empty. It compares the **rendered** strings, not the floats: two
+figures that round together are one figure to the person asking why nothing changed. The
+`⟳` beside the label is the other half — the row sits under two static rows it is
+pixel-identical to, so a hover-only highlight was the entire affordance.
 
 **The write is floored at a minute, and a disk meter is exactly the wrong thing to be
 sloppy about here.** The poll behind it runs every 4s for as long as a session is on
@@ -705,7 +735,7 @@ it does not take a reading.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 644 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 685 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |

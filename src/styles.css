@@ -762,12 +762,21 @@ html.win .wctl { display: flex; }
 .res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 /* Totals: context for the rates above, so it reads as a footnote not a third gauge.
    A button, because the window it covers cycles on click (today → this run → recorded)
-   — reset to look exactly like the row it replaced, with only a hover to say it acts. */
+   — reset to look exactly like the row it replaced. */
 .res .rtot { margin-top: 1px; width: 100%; padding: 2px 3px; margin-left: -3px; border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; text-align: left; }
 .res .rtot:hover { background: var(--surface-2); border-color: var(--hair); }
 /* The scope name is the key here and it is a word, not a fixed label — so this is the
    second row allowed out of the 30px column, for the same reason `.rall` is. */
 .res .rtot .rk { width: auto; flex: none; }
+/* The affordance, and it must be visible AT REST. This row is pixel-identical to the
+   two static ones above it until you hover, so a hover-only highlight was the whole
+   signal — and a label is the last thing anyone hovers. Dim enough to stay a footnote,
+   present enough to read as a control; it brightens and turns with the row. */
+.res .rcyc { font-size: 9px; line-height: 1; color: var(--muted-2); opacity: .55; margin-left: 5px; transition: opacity .15s ease, transform .3s ease; }
+.res .rtot:hover .rcyc { opacity: 1; color: var(--fg); transform: rotate(180deg); }
+/* Why the numbers did not move. Present only when two windows genuinely coincide, so
+   it is a sentence you see once on a fresh machine and then never again. */
+.res .rnote { margin: 3px 3px 0; font: 9.5px/1.35 var(--font-ui); color: var(--muted-2); opacity: .8; }
 .res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; margin-left: auto; }
 /* These figures are app-wide, not the session on screen — this row is what says so,
    and the only one allowed out of the 30px key column, because "all sessions" has to

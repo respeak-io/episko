@@ -30,8 +30,8 @@ describe("the project is a ceiling, not a default", () => {
   it("cannot turn anything ON that you did not ask for", () => {
     // A ceiling only ever lowers. A project must not be able to make your machine
     // start commenting on issues because it said so.
-    const r = resolveClaim(policy({ assign: false, comment: false, pushBranch: false }), ALLOW_ALL);
-    expect([r.assign.value, r.comment.value, r.pushBranch.value]).toEqual([false, false, false]);
+    const r = resolveClaim(policy({ assign: false, comment: false }), ALLOW_ALL);
+    expect([r.assign.value, r.comment.value]).toEqual([false, false]);
   });
 
   it("blames the project only when the project is actually the reason", () => {
@@ -43,7 +43,7 @@ describe("the project is a ceiling, not a default", () => {
 
   it("treats a project with no policy as permitting everything", () => {
     // A repo that never heard of Episko must not silently disable features.
-    const r = resolveClaim(policy({ assign: true, comment: true, pushBranch: true, label: "agent: running" }));
+    const r = resolveClaim(policy({ assign: true, comment: true, label: "agent: running" }));
     expect(policyWritesAnything(r)).toBe(true);
     expect(r.label.value).toBe("agent: running");
   });
@@ -55,14 +55,13 @@ describe("the project is a ceiling, not a default", () => {
   });
 
   it("knows when a policy would write nothing at all", () => {
-    const silent = resolveClaim(policy({ assign: false, comment: false, pushBranch: false, label: "" }));
+    const silent = resolveClaim(policy({ assign: false, comment: false, label: "" }));
     expect(policyWritesAnything(silent)).toBe(false);
   });
 
   it("defaults to assignment only — one call, reversible, no comment spam", () => {
     expect(DEFAULT_POLICY.assign).toBe(true);
     expect(DEFAULT_POLICY.comment).toBe(false);
-    expect(DEFAULT_POLICY.pushBranch).toBe(false);
   });
 });
 

@@ -31,11 +31,11 @@ import {
 } from "./dashview";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
-  resolveClaim, type ClaimAllow, type ClaimPolicy,
+  resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
 } from "./claim";
 import {
-  bucketed, cardRows, closeComment, holderOf, isoDay, quietFor, staleCandidates,
-  type GhResult, type GhThread, type KeptIssue,
+  bucketed, cardRows, claimComment, closeComment, holderOf, isoDay, quietFor,
+  releaseComment, staleCandidates, type GhResult, type GhThread, type KeptIssue,
 } from "./ghwork";
 import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, type SharedNote } from "./notes";
@@ -79,6 +79,12 @@ let host: DashHost = {
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
+
+/// How long to wait between typing a dispatched prompt and sending the Enter that
+/// submits it. It exists because the two must not arrive in one read: Claude's REPL
+/// treats a burst as a paste and folds the `\r` into the buffer as a newline. Anything
+/// clear of a single event-loop turn does it; this is a keystroke's worth of slack.
+const SUBMIT_MS = 250;
 
 // ---------- preferences ----------
 export let dashRange = clampRange(+(localStorage.getItem("cc-dash-range") || DASH_RANGE_DEFAULT));
@@ -765,7 +771,6 @@ function togglePolicy(k: string): void {
   const r = resolveClaim(policy, allow);
   if (k === "assign" && r.assign.source !== "project") policy = { ...policy, assign: !policy.assign };
   else if (k === "comment" && r.comment.source !== "project") policy = { ...policy, comment: !policy.comment };
-  else if (k === "pushBranch" && r.pushBranch.source !== "project") policy = { ...policy, pushBranch: !policy.pushBranch };
   else if (k === "label" && r.label.source !== "project") {
     policy = { ...policy, label: policy.label ? "" : "agent: running" };
   }
@@ -826,22 +831,43 @@ async function doDispatch(): Promise<void> {
   if (typeof sid !== "string") return;
 
   const eff = resolveClaim(policy, allow);
-  if (eff.assign.value || eff.comment.value || eff.label.value || eff.pushBranch.value) {
-    void invoke("gh_claim", {
-      root: r, number: t.number, kind: t.kind === "pr" ? "pr" : "issue",
+  // Pass EVERY argument the command declares, including `body` when `comment` is off.
+  // Tauri rejects the whole invoke on one missing key, so omitting `body` did not mean
+  // "no comment" — it meant no assign and no label either, for three releases, reported
+  // only as a `dlog` warning behind a toast that said "Started on #232".
+  if (eff.assign.value || eff.comment.value || eff.label.value) {
+    const kind = t.kind === "pr" ? "pr" : "issue";
+    void invoke<ClaimOutcome>("gh_claim", {
+      root: r, number: t.number, kind,
       assign: eff.assign.value, comment: eff.comment.value,
-      label: eff.label.value, pushBranch: eff.pushBranch.value,
-    }).then(() => {
+      label: eff.label.value, body: claimComment(gh.viewer || "", Date.now()),
+    }).then((out) => {
+      // Record what actually landed, not what was asked for — the release undoes this.
       recordClaim({ threadId: `${r}#${t.number}`, root: r, number: t.number,
-        kind: t.kind === "pr" ? "pr" : "issue", sessionId: sid, at: Date.now() });
+        kind, sessionId: sid, at: Date.now(),
+        wrote: { assigned: out.assigned, label: out.labeled ? eff.label.value : "" } });
+      if (out.problems.length) {
+        dlog("warn", `claim #${t.number} partial — ${out.problems.join("; ")}`);
+        toast(`Started on #${t.number} — but the claim didn't fully land: ${out.problems.join("; ")}`);
+      }
       void loadGh(r, true);
-    }).catch((e) => { dlog("warn", `claim #${t.number} failed — ${e}`); });
+    }).catch((e) => {
+      dlog("warn", `claim #${t.number} failed — ${e}`);
+      toast(`Started on #${t.number} — but nothing could be written to it: ${e}`);
+    });
   }
 
-  // Sent, not prefilled — see the note above.
+  // Sent, not prefilled — see the note above. The carriage return goes in a write of its
+  // OWN, a beat behind the text: Claude's REPL reads a burst that arrives in one chunk
+  // as a *paste*, and a `\r` inside a paste is a newline in the buffer, not a submit. So
+  // the prompt landed in the input box and sat there — which is exactly the waiting this
+  // path exists to remove. A lone `\r` has no burst to be folded into.
   setTimeout(() => {
     const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
-    void invoke("write_pty", { sessionId: sid, data: prompt.replace(/\n/g, " ") + "\r" }).catch(() => {});
+    void invoke("write_pty", { sessionId: sid, data: prompt.replace(/\n/g, " ") })
+      .then(() => new Promise((r2) => setTimeout(r2, SUBMIT_MS)))
+      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
+      .catch(() => {});
   }, 1400);
   toast(`Started on #${t.number}`);
 }
@@ -852,7 +878,22 @@ export function releaseClaimFor(sessionId: string): void {
   const rec = claimForSession(sessionId);
   if (!rec) return;
   dropClaim(rec.threadId);
-  void invoke("gh_release", { root: rec.root, number: rec.number, kind: rec.kind }).catch(() => {});
+  // `label` and `body` are required arguments, and leaving them off made every release
+  // since the feature shipped fail the same way `gh_claim` did — silently, because the
+  // only handler was a bare `.catch(() => {})`. A release that never runs is the
+  // graveyard-of-dead-claims failure this function exists to prevent.
+  //
+  // `unassign` is what we *wrote*, never a blanket `@me`: a ledger entry from before
+  // `wrote` existed says nothing about who assigned the issue, and guessing there means
+  // stripping an assignment a human made by hand.
+  void invoke<ClaimOutcome>("gh_release", {
+    root: rec.root, number: rec.number, kind: rec.kind,
+    unassign: rec.wrote?.assigned ?? false,
+    label: rec.wrote?.label ?? "",
+    body: releaseComment(gh.viewer || "", Date.now()),
+  }).then((out) => {
+    if (out.problems.length) dlog("warn", `release #${rec.number} partial — ${out.problems.join("; ")}`);
+  }).catch((e) => { dlog("warn", `release #${rec.number} failed — ${e}`); });
 }
 
 /// Promote a note into the project, or take it back out. Sharing needs *git*, not

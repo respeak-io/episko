@@ -31,19 +31,22 @@ export interface ClaimPolicy {
   /// One comment per thread, EDITED in place (`--edit-last --create-if-none`), never
   /// appended. The difference between a useful bot and an annoying one.
   comment: boolean;
-  /// Push the dispatch branch immediately, so the claim and the presence signal become
-  /// the same mechanism — `for-each-ref` already reads it. Off by default: whether a
-  /// bare branch push starts CI is repo-dependent.
-  pushBranch: boolean;
+  // There was a `pushBranch` here — "push the dispatch branch immediately, so the claim
+  // and the presence signal become the same mechanism". It was a switch in the dispatch
+  // sheet, a field in the project ceiling, and a key in the `gh_claim` call, and NONE of
+  // it ever reached a `git push`: the command has never taken the argument, and dispatch
+  // does not create a branch to push in the first place (it starts a session in the
+  // project root — the sheet claimed a worktree it never made). A control that cannot
+  // act is worse than a missing one, because flipping it reads as a decision taken.
+  // Reintroduce it with the worktree half, or not at all.
   /// A label like `agent: running`. Empty means off. Distinct from `assign` on purpose:
   /// assignment says a *human* owns this, a label says a *machine* is on it right now.
   label: string;
 }
 
 export const DEFAULT_POLICY: ClaimPolicy = {
-  assign: true,      // one API call, reversible, and the clearest signal there is
-  comment: false,    // expressive but social — opt in
-  pushBranch: false, // repo-dependent (CI triggers)
+  assign: true,   // one API call, reversible, and the clearest signal there is
+  comment: false, // expressive but social — opt in
   label: "",
 };
 
@@ -53,10 +56,9 @@ export const DEFAULT_POLICY: ClaimPolicy = {
 export interface ClaimAllow {
   assign: boolean;
   comment: boolean;
-  pushBranch: boolean;
   label: boolean;
 }
-export const ALLOW_ALL: ClaimAllow = { assign: true, comment: true, pushBranch: true, label: true };
+export const ALLOW_ALL: ClaimAllow = { assign: true, comment: true, label: true };
 
 /// Where an effective value came from — so the settings tab can say *why* something is
 /// off, rather than showing a switch that silently does nothing when you flip it.
@@ -65,7 +67,6 @@ export interface Resolved<T> { value: T; source: PolicySource }
 export interface ResolvedPolicy {
   assign: Resolved<boolean>;
   comment: Resolved<boolean>;
-  pushBranch: Resolved<boolean>;
   label: Resolved<string>;
 }
 
@@ -81,7 +82,6 @@ export function resolveClaim(personal: ClaimPolicy, allow: ClaimAllow = ALLOW_AL
   return {
     assign: bool(personal.assign, allow.assign),
     comment: bool(personal.comment, allow.comment),
-    pushBranch: bool(personal.pushBranch, allow.pushBranch),
     label: personal.label && !allow.label
       ? { value: "", source: "project" }
       : { value: personal.label, source: "personal" },
@@ -90,7 +90,26 @@ export function resolveClaim(personal: ClaimPolicy, allow: ClaimAllow = ALLOW_AL
 
 /** Does the effective policy write anything at all? */
 export function policyWritesAnything(r: ResolvedPolicy): boolean {
-  return r.assign.value || r.comment.value || r.pushBranch.value || !!r.label.value;
+  return r.assign.value || r.comment.value || !!r.label.value;
+}
+
+/// What `gh_claim` / `gh_release` actually managed to write. Every part is independent
+/// and best-effort — a repo you cannot assign in should still get the comment — so a
+/// *partial* failure is the normal shape of a bad day, not an exception.
+///
+/// This is a return value that has to be **read**. `gh_claim` was invoked for three
+/// releases with a missing `body` argument, so every claim ever attempted was rejected
+/// by Tauri before `gh` ran; the only trace was a `dlog` warning nobody opens, and the
+/// dashboard cheerfully said "Started on #232". A claim that silently wrote nothing is
+/// worse than no claim at all, because the person who dispatched believes the work is
+/// marked and a colleague picks it up anyway — which is the exact blind window this
+/// whole module exists to close.
+export interface ClaimOutcome {
+  assigned: boolean;
+  commented: boolean;
+  labeled: boolean;
+  /// Everything that did not work, in the user's words rather than gh's.
+  problems: string[];
 }
 
 // ---------- staleness ----------
@@ -126,6 +145,12 @@ export interface ClaimRecord {
   /// The session that took it, so an exit can release exactly the right claim.
   sessionId: string;
   at: number;
+  /// What the claim actually wrote, so the release undoes exactly that and no more.
+  /// Without it a release unassigns `@me` unconditionally — a write to a colleague's
+  /// issue on the strength of a guess, and one that would silently undo an assignment
+  /// you had made by hand. Optional because a ledger written before this existed is
+  /// still a valid ledger; absent means "we don't know", which reads as "touch nothing".
+  wrote?: { assigned: boolean; label: string };
 }
 
 const LEDGER = "cc-claims";

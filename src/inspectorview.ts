@@ -16,7 +16,7 @@ import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline,
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
 import { ioAll, ioScope, sessions, type IoScope } from "./state";
-import { dayIo, ioTotal, todayKey } from "./usage";
+import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
 // disabled while one is.
@@ -239,6 +239,13 @@ function ioFigures(scope: IoScope): { r: number; w: number; known: boolean } {
   const v = scope === "today" ? dayIo[todayKey()] : ioTotal();
   return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
 }
+/// What one scope reads as. The note below compares these strings rather than the
+/// floats, because two figures that round to the same text are the same figure to
+/// whoever is looking at the row.
+function ioText(scope: IoScope): string {
+  const f = ioFigures(scope);
+  return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
+}
 export function resHtml(): string {
   const r = ioAll;
   // Before the second sample there is no window to average over, so the rate is unknown
@@ -250,15 +257,22 @@ export function resHtml(): string {
   // The total is a *window*, and which window was never stated — it said "total" while
   // showing the current run, so it read as a lifetime figure that reset overnight. The
   // scope is now named on the row and the whole row cycles it.
-  const f = ioFigures(ioScope);
-  const tot = f.known
-    ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written`
-    : `not recorded`;
+  const tot = ioText(ioScope);
+  // The `⟳` is permanent, not a hover reveal. This row sits directly under two static
+  // ones it is pixel-identical to at rest, so the only thing that said "clickable" was
+  // a hover highlight — which nobody finds, because nobody hovers a label. A cycling
+  // control has to look like one before it is touched.
+  //
+  // The note below it is the other half: the three windows legitimately coincide on a
+  // machine's first day (see `ioSameNote`), and a click that visibly changes nothing is
+  // indistinguishable from a broken one unless the row says why.
+  const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
   return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
     <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
-    <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rvtot">${tot}</span></button></div>`;
+    <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
+    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}</div>`;
 }
 /// Spelled out per scope rather than one generic hint, because the difference between
 /// them is the whole point and two of the three have a caveat worth one sentence.

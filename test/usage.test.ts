@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDelta, ioTotal,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDayCount, ioDelta,
+  ioSameNote, ioTotal,
   modelFamily,
   resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
@@ -439,12 +440,54 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     expect(store.get("cc-io")).toBeUndefined();
   });
 
-  it("sums every recorded day, and says zero when nothing is recorded", () => {
-    expect(ioTotal()).toEqual({ r: 0, w: 0 });
+  it("sums every recorded day, and answers NULL when nothing is recorded", () => {
+    // Not `{r:0,w:0}`: an empty rollup means we did not keep this, and a confident zero
+    // would claim the disk sat idle. The row renders the two differently.
+    expect(ioTotal()).toBeNull();
     addIo({ r: 10, w: 4 });
     vi.setSystemTime(noon(2027, 3, 15));
     addIo({ r: 30, w: 10 });
     expect(ioTotal()).toEqual({ r: 30, w: 10 });
+    expect(ioDayCount()).toBe(2);
+  });
+});
+
+// Why the I/O row can be clicked and not appear to change. The three windows really do
+// coincide early on, and the note is the only thing standing between "correct" and
+// "this button is broken".
+describe("ioSameNote — the three I/O windows reading alike", () => {
+  const A = "1.0 MB read · 2.0 MB written";
+  const B = "9.0 MB read · 3.0 MB written";
+
+  it("explains a first day, where all three are the same by construction", () => {
+    // `all` == `today` because one day is recorded; `run` == `today` because ioDelta
+    // banks the whole counter on the first poll. Both are right, and together they make
+    // every position of the control read identically.
+    const n = ioSameNote(A, A, A, 1);
+    expect(n).toMatch(/only day recorded/);
+    expect(n).toMatch(/this run/);
+  });
+
+  it("does not blame the day count once several days are recorded", () => {
+    expect(ioSameNote(A, A, A, 5)).toBe("All three windows happen to read the same right now.");
+  });
+
+  it("names the run when only the run coincides", () => {
+    expect(ioSameNote(A, A, B, 3)).toMatch(/all this run/);
+  });
+
+  it("names the record when only the total coincides", () => {
+    expect(ioSameNote(A, B, A, 1)).toMatch(/everything recorded/);
+  });
+
+  it("says NOTHING once the windows genuinely differ — absent, not empty", () => {
+    expect(ioSameNote(A, B, "3.0 MB read · 1.0 MB written", 4)).toBeNull();
+  });
+
+  it("compares what is rendered, so a sub-unit difference is still 'the same'", () => {
+    // The reader sees `fmtMb` output, not floats. Two figures that round together are
+    // one figure as far as "why didn't it change?" is concerned.
+    expect(ioSameNote(A, A, A, 2)).not.toBeNull();
   });
 });
 

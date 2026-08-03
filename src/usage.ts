@@ -275,10 +275,51 @@ export function resetIoRollup() {
 /// Everything the rollup has ever recorded. Not a lifetime figure and does not pretend
 /// to be one — it starts the day this ships, which is why the label says "recorded"
 /// rather than "all time".
-export function ioTotal(): DayIo {
+///
+/// **Null when nothing has been recorded**, never `{r:0,w:0}`: an empty rollup means we
+/// did not keep this, and a confident zero would say the disk was idle. Same distinction
+/// the per-project cost strip makes with its dash.
+export function ioTotal(): DayIo | null {
+  const days = Object.values(dayIo);
+  if (!days.length) return null;
   let r = 0, w = 0;
-  for (const v of Object.values(dayIo)) { r += v.r; w += v.w; }
+  for (const v of days) { r += v.r; w += v.w; }
   return { r, w };
+}
+
+/** How many days the rollup holds — what tells `all` apart from `today`. */
+export function ioDayCount(): number {
+  return Object.keys(dayIo).length;
+}
+
+/**
+ * Why the I/O row does not change when you click it.
+ *
+ * The three windows *genuinely* coincide in the ordinary early case, and the arithmetic
+ * makes it more common than it sounds. `all` equals `today` whenever one day is
+ * recorded — which is every install for the first day after the rollup ships. And `run`
+ * equals `today` whenever the run's first poll is also the day's first: `ioDelta` banks
+ * the entire cumulative counter when there is no previous reading, so a single run
+ * started today telescopes to exactly today's total.
+ *
+ * That is correct, and it is indistinguishable from a broken control. A cycling row
+ * whose three positions carry identical numbers reads as a click that does nothing, so
+ * it has to say why. Returns null once they diverge, so the note is absent rather than
+ * empty — the same stance as `missingCard`.
+ *
+ * Compared on the RENDERED strings, not the floats: two figures that differ by a byte
+ * are the same figure to the person reading the row, and that reader is who the note is
+ * for.
+ */
+export function ioSameNote(today: string, run: string, all: string, days: number): string | null {
+  if (today === run && run === all) {
+    return days <= 1
+      ? "All three windows are the same so far: today is the only day recorded, and all of it is this run."
+      : "All three windows happen to read the same right now.";
+  }
+  if (today === run) return "Today is all this run — nothing was recorded earlier today.";
+  if (today === all) return "Today is everything recorded so far.";
+  return null;
 }
 
 // What the statusLine reports is a running total, so the day only wants the increment
