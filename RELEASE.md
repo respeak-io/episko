@@ -296,9 +296,43 @@ Nothing here has automated cover: the frame is drawn by the OS on one side and b
 
 ## Cutting it
 
+**The order matters, and it is not the obvious one.** `changelog release` closes
+`## Unreleased` into a version section and opens a fresh empty one — which is exactly
+what the `dev → main` gate refuses. So the roll cannot happen on the branch the pull
+request is cut from, and every release since 0.13.x has done it on `main` afterwards
+(`d673829`, `4cdf601`, `105d069` — each three files, on main, after the merge commit).
+
 ```sh
-git tag v0.11.1 && git push origin v0.11.1
+# 1. on dev: `## Unreleased` is FULL. Open the PR and let CI read it.
+gh pr create --base main --head dev --title "release: 0.14.0"
+gh pr merge <n> --merge            # a merge commit, not a squash
+
+# 2. on main, after the merge — the roll and the version bump are one commit
+git checkout main && git pull --ff-only
+pnpm changelog release 0.14.0      # then re-read it: it does NOT write the lede
+$EDITOR CHANGELOG.md               # add the one-line lede under the heading
+#   …and bump `version` in package.json AND src-tauri/tauri.conf.json to match
+git commit -am "release: 0.14.0" && git push origin main
+
+# 3. the tag, from main
+git tag v0.14.0 && git push origin v0.14.0
+
+# 4. put main back into dev, or the next release ships these notes twice
+git checkout dev && git merge --ff-only main && git push origin dev
 ```
+
+**Step 4 is not tidying.** The merge leaves `main` with the entries rolled into a
+version section and `dev` still holding the same entries under `## Unreleased`, so the
+*next* dev → main PR re-proposes all of them and the release after that ships the
+section twice. `dev` is a strict ancestor of `main` at this point, so it fast-forwards.
+Afterwards `changelog check` fails on `dev` — correct, and not a problem: that gate only
+runs on a pull request onto `main`, and the first entry of the next release clears it.
+
+**The lede is worth the extra minute.** `changelog release` writes only the heading;
+*What's new* renders the line under it as the release's headline, and `release.yml`
+lifts the whole section into the GitHub release body. A section with no entries **and**
+no lede is dropped at parse time, so a botched roll ships a release describing nothing.
+Check it before tagging: `node scripts/changelog.mjs section 0.14.0 | head -3`.
 
 `release.yml` builds both platforms against that tag, and both jobs append to the one
 GitHub Release: macOS `aarch64` produces the `.dmg` + the updater artifact, Windows
