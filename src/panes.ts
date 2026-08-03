@@ -20,7 +20,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
@@ -289,7 +289,7 @@ export function closeSession(id: string) {
     setActiveId(null);
     if (next) { setActive(next.id); return; }
     document.documentElement.style.setProperty("--accent", "#a78bfa");
-    ($("empty") as HTMLElement).style.display = "grid";
+    takeStage("none");
   }
   renderAll();
 }
@@ -298,9 +298,12 @@ export function closeSession(id: string) {
 export function setActive(id: string) {
   const s = sessions.get(id);
   if (!s) return;
+  // The pointer and the transcript timer, then the panes: `closeExternalView` owns the
+  // first pair, `takeStage` the second. It is called after, not instead — that one drops
+  // the stage to the empty card, which this immediately replaces with the pane.
   closeExternalView();
   setActiveId(id);
-  ($("empty") as HTMLElement).style.display = "none";
+  takeStage("session");
   for (const x of sessions.values()) x.pane.classList.toggle("active", x.id === id);
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
   if (s.term && s.fit) {

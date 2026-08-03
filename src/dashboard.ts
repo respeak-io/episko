@@ -17,16 +17,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import {
   canShare, clampRange, DASH_RANGE_DEFAULT, dashDays, dashPulse, densePerDay,
   projectCost, projectTier, type ProjectFacts, type ProjectTier,
 } from "./dash";
 import {
-  checkoutsCard, checkoutsOverlay, closeSheet, dashInspector, dashStrip, dayHtml,
-  dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay, pulseHtml,
-  triageCard, triageOverlay, workCard, workLogOffer, workOverlay,
+  cardSkeleton, checkoutsCard, checkoutsOverlay, closeSheet, dashInspector, dashStrip,
+  dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay, pulseHtml,
+  pulseSkeleton, spineSkeleton, triageCard, triageOverlay, workCard, workLogOffer,
+  workOverlay,
 } from "./dashview";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
@@ -102,7 +103,24 @@ let tier: ProjectTier = "none";
 let days: TrailDay[] = [];
 let heads: WtHead[] = [];
 let hasDigest = false;
-let loading = false;
+/**
+ * The waits, and they are deliberately separate flags rather than one `isLoading` —
+ * three here, plus `writing`/`stage` down with the summary queue. Each starts at a
+ * different moment, ends at a different moment, and darkens a different part of the
+ * screen; one flag over the lot would either skeleton a surface that already has its
+ * answer or leave one that doesn't looking settled.
+ */
+let loading = false;                 // the local reads: facts, history, git log, digest
+/// Whether `project_facts` has answered **for the project now on screen**. Not the same
+/// question as `loading`: a range change reloads the timeline without putting the tier
+/// back in doubt, so the inspector's repo verbs must not blink for it. False only
+/// between clicking a new project and its facts landing — during which `tier` reads
+/// `none`, which is an assertion this has no basis for yet.
+let factsKnown = false;
+/// The GitHub half, which fires *after* the local reads and used to be entirely silent:
+/// the Open work card was simply not there yet, which on a repo whose issues are the
+/// point reads as `gh` being broken rather than as `gh` being slow.
+let ghLoading = false;
 /// The GitHub half. `gh` is allowed to be missing, logged out, or pointed at a folder
 /// that is not a GitHub repo — every one of those is `available: false` and a reason,
 /// shown as one quiet row rather than as breakage.
@@ -131,6 +149,16 @@ const teamSummaries = new Map<string, string>();
 const openDays = new Set<string>();
 /// Which enlarge overlay is up, if any.
 let openView: "checkouts" | "notes" | "work" | "triage" | null = null;
+/// The one day whose sentence is out at the model right now, and in which scope. One at
+/// a time by construction — `runSummaryQueue` is sequential — so this is a value, not a
+/// set, and the mark it draws walks down the timeline as the queue does.
+let writing: { key: string; scope: "me" | "project" } | null = null;
+/// Which half of a pass is running. It is what lets a *shared* box be drawn before its
+/// sentence exists: during stage 2 every shared day with no line yet is genuinely queued
+/// for one. Gated on the stage rather than on the whole queue because stage 1 can be a
+/// fortnight of calls, and a screenful of boxes shimmering through all of it promises
+/// something that is true but not yet happening.
+let stage: "me" | "project" | null = null;
 
 const root = () => dashMirror()?.root ?? "";
 const name = () => dashMirror()?.name ?? "";
@@ -157,16 +185,32 @@ export function dashLaunchHint(): { branch: string } | null {
 // ---------- data ----------
 async function loadDash(): Promise<void> {
   const r = root();
-  if (!r) return;
+  // `openDashboard` sets `loading` before this is even called, so bailing without
+  // clearing it would leave the pane shimmering at a skeleton nothing is filling.
+  if (!r) { loading = false; return; }
   loading = true;
+  ghLoading = false;
   summaries.clear();
   teamSummaries.clear();
   renderDash();
   try {
     // `project_facts` first and alone: it decides which of the calls below are even
     // worth making, and a folder that isn't a repo must not be asked for a git log.
-    facts = await invoke<ProjectFacts>("project_facts", { dir: r }).catch(() => null);
+    const f = await invoke<ProjectFacts>("project_facts", { dir: r }).catch(() => null);
+    // Everything below is an answer *about `r`*, and a load for another project may have
+    // started while this one was awaiting — in which case that load owns the state and
+    // this one must touch none of it, `loading` included. The same guard `loadGh` has
+    // always had, needed at both awaits here because both write module state; without it
+    // a stale continuation lands the previous project's tier under the new one's name
+    // and, worse, declares it *known*.
+    if (root() !== r) return;
+    facts = f;
     tier = projectTier(facts);
+    factsKnown = true;
+    // The tier is what the inspector's repo verbs and the strip's hang off, and they are
+    // painted by `renderAll`, not by us — so say so now rather than at the end of the
+    // reads below, which are several seconds of history scanning away.
+    host.renderAll();
     const wantGit = tier !== "none";
     const [hist, commits, wt, digest, sn] = await Promise.all([
       invoke<HistEntry[]>("list_session_history", { limit: 400 }).catch((e) => {
@@ -184,12 +228,14 @@ async function loadDash(): Promise<void> {
       wantGit ? invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => [] as SharedNote[])
               : Promise.resolve([] as SharedNote[]),
     ]);
+    if (root() !== r) return;
     shared = sn;
     heads = wt.filter((w) => w.exists);
     // The GitHub half, only for a repo that has a GitHub remote. Fired after the
     // cheap local reads rather than alongside them: `gh` is a process per call and
     // the timeline should paint without waiting for the network.
     if (tier === "github") {
+      ghLoading = true;
       void loadGh(r);
     } else {
       gh = { available: false, reason: null, threads: [], viewer: null };
@@ -203,7 +249,9 @@ async function loadDash(): Promise<void> {
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
     days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
   } finally {
-    loading = false;
+    // Guarded like every other write above: clearing it unconditionally would take the
+    // *next* project's skeletons down while its own load is still running.
+    if (root() === r) loading = false;
   }
   renderDash();
   if (dashSummaries) void runSummaryQueue();
@@ -220,6 +268,10 @@ async function loadGh(r: string, force = false): Promise<void> {
     invoke<ClaimAllow>("claim_policy", { root: r }).catch(() => ALLOW_ALL),
   ]);
   if (root() !== r) return;   // the user moved on while this was in flight
+  // Cleared inside the guard, never before it: a stale call landing after the user has
+  // moved to another GitHub project would otherwise take that project's skeleton down
+  // and leave its own, still-running, call with nothing on screen saying so.
+  ghLoading = false;
   gh = res; kept = k; allow = a;
   renderDash();
 }
@@ -254,6 +306,9 @@ async function runSummaryQueue(): Promise<void> {
     } while (queueAgain && dashMirror() && dashSummaries);
   } finally {
     queueRunning = false;
+    // A pass that answered every day from cache never renders on its own, so the marks
+    // it drew on the way in would sit there until something else repainted.
+    renderDash();
   }
 }
 
@@ -278,8 +333,19 @@ async function summaryPass(): Promise<void> {
   const r = root();
   const now = Date.now();
   const ordered = [...days.filter((d) => dayIsClosed(d, now)), ...days.filter((d) => !dayIsClosed(d, now))];
-  for (const d of ordered) if (!await summariseDay(d, r, now, "me")) return;
-  for (const d of ordered) if (!await summariseDay(d, r, now, "project")) return;
+  try {
+    stage = "me";
+    for (const d of ordered) if (!await summariseDay(d, r, now, "me")) return;
+    stage = "project";
+    // The shared boxes this stage is about to fill, drawn before the first call goes
+    // out: the box is a block that would otherwise appear from nothing, and its heading
+    // — that this day had more than one human committer, and who — has been known since
+    // the timeline was assembled.
+    renderDash();
+    for (const d of ordered) if (!await summariseDay(d, r, now, "project")) return;
+  } finally {
+    stage = null;
+  }
 }
 
 /**
@@ -306,6 +372,11 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
   // say and must not be asked — an empty record would spend a call on "quiet day".
   const f = mine ? dayFacts(d) : projectDayFacts(d);
   if (!f.trim()) return true;
+  // Marked only from here, past every early return above: a day answered from cache or
+  // skipped by the sharing rule is not waiting on anything, and marking it would put a
+  // "writing…" on rows that will never change.
+  writing = { key: d.key, scope };
+  renderDash();
   try {
     const line = await invoke<string>("summarize_day", {
       root: r, key: d.key, facts: f, model: "haiku", scope, force: !closed,
@@ -317,7 +388,6 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
     if (root() !== r) return false;
     if (!line) return true;
     into.set(d.key, line);
-    renderDash();
     // Share it — and only ever this half. A day still being written is not written to
     // the repo either: today's line changes as the day goes on, and each change would
     // dirty a tracked file.
@@ -334,6 +404,12 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
     // No summary is a fine state — the deterministic headline already reads correctly —
     // so a failure is logged and the loop moves on.
     dlog("warn", `dash: ${scope} summary for ${d.key} failed — ${e}`);
+  } finally {
+    // Cleared and repainted however the call went, so a failed or empty one doesn't
+    // leave its row claiming to still be writing. Safe to null unconditionally: the
+    // queue is sequential, so nothing newer can have claimed the slot.
+    writing = null;
+    if (root() === r) renderDash();
   }
   return true;
 }
@@ -344,13 +420,20 @@ const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root(
 
 export function renderDash(): void {
   if (!dashMirror()) return;
+  // One place says the pane is working, because the bars themselves say nothing: they
+  // are `<i>`s of colour, and a reader not looking at them needs the state, not the
+  // shape. Every wait counts, including the two that leave real content on screen.
+  $("dashPane").setAttribute("aria-busy", loading || ghLoading || queueRunning ? "true" : "false");
   const p = dashPulse(days);
   const dense = densePerDay(days, dashRange, Date.now());
-  $("dashPulse").innerHTML = pulseHtml(p, tier, dashRange, dense);
+  // A row of zeros is not an empty answer, it is a wrong one — `dashPulse([])` counts no
+  // commits, no sessions and no contributors for a project that may have had plenty, and
+  // reads as "nothing happened here" rather than "nothing has been read yet".
+  $("dashPulse").innerHTML = loading ? pulseSkeleton(dashRange) : pulseHtml(p, tier, dashRange, dense);
 
   const spine = $("dashSpine");
   if (loading) {
-    spine.innerHTML = `<div class="db-empty">Reading this project's history…</div>`;
+    spine.innerHTML = spineSkeleton();
   } else if (!days.length) {
     spine.innerHTML = `<div class="db-empty">Nothing in the last ${dashRange} days.
       Sessions, commits and spend appear here on their own — there is nothing to fill in.</div>`;
@@ -368,7 +451,15 @@ export function renderDash(): void {
       dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key),
         // Written for every day, shown only where it says something your own line
         // doesn't — see `sharedDay`.
-        sharedDay(d) ? teamSummaries.get(d.key) ?? null : null, humanAuthors(d))).join("")
+        sharedDay(d) ? teamSummaries.get(d.key) ?? null : null, humanAuthors(d),
+        {
+          mine: writing?.scope === "me" && writing.key === d.key,
+          // The whole of stage 2, not just the call in flight: every shared day without
+          // a line is queued for one, and `sharedDay` is exactly the condition under
+          // which `summariseDay` buys it — so the box drawn here is one that will fill.
+          team: dashSummaries && sharedDay(d) && !teamSummaries.has(d.key)
+            && (stage === "project" || writing?.scope === "project"),
+        })).join("")
       + workLogOffer(unshared);
   }
 
@@ -377,13 +468,20 @@ export function renderDash(): void {
   const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
   const prs = gh.threads.filter((t) => t.kind === "pr").length;
 
-  $("dashAside").innerHTML =
-    (gh.available ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder) : "")
-    + (gh.available ? triageCard(stale, gh.threads.filter((t) => t.kind === "issue").length) : "")
-    + checkoutsCard(heads, liveIn, folderDirty)
-    + notesCard(noteList(root()))
-    + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
-    + missingCard(tier, facts);
+  // Notes survive the wait because they never needed the wait: they are localStorage and
+  // are already correct, and the jot box is the one thing here you might have opened the
+  // project to type into. Everything else is either unread or, in `missingCard`'s case, a
+  // statement about a tier that hasn't been answered — hence the whole branch, rather
+  // than a skeleton bolted onto the front of the real list.
+  $("dashAside").innerHTML = loading
+    ? cardSkeleton() + notesCard(noteList(root()))
+    : (ghLoading ? cardSkeleton() : "")
+      + (gh.available ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder) : "")
+      + (gh.available ? triageCard(stale, gh.threads.filter((t) => t.kind === "issue").length) : "")
+      + checkoutsCard(heads, liveIn, folderDirty)
+      + notesCard(noteList(root()))
+      + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
+      + missingCard(tier, facts);
 
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
@@ -431,9 +529,9 @@ export function renderDashInspector(): void {
     cls: GCLASS[statusKey(s)] ?? "g-idle",
     ctx: s.ctxPct != null ? `${Math.round(s.ctxPct)}%` : "",
   }));
-  $("inspector").innerHTML = dashInspector(root(), tier, facts, live, hasDigest);
+  $("inspector").innerHTML = dashInspector(root(), tier, facts, live, hasDigest, factsKnown);
   $("dashStrip").innerHTML = dashStrip(accentFor(root()), (name()[0] || "?").toUpperCase(), tier,
-    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })));
+    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown);
 }
 
 // ---------- open / close ----------
@@ -442,11 +540,19 @@ export function openDashboard(project: string, path: string): void {
   setMirror({ kind: "dash", root: path, name: project });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
-  ($("empty") as HTMLElement).style.display = "none";
-  ($("extPane") as HTMLElement).hidden = true;
-  ($("dashPane") as HTMLElement).hidden = false;
+  takeStage("dash");
   document.documentElement.style.setProperty("--accent", accentFor(path));
-  if (changed) { days = []; heads = []; facts = null; openDays.clear(); openView = null; }
+  // A new project inherits nothing. Everything below is an *answer about a folder*, so
+  // leaving any of it in place shows the previous project's answer under this one's name
+  // — and `renderAll` below paints before `loadDash` has reached its first await, so
+  // there is a real frame in which it would. `loading` is part of the reset for the same
+  // reason: it is what the paint reads to know it has nothing yet.
+  if (changed) {
+    days = []; heads = []; facts = null; openDays.clear(); openView = null;
+    tier = "none"; factsKnown = false; loading = true; ghLoading = false;
+    gh = { available: false, reason: null, threads: [], viewer: null };
+    kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
+  }
   host.renderAll();
   void loadDash();
 }
@@ -455,10 +561,11 @@ export function closeDashboard(): void {
   if (!dashMirror()) return;
   setMirror(null);
   openView = null;
-  ($("dashPane") as HTMLElement).hidden = true;
-  // The collapsed rail is a dashboard-only mode: left set, the next session would get
-  // a 44px inspector holding the wrong buttons.
-  $("app").classList.remove("insp-mini");
+  // Takes the collapsed rail with it — that is a dashboard-only mode, and left set the
+  // next session gets a 44px inspector holding the wrong buttons. It also brings the
+  // empty card back: `renderAll` never touches it, so closing the last thing on the
+  // stage by hand used to leave a blank one.
+  takeStage("none");
 }
 
 /// Esc steps out one layer at a time — the enlarge overlay first, then the pane. Same
