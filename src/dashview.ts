@@ -23,13 +23,17 @@ const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /// on both of their waiting states. Declared once because a reader learns "a model wrote
 /// this" from the *shape* long before the word, so the shape must not vary.
 ///
-/// The glyph is its own element: it is an emoji, so it carries its own metrics and
-/// ignores `color`, and at the 8.5px the label is set in it would be a smudge. The CSS
-/// sizes and aligns it separately for that reason — don't fold it back into the text.
+/// **Deliberately just the word.** A ✨ was tried here and pulled the eye straight to the
+/// least important thing on the row: the mark exists so a reader can tell an observation
+/// from a generated sentence, which needs it to be *findable*, not *loud*.
+///
+/// The caller passes the whole label, because the two placements need different ones: an
+/// inline mark takes a `·` to separate it from the sentence it follows, and the cornered
+/// one is already separated by being in the corner — a `·` there points at nothing.
 const aiMark = (text: string, cls = "") =>
-  `<span class="ai${cls ? " " + cls : ""}"><i>✨</i>${text}</span>`;
-/// The shared box's copy, pinned to its bottom-right corner rather than trailing the
-/// sentence. Kept outside the `<p>` so the clamp below measures the text alone.
+  `<span class="ai${cls ? " " + cls : ""}">${text}</span>`;
+/// The shared box's copy, in its own bottom-right corner rather than trailing the
+/// sentence — inline it read as the last words of the sentence it labels.
 const AI_MARK = aiMark("ai", "ai-cnr");
 
 // ---------- the pulse strip ----------
@@ -179,12 +183,17 @@ export function dayHtml(
   // such stand-in: it is a block that would otherwise appear out of nothing, and its
   // heading is known (this day has more than one human committer, and who they were) long
   // before its sentence is, so only the sentence is a bar.
-  // The `ai` mark sits in the box's own bottom-right rather than trailing the last word.
-  // Inline it read as part of the sentence — the one thing a provenance mark must never
-  // do — and landed wherever the text happened to wrap. `data-dashteam` makes the whole
-  // box the toggle for its own clamp; ./dashboard adds `.clamped` only when there is
-  // something folded away, so a short sentence offers no affordance it cannot honour.
-  const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}" data-dashteam="${esc(d.key)}">
+  // The `ai` mark sits in the box's own bottom-right rather than trailing the last word:
+  // inline it read as part of the sentence, which is the one thing a provenance mark must
+  // never do, and it landed wherever the text happened to wrap.
+  //
+  // **The paragraph is not clamped, and must not be.** A three-line clamp with a
+  // click-to-expand lived here briefly and was pure loss: `prompt_for` caps this sentence
+  // at 22 words, so it cannot reach three lines at this width — the fold could never fire
+  // for the reason it existed, while the measurement behind its "· more" was wrong often
+  // enough to advertise a fold on every box on screen. A length the generator guarantees
+  // does not need a length control.
+  const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}">
         <span class="tl"><span class="sh">shared</span>The project${
           authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
         <p>${body}</p>${mark}
@@ -198,8 +207,8 @@ export function dayHtml(
       ${team ? teamBox(esc(team), "", AI_MARK)
         : pend.team ? teamBox(sk("84%", 10), " sk") : ""}
       <p class="db-sum">${esc(summary || headline)}${
-        summary ? aiMark("ai")
-        : pend.mine ? aiMark("writing", "wr") : ""}</p>
+        summary ? aiMark("· ai")
+        : pend.mine ? aiMark("· writing", "wr") : ""}</p>
       <div class="db-facts">
         ${d.commits.length ? `<span>${d.commits.length} commit${d.commits.length === 1 ? "" : "s"}</span>` : ""}
         ${d.commits.length && d.sessions.length ? `<span class="dot">·</span>` : ""}

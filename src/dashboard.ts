@@ -459,32 +459,6 @@ function paint(id: string, html: string): void {
  */
 function invalidatePaintCache(): void { painted.clear(); }
 
-/**
- * Which shared boxes have text folded away by the 3-line clamp.
- *
- * CSS can clamp but cannot say whether it clamped anything, and the difference decides
- * whether the box is a control at all — `.clamped` is what gives it a pointer, a hover
- * and its `· more`. So it is measured: `scrollHeight > clientHeight` on the paragraph.
- *
- * That is a forced layout read, which is exactly what the note above `paint` warns
- * about — and it is affordable *because* of `paint`: this runs only on a repaint that
- * actually changed the timeline, not on every telemetry event. It re-runs from scratch
- * rather than being incremental, since a width change (⌘I, a window resize) can fold or
- * unfold a box with no markup change at all.
- */
-function markClamped(): void {
-  for (const box of $("dashSpine").querySelectorAll<HTMLElement>(".db-team")) {
-    const p = box.querySelector("p");
-    if (!p) continue;
-    // Measure against the *clamped* height, so an already-open box is asked the right
-    // question rather than "does your full text overflow its full height" (never).
-    const open = box.classList.contains("open");
-    if (open) box.classList.remove("open");
-    box.classList.toggle("clamped", p.scrollHeight > p.clientHeight + 1);
-    if (open) box.classList.add("open");
-  }
-}
-
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
@@ -533,7 +507,6 @@ export function renderDash(): void {
       + workLogOffer(unshared);
   }
   paint("dashSpine", spine);
-  markClamped();
 
   const now = Date.now();
   const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
@@ -664,13 +637,6 @@ export function wireDashboard(): void {
     const t = e.target as HTMLElement;
     const range = t.closest<HTMLElement>("[data-dashrange]");
     if (range) { setDashRange(+range.dataset.dashrange!); return; }
-
-    // The shared box expands in place. Not a `renderDash()` round trip: the state is
-    // "which paragraphs are unfolded", which nothing else reads and which would have to
-    // be re-applied after every repaint if it lived in the markup — the same reasoning
-    // the sidebar's peek uses for its expansion. Ignored on a box with nothing folded.
-    const team = t.closest<HTMLElement>("[data-dashteam]");
-    if (team) { if (team.classList.contains("clamped")) team.classList.toggle("open"); return; }
 
     const more = t.closest<HTMLElement>("[data-dashopen]");
     if (more) {

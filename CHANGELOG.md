@@ -79,9 +79,12 @@ Markers: `+` new · `~` changed · `!` fixed
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
 ~ **The generated-by-a-model mark reads as a mark, not as the last word of the
-  sentence.** It is now ✨ and sits in the shared box's own bottom-right corner instead
-  of trailing the text wherever it happened to wrap. A long shared summary is folded to
-  three lines so one busy day can't push the next off screen — click the box for the rest.
+  sentence.** In the shared box it sits in the box's own bottom-right corner instead of
+  trailing the text wherever it happened to wrap.
+~ **The dashboard's right-hand column gets more room and takes a share of a wide
+  window.** Issues, checkouts and notes all put a title next to a number, and at a fixed
+  width every one of them was cut short while the timeline beside them — one capped
+  sentence per row — took the whole of any extra space.
 ~ **Every action in the project inspector says what it does.** Four of them carried a
   label and nothing else while the rest had a line underneath, so the list read as two
   kinds of thing.
