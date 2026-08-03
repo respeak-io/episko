@@ -50,7 +50,13 @@ export function dropScrim() {
  * holding the wrong buttons.
  */
 export type Stage = "session" | "ext" | "dash" | "none";
+/// Bumped on every handover. `#inspector` belongs to whoever holds the stage — ./mirror
+/// and ./dashboard write it as well as ./inspector — so a "what did I last paint here"
+/// cache is only valid within one tenancy. This module cannot import any of them, and
+/// does not need to: a number they can all read is the whole contract.
+export let stageGen = 0;
 export function takeStage(show: Stage) {
+  stageGen++;
   ($("extPane") as HTMLElement).hidden = show !== "ext";
   ($("dashPane") as HTMLElement).hidden = show !== "dash";
   ($("empty") as HTMLElement).style.display = show === "none" ? "grid" : "none";

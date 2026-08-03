@@ -744,28 +744,42 @@ Four rules keep that graph honest. **There are no import cycles across the 49 mo
 - **A `*view.ts` takes data and returns a string** — no `$()`, no `innerHTML`, no renderer call. The `render*` function that paints the result stays with whoever owns the element, its timers and its delegated handlers. If a candidate seems to need a `setSomething`, it is a `render*` and should stay behind.
 - **`state.ts`'s `setX` setters assign and nothing else.** Persistence and `renderAll()` belong to the call site — that is what `actions.ts` is for. (Conflating the two is a bug this codebase has already shipped once: a settings picker called `state.ts`'s `setWtGroup` instead of `actions.ts`'s, so the choice never persisted.) Reads are the live ESM binding and stay bare identifiers (`activeId`, never `state.activeId`).
 
-**Three surfaces on `renderAll`'s path are guarded, and the guard is a pattern, not a
-one-off.** `renderSidebar` builds its markup every time but assigns `#projects.innerHTML`
-only when the string differs from what it last wrote; `updateTray` diffs a signature
-before rebuilding the native menu; `dashboard.ts`'s `paint(id, html)` does the same for
-each of the dashboard's seven surfaces. All three exist because `renderAll()` fires on
+**Every `innerHTML` surface on `renderAll`'s path is guarded, and the guard is a
+pattern, not a one-off.** `renderSidebar` (`#projects`), `renderMini` (`#railmini`) and
+`renderInspector` (`#inspector`) each build their markup every time but assign only when
+the string differs from what they last wrote; `updateTray` diffs a signature before
+rebuilding the native menu; `dashboard.ts`'s `paint(id, html)` does the same for each of
+the dashboard's seven surfaces. `renderFoot`, `renderAttn`, `syncStageButtons` and
+`reconcileCaf` need no guard — they assign `textContent`, class names and properties,
+which replace no nodes. All of them exist because `renderAll()` fires on
 *every* telemetry event and most events change nothing those surfaces show — 84.5% of
 sidebar repaints were byte-identical under a realistic event stream. This is **not**
 render diffing (no DOM is compared or patched) and it does not weaken the
 render-everything rule; it is "skip when nothing changed", applied where it was measured
 to matter. If you add a surface to `renderAll`, measure it before assuming it is free.
 
-**On an interactive surface the guard is a correctness fix, not an optimisation**, and
-that is why the dashboard needed one. Cost is what the sidebar's guard bought; what the
-dashboard's buys is that **an `innerHTML` assignment destroys the node under the
-pointer**. Rebuilt several times a second by a live fleet, `▶ Start` lost and re-acquired
-`:hover` on every hook — restarting its `.14s` colour transition from the top, so the
-button pulsed while the mouse sat still on it — and `#dashNote`, an `<input>` inside
-`#dashAside`, came back empty, losing a note mid-typing. Neither is visible on an idle
-fleet, which is the state a dashboard gets developed in. **A repaint-per-event surface
-carrying buttons or inputs needs this guard before it ships**, and the cache must be
-invalidated wherever another module can write the same element: `#inspector` belongs to
-whoever holds the stage, so `openDashboard` clears the whole cache on every entry.
+**On an interactive surface the guard is a correctness fix, not an optimisation.** Cost
+is what the sidebar's guard bought; on every other surface what it buys is that **an
+`innerHTML` assignment destroys the node under the pointer**, which costs three things
+in rising order of seriousness — a restarted CSS transition (the dashboard's `▶ Start`
+visibly pulsed under a still mouse), an emptied `<input>` (`#dashNote` lost a note
+mid-typing), and **a dropped click**: replace a node between mousedown and mouseup and
+the `click` fires on the container, so `closest("[data-perm]")` finds nothing and a
+permission *Allow* is silently discarded on a session blocked waiting for it. None of
+these is visible on an idle fleet, which is the state this app gets developed in. **A
+repaint-per-event surface carrying buttons or inputs needs this guard before it ships.**
+
+Two things make a guard *effective* rather than merely present, and both were needed
+here. **A per-second clock in the markup defeats it entirely** — `dwellText` is `m:ss`,
+so while it was rendered the inspector's string differed every second by construction
+and no repaint could ever be skipped. It is now emitted empty and filled by `tickDwell`
+(`textContent`), which main.ts's one-second tick already did for the neighbouring reason
+that an `innerHTML` assignment restarts the heartbeat animation. And **the cache must be
+invalidated wherever another module writes the same element**: `#inspector` belongs to
+whoever holds the stage, so `paintInspector` keys on `dom.ts`'s `stageGen` — a counter
+`takeStage` bumps — and `openDashboard` clears its own cache on every entry. `dom.ts`
+owning that counter is what keeps a leaf module free of any dependency on the three
+that need it.
 
 **When you measure a render function, force layout or the number is a lie.** An
 `innerHTML` assignment defers style recalc and layout to the next frame, which a
@@ -813,6 +827,27 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
+- **A `localStorage` write on the telemetry path is a disk write, and there are three
+  cadences here — pick deliberately.** The statusLine fires **every 3s per session**
+  (`refreshInterval` in `write_instrument_settings`), so anything `applyStatusline`
+  reaches runs ~once a second on a working fleet. Measured on a real store: `cc-usage`
+  980 chars, `cc-usage-detail` **24,586**, `cc-cost-base` 718, `cc-icons` 91,882.
+  - **Eager** — `cc-usage`, the day's money. Small, and a crash-lost dollar cannot be
+    reconstructed from anything.
+  - **Only when the value changed** — `cc-cost-base`. An unchanged total leaves nothing
+    to persist but `at`, which orders eviction and does not need second accuracy; it
+    used to write the whole map on every statusLine, so an *idle* fleet wrote the same
+    bytes once a second forever.
+  - **Floored** — `cc-usage-detail` (30s) and `cc-io` (60s), both flushed on
+    `quit-requested` and forced across a midnight, since nothing adds to yesterday
+    again. Both are derived or approximate, and `daySpend`'s `unattributed` row already
+    renders exactly what a crash-lost minute of attribution looks like.
+
+  Also **cap anything keyed by day** — `cc-usage`, `cc-usage-detail` and `cc-io` are all
+  bounded at `USAGE_MAX_DAYS`/`IO_MAX_DAYS` (420, past the Usage panel's widest 12-month
+  range), because a daily key with no cap grows forever *and* is re-serialised on every
+  write. `cc-icons` is the largest key by far but is written once per project ever, so
+  it needs neither.
 - **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-io` daily disk-I/O rollup and its `cc-io-scope` pick, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".

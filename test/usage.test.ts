@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, ioDelta, ioTotal, modelFamily,
-  resetCostBaselines, resetIoRollup, setTokenDays, setUsageRange,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDelta, ioTotal,
+  modelFamily,
+  resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
@@ -23,6 +24,7 @@ beforeEach(() => {
   setUsageRange(30);
   resetCostBaselines();
   resetIoRollup();
+  resetUsageWrites();
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -216,6 +218,89 @@ describe("addUsage — the daily $ rollup", () => {
       });
       expect(JSON.parse(store.get("cc-usage")!)).toEqual({ "2027-03-14": 1 });
     });
+  });
+
+  describe("what gets written, and how often", () => {
+    it("writes the day's money on every delta — it is small and nobody can rebuild it", () => {
+      addUsage(1, sess({}));
+      addUsage(2, sess({}));
+      expect(JSON.parse(store.get("cc-usage")!)["2027-03-14"]).toBe(3);
+    });
+
+    it("does NOT rewrite the 25KB split on every delta", () => {
+      // Measured on a real store: `cc-usage-detail` is 24,586 chars against
+      // `cc-usage`'s 980, and both were written on the same trigger — a statusLine per
+      // session every 3s. Attribution can lag by a minute; money cannot.
+      addUsage(1, sess({}));            // the first write establishes the key
+      store.clear();
+      addUsage(2, sess({}));
+      expect(usageDetail["2027-03-14"].projects.epi).toBe(3); // memory, current
+      expect(store.get("cc-usage-detail")).toBeUndefined();   // disk, not yet
+    });
+
+    it("writes the split once the floor has passed", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      vi.advanceTimersByTime(30_000);
+      addUsage(2, sess({}));
+      expect(JSON.parse(store.get("cc-usage-detail")!)["2027-03-14"].projects.epi).toBe(3);
+    });
+
+    it("writes the split across a midnight regardless of the floor", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      vi.setSystemTime(noon(2027, 3, 15));
+      addUsage(2, sess({}));
+      expect(Object.keys(JSON.parse(store.get("cc-usage-detail")!))).toEqual(["2027-03-14", "2027-03-15"]);
+    });
+
+    it("flushUsageDetail writes what the floor is holding", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      addUsage(2, sess({}));
+      flushUsageDetail();
+      expect(JSON.parse(store.get("cc-usage-detail")!)["2027-03-14"].projects.epi).toBe(3);
+    });
+
+    it("caps both rollups by day, so a daily key cannot grow forever", () => {
+      // 33 days after two months and unbounded; the Usage panel's widest range is 12
+      // months, so a year and a bit is everything anything reads.
+      for (let i = 0; i < 425; i++) {
+        vi.setSystemTime(new Date(2027, 0, 1 + i, 12, 0, 0));
+        addUsage(1, sess({}));
+      }
+      flushUsageDetail();
+      expect(Object.keys(usage)).toHaveLength(420);
+      expect(Object.keys(usageDetail)).toHaveLength(420);
+      expect(usage["2027-01-01"]).toBeUndefined();  // the oldest days fell off
+    });
+  });
+});
+
+describe("costDelta — what it persists, and when", () => {
+  it("writes the baseline when the figure moved", () => {
+    costDelta("conv", 5);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(5);
+    store.clear();
+    costDelta("conv", 9);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(9);
+  });
+
+  it("writes NOTHING when a repeated statusLine reports the same total", () => {
+    // The statusLine fires every 3s per session whether or not anything was spent, so
+    // this used to write the whole map to disk once a second on an idle fleet — the
+    // same bytes, for a change of `at` alone, which only orders eviction.
+    costDelta("conv", 5);
+    store.clear();
+    expect(costDelta("conv", 5)).toBe(0);
+    expect(store.get("cc-cost-base")).toBeUndefined();
+  });
+
+  it("still writes when a counter restarts below its baseline", () => {
+    costDelta("conv", 40);
+    store.clear();
+    expect(costDelta("conv", 0.5)).toBe(0.5);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(0.5);
   });
 });
 

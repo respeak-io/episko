@@ -50,10 +50,55 @@ export interface DayDetail {
 export const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
 export const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
 export function todayKey() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+
+/**
+ * The two rollups are written on different terms, and the split is the point.
+ *
+ * `cc-usage` is the day's money and the footer reads it directly — it stays **eager**,
+ * because losing spend to a crash is the one thing here nobody can reconstruct, and it
+ * is small (measured: 980 chars over 33 days).
+ *
+ * `cc-usage-detail` is *attribution*, it is **25× bigger** (24,586 chars over the same
+ * 33 days, and growing with every session now that it carries a per-session map), and
+ * it was written on the same trigger — every cost delta, so up to once per session per
+ * `refreshInterval` (3s). That is a 25KB `stringify` + synchronous `setItem` roughly
+ * once a second on a working fleet, to record a breakdown read once a day.
+ *
+ * So the detail write is floored. Divergence after a crash is not a silent loss:
+ * `daySpend` already puts what the split cannot account for on screen as
+ * `unattributed`, which is exactly what a lost minute of attribution looks like.
+ */
+const DETAIL_SAVE_FLOOR_MS = 30_000;
+/// Both rollups were unbounded, which on a daily key means "grows forever". The Usage
+/// panel's widest range is 12 months, so a year and a bit is everything anything reads.
+const USAGE_MAX_DAYS = 420;
+let detailSavedAt = 0;
+let detailDirty = false;
+let detailDay = "";
+function trimDays(o: Record<string, unknown>) {
+  const keys = Object.keys(o).sort();
+  for (const old of keys.slice(0, Math.max(0, keys.length - USAGE_MAX_DAYS))) delete o[old];
+}
+/// Write the attribution split out now — on the floor, across a midnight, and from the
+/// quit path. Kept separate from `flushIo` because the two have different triggers and
+/// only ./main's quit handler ever wants both.
+/// Only a test needs this: the floor's bookkeeping is module state that outlives one
+/// `it`, so without it a later case inherits an earlier one's "written just now" and
+/// sees a write it expected to be held back (or the reverse).
+export function resetUsageWrites() { detailSavedAt = 0; detailDirty = false; detailDay = ""; }
+export function flushUsageDetail(): void {
+  if (!detailDirty) return;
+  detailDirty = false;
+  detailSavedAt = Date.now();
+  trimDays(usageDetail);
+  localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
+}
+
 export function addUsage(delta: number, s?: Sess) {
   if (!(delta > 0)) return;
   const k = todayKey();
   usage[k] = (usage[k] || 0) + delta;
+  trimDays(usage);
   localStorage.setItem("cc-usage", JSON.stringify(usage));
   if (!s || !isAgent(s)) return;
   // Attribute the cost delta to whichever model is active right now and to the
@@ -72,7 +117,12 @@ export function addUsage(delta: number, s?: Sess) {
   // an empty one — so first-write-wins would leave the busiest rows unnamed.
   if (s.title) e.title = s.title;
   e.project = proj;
-  localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
+  // A day left behind is written regardless of the floor — nothing adds to it again,
+  // so a throttled write would drop its tail permanently rather than merely late.
+  const rolled = detailDay !== "" && detailDay !== k;
+  detailDay = k;
+  detailDirty = true;
+  if (rolled || Date.now() - detailSavedAt >= DETAIL_SAVE_FLOOR_MS) flushUsageDetail();
 }
 
 /// One day's spend, split the two ways anyone actually asks for it. Pure arithmetic over
@@ -289,7 +339,13 @@ function saveBaselines() {
 export function costDelta(conv: string, total: number): number {
   const prev = costBaseline.get(conv)?.t;
   costBaseline.set(conv, { t: total, at: Date.now() });
-  saveBaselines();
+  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (3s) per
+  // session whether or not anything was spent, and this used to serialise and write the
+  // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
+  // forever. An unchanged total leaves nothing to persist but `at`, and `at` exists
+  // solely to order eviction, where seconds do not matter: it rides along on the next
+  // write this conversation earns.
+  if (prev !== total) saveBaselines();
   return prev === undefined || total < prev ? total : total - prev;
 }
 // Only a test needs to clear it; the app's own copy is meant to outlive the run.

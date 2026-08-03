@@ -78,6 +78,17 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+! **A permission decision can no longer be swallowed by a repaint.** The inspector was
+  rebuilt on every telemetry event — several times a second with a few agents running —
+  so a click on *Allow* that happened to span one of those rebuilds landed on nothing,
+  leaving the session waiting on an answer you had already given. The panel now repaints
+  only when something on it changed. The collapsed project rail is the same fix.
+~ **Episko writes to disk far less while it is just running.** Three records were
+  persisted on every status update from every session — roughly once a second on a busy
+  fleet, mostly rewriting bytes that hadn't changed, one of them 25× larger than the
+  figure it accompanied. The day's spend is still saved the instant it changes; the
+  breakdowns behind it are saved on a timer and flushed when you quit. Daily records are
+  also capped now instead of growing forever.
 + **The day's spend opens.** *today $x.xx* in the status bar is now a button, like the
   limits beside it: it shows what the day cost, split by project and by session, and
   clicking a session that is still running jumps to it. Whatever the split can't account

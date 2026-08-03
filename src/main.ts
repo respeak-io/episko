@@ -17,7 +17,7 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
-import { renderInspector } from "./inspector";
+import { renderInspector, tickDwell } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
@@ -77,7 +77,6 @@ import {
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
-import { dwellText } from "./inspectorview";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnSessionTouched, setOnTurnEnd,
@@ -90,7 +89,7 @@ import {
   setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
-import { flushIo } from "./usage";
+import { flushIo, flushUsageDetail } from "./usage";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -679,9 +678,10 @@ new ResizeObserver(() => {
 // when something would actually be lost — an idle Episko quits immediately, keeping
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {
-  // The disk rollup's write is floored at a minute, so this is the one place its last
-  // stretch would otherwise be lost — there is no later poll after a quit.
+  // Both floored writes land here: there is no later poll or delta after a quit. The
+  // day's *money* (`cc-usage`) is written eagerly and needs no flush — see ./usage.
   flushIo();
+  flushUsageDetail();
   const live = [...sessions.values()].filter((s) => s.phase !== "ended");
   const agents = live.filter((s) => isAgent(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
@@ -745,8 +745,7 @@ setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (!s || !isAgent(s)) return;
-  const el = document.getElementById("iDwell");
-  if (el) el.textContent = dwellText(s);
+  tickDwell(s);
 }, 1000);
 
 // Refresh the active session's working-set diff + CPU/RAM on a slow cadence.

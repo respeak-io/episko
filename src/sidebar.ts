@@ -341,9 +341,16 @@ export function initFileDrop() {
 function shellEscapePath(p: string): string {
   return p.replace(/[^A-Za-z0-9_@%+=:,./-]/g, "\\$&");
 }
+// Guarded like `renderSidebar` above, and for the sharper of its two reasons: the rail
+// is nothing BUT buttons, and it rides `renderAll` — so on a busy fleet every one of
+// them was destroyed and rebuilt several times a second. That loses `:hover` under a
+// stationary pointer, and loses a click outright when the node is replaced between
+// mousedown and mouseup. What the rail shows (a glyph, an accent, an attention dot)
+// changes far more rarely than the events that repaint it.
+let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
-  $("railmini").innerHTML =
+  const html =
     `<button class="rm-btn" data-rail="1" title="Expand sidebar (${chord("B")})">»</button>` +
     projectList().map((p) => {
       const first = p.sessions[0];
@@ -359,4 +366,7 @@ export function renderMini() {
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
     `<button class="rm-btn rm-add" data-pal="1" title="New session (${chord("K")})">＋</button>`;
+  if (html === lastMiniHtml) return;
+  lastMiniHtml = html;
+  $("railmini").innerHTML = html;
 }
