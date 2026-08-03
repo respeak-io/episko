@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addIo, addUsage, costDelta, dayIo, daySpend, ioDelta, ioTotal, modelFamily,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, ioDelta, ioTotal, modelFamily,
   resetCostBaselines, resetIoRollup, setTokenDays, setUsageRange,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
@@ -234,28 +234,41 @@ describe("daySpend — where today's money went", () => {
   });
 
   it("names what the split cannot account for rather than dropping it", () => {
-    // The whole reason this row exists: `total` is cc-usage (full history, every pane),
-    // the split is cc-usage-detail (agent panes, recorded going forward). A popover
-    // showing only the split would read lower than the footer that opened it.
+    // The whole reason this row exists: a list that summed lower than the footer segment
+    // it opened from would read as money going missing.
     const d = daySpend(detail({ projects: { epi: 2 } }), "2027-03-14", 5);
     expect(d.projects.at(-1)).toEqual({ key: "", label: "unattributed", sub: "", usd: 3 });
     expect(d.split).toBe(2);
   });
 
+  it("gives the SESSION list its own remainder — the two splits fall short separately", () => {
+    // The day you upgrade, exactly: the day's total is already banked and the projects
+    // split with it, while a per-session split introduced by that build starts from
+    // whatever is spent after it. Covering only projects left this list quietly short.
+    const d = daySpend(detail({
+      projects: { epi: 5 },
+      sess: { a: { usd: 2, title: "late starter", project: "epi" } },
+    }), "2027-03-14", 5);
+    expect(d.projects.map((r) => r.label)).toEqual(["epi"]);          // complete
+    expect(d.sessions.map((r) => r.label)).toEqual(["late starter", "unattributed"]);
+    expect(d.sessions.at(-1)!.usd).toBe(3);
+  });
+
   it("does not invent a remainder out of floating-point dust", () => {
-    // Both totals are sums of the same deltas in a different order, so a fully
+    // Both figures are sums of the same deltas in a different order, so a fully
     // attributed day still differs in the last place. A "$0.00 unattributed" row is
     // noise that reads as a bug.
     const d = daySpend(detail({ projects: { epi: 0.1 + 0.2 } }), "2027-03-14", 0.3);
     expect(d.projects.map((r) => r.label)).toEqual(["epi"]);
   });
 
-  it("is empty, not zero-filled, for a day recorded before the split existed", () => {
+  it("leaves a split with nothing in it empty rather than adding a lone mystery row", () => {
+    // A day that predates the record entirely. One anonymous row claiming the whole day
+    // reads as a session nobody can identify; the reader says so in words instead.
     const d = daySpend({}, "2027-03-14", 12);
+    expect(d.projects).toEqual([]);
     expect(d.sessions).toEqual([]);
-    // The day's money is still stated — all of it as unattributed, which is the truth.
-    expect(d.projects).toEqual([{ key: "", label: "unattributed", sub: "", usd: 12 }]);
-    expect(d.total).toBe(12);
+    expect(d.total).toBe(12); // the money is still stated, at the top
   });
 });
 
@@ -278,6 +291,7 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     addIo({ r: 10, w: 4 });
     addIo({ r: 25, w: 9 });
     expect(dayIo["2027-03-14"]).toEqual({ r: 25, w: 9 });
+    flushIo(); // the second reading is inside the write floor — see the tests below
     expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 25, w: 9 });
   });
 
@@ -293,6 +307,50 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     addIo({ r: 10, w: 4 });
     store.clear();
     addIo({ r: 10, w: 4 });
+    expect(store.get("cc-io")).toBeUndefined();
+  });
+
+  // The poll behind this runs every 4s for as long as a session is on stage. Persisting
+  // every reading would make a *disk-I/O meter* one of the app's heaviest writers.
+  it("keeps accumulating in memory but does not write on every poll", () => {
+    addIo({ r: 10, w: 4 });   // the first write establishes the key
+    store.clear();
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 20, w: 8 });
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 30, w: 12 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 30, w: 12 }); // in memory, current
+    expect(store.get("cc-io")).toBeUndefined();            // on disk, not yet
+  });
+
+  it("writes once the floor has passed", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    vi.advanceTimersByTime(60_000);
+    addIo({ r: 30, w: 12 });
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 30, w: 12 });
+  });
+
+  it("writes across a midnight regardless of the floor", () => {
+    // Nothing adds to yesterday again, so a throttled write would drop its last minutes
+    // permanently rather than merely late.
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 12, w: 5 });
+    const saved = JSON.parse(store.get("cc-io")!);
+    expect(saved["2027-03-14"]).toEqual({ r: 10, w: 4 });
+    expect(saved["2027-03-15"]).toEqual({ r: 2, w: 1 });
+  });
+
+  it("flushIo writes what the floor is still holding, and is a no-op when clean", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    addIo({ r: 30, w: 12 });   // inside the floor — not written
+    flushIo();
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 30, w: 12 });
+    store.clear();
+    flushIo();
     expect(store.get("cc-io")).toBeUndefined();
   });
 

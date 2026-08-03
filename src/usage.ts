@@ -75,34 +75,43 @@ export function addUsage(delta: number, s?: Sess) {
   localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
 }
 
-/// Today's spend, split the two ways anyone actually asks for it. Pure arithmetic over
+/// One day's spend, split the two ways anyone actually asks for it. Pure arithmetic over
 /// the stored rollup so ./footer only has to paint it.
 ///
-/// **The remainder is part of the answer.** `total` comes from `cc-usage`, the split
-/// from `cc-usage-detail`, and the two legitimately disagree: the split only records
-/// from the day it shipped, and only for agent panes. A popover that showed the split
-/// alone would quietly present a smaller number than the footer it opened from, so
-/// whatever is unaccounted for is named `unattributed` rather than dropped.
+/// **The remainder is part of the answer, and BOTH splits need one.** `total` is
+/// `cc-usage` for that day; each split is a different slice of `cc-usage-detail` for the
+/// same day, and each can fall short on its own. The case is not exotic — it is the day
+/// you upgrade: the day's total is already banked, and a split introduced by that build
+/// starts from whatever is spent after it. So the two lists routinely disagree with each
+/// other as well as with the total, and a list that quietly summed lower than the footer
+/// segment that opened it would be the exact defect the projects row was added to avoid.
+///
+/// A split with *nothing* in it is left empty rather than given a lone `unattributed`
+/// row: the reader says "this day predates the record", which is the true statement, and
+/// one anonymous row claiming the whole day reads like a session nobody can identify.
 export interface SpendRow { key: string; label: string; sub: string; usd: number }
 export interface DaySpend { total: number; projects: SpendRow[]; sessions: SpendRow[]; split: number }
+/// Half a cent, not zero: both figures are sums of the same deltas in a different order,
+/// so a fully attributed day still differs in the last place, and a `$0.00 unattributed`
+/// row is noise that reads as a bug.
+const SPEND_EPS = 0.005;
 export function daySpend(
   detail: Record<string, DayDetail | undefined>, day: string, total: number,
 ): DaySpend {
   const d = detail[day];
-  const by = (o: Record<string, number> | undefined): SpendRow[] =>
-    Object.entries(o || {}).filter(([, v]) => v > 0)
-      .map(([k, v]) => ({ key: k, label: k, sub: "", usd: v }))
-      .sort((a, b) => b.usd - a.usd);
-  const projects = by(d?.projects);
+  const rest = (rows: SpendRow[]): SpendRow[] => {
+    const missing = total - rows.reduce((n, r) => n + r.usd, 0);
+    if (rows.length && missing > SPEND_EPS) rows.push({ key: "", label: "unattributed", sub: "", usd: missing });
+    return rows;
+  };
+  const projects = Object.entries(d?.projects || {}).filter(([, v]) => v > 0)
+    .map(([k, v]) => ({ key: k, label: k, sub: "", usd: v }))
+    .sort((a, b) => b.usd - a.usd);
+  const split = projects.reduce((n, r) => n + r.usd, 0);
   const sessions = Object.entries(d?.sess || {}).filter(([, v]) => v.usd > 0)
     .map(([id, v]) => ({ key: id, label: v.title || "untitled session", sub: v.project, usd: v.usd }))
     .sort((a, b) => b.usd - a.usd);
-  const split = projects.reduce((n, r) => n + r.usd, 0);
-  // Half a cent, not zero: the two totals are floating-point sums of the same deltas in
-  // a different order, so they differ in the last place on a day that is fully attributed.
-  const rest = total - split;
-  if (rest > 0.005) projects.push({ key: "", label: "unattributed", sub: "", usd: rest });
-  return { total, projects, sessions, split };
+  return { total, projects: rest(projects), sessions: rest(sessions), split };
 }
 
 // ---------- the daily disk-I/O rollup ----------
@@ -147,18 +156,57 @@ export function ioDelta(cur: DayIo, prev: DayIo | null): DayIo {
   return { r: Math.max(0, cur.r - p.r), w: Math.max(0, cur.w - p.w) };
 }
 
+/// **A disk-I/O meter must not be a heavy writer**, and the naive version was one: the
+/// poll behind it runs every 4s for as long as a session is on stage, so persisting on
+/// every reading meant a synchronous `JSON.stringify` + `setItem` ~900 times an hour,
+/// forever, to record a figure nobody reads more than once a day. The accumulation is
+/// free and stays per-poll; only the *write* is floored.
+///
+/// Losing up to a minute of it to a crash is the right trade — this is a disk meter, not
+/// money, and `cc-usage`'s own baselines are the thing that gets flushed eagerly.
+const IO_SAVE_FLOOR_MS = 60_000;
 let ioPrev: DayIo | null = null;
+let ioSavedAt = 0;
+let ioDirty = false;
+let ioDay = "";
 /// Bank a fresh `all_sessions_resources` reading into today. Called from the same poll
 /// that updates `ioAll`, so the rollup and the live bars can never describe different
 /// samples.
+///
+/// **A gap in the polling costs nothing**, which is why the floor above is safe and why
+/// the poll stopping while the dashboard is on stage doesn't skew the day: the counters
+/// are cumulative and `io_retired` preserves a session's bytes past its exit, so the
+/// first reading after a quiet hour carries the whole hour, and `setActive` takes one
+/// the moment a pane is back on stage.
+///
+/// The one genuine loss is the stretch after the *last* reading of a run — quitting
+/// straight from the dashboard leaves however long it was open unsampled. `flushIo`
+/// does not rescue that: it persists what has been read, it does not take a reading.
+/// Living with it is deliberate — the alternative is an IPC on the quit path to improve
+/// a disk meter, and the figure is a rough one by nature.
 export function addIo(cur: DayIo): void {
   const d = ioDelta(cur, ioPrev);
   ioPrev = cur;
   if (d.r <= 0 && d.w <= 0) return;
   const k = todayKey();
+  // A day that has been left behind must be written before the floor would allow it:
+  // nothing adds to yesterday again, so a throttled write would drop its last minutes
+  // permanently rather than merely late.
+  const rolled = ioDay !== "" && ioDay !== k;
+  ioDay = k;
   const day = dayIo[k] || (dayIo[k] = { r: 0, w: 0 });
   day.r += d.r;
   day.w += d.w;
+  ioDirty = true;
+  if (rolled || Date.now() - ioSavedAt >= IO_SAVE_FLOOR_MS) flushIo();
+}
+
+/// Write the rollup out now. Called on the floor above, across a midnight, and from the
+/// quit path — the one moment there is no later poll to catch what is pending.
+export function flushIo(): void {
+  if (!ioDirty) return;
+  ioDirty = false;
+  ioSavedAt = Date.now();
   const keys = Object.keys(dayIo).sort();
   for (const old of keys.slice(0, Math.max(0, keys.length - IO_MAX_DAYS))) delete dayIo[old];
   localStorage.setItem(IO_KEY, JSON.stringify(dayIo));
@@ -168,6 +216,9 @@ export function addIo(cur: DayIo): void {
 export function resetIoRollup() {
   for (const k of Object.keys(dayIo)) delete dayIo[k];
   ioPrev = null;
+  ioSavedAt = 0;
+  ioDirty = false;
+  ioDay = "";
   localStorage.removeItem(IO_KEY);
 }
 

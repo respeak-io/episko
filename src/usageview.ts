@@ -84,13 +84,22 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
       ? `<button class="cp-s on" data-sel="${esc(r.key)}" title="Jump to this session">${inner}</button>`
       : `<div class="cp-s">${inner}</div>`;
   }).join("");
-  const nothing = !d.projects.length && !d.sessions.length;
+  // Three different silences, and telling them apart is the whole honesty of this
+  // popover: nothing spent, spent-but-nothing-recorded, and recorded-by-project-only
+  // (the shape of the day you upgrade). One catch-all note would call the second of
+  // those "nothing yet" while a real figure sat above it.
+  const note = !d.total && !d.projects.length
+    ? "Nothing recorded today yet. A session's spend appears here as soon as one reports it."
+    : !d.projects.length && !d.sessions.length
+      ? "No breakdown for this day — it predates the record."
+      : !d.sessions.length
+        ? "No per-session split for this day — it predates the record."
+        : "";
   return `<div class="up-h">Today's spend</div>
     <div class="cp-tot">${uUsd2(d.total)}</div>
     ${rows ? `<div class="cp-lbl">By project</div>${rows}` : ""}
     ${sess ? `<div class="cp-lbl">By session</div><div class="cp-sess">${sess}</div>` : ""}
-    ${nothing ? `<div class="up-note">Nothing recorded today yet. A session's spend appears here as soon as it reports one.</div>` : ""}
-    ${!nothing && !d.sessions.length ? `<div class="up-note">No per-session split for this day — it predates the record.</div>` : ""}`;
+    ${note ? `<div class="up-note">${note}</div>` : ""}`;
 }
 
 export let tokenScanning = false;

@@ -395,12 +395,17 @@ Three things that are easy to get wrong:
   **per-session** `sess` map, which the footer's spend popover (`daySpend` →
   `costPopHtml`) reads; it replaced a `sessions: string[]` that recorded *which* ids
   contributed but not what any cost, and was therefore write-only for its whole life.
-  **The two totals disagree by design** — `cc-usage` counts every pane and all of
-  history, the split only agent panes from the day it shipped — so `daySpend` names the
-  difference as an `unattributed` row rather than dropping it, or a popover would read
-  lower than the footer segment that opened it. The half-cent floor on that row is not
-  tidiness: both figures are sums of the same deltas in a different order, so a fully
-  attributed day still differs in the last place.
+  **A split can fall short of the day's total, and each split falls short separately** —
+  `cc-usage` banks the day's money from the first dollar, while a split introduced by a
+  later build starts from whatever is spent after it lands. That makes **the day you
+  upgrade** the ordinary case, not an exotic one: the projects list can be complete while
+  the sessions list covers only the afternoon. So `daySpend` gives **both** lists their
+  own `unattributed` row rather than dropping the difference — a list that summed lower
+  than the footer segment that opened it would read as money going missing. A split with
+  *nothing* in it stays empty instead, and the reader says the day predates the record:
+  one anonymous row claiming the whole day reads as a session nobody can identify. The
+  half-cent floor is not tidiness either — both figures are sums of the same deltas in a
+  different order, so a fully attributed day still differs in the last place.
 - **The list drops empty days and the sparkline must not.** `trailDays` omits a day
   nothing happened on (a column of blank rows reads as broken); `densePerDay` fills
   them back in, because two busy days a week apart otherwise render as two adjacent
@@ -678,6 +683,17 @@ from, and `ioDelta` clamps a drop to zero because a restart is the normal case h
 an edge one — the same reasoning as `costDelta`'s drop branch, reached independently.
 There is no back-fill: days before it shipped have no entry and render as "not
 recorded", never as zero.
+
+**The write is floored at a minute, and a disk meter is exactly the wrong thing to be
+sloppy about here.** The poll behind it runs every 4s for as long as a session is on
+stage, so persisting each reading would mean ~900 synchronous `stringify` + `setItem`
+calls an hour to record a number read once a day. Accumulation stays per-poll (free);
+only `flushIo` writes, and it is forced across a midnight (nothing adds to yesterday
+again) and on `quit-requested`. **Skipping polls costs nothing** — the counters are
+cumulative and `io_retired` outlives a session's exit, so the next reading carries the
+whole gap, which is also why the poll's `if (mirror) return` doesn't skew a day. The one
+real loss is the stretch after a run's last reading; `flushIo` persists what was read,
+it does not take a reading.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.

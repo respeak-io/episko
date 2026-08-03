@@ -90,6 +90,7 @@ import {
   setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
+import { flushIo } from "./usage";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -494,6 +495,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
   if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
+  if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   if (!t.closest("#bPop, [data-wtpick]")) closeBranchPop(false);
@@ -677,6 +679,9 @@ new ResizeObserver(() => {
 // when something would actually be lost — an idle Episko quits immediately, keeping
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {
+  // The disk rollup's write is floored at a minute, so this is the one place its last
+  // stretch would otherwise be lost — there is no later poll after a quit.
+  flushIo();
   const live = [...sessions.values()].filter((s) => s.phase !== "ended");
   const agents = live.filter((s) => isAgent(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
