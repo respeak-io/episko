@@ -700,15 +700,28 @@ Four rules keep that graph honest. **There are no import cycles across the 49 mo
 - **A `*view.ts` takes data and returns a string** — no `$()`, no `innerHTML`, no renderer call. The `render*` function that paints the result stays with whoever owns the element, its timers and its delegated handlers. If a candidate seems to need a `setSomething`, it is a `render*` and should stay behind.
 - **`state.ts`'s `setX` setters assign and nothing else.** Persistence and `renderAll()` belong to the call site — that is what `actions.ts` is for. (Conflating the two is a bug this codebase has already shipped once: a settings picker called `state.ts`'s `setWtGroup` instead of `actions.ts`'s, so the choice never persisted.) Reads are the live ESM binding and stay bare identifiers (`activeId`, never `state.activeId`).
 
-**Two surfaces on `renderAll`'s path are guarded, and the guard is a pattern, not a
+**Three surfaces on `renderAll`'s path are guarded, and the guard is a pattern, not a
 one-off.** `renderSidebar` builds its markup every time but assigns `#projects.innerHTML`
 only when the string differs from what it last wrote; `updateTray` diffs a signature
-before rebuilding the native menu. Both exist because `renderAll()` fires on *every*
-telemetry event and most events change nothing those surfaces show — 84.5% of sidebar
-repaints were byte-identical under a realistic event stream. This is **not** render
-diffing (no DOM is compared or patched) and it does not weaken the render-everything
-rule; it is "skip when nothing changed", applied where it was measured to matter. If
-you add a surface to `renderAll`, measure it before assuming it is free.
+before rebuilding the native menu; `dashboard.ts`'s `paint(id, html)` does the same for
+each of the dashboard's seven surfaces. All three exist because `renderAll()` fires on
+*every* telemetry event and most events change nothing those surfaces show — 84.5% of
+sidebar repaints were byte-identical under a realistic event stream. This is **not**
+render diffing (no DOM is compared or patched) and it does not weaken the
+render-everything rule; it is "skip when nothing changed", applied where it was measured
+to matter. If you add a surface to `renderAll`, measure it before assuming it is free.
+
+**On an interactive surface the guard is a correctness fix, not an optimisation**, and
+that is why the dashboard needed one. Cost is what the sidebar's guard bought; what the
+dashboard's buys is that **an `innerHTML` assignment destroys the node under the
+pointer**. Rebuilt several times a second by a live fleet, `▶ Start` lost and re-acquired
+`:hover` on every hook — restarting its `.14s` colour transition from the top, so the
+button pulsed while the mouse sat still on it — and `#dashNote`, an `<input>` inside
+`#dashAside`, came back empty, losing a note mid-typing. Neither is visible on an idle
+fleet, which is the state a dashboard gets developed in. **A repaint-per-event surface
+carrying buttons or inputs needs this guard before it ships**, and the cache must be
+invalidated wherever another module can write the same element: `#inspector` belongs to
+whoever holds the stage, so `openDashboard` clears the whole cache on every entry.
 
 **When you measure a render function, force layout or the number is a lie.** An
 `innerHTML` assignment defers style recalc and layout to the next frame, which a

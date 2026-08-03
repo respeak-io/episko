@@ -148,8 +148,8 @@ const summaries = new Map<string, string>();
 /// that goes into `.episko/digest.md`, and the half a colleague's copy can hand back —
 /// which is why `loadDash` seeds it from the committed file before generating anything.
 const teamSummaries = new Map<string, string>();
-/// Which day rows are expanded. Survives a re-render because it is keyed by day, not
-/// by element — the pane rebuilds its innerHTML on every repaint.
+/// Which day rows are expanded. Survives a re-render because it is keyed by day, not by
+/// element — a repaint that changes anything replaces the whole timeline (see `paint`).
 const openDays = new Set<string>();
 /// Which enlarge overlay is up, if any.
 let openView: "checkouts" | "notes" | "work" | "triage" | null = null;
@@ -419,6 +419,42 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
 }
 
 // ---------- render ----------
+/**
+ * Assign only when the markup actually changed — the same "build always, assign only on
+ * a change" guard ./sidebar and ./tray already use, and the same non-claim: no DOM is
+ * compared or patched, so the render-everything rule is intact.
+ *
+ * It is needed *more* here than on the sidebar. `renderDash` sits on `renderAll`'s path,
+ * `renderAll` fires on **every telemetry event**, and a handful of live agents put that
+ * at several times a second — while almost nothing on screen changes: `shortAge` is
+ * minute-granular, `gh_threads` is cached 60s, and the notes are localStorage. The cost
+ * was never the string building, it was that an `innerHTML` assignment **destroys the
+ * node under the pointer**:
+ *
+ *   • `▶ Start` lost and re-acquired `:hover` on every hook, restarting its `.14s`
+ *     colour transition from the top — a button that visibly pulsed while the mouse sat
+ *     still on it, which is what sent somebody looking for an animation bug.
+ *   • `#dashNote` is an `<input>` inside `#dashAside`. A replaced input is an empty one,
+ *     so jotting a note while anything was running lost the text between keystrokes.
+ *
+ * Both are the same defect, and neither is visible on an idle fleet — which is exactly
+ * the state a dashboard gets developed in.
+ */
+const painted = new Map<string, string>();
+function paint(id: string, html: string): void {
+  if (painted.get(id) === html) return;
+  painted.set(id, html);
+  $(id).innerHTML = html;
+}
+/**
+ * The cache is "what *this module* last wrote", so it may only be trusted while the
+ * dashboard has held the stage continuously. `#inspector` is what makes that more than
+ * paranoia: ./inspector and ./mirror write it too, so a session visited in between
+ * leaves an entry describing markup that is no longer on screen. `openDashboard` is the
+ * only place the dash mirror is ever set, so clearing there covers every route back in.
+ */
+function invalidatePaintCache(): void { painted.clear(); }
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
@@ -433,13 +469,13 @@ export function renderDash(): void {
   // A row of zeros is not an empty answer, it is a wrong one — `dashPulse([])` counts no
   // commits, no sessions and no contributors for a project that may have had plenty, and
   // reads as "nothing happened here" rather than "nothing has been read yet".
-  $("dashPulse").innerHTML = loading ? pulseSkeleton(dashRange) : pulseHtml(p, tier, dashRange, dense);
+  paint("dashPulse", loading ? pulseSkeleton(dashRange) : pulseHtml(p, tier, dashRange, dense));
 
-  const spine = $("dashSpine");
+  let spine: string;
   if (loading) {
-    spine.innerHTML = spineSkeleton();
+    spine = spineSkeleton();
   } else if (!days.length) {
-    spine.innerHTML = `<div class="db-empty">Nothing in the last ${dashRange} days.
+    spine = `<div class="db-empty">Nothing in the last ${dashRange} days.
       Sessions, commits and spend appear here on their own — there is nothing to fill in.</div>`;
   } else {
     // The offer counts closed days with commits — what a work log *would* carry, not
@@ -451,7 +487,7 @@ export function renderDash(): void {
     const unshared = canShare(tier) && !hasDigest && !digestOk().includes(root())
       ? days.filter((d) => dayIsClosed(d) && d.commits.length > 0).length
       : 0;
-    spine.innerHTML = days.map((d) =>
+    spine = days.map((d) =>
       dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key),
         // Written for every day, shown only where it says something your own line
         // doesn't — see `sharedDay`.
@@ -466,6 +502,7 @@ export function renderDash(): void {
         })).join("")
       + workLogOffer(unshared);
   }
+  paint("dashSpine", spine);
 
   const now = Date.now();
   const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
@@ -477,7 +514,7 @@ export function renderDash(): void {
   // project to type into. Everything else is either unread or, in `missingCard`'s case, a
   // statement about a tier that hasn't been answered — hence the whole branch, rather
   // than a skeleton bolted onto the front of the real list.
-  $("dashAside").innerHTML = loading
+  paint("dashAside", loading
     ? cardSkeleton() + notesCard(noteList(root()))
     : (ghLoading ? cardSkeleton() : "")
       + (gh.available ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder) : "")
@@ -485,27 +522,26 @@ export function renderDash(): void {
       + checkoutsCard(heads, liveIn, folderDirty)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
-      + missingCard(tier, facts);
+      + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
   ovl.dataset.view = openView ?? "";
-  if (openView === "checkouts") ovl.innerHTML = checkoutsOverlay(heads, liveIn, folderDirty);
+  if (openView === "checkouts") paint("dashOverlay", checkoutsOverlay(heads, liveIn, folderDirty));
   else if (openView === "notes") {
     const mineShared = new Set(shared.map((n) => n.id));
     // A colleague's note is theirs; ours are the ones we can promote or withdraw.
     const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
-    ovl.innerHTML = notesOverlay(noteList(root()), theirs, mineShared, canShare(tier));
+    paint("dashOverlay", notesOverlay(noteList(root()), theirs, mineShared, canShare(tier)));
   }
-  else if (openView === "work") ovl.innerHTML = workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder);
-  else if (openView === "triage") ovl.innerHTML = triageOverlay(stale, kept, canShare(tier));
+  else if (openView === "work") paint("dashOverlay", workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
+  else if (openView === "triage") paint("dashOverlay", triageOverlay(stale, kept, canShare(tier)));
 
-  const sh = $("dashSheet");
-  sh.classList.toggle("show", sheet !== null);
+  $("dashSheet").classList.toggle("show", sheet !== null);
   $("dashScrim").classList.toggle("show", sheet !== null);
-  if (sheet?.kind === "close") sh.innerHTML = closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name());
+  if (sheet?.kind === "close") paint("dashSheet", closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name()));
   else if (sheet?.kind === "dispatch") {
-    sh.innerHTML = dispatchSheet(sheet.t, policy, allow, permMode, holder(sheet.t));
+    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, permMode, holder(sheet.t)));
   }
 }
 
@@ -533,14 +569,18 @@ export function renderDashInspector(): void {
     cls: GCLASS[statusKey(s)] ?? "g-idle",
     ctx: s.ctxPct != null ? `${Math.round(s.ctxPct)}%` : "",
   }));
-  $("inspector").innerHTML = dashInspector(root(), tier, facts, live, hasDigest, factsKnown);
-  $("dashStrip").innerHTML = dashStrip(accentFor(root()), (name()[0] || "?").toUpperCase(), tier,
-    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown);
+  paint("inspector", dashInspector(root(), tier, facts, live, hasDigest, factsKnown));
+  paint("dashStrip", dashStrip(accentFor(root()), (name()[0] || "?").toUpperCase(), tier,
+    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown));
 }
 
 // ---------- open / close ----------
 export function openDashboard(project: string, path: string): void {
   const changed = root() !== path;
+  // Unconditionally, including when the project is unchanged: `#inspector` belongs to
+  // whatever holds the stage, so a session visited in between has overwritten markup
+  // this module still believes it put there. See `invalidatePaintCache`.
+  invalidatePaintCache();
   setMirror({ kind: "dash", root: path, name: project });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");

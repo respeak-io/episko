@@ -78,6 +78,12 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+! **The dashboard's buttons stop flickering under the pointer.** ▶ Start and everything
+  beside it pulsed between their hover and resting colours while the mouse sat still on
+  them — the whole pane was rebuilt on every telemetry event, so with a few agents
+  running the button was destroyed and recreated several times a second. The same rebuild
+  emptied the note box while you were typing in it. Both stop: the dashboard now repaints
+  only what actually changed, which on a quiet minute is nothing.
 ! **Starting an agent on an issue works, and the claim gets written.** Every dispatch from
   the dashboard reported *Could not start a session* — while starting one. The pane was
   there and the agent was idle in it: what never arrived was the prompt naming the issue,
