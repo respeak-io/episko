@@ -205,6 +205,55 @@ html.win .wctl { display: flex; }
 .rail-add::before { width: 10px; height: 1.6px; }
 .rail-add::after { width: 1.6px; height: 10px; }
 
+/* ---------- project folds: the user's named groups of projects -------------------
+   `.pf*`, never `.pg*`: `.pgroup` (a project) and `.pgpeek` (its idle checkouts) live
+   INSIDE one of these, and the reorder, the peek hover and applyPeek all reach for
+   `.pgroup` by class. See the note in sidebarview.ts.
+
+   Same `0fr → 1fr` collapse as .pgpeek and the dashboard's day rows — it animates an
+   unknown height with nothing measured; `.pfbody-in` carries the overflow/min-height
+   that makes the 0fr row clip rather than spill. */
+.pfold { margin-bottom: 7px; }
+/* Quieter than a project header by design: this is a label over the list, not a row in
+   it. Uppercase + tracking is what says "heading" at a size where weight alone can't. */
+.pfhead { display: flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: var(--radius-sm); cursor: grab; user-select: none; }
+.pfhead:hover { background: var(--surface); }
+.pfhead:hover .pfchev, .pfhead:hover .pfname { color: var(--text); }
+/* Drawn, not typed — same call as .rail-add's plus above. A `▾` at the size this
+   heading wants is a smudge, and the rotated form is indistinguishable from it, which
+   makes the one affordance that says "this folds" unreadable. Two borders on a rotated
+   box are crisp at 4px and the rotation reads unmistakably. */
+.pfchev { flex: none; position: relative; width: 9px; height: 9px; color: var(--muted-2); transition: color .12s; }
+.pfchev::before {
+  content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+  border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor;
+  transform: translate(-50%, -70%) rotate(45deg);
+  transition: transform .2s cubic-bezier(.32,.72,0,1);
+}
+.pfold.collapsed .pfchev::before { transform: translate(-65%, -50%) rotate(-45deg); }
+.pfname { min-width: 0; font: 700 9.5px var(--font-ui); letter-spacing: .075em; text-transform: uppercase; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .12s; }
+/* Bare number = projects; the pill = sessions, which is the shape `.pcount` already
+   means one row down. So the badge never has to be read twice to know which it is. */
+.pfcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
+.pfcount.live { padding: 1px 6px; border-radius: 6px; background: var(--surface-2); }
+/* Both are collapsed-only (see foldHead): folding a group away must not fold away the
+   fact that something inside it is dirty or waiting on you. */
+.pfdirty { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
+.pfattn { flex: none; font-size: 9px; line-height: 1; }
+.pfbody { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .24s cubic-bezier(.32,.72,0,1); }
+.pfold.collapsed .pfbody { grid-template-rows: 0fr; }
+/* The inset is the only nesting cue — a third border rail (after .psessions and
+   .wtsessions) would stripe the rail for a heading that already reads as one. */
+.pfbody-in { overflow: hidden; min-height: 0; padding-left: 5px; }
+.pfempty { padding: 5px 8px 6px 3px; font-size: 10.5px; color: var(--muted-2); opacity: .7; font-style: italic; }
+/* A collapsed fold has no visible body for the .dropmark to sit in, so the header
+   itself says "this one" while a project is held over it. */
+.pfold.droptarget > .pfhead { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.pfold.droptarget > .pfhead .pfname { color: var(--accent-ink); }
+.pfold.dragging { opacity: .38; }
+.pfold.dragging .pfhead { cursor: grabbing; }
+@media (prefers-reduced-motion: reduce) { .pfbody, .pfchev { transition: none; } }
+
 .pgroup { margin-bottom: 3px; }
 /* While reordering (pointer-driven), suppress text selection across the whole list —
    and hold the grabbing cursor over every row the pointer crosses, since the buttons
@@ -1418,6 +1467,15 @@ select.in-ctl { cursor: pointer; }
    "Episko forgot how to do this". Same shape the branch popover uses for its own. */
 .ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }
 .ctxmenu .mp-item.dis:hover { background: transparent; }
+/* A group has no folder and no colour, so its head wears the fold glyph instead of the
+   swatch every other #ctxMenu head shows. */
+.ctxmenu .mp-hfold { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-2); border-radius: 3px; }
+/* Naming or renaming a group, inline. A dialog for one short string would weigh more
+   than the thing it makes — the colour panel's .sw-hex field is the same call. */
+.ctxmenu .mp-new { padding: 4px 7px 2px; }
+.ctxmenu .mp-in { width: 100%; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); font: 500 12px var(--font-ui); outline: none; }
+.ctxmenu .mp-in:focus { border-color: var(--accent-line); }
+.ctxmenu .mp-in::placeholder { color: var(--muted-2); }
 
 /* "x needs you" dropdown (multiple sessions awaiting attention) */
 .attn-badge.multi::after { content: "▾"; font-size: 8px; margin-left: 1px; opacity: .7; }

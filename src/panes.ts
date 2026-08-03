@@ -32,7 +32,7 @@ import { fmtMb, fmtRate } from "./format";
 import { claudeInput, cleanTitle, clipboardKeys, fitSession, loadWebgl, MONO, shellKeys, winClaudePaste } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { renderInspector } from "./inspector";
-import { renderMini, renderSidebar } from "./sidebar";
+import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderFoot } from "./footer";
 import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
@@ -307,6 +307,10 @@ export function setActive(id: string) {
     fitSession(s);
     s.term.focus();
   }
+  // ⌘1–9, `nextAfterClose` and the tray can all land on a session filed inside a
+  // collapsed project group — and a rail with nothing selected while a pane is plainly
+  // on screen reads as the selection having been lost. Unfold it before painting.
+  revealProjGroup(s.colorKey);
   renderHeader(s); renderInspector(s); renderSidebar(); renderMini(); renderFoot();
   // Show the branch that's really checked out right now, immediately on activate.
   void refreshBranch(s).then((changed) => { if (changed) { renderSidebar(); if (activeId === id) renderHeader(s); } });

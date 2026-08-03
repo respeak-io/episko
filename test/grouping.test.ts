@@ -2,14 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
-  accentFor, colorOverrides, sessions, setDormants, setExternals, setFavorites,
-  setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
+  accentFor, colorOverrides, dirtyByFolder, sessions, setDormants, setExternals,
+  setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, clusterIsLive, needsYou, needsYouSessions,
-  nextAfterClose, orderedSessions, projectList, reactorLabel, reactorState,
-  splitByWorktree, urgencyRank, type ProjGroup,
+  allProjects, clusterByWorktree, clusterIsLive, groupedProjects, groupSummary,
+  needsYou, needsYouSessions, nextAfterClose, orderedSessions, projectList,
+  reactorLabel, reactorState, splitByWorktree, urgencyRank,
+  type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
+import { NO_GROUPS } from "../src/projgroups";
 import { taskPrefs } from "../src/tasks";
 
 const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
@@ -45,8 +47,9 @@ beforeEach(() => {
   vi.setSystemTime(NOW_MS);
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
-  setSortMode("manual"); setWtGroup("off");
+  setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
   worktreesByRepo.clear();
+  dirtyByFolder.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
   taskPrefs.attention = true; // needsYou reads it; restore the shipped default
   store.clear();
@@ -440,6 +443,97 @@ describe("projectList — worktree grouping", () => {
   });
 });
 
+describe("groupedProjects — the user's named groups folded over that list", () => {
+  // What each slot is, flattened to something an assertion can read: a project by its
+  // path, a group as "Name[member, member]".
+  const shape = (l: SidebarSlot[]) =>
+    l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${s.projects.map((p) => p.path).join(", ")}]`));
+  const threeFavs = () => setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]);
+
+  it("passes everything through untouched when there are no groups", () => {
+    threeFavs();
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c"]);
+  });
+
+  it("collects a group's members and leaves the rest at the top level", () => {
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a, /w/c]", "/w/b"]);
+  });
+
+  it("puts the group where its FIRST member sits, not where the group was made", () => {
+    // The whole reason there is no group order to persist: the position is derived, so
+    // a drag that moves a member moves the group with it and the two cannot disagree.
+    threeFavs();
+    setProjOrder(["/w/b", "/w/c", "/w/a"]);
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["/w/b", "Work[/w/c, /w/a]"]);
+  });
+
+  it("floats a group up in the attention sort when one of its projects needs you", () => {
+    setSortMode("attention");
+    open(
+      sess({ id: "quiet", project: "b", colorKey: "/w/b", phase: "idle" }),
+      sess({ id: "blocked", project: "a", colorKey: "/w/a", attention: "Bash" }),
+    );
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a]", "/w/b"]);
+  });
+
+  it("keeps an emptied group, at the end — it has no member to be ranked by", () => {
+    // Dropping it would read as Episko having deleted a heading the user named, and it
+    // is also the only drop target that could ever refill it.
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: {} });
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
+  });
+
+  it("ignores a membership pointing at a group that is gone", () => {
+    // clampGroups repairs this on load; this is the render side refusing to lose a
+    // project to a fold nothing draws even if one ever got through.
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "ghost" } });
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
+  });
+
+  it("keeps a grouped repo's worktrees together in toplevel mode", () => {
+    // There the repo has exploded into one group per checkout, each keyed by its own
+    // dir — but the user filed the *repo*, so every checkout has to answer with it or a
+    // grouped repo scatters across the rail the moment a second worktree opens.
+    setWtGroup("toplevel");
+    open(sess({ id: "a", workdir: "/w/epi", branch: "main" }), sess({ id: "b", workdir: "/w/wt", branch: "feature" }));
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/epi": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/epi, /w/wt]"]);
+  });
+});
+
+describe("groupSummary — what a collapsed group still has to say", () => {
+  it("counts sessions and externals across every project in it", () => {
+    const l = [grp({ path: "/w/a", sessions: [sess({ id: "x" }), sess({ id: "y" })] }),
+               grp({ path: "/w/b", externals: [ext()] })];
+    expect(groupSummary(l).count).toBe(3);
+  });
+  it("reports the most urgent session, so folding never hides one waiting on you", () => {
+    const blocked = sess({ id: "blocked", attention: "Bash" });
+    const l = [grp({ path: "/w/a", sessions: [sess({ id: "done", phase: "done" })] }),
+               grp({ path: "/w/b", sessions: [blocked] })];
+    expect(groupSummary(l).urgent).toBe(blocked);
+  });
+  it("breaks a tie on who has been waiting longest", () => {
+    const older = sess({ id: "older", phase: "done", phaseSince: 10 });
+    const l = [grp({ sessions: [sess({ id: "newer", phase: "done", phaseSince: 99 }), older] })];
+    expect(groupSummary(l).urgent).toBe(older);
+  });
+  it("has no urgent session when nothing in it wants anything", () => {
+    expect(groupSummary([grp({ sessions: [sess({ phase: "working" })] })]).urgent).toBeNull();
+  });
+  it("lights dirty when ANY member folder has uncommitted changes", () => {
+    expect(groupSummary([grp({ sessions: [sess({ workdir: "/w/a" })] })]).dirty).toBe(false);
+    dirtyByFolder.set("/w/a", { added: 3, removed: 1, files: 2, untracked: 0, dirty: 2, upstream: null, ahead: 0, behind: 0 });
+    expect(groupSummary([grp({ sessions: [sess({ workdir: "/w/a" })] })]).dirty).toBe(true);
+  });
+});
+
 describe("urgencyRank — who needs you first", () => {
   it("ranks a blocking permission above everything else", () => {
     expect(urgencyRank(sess({ attention: "Bash", phase: "working" }))).toBe(0);
@@ -486,6 +580,23 @@ describe("orderedSessions — the sidebar read as one flat list", () => {
     setExternals([ext()]);
     setDormants([dorm()]);
     expect(ids(orderedSessions())).toEqual(["a1"]);
+  });
+  it("follows the order GROUPS put the sidebar in, not the ungrouped one", () => {
+    // A group physically moves its members, so reading the ungrouped list would make
+    // ⌘4 land on the fourth session in an order nothing on screen is in.
+    open(
+      sess({ id: "a", project: "a", colorKey: "/w/a" }),
+      sess({ id: "b", project: "b", colorKey: "/w/b" }),
+      sess({ id: "c", project: "c", colorKey: "/w/c" }),
+    );
+    expect(ids(orderedSessions())).toEqual(["a", "b", "c"]);
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(ids(orderedSessions())).toEqual(["a", "c", "b"]);
+  });
+  it("keeps a collapsed group's sessions reachable — they are still running", () => {
+    open(sess({ id: "a", project: "a", colorKey: "/w/a" }), sess({ id: "b", project: "b", colorKey: "/w/b" }));
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: true }], of: { "/w/a": "g1" } });
+    expect(ids(orderedSessions())).toEqual(["a", "b"]);
   });
 });
 
