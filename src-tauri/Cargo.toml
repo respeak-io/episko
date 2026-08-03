@@ -55,13 +55,17 @@ tauri-plugin-log = "2"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # `SetThreadExecutionState` for the keep-awake control — Windows' answer to
-# macOS `caffeinate` — and the window APIs behind `focus_external_session`
+# macOS `caffeinate` — the window APIs behind `focus_external_session`
 # (`EnumWindows` + `SetForegroundWindow`, Windows' answer to the AppleScript
-# half). 0.61 is the version tauri already resolves, so this adds features to an
-# existing crate rather than a second copy of windows-sys.
+# half) — and `RestartManager`, which answers "which processes have this file
+# open", the API the Windows installer stack uses for exactly that question and
+# the only way to name the editor or watcher pinning a worktree folder we have
+# just been asked to delete. 0.61 is the version tauri already resolves, so this
+# adds features to an existing crate rather than a second copy of windows-sys.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_System_Power",
+  "Win32_System_RestartManager",
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
 ] }
