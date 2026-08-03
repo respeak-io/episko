@@ -760,9 +760,15 @@ html.win .wctl { display: flex; }
 .res .rbar > i { display: block; height: 100%; border-radius: 2px; background: var(--st-done); }
 .res .rbar.warn > i { background: var(--st-working); } .res .rbar.hot > i { background: var(--st-error); }
 .res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
-/* lifetime totals: context for the rates above, so it reads as a footnote not a third gauge */
-.res .rtot { margin-top: 1px; }
-.res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+/* Totals: context for the rates above, so it reads as a footnote not a third gauge.
+   A button, because the window it covers cycles on click (today → this run → recorded)
+   — reset to look exactly like the row it replaced, with only a hover to say it acts. */
+.res .rtot { margin-top: 1px; width: 100%; padding: 2px 3px; margin-left: -3px; border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; text-align: left; }
+.res .rtot:hover { background: var(--surface-2); border-color: var(--hair); }
+/* The scope name is the key here and it is a word, not a fixed label — so this is the
+   second row allowed out of the 30px column, for the same reason `.rall` is. */
+.res .rtot .rk { width: auto; flex: none; }
+.res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; margin-left: auto; }
 /* These figures are app-wide, not the session on screen — this row is what says so,
    and the only one allowed out of the 30px key column, because "all sessions" has to
    read as a heading rather than as another metric label. */
@@ -1452,6 +1458,33 @@ select.in-ctl { cursor: pointer; }
 .usagepop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 5px 2px 1px; border-top: 1px solid var(--hair); }
 .usagepop .up-foot b { color: var(--text); }
 .usagepop .up-note { font-size: 10px; color: var(--muted-2); padding: 2px; line-height: 1.4; }
+
+/* today's-spend popover (the footer's "today $x.xx"). Borrows .usagepop's header and
+   note, since it is the same chrome one segment along; everything with a figure in it
+   is its own, because a spend row is a name + a bar + money, not a metered percentage. */
+.costpop { min-width: 252px; max-width: 320px; gap: 3px; padding: 10px; }
+.costpop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
+.costpop .up-note { font-size: 10px; color: var(--muted-2); padding: 3px 2px; line-height: 1.4; }
+.costpop .cp-tot { font: 700 21px var(--font-mono); color: var(--text); padding: 0 2px 4px; letter-spacing: -.01em; }
+.costpop .cp-lbl { font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 7px 2px 4px; border-top: 1px solid var(--hair); margin-top: 3px; }
+.costpop .cp-row { display: flex; flex-direction: column; gap: 3px; padding: 3px 2px; }
+.costpop .cp-top { display: flex; align-items: baseline; gap: 8px; }
+/* The name yields, the money never does: a truncated figure is unreadable, and the
+   column it lines up in is the thing the popover exists to be scanned down. */
+.costpop .cp-l { font: 600 11.5px var(--font-ui); color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.costpop .cp-un { color: var(--muted-2); font-style: italic; }
+.costpop .cp-v { margin-left: auto; flex: none; font: 700 11px var(--font-mono); color: var(--text); }
+.costpop .cp-bar { height: 4px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.costpop .cp-bar i { display: block; height: 100%; border-radius: 3px; background: var(--muted-2); }
+.costpop .cp-sess { display: flex; flex-direction: column; gap: 1px; max-height: 168px; overflow-y: auto; }
+.costpop .cp-s { display: flex; align-items: baseline; gap: 7px; width: 100%; padding: 4px 5px; border-radius: 7px; text-align: left; border: 1px solid transparent; background: transparent; }
+.costpop .cp-s.on { cursor: pointer; }
+.costpop .cp-s.on:hover { background: var(--surface); border-color: var(--hair); }
+.costpop .cp-sl { font: 600 11.5px var(--font-ui); color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A dead session's row is text, so it must not read as a disabled control — it is
+   dimmed only by its subtitle, exactly as the live one is. */
+.costpop .cp-ss { flex: none; font: 500 9.5px var(--font-mono); color: var(--muted-2); }
+.costpop .cp-s .cp-v { font-size: 10.5px; }
 
 /* keyboard-shortcuts popover (⌘ Shortcuts footer segment) */
 .shortpop { min-width: 262px; gap: 1px; padding: 8px; }

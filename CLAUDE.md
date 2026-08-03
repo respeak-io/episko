@@ -391,7 +391,16 @@ Three things that are easy to get wrong:
   is every project's spend that day at once, so attributing it to whichever dashboard
   is open would invent a number. The detail split only exists going forward, so older
   days legitimately have none, and the strip shows a dash rather than `$0.00` — "we
-  didn't keep this" and "it was free" are different facts.
+  didn't keep this" and "it was free" are different facts. `DayDetail` also carries a
+  **per-session** `sess` map, which the footer's spend popover (`daySpend` →
+  `costPopHtml`) reads; it replaced a `sessions: string[]` that recorded *which* ids
+  contributed but not what any cost, and was therefore write-only for its whole life.
+  **The two totals disagree by design** — `cc-usage` counts every pane and all of
+  history, the split only agent panes from the day it shipped — so `daySpend` names the
+  difference as an `unattributed` row rather than dropping it, or a popover would read
+  lower than the footer segment that opened it. The half-cent floor on that row is not
+  tidiness: both figures are sums of the same deltas in a different order, so a fully
+  attributed day still differs in the last place.
 - **The list drops empty days and the sparkline must not.** `trailDays` omits a day
   nothing happened on (a column of blank rows reads as broken); `densePerDay` fills
   them back in, because two busy days a week apart otherwise render as two adjacent
@@ -660,6 +669,16 @@ Four conventions hold across them:
 
 `AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), `io_samples` (the previous disk-I/O reading per pid, which is what turns the kernel's lifetime byte counters into the inspector's rate) and `io_retired` (the bytes of sessions that have since exited, so the app-wide total doesn't fall when a pane closes), the held-open `pending` permission requests, and `caffeinate`.
 
+**Both of those I/O fields are in-memory, so what `all_sessions_resources` reports is a
+*run* figure — and that is why `cc-io` exists.** The counters belong to processes this
+Episko spawned, so they start near zero on every launch; the inspector called the sum
+"total", which is neither daily nor lifetime and reads as the latter. `addIo` banks each
+poll's increment into a per-day rollup off the *same* sample the live bars are drawn
+from, and `ioDelta` clamps a drop to zero because a restart is the normal case here, not
+an edge one — the same reasoning as `costDelta`'s drop branch, reached independently.
+There is no back-fill: days before it shipped have no entry and render as "not
+recorded", never as zero.
+
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
@@ -678,7 +697,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts — data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
-| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup |
 | `phase.ts` | `applyHook` / `applyStatusline` — telemetry → session state. The heart of the display |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
@@ -778,7 +797,7 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-io` daily disk-I/O rollup and its `cc-io-scope` pick, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 

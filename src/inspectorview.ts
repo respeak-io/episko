@@ -15,7 +15,8 @@
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { ioAll, sessions } from "./state";
+import { ioAll, ioScope, sessions, type IoScope } from "./state";
+import { dayIo, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
 // disabled while one is.
@@ -228,6 +229,16 @@ function ioPct(bps: number): number {
 // App-wide, not per-session: `ioAll` sums every claude process Episko owns, so this
 // block reads the same on whichever pane you happen to have open — like the rate
 // limits, and labelled so nobody mistakes it for the session in front of them.
+/// The three windows the total row can show, and what each honestly covers. `run` is
+/// the raw reading; the other two come from the `cc-io` rollup, which only starts the
+/// day it shipped — so a machine that has just updated has a `today` smaller than its
+/// `run`, which is correct rather than a bug.
+const IO_SCOPE_LABEL: Record<IoScope, string> = { today: "today", run: "this run", all: "recorded" };
+function ioFigures(scope: IoScope): { r: number; w: number; known: boolean } {
+  if (scope === "run") return { r: ioAll.readMb, w: ioAll.writtenMb, known: true };
+  const v = scope === "today" ? dayIo[todayKey()] : ioTotal();
+  return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
+}
 export function resHtml(): string {
   const r = ioAll;
   // Before the second sample there is no window to average over, so the rate is unknown
@@ -236,9 +247,23 @@ export function resHtml(): string {
   const wr = r.primed ? fmtRate(r.writeBps) : "—";
   const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
   const n = [...sessions.values()].filter((x) => isAgent(x) && !x.external).length;
+  // The total is a *window*, and which window was never stated — it said "total" while
+  // showing the current run, so it read as a lifetime figure that reset overnight. The
+  // scope is now named on the row and the whole row cycles it.
+  const f = ioFigures(ioScope);
+  const tot = f.known
+    ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written`
+    : `not recorded`;
   return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
     <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
-    <div class="rr rtot"><span class="rk">total</span><span class="rvtot">${fmtMb(r.readMb)} read · ${fmtMb(r.writtenMb)} written</span></div></div>`;
+    <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rvtot">${tot}</span></button></div>`;
 }
+/// Spelled out per scope rather than one generic hint, because the difference between
+/// them is the whole point and two of the three have a caveat worth one sentence.
+const IO_SCOPE_TITLE: Record<IoScope, string> = {
+  today: "Disk I/O by Episko's claude sessions today — click for this run",
+  run: "Disk I/O since Episko started — the processes' own counters, which reset with the app. Click for everything recorded",
+  all: "Disk I/O across every day Episko has recorded one. Not a lifetime figure — it starts when this rollup shipped. Click for today",
+};

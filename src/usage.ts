@@ -35,7 +35,18 @@ export function modelFamily(m: string): string {
 // which the Usage analytics tab reads. The split is telemetry-only, so it records
 // from the day this ships forward; the totals (and the transcript-scanned tokens)
 // still carry full history. See the Usage panel section below.
-export interface DayDetail { models: Record<string, number>; projects: Record<string, number>; sessions: string[] }
+/// What one session spent on one day. This replaced a bare `sessions: string[]`, which
+/// recorded *which* ids contributed but not what any of them cost — write-only for its
+/// whole life, and unable to answer the only question anyone asks of it ("where did
+/// today go?"). Old stored days therefore have no `sess` at all, exactly as they have no
+/// `projects`: the split records from the day it ships forward, and a day without one
+/// says so rather than showing zeros.
+export interface DaySess { usd: number; title: string; project: string }
+export interface DayDetail {
+  models: Record<string, number>;
+  projects: Record<string, number>;
+  sess?: Record<string, DaySess>;
+}
 export const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
 export const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
 export function todayKey() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
@@ -47,13 +58,126 @@ export function addUsage(delta: number, s?: Sess) {
   if (!s || !isAgent(s)) return;
   // Attribute the cost delta to whichever model is active right now and to the
   // session's project — the closest honest split the statusLine data allows.
-  const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {}, sessions: [] });
+  const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {} });
   const fam = modelFamily(s.model);
   d.models[fam] = (d.models[fam] || 0) + delta;
   const proj = s.project || basename(s.workdir) || "unknown";
   d.projects[proj] = (d.projects[proj] || 0) + delta;
-  if (s.id && !d.sessions.includes(s.id)) d.sessions.push(s.id);
+  if (!s.id) return;
+  const bag = d.sess || (d.sess = {});
+  const e = bag[s.id] || (bag[s.id] = { usd: 0, title: "", project: proj });
+  e.usd += delta;
+  // Re-stamped on every increment, not written once: a session's title arrives *after*
+  // its first dollar — Claude sets it from the conversation, and the pane starts with
+  // an empty one — so first-write-wins would leave the busiest rows unnamed.
+  if (s.title) e.title = s.title;
+  e.project = proj;
   localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
+}
+
+/// Today's spend, split the two ways anyone actually asks for it. Pure arithmetic over
+/// the stored rollup so ./footer only has to paint it.
+///
+/// **The remainder is part of the answer.** `total` comes from `cc-usage`, the split
+/// from `cc-usage-detail`, and the two legitimately disagree: the split only records
+/// from the day it shipped, and only for agent panes. A popover that showed the split
+/// alone would quietly present a smaller number than the footer it opened from, so
+/// whatever is unaccounted for is named `unattributed` rather than dropped.
+export interface SpendRow { key: string; label: string; sub: string; usd: number }
+export interface DaySpend { total: number; projects: SpendRow[]; sessions: SpendRow[]; split: number }
+export function daySpend(
+  detail: Record<string, DayDetail | undefined>, day: string, total: number,
+): DaySpend {
+  const d = detail[day];
+  const by = (o: Record<string, number> | undefined): SpendRow[] =>
+    Object.entries(o || {}).filter(([, v]) => v > 0)
+      .map(([k, v]) => ({ key: k, label: k, sub: "", usd: v }))
+      .sort((a, b) => b.usd - a.usd);
+  const projects = by(d?.projects);
+  const sessions = Object.entries(d?.sess || {}).filter(([, v]) => v.usd > 0)
+    .map(([id, v]) => ({ key: id, label: v.title || "untitled session", sub: v.project, usd: v.usd }))
+    .sort((a, b) => b.usd - a.usd);
+  const split = projects.reduce((n, r) => n + r.usd, 0);
+  // Half a cent, not zero: the two totals are floating-point sums of the same deltas in
+  // a different order, so they differ in the last place on a day that is fully attributed.
+  const rest = total - split;
+  if (rest > 0.005) projects.push({ key: "", label: "unattributed", sub: "", usd: rest });
+  return { total, projects, sessions, split };
+}
+
+// ---------- the daily disk-I/O rollup ----------
+
+/// Bytes read and written per day, in MiB. **This is the only durable record of it.**
+///
+/// `all_sessions_resources` reports a *run* figure — the kernel's per-process counters
+/// for every claude pid Episko owns, plus `io_retired` for the ones that have exited —
+/// and all of that lives in `AppState`, so quitting the app takes it with it. "Total
+/// read/written" therefore meant "since this Episko started", which is a window nobody
+/// chose and which reads as a lifetime figure sitting next to a lifetime-shaped label.
+///
+/// So the increments are banked here, keyed by day, in the shape `cc-usage` already
+/// uses. There is deliberately no back-fill: days before this shipped have no entry,
+/// which the reader renders as "not recorded" rather than as zero.
+export interface DayIo { r: number; w: number }
+const IO_KEY = "cc-io";
+/// ~14 months of days at ~40 bytes each. Same reasoning as `COST_BASE_MAX`: bounded by
+/// count so the key can't grow without limit on a machine that is never cleared.
+const IO_MAX_DAYS = 420;
+export const dayIo: Record<string, DayIo> = ((): Record<string, DayIo> => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(IO_KEY) || "{}") as Record<string, DayIo>;
+    const out: Record<string, DayIo> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (v && typeof v.r === "number" && typeof v.w === "number") out[k] = v;
+    }
+    return out;
+  } catch { return {}; }
+})();
+
+/// The increment between two readings of a cumulative counter that restarts.
+///
+/// A restart is the *normal* case here, not an edge one: every Episko launch begins a
+/// new run whose counters start near zero, so the reading routinely goes down. Clamping
+/// at zero rather than trusting the difference is what keeps a restart from booking a
+/// negative day — the same drop-branch reasoning as `costDelta` above, arrived at for
+/// the same reason. With no previous reading the whole figure is the increment: this
+/// process spawned those pids, so everything they have churned belongs to this run.
+export function ioDelta(cur: DayIo, prev: DayIo | null): DayIo {
+  const p = prev ?? { r: 0, w: 0 };
+  return { r: Math.max(0, cur.r - p.r), w: Math.max(0, cur.w - p.w) };
+}
+
+let ioPrev: DayIo | null = null;
+/// Bank a fresh `all_sessions_resources` reading into today. Called from the same poll
+/// that updates `ioAll`, so the rollup and the live bars can never describe different
+/// samples.
+export function addIo(cur: DayIo): void {
+  const d = ioDelta(cur, ioPrev);
+  ioPrev = cur;
+  if (d.r <= 0 && d.w <= 0) return;
+  const k = todayKey();
+  const day = dayIo[k] || (dayIo[k] = { r: 0, w: 0 });
+  day.r += d.r;
+  day.w += d.w;
+  const keys = Object.keys(dayIo).sort();
+  for (const old of keys.slice(0, Math.max(0, keys.length - IO_MAX_DAYS))) delete dayIo[old];
+  localStorage.setItem(IO_KEY, JSON.stringify(dayIo));
+}
+
+/// Only a test needs to clear it; the app's own copy is meant to outlive the run.
+export function resetIoRollup() {
+  for (const k of Object.keys(dayIo)) delete dayIo[k];
+  ioPrev = null;
+  localStorage.removeItem(IO_KEY);
+}
+
+/// Everything the rollup has ever recorded. Not a lifetime figure and does not pretend
+/// to be one — it starts the day this ships, which is why the label says "recorded"
+/// rather than "all time".
+export function ioTotal(): DayIo {
+  let r = 0, w = 0;
+  for (const v of Object.values(dayIo)) { r += v.r; w += v.w; }
+  return { r, w };
 }
 
 // What the statusLine reports is a running total, so the day only wants the increment

@@ -38,6 +38,7 @@ import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose } from "./grouping";
 import { probeIcon } from "./icons";
+import { addIo } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, dashMirror, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
@@ -350,6 +351,9 @@ export async function refreshSessionStats(s: Sess) {
     ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
     ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
     ioAll.primed = res.primed;
+    // Bank the increment into today off the SAME sample the bars above are drawn from,
+    // so the rollup and the live figure can never describe different readings.
+    addIo({ r: res.read_mb, w: res.written_mb });
   }
   if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }

@@ -9,7 +9,7 @@ import { isAgent } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
-  closeAttnPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
+  closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
   refreshTokens, renderAttn, renderFoot, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
@@ -20,7 +20,7 @@ import {
 import { renderInspector } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
-  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
+  addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
   setTheme, setWtGroup, toggleInsp,
@@ -501,7 +501,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -515,7 +515,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
-  else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  // Two popovers emit data-sel rows — the reactor's picker and the spend split — and
+  // both are answered by putting that session on the stage, so both close behind it.
+  else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   // A project header. This used to select whichever session sorted first, so one
   // click meant two different things depending on state; it now opens the project
   // dashboard, and the sessions are the rows directly beneath it.
@@ -530,6 +532,11 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
+  // The inspector's read/written row states which window it covers, and clicking it
+  // cycles: today → this run → everything recorded. A cycle rather than a popover
+  // because there are three values and no sub-choices — a menu would be one more click
+  // to reach a number that is already on screen.
+  else if (el.dataset.ioscope) cycleIoScope();
   else if (el.dataset.toast) toast(el.dataset.toast);
 });
 

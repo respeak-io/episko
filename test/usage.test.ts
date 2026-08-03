@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addUsage, costDelta, modelFamily, resetCostBaselines, setTokenDays, setUsageRange,
+  addIo, addUsage, costDelta, dayIo, daySpend, ioDelta, ioTotal, modelFamily,
+  resetCostBaselines, resetIoRollup, setTokenDays, setUsageRange,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
@@ -21,6 +22,7 @@ beforeEach(() => {
   setTokenDays([]);
   setUsageRange(30);
   resetCostBaselines();
+  resetIoRollup();
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -185,19 +187,121 @@ describe("addUsage — the daily $ rollup", () => {
       addUsage(2, sess({ project: "", workdir: "" }));
       expect(usageDetail["2027-03-14"].projects).toEqual({ respeak: 1, unknown: 2 });
     });
-    it("records each contributing session once, however many deltas it sends", () => {
+    it("accumulates each contributing session's own spend, however many deltas it sends", () => {
       addUsage(1, sess({ id: "a" }));
       addUsage(1, sess({ id: "a" }));
       addUsage(1, sess({ id: "b" }));
-      expect(usageDetail["2027-03-14"].sessions).toEqual(["a", "b"]);
+      expect(usageDetail["2027-03-14"].sess!.a.usd).toBe(2);
+      expect(usageDetail["2027-03-14"].sess!.b.usd).toBe(1);
+    });
+    it("re-stamps the title, because a session earns its first dollar before it has one", () => {
+      // Claude names the conversation from its content, so the pane starts untitled and
+      // is already spending. Write-once here left the busiest rows permanently unnamed.
+      addUsage(1, sess({ id: "a", title: "" }));
+      addUsage(1, sess({ id: "a", title: "Fix the router" }));
+      expect(usageDetail["2027-03-14"].sess!.a.title).toBe("Fix the router");
+    });
+    it("keeps the last title rather than blanking it when one arrives empty", () => {
+      addUsage(1, sess({ id: "a", title: "Fix the router" }));
+      addUsage(1, sess({ id: "a", title: "" }));
+      expect(usageDetail["2027-03-14"].sess!.a.title).toBe("Fix the router");
     });
     it("persists the split under its own key, leaving the totals alone", () => {
-      addUsage(1, sess({ id: "a", model: "Haiku 4.5", project: "epi" }));
+      addUsage(1, sess({ id: "a", model: "Haiku 4.5", project: "epi", title: "t" }));
       expect(JSON.parse(store.get("cc-usage-detail")!)).toEqual({
-        "2027-03-14": { models: { Haiku: 1 }, projects: { epi: 1 }, sessions: ["a"] },
+        "2027-03-14": {
+          models: { Haiku: 1 }, projects: { epi: 1 },
+          sess: { a: { usd: 1, title: "t", project: "epi" } },
+        },
       });
       expect(JSON.parse(store.get("cc-usage")!)).toEqual({ "2027-03-14": 1 });
     });
+  });
+});
+
+describe("daySpend — where today's money went", () => {
+  const detail = (o: Partial<(typeof usageDetail)[string]>) =>
+    ({ "2027-03-14": { models: {}, projects: {}, ...o } });
+
+  it("ranks projects and sessions by spend, biggest first", () => {
+    const d = daySpend(detail({
+      projects: { epi: 1, gb: 4, other: 2 },
+      sess: { a: { usd: 1, title: "small", project: "epi" }, b: { usd: 6, title: "big", project: "gb" } },
+    }), "2027-03-14", 7);
+    expect(d.projects.map((r) => r.label)).toEqual(["gb", "other", "epi"]);
+    expect(d.sessions.map((r) => r.label)).toEqual(["big", "small"]);
+    expect(d.sessions[0].sub).toBe("gb"); // the project rides along as the subtitle
+  });
+
+  it("names what the split cannot account for rather than dropping it", () => {
+    // The whole reason this row exists: `total` is cc-usage (full history, every pane),
+    // the split is cc-usage-detail (agent panes, recorded going forward). A popover
+    // showing only the split would read lower than the footer that opened it.
+    const d = daySpend(detail({ projects: { epi: 2 } }), "2027-03-14", 5);
+    expect(d.projects.at(-1)).toEqual({ key: "", label: "unattributed", sub: "", usd: 3 });
+    expect(d.split).toBe(2);
+  });
+
+  it("does not invent a remainder out of floating-point dust", () => {
+    // Both totals are sums of the same deltas in a different order, so a fully
+    // attributed day still differs in the last place. A "$0.00 unattributed" row is
+    // noise that reads as a bug.
+    const d = daySpend(detail({ projects: { epi: 0.1 + 0.2 } }), "2027-03-14", 0.3);
+    expect(d.projects.map((r) => r.label)).toEqual(["epi"]);
+  });
+
+  it("is empty, not zero-filled, for a day recorded before the split existed", () => {
+    const d = daySpend({}, "2027-03-14", 12);
+    expect(d.sessions).toEqual([]);
+    // The day's money is still stated — all of it as unattributed, which is the truth.
+    expect(d.projects).toEqual([{ key: "", label: "unattributed", sub: "", usd: 12 }]);
+    expect(d.total).toBe(12);
+  });
+});
+
+describe("ioDelta / addIo — banking a counter that restarts", () => {
+  it("books the whole first reading: this run spawned those processes", () => {
+    expect(ioDelta({ r: 5, w: 2 }, null)).toEqual({ r: 5, w: 2 });
+  });
+
+  it("books only the increment once there is a previous reading", () => {
+    expect(ioDelta({ r: 9, w: 4 }, { r: 5, w: 2 })).toEqual({ r: 4, w: 2 });
+  });
+
+  it("clamps a drop to zero instead of booking a negative day", () => {
+    // Not an edge case — every Episko launch is one. The counters belong to processes
+    // this run spawned, so they start near zero and the reading goes *down*.
+    expect(ioDelta({ r: 1, w: 0 }, { r: 900, w: 400 })).toEqual({ r: 0, w: 0 });
+  });
+
+  it("accumulates increments into today and persists them", () => {
+    addIo({ r: 10, w: 4 });
+    addIo({ r: 25, w: 9 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 25, w: 9 });
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 25, w: 9 });
+  });
+
+  it("splits the increment across a midnight, leaving yesterday's alone", () => {
+    addIo({ r: 10, w: 4 });
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 30, w: 10 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 10, w: 4 });
+    expect(dayIo["2027-03-15"]).toEqual({ r: 20, w: 6 });
+  });
+
+  it("writes nothing when the disk was idle between polls", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    addIo({ r: 10, w: 4 });
+    expect(store.get("cc-io")).toBeUndefined();
+  });
+
+  it("sums every recorded day, and says zero when nothing is recorded", () => {
+    expect(ioTotal()).toEqual({ r: 0, w: 0 });
+    addIo({ r: 10, w: 4 });
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 30, w: 10 });
+    expect(ioTotal()).toEqual({ r: 30, w: 10 });
   });
 });
 

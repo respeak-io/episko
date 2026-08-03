@@ -223,3 +223,16 @@ export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.ex
 // identifier); `all_sessions_resources` in pty.rs does the summing and the per-pid
 // rate differencing, because that is where the previous readings live.
 export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, primed: false };
+
+// Which window the inspector's read/written total covers. `run` is what the figure
+// always was — the kernel counters of the claude processes THIS Episko spawned, which
+// go back to zero every launch — and it was labelled a bare "total", so it read as a
+// lifetime number that happened to be small. `today` is the default because it is the
+// question the footer's spend beside it already answers, and `all` is everything the
+// `cc-io` rollup has banked since it started keeping one. Cycled by clicking the row.
+export type IoScope = "today" | "run" | "all";
+export const IO_SCOPES: IoScope[] = ["today", "run", "all"];
+export let ioScope: IoScope =
+  (IO_SCOPES as string[]).includes(localStorage.getItem("cc-io-scope") || "")
+    ? localStorage.getItem("cc-io-scope") as IoScope : "today";
+export function setIoScope(s: IoScope) { ioScope = s; }

@@ -20,9 +20,10 @@ import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  dashMirror, FAVORITES, markWorkdirStale, peekPrefs, permMode, permModeDef,
+  dashMirror, FAVORITES, IO_SCOPES, ioScope, markWorkdirStale, peekPrefs, permMode,
+  permModeDef,
   saveFavorites, sessions, termEngine,
-  setFavorites, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  setFavorites, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setSortMode, SORT_META, SORT_MODES,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   type SortMode, type WtGroup,
@@ -139,6 +140,14 @@ export function setSort(m: SortMode, announce = true) {
   renderSidebar(); renderMini();
 }
 export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length]); }
+/// Which window the inspector's read/written total covers. Persisted, because it is a
+/// preference — somebody who wants "this run" wants it on the next pane too, and having
+/// to re-pick it per session is what makes a cycling control annoying rather than handy.
+export function cycleIoScope() {
+  setIoScope(IO_SCOPES[(IO_SCOPES.indexOf(ioScope) + 1) % IO_SCOPES.length]);
+  localStorage.setItem("cc-io-scope", ioScope);
+  renderAll();
+}
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is
 // unreachable from that header. **On the dashboard it collapses to a 44px icon rail

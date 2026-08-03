@@ -78,6 +78,15 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
++ **The day's spend opens.** *today $x.xx* in the status bar is now a button, like the
+  limits beside it: it shows what the day cost, split by project and by session, and
+  clicking a session that is still running jumps to it. Whatever the split can't account
+  for is a row of its own rather than quietly missing, so the popover can never read
+  lower than the segment that opened it.
+~ **The inspector's read/written figure says which window it covers, and defaults to
+  today.** It was labelled *total* while showing neither a daily nor a lifetime number:
+  the processes' own counters, which start again every time Episko does. Episko now keeps
+  a daily record, and the row cycles today → this run → everything recorded.
 ~ **One ＋ on the project dashboard, not two.** *New session* and *New worktree session…*
   sat one above the other, so picking the right row meant knowing whether the folder was
   a repo — which is what the dialog asks about anyway. *New session* now opens that
