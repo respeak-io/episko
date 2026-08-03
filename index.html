@@ -154,7 +154,7 @@
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv"></span>
-        <span class="fseg">today <b id="fCost">$0.00</b></span>
+        <span class="fseg fclick" id="fCostSeg" title="Today's spend — click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
         <span class="fdiv"></span>
         <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast — click for detail">
           <span class="flabel">limits</span>
@@ -345,6 +345,7 @@
     <div class="menupop cafpop" id="cafPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
+    <div class="menupop costpop" id="costPop"></div>
     <div class="menupop shortpop" id="shortPop"></div>
     <!-- branch chooser for the new-session dialog (worktree base / root switch target).
          Lives out here with its siblings, not inside #wtDlg: that dialog is

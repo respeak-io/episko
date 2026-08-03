@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  grouped, parseChangelog, parseSeen, recordSeen, releaseFor, shouldAnnounce, type Release,
+  grouped, inlineMd, parseChangelog, parseSeen, recordSeen, releaseFor, shouldAnnounce, type Release,
 } from "../src/changelog";
 
 const SAMPLE = `# Changelog
@@ -187,9 +187,12 @@ describe("grouped", () => {
 describe("the real CHANGELOG.md", () => {
   const log = parseChangelog(readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8"));
 
-  it("parses, and starts with Unreleased", () => {
+  it("parses, and leads with Unreleased while it has something in it", () => {
     expect(log.length).toBeGreaterThan(5);
-    expect(log[0].version).toBe("Unreleased");
+    // On `dev` between releases this is Unreleased; on `main` right after one is cut the
+    // section is empty and dropped, so the newest release leads. Both are correct — what
+    // must never happen is a blank row at the top of the rail.
+    expect(log[0].entries.length).toBeGreaterThan(0);
   });
   it("gives every released section a date and at least one entry", () => {
     for (const r of log.filter((x) => x.released)) {
@@ -197,15 +200,85 @@ describe("the real CHANGELOG.md", () => {
       expect(r.entries.length, `${r.version} has no entries`).toBeGreaterThan(0);
     }
   });
-  it("always carries an Unreleased section, even right after a release stamps it empty", () => {
-    // Non-EMPTY is a branch policy and belongs to `changelog.mjs check`, which runs on
-    // the dev → main PR. Asserting it here would fail on main every time a release is
-    // cut, which is the one moment the section is legitimately blank.
-    expect(log[0].version).toBe("Unreleased");
-    expect(log[0].released).toBe(false);
+  it("shows no section that would render as a blank page", () => {
+    // Whether `## Unreleased` is non-empty is a *branch* policy and belongs to
+    // `changelog.mjs check`, which runs on the dev → main PR and has its own parser —
+    // asserting it here would fail on main every time a release is cut, which is the one
+    // moment the section is legitimately blank. What this asserts instead is that a
+    // blank one never reaches the rail: every released build ships one, and it opened on
+    // a heading, "not released yet", and nothing else.
+    for (const r of log) {
+      expect(r.entries.length > 0 || r.lede !== "", `${r.version} is empty`).toBe(true);
+    }
   });
   it("lists versions newest-first, which is the order the rail renders", () => {
     const rel = log.filter((r) => r.released).map((r) => r.date);
     expect([...rel].sort().reverse()).toEqual(rel);
+  });
+
+  it("leaves no markdown unrendered in any entry or lede", () => {
+    // The check that would have caught the missing italic rule: after `inlineMd`, no
+    // `*` may survive anywhere in the file. Bold worked, italics did not, and the file
+    // uses both — so the app showed literal asterisks for nine releases.
+    for (const r of log) {
+      for (const text of [r.lede, ...r.entries.map((e) => e.text)]) {
+        // Outside a code span, because a `*` *inside* one is rendered output and not a
+        // leftover marker — quoting the characters is the whole point of the span.
+        const stray = inlineMd(text).replace(/<code>[\s\S]*?<\/code>/g, "");
+        expect(stray, `${r.version}: unrendered markup`).not.toMatch(/[*`]/);
+      }
+    }
+  });
+});
+
+describe("inlineMd — the little markup an entry may carry", () => {
+  it("renders bold, italic and code", () => {
+    expect(inlineMd("**bold**")).toBe("<b>bold</b>");
+    expect(inlineMd("*italic*")).toBe("<i>italic</i>");
+    expect(inlineMd("`code`")).toBe("<code>code</code>");
+    expect(inlineMd("a **b** and *c* and `d`")).toBe("a <b>b</b> and <i>c</i> and <code>d</code>");
+  });
+
+  it("does not let the italic rule eat a bold run", () => {
+    // The ordering trap: `**x**` handed to the italic rule first becomes an empty
+    // emphasis wrapped around `x*`. Bold is applied first, and both patterns are
+    // anchored on runs containing no `*`.
+    expect(inlineMd("**A day gets two sentences.** Then *this*."))
+      .toBe("<b>A day gets two sentences.</b> Then <i>this</i>.");
+    expect(inlineMd("**bold**")).not.toContain("<i>");
+  });
+
+  it("renders italics nested inside bold, which the real file uses", () => {
+    // 0.13.6's entry, verbatim in shape. Bold anchored on a run with no `*` in it
+    // skipped this entirely — no bold, and the asterisks showed.
+    expect(inlineMd("**The *Reveal idle checkouts on hover* switch sits beside its label**, not underneath."))
+      .toBe("<b>The <i>Reveal idle checkouts on hover</i> switch sits beside its label</b>, not underneath.");
+  });
+
+  it("keeps two bold runs on one line separate", () => {
+    // The reason bold is non-greedy: `.+` would swallow everything between the first
+    // `**` and the last.
+    expect(inlineMd("**one** middle **two**")).toBe("<b>one</b> middle <b>two</b>");
+  });
+
+  it("escapes before it renders, so a changelog can never inject", () => {
+    expect(inlineMd("<script>alert(1)</script>")).toBe("&lt;script>alert(1)&lt;/script>");
+    expect(inlineMd("**<b>**")).toBe("<b>&lt;b></b>");
+    expect(inlineMd("a & b")).toBe("a &amp; b");
+  });
+
+  it("treats a code span as opaque, so markers inside it stay literal", () => {
+    // Found by the whole-file check above, on this very release's entry: quoting `*`
+    // and `**` in code left those asterisks exposed to the emphasis passes, and the
+    // sentence came back italicised from the inside out.
+    expect(inlineMd("literal `*` and `**` markers"))
+      .toBe("literal <code>*</code> and <code>**</code> markers");
+    expect(inlineMd("`a * b` stays put")).toBe("<code>a * b</code> stays put");
+    expect(inlineMd("**bold with `*` inside**")).toBe("<b>bold with <code>*</code> inside</b>");
+  });
+
+  it("leaves an unpaired marker alone rather than swallowing the rest of the line", () => {
+    expect(inlineMd("2 * 3 = 6")).toBe("2 * 3 = 6");
+    expect(inlineMd("a `b")).toBe("a `b");
   });
 });

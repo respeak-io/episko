@@ -19,10 +19,15 @@ import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
-import { engineDef, externals, permMode, permModeDef, sessions, termEngine } from "./state";
+import {
+  engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
+} from "./state";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
-let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
+// Resolves to the new session id, or null if the spawn failed. Nothing in this module
+// uses it — the dialog starts a session and is done — but the type must match panes.ts's
+// so a caller that DOES need the id can't be handed a hook that quietly drops it.
+let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<string | null> = async () => null;
 export function setWtLaunch(fn: typeof launch) { launch = fn; }
 let closeSession: (id: string) => void = () => {};
 export function setWtCloseSession(fn: typeof closeSession) { closeSession = fn; }
@@ -991,20 +996,39 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     return;
   }
   const live = wtSessionsIn(path);
-  // Never close a session that still has a dirty tree — hand the decision (and a
-  // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
-  // enough to try", since the backend still refuses (without forcing) if it's wrong.
-  const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
-  if (ds && ds.dirty > 0) {
-    toast(`${label}: uncommitted changes — commit or discard first`);
-    await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
-    return;
+  // **Is the folder even there?** A checkout merged and removed outside Episko — a PR
+  // landing, a `git worktree remove` in your own terminal — leaves an administrative
+  // record in `.git/worktrees` and a cluster here for as long as a session of ours still
+  // names it. Asked the generic question below, that read as a destructive warning about
+  // a folder full of work, and answering it produced "its folder was already gone" from
+  // the backend's prune fallback. The ⑃ dialog has always said this plainly
+  // (`wtConfirmHtml`); this path is the one that didn't.
+  //
+  // The roster is the authority and it is already in memory — `worktree_heads` is what
+  // the sidebar draws from, refreshed every 4s. Unknown means "assume it is there": the
+  // backend prunes rather than failing if we are wrong, so the cost of guessing that way
+  // is one honest sentence, where the reverse would offer to prune a live checkout.
+  const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => w.path === path);
+  const gone = known ? !known.exists : false;
+  if (gone) {
+    if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone — this only clears git's record of it. Nothing is lost.`,
+      { title: "Prune worktree", kind: "info", okLabel: "Prune", cancelLabel: "Cancel" })) return;
+  } else {
+    // Never close a session that still has a dirty tree — hand the decision (and a
+    // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
+    // enough to try", since the backend still refuses (without forcing) if it's wrong.
+    const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
+    if (ds && ds.dirty > 0) {
+      toast(`${label}: uncommitted changes — commit or discard first`);
+      await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
+      return;
+    }
+    const closes = live.length === 0 ? "Nothing is running in it"
+      : live.length === 1 ? "Its session closes"
+      : `Its ${live.length} sessions close`;
+    if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
+      { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
   }
-  const closes = live.length === 0 ? "Nothing is running in it"
-    : live.length === 1 ? "Its session closes"
-    : `Its ${live.length} sessions close`;
-  if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
-    { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
   for (const s of live) {
     closeSession(s.id);
     await invoke("kill_session", { sessionId: s.id }).catch(() => {}); // ensure the backend guard sees it gone

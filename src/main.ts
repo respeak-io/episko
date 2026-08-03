@@ -9,7 +9,7 @@ import { isAgent } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
-  closeAttnPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
+  closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
   refreshTokens, renderAttn, renderFoot, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
@@ -17,10 +17,10 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
-import { renderInspector } from "./inspector";
+import { renderInspector, tickDwell } from "./inspector";
 import { applyFontSize, bumpFont, refit } from "./terminal";
 import {
-  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
+  addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
   setTheme, setWtGroup, toggleInsp,
@@ -50,7 +50,7 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, openWt as openWtDlg, setWtCloseSession, setWtHandToTerminal,
+  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
   setWtLaunch, setWtRefreshGit, setWtRenderAll, setWtSetActive,
 } from "./worktree";
 import {
@@ -77,7 +77,6 @@ import {
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
 } from "./settings";
-import { dwellText } from "./inspectorview";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnSessionTouched, setOnTurnEnd,
@@ -90,6 +89,7 @@ import {
   setTermFontSize, sortMode, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
+import { flushIo, flushUsageDetail } from "./usage";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -230,7 +230,7 @@ setSettingsHost({
 // worktree dialog, the task picker, the graph and History all live elsewhere.
 setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
-  openWorktreeDialog: (project, root) => { void openWtDlg(project, root); },
+  requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
@@ -494,6 +494,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
   if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
+  if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   if (!t.closest("#bPop, [data-wtpick]")) closeBranchPop(false);
@@ -501,7 +502,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -515,7 +516,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
-  else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); }
+  // Two popovers emit data-sel rows — the reactor's picker and the spend split — and
+  // both are answered by putting that session on the stage, so both close behind it.
+  else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   // A project header. This used to select whichever session sorted first, so one
   // click meant two different things depending on state; it now opens the project
   // dashboard, and the sessions are the rows directly beneath it.
@@ -530,6 +533,11 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.launch) requestLaunch(el.dataset.proj || basename(el.dataset.launch), el.dataset.launch);
   else if (el.dataset.pal) openPalette();
   else if (el.dataset.rail) toggleRail();
+  // The inspector's read/written row states which window it covers, and clicking it
+  // cycles: today → this run → everything recorded. A cycle rather than a popover
+  // because there are three values and no sub-choices — a menu would be one more click
+  // to reach a number that is already on screen.
+  else if (el.dataset.ioscope) cycleIoScope();
   else if (el.dataset.toast) toast(el.dataset.toast);
 });
 
@@ -670,6 +678,10 @@ new ResizeObserver(() => {
 // when something would actually be lost — an idle Episko quits immediately, keeping
 // the Cmd+Q muscle memory intact.
 listen("quit-requested", async () => {
+  // Both floored writes land here: there is no later poll or delta after a quit. The
+  // day's *money* (`cc-usage`) is written eagerly and needs no flush — see ./usage.
+  flushIo();
+  flushUsageDetail();
   const live = [...sessions.values()].filter((s) => s.phase !== "ended");
   const agents = live.filter((s) => isAgent(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
@@ -733,8 +745,7 @@ setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (!s || !isAgent(s)) return;
-  const el = document.getElementById("iDwell");
-  if (el) el.textContent = dwellText(s);
+  tickDwell(s);
 }, 1000);
 
 // Refresh the active session's working-set diff + CPU/RAM on a slow cadence.

@@ -13,6 +13,145 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The project dashboard says when it is still reading.** Opening a project costs a
+  scan of every transcript on the machine, three git calls and — on a GitHub repo — two
+  more `gh` calls after those, and none of it used to show. The strip led with a
+  confident row of zeros, the aside was simply short a card or two, and a folder still
+  being read looked exactly like a folder with nothing in it. Every wait now draws the
+  shape of what is coming: the strip, the timeline, the aside's cards, and the issues
+  card that arrives last. A day whose sentence is still being written says *writing*
+  beside the plain headline it already has, rather than hiding a line you can read to
+  promise a better one.
+! **Every project in the sidebar opens its dashboard, not just the ones with a session
+  running.** A folder Episko knew about only from a session in another terminal, only
+  from past sessions, or from a worktree whose session had ended simply did not respond
+  to the click — with nothing greyed out to say why, because the header was built without
+  the handler rather than with a disabled one. A worktree's header now opens its
+  *project's* dashboard, too: keyed to the checkout it matched no sessions at all, so the
+  timeline showed commits nobody appeared to have worked on. Checkouts are a card inside
+  the project, which is where they belong.
+! **Clicking a session from the project dashboard opens it.** Picking an external or a
+  restorable session while the dashboard was on screen changed the header, the inspector
+  and the accent colour but left the dashboard itself sitting on top of the transcript it
+  had just loaded, so the click read as recolouring the page. Leaving a dashboard you had
+  collapsed to its icon rail (⌘I) also carried the rail onto the next session, where it
+  held the wrong buttons — and closing the dashboard with nothing else running left a
+  blank stage instead of the "no sessions" card. All three were the same missing
+  handover: what takes the stage now says so in one place, and everything else steps
+  aside.
+! **The dashboard no longer shows the last project's answers under the new project's
+  name.** Clicking from one project to another kept the previous one's tier for a beat,
+  so a repository could flash *not a repo* — losing the worktree and commit-graph verbs
+  with it — and a GitHub project's issues could appear briefly under a folder that has
+  none.
++ **A day now gets two sentences: yours, and the project's.** The one on the timeline is
+  still your day — your sessions, your spend. Above it, on days more than one person
+  committed, sits a second line describing what the *project* did, written from the
+  commits and pull requests alone. A release tagged by a bot doesn't make a day a team
+  day, and on a day you worked alone the box is absent rather than repeating the line
+  beneath it.
++ **The shared work log can be found, and it holds the right half.** The project's line
+  can be written to `.episko/digest.md` and committed, so everyone who pulls gets the
+  same account instead of re-deriving — and paying for — their own; on a team repo that
+  makes it cheaper than a summary per person, not dearer. Nothing in the app offered it
+  before: the timeline now says so at its foot once there is something to share, and the
+  inspector carries *Share the work log…* beside the other project verbs.
++ **↗ Jump to its terminal works on Windows.** Clicking an external session used to
+  answer *"focusing external sessions isn't supported on Windows yet"*; it now brings
+  the hosting window forward — Windows Terminal, VS Code, or a plain console alike. With
+  several windows of one app open it picks the one running that session rather than
+  whichever was last in front. macOS still lands on the exact tab; Windows has no tty to
+  aim at, so it lands on the window.
+~ **Your own half never reaches a file.** It was one sentence blending both, which meant
+  a committed line was whoever generated it last describing the part of the day they
+  personally saw — and your session titles and daily spend went into a file that gets
+  pushed. Your line now stays in Episko's own cache.
+~ **A work log already in the repo is contributed to without asking.** Creating a
+  committable file in your repo still needs an explicit yes; adding your days to one a
+  colleague has already committed does not, or the file quietly becomes one person's
+  diary.
+! ***What's new* shows its formatting instead of its asterisks.** Emphasis rendered as
+  literal `*` and `**` throughout the release notes — every italic in the file, and any
+  entry that put an italic inside a bold phrase, which came out with no bold either. The
+  one-line summary at the top of each release was rendered as plain text as well.
+! ***What's new* no longer opens on a blank "next release".** Cutting a release leaves an
+  empty section behind for the next one, and every build shipped with that section
+  showing in the sidebar — a row that opened on a heading, "not released yet", and
+  nothing else.
+~ **The generated-by-a-model mark reads as a mark, not as the last word of the
+  sentence.** In the shared box it sits in the box's own bottom-right corner instead of
+  trailing the text wherever it happened to wrap.
+~ **The dashboard's right-hand column gets more room and takes a share of a wide
+  window.** Issues, checkouts and notes all put a title next to a number, and at a fixed
+  width every one of them was cut short while the timeline beside them — one capped
+  sentence per row — took the whole of any extra space.
+~ **Every action in the project inspector says what it does.** Four of them carried a
+  label and nothing else while the rest had a line underneath, so the list read as two
+  kinds of thing.
+! **Removing a worktree that is already gone says so up front.** A checkout merged and
+  deleted outside Episko still asked the full "the folder goes, its branch is deleted"
+  warning, and only after you clicked through did it report that the folder had been gone
+  all along. It now offers to prune git's leftover record of it instead, and says plainly
+  that nothing is lost.
+! **The hover bar of checkouts appears on projects with nothing running.** Resting on a
+  project revealed its idle worktrees only if something was already running in that repo —
+  and closing the last session made the rows disappear again. Episko now knows a
+  project's checkouts whether or not it is busy, which is exactly when you want to start
+  one.
+! **A permission decision can no longer be swallowed by a repaint.** The inspector was
+  rebuilt on every telemetry event — several times a second with a few agents running —
+  so a click on *Allow* that happened to span one of those rebuilds landed on nothing,
+  leaving the session waiting on an answer you had already given. The panel now repaints
+  only when something on it changed. The collapsed project rail is the same fix.
+~ **Episko writes to disk far less while it is just running.** Three records were
+  persisted on every status update from every session — roughly once a second on a busy
+  fleet, mostly rewriting bytes that hadn't changed, one of them 25× larger than the
+  figure it accompanied. The day's spend is still saved the instant it changes; the
+  breakdowns behind it are saved on a timer and flushed when you quit. Daily records are
+  also capped now instead of growing forever.
++ **The day's spend opens.** *today $x.xx* in the status bar is now a button, like the
+  limits beside it: it shows what the day cost, split by project and by session, and
+  clicking a session that is still running jumps to it. Whatever the split can't account
+  for is a row of its own rather than quietly missing, so the popover can never read
+  lower than the segment that opened it.
+~ **The inspector's read/written figure says which window it covers, and defaults to
+  today.** It was labelled *total* while showing neither a daily nor a lifetime number:
+  the processes' own counters, which start again every time Episko does. Episko now keeps
+  a daily record, and the row cycles today → this run → everything recorded.
+~ **One ＋ on the project dashboard, not two.** *New session* and *New worktree session…*
+  sat one above the other, so picking the right row meant knowing whether the folder was
+  a repo — which is what the dialog asks about anyway. *New session* now opens that
+  dialog, exactly as ＋ Session in the header already did, and starts straight away in a
+  folder that has no branches to choose between.
+! **The dashboard's buttons stop flickering under the pointer.** ▶ Start and everything
+  beside it pulsed between their hover and resting colours while the mouse sat still on
+  them — the whole pane was rebuilt on every telemetry event, so with a few agents
+  running the button was destroyed and recreated several times a second. The same rebuild
+  emptied the note box while you were typing in it. Both stop: the dashboard now repaints
+  only what actually changed, which on a quiet minute is nothing.
+! **Starting an agent on an issue works, and the claim gets written.** Every dispatch from
+  the dashboard reported *Could not start a session* — while starting one. The pane was
+  there and the agent was idle in it: what never arrived was the prompt naming the issue,
+  and the claim that tells a colleague somebody has this one. Dispatching a note had the
+  same hole, and consumed the note on the way through.
+! **A project's day summaries appear straight away.** Every past day's sentence was
+  already on disk from the first time you looked, but the timeline asked for today's
+  first — and today is the one day that has to be re-written, so a week of summaries
+  paid for days ago waited behind one live model call, and behind the full 45-second
+  timeout when that call wedged. The days that cost nothing now fill immediately and
+  today's arrives when it arrives.
+! **Opening a second project while the first is still summarising no longer leaves it
+  blank.** The request was dropped rather than queued, so that project showed its plain
+  headlines for the whole visit even though every sentence was cached. A summary that
+  lands after you have moved on also no longer files itself under the project you moved
+  to.
+! **A repo cloned through an SSH host alias is on GitHub after all.** Two GitHub accounts
+  on one machine means an `~/.ssh/config` entry per identity — `github.com-work` pointing
+  at `github.com` — and that alias, not the hostname, is what the remote URL carries. The
+  dashboard read the name literally, decided the project was hosted somewhere it had
+  never heard of, and hid issues, pull requests and claims behind a card explaining that
+  the remote wasn't GitHub. `gh` had been resolving those aliases all along.
+
 ## 0.13.7 — 2026-08-01
 
 The project dashboard stops being a page you can only read.

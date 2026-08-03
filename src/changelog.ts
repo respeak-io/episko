@@ -72,7 +72,57 @@ export function parseChangelog(md: string): Release[] {
     if (line) lede.push(line);
   }
   flushLede();
-  return out;
+  // A section with nothing in it is dropped rather than listed.
+  //
+  // This is not hypothetical tidiness: `changelog release` opens a fresh, empty
+  // `## Unreleased` and the tag then builds from that state, so **every released build
+  // ships one**. Kept, it renders as a "next" row in the rail that opens on a heading,
+  // the words "not released yet", and nothing else — which in a panel where every other
+  // row has content reads as the dialog being broken.
+  return out.filter((r) => r.entries.length > 0 || r.lede !== "");
+}
+
+// ---------- the little markup an entry may carry ----------
+
+/**
+ * `**bold**`, `*italic*` and `` `code` `` — and nothing else.
+ *
+ * It lives here rather than in ./changelogui because it is a string in, string out, and
+ * therefore the half of the dialog that can be tested. It was in the DOM module, where
+ * the missing italic rule went unnoticed through nine releases of a file that uses
+ * italics in every other entry.
+ *
+ * **Escaped first**, so this can never inject. The file is in our own repo, but it is
+ * also the thing a contributor edits, and a changelog is not a place to trust input.
+ *
+ * **Bold before italic, and bold must tolerate a `*` inside it.** Both halves of that are
+ * load-bearing, and each was a real bug in the file this renders:
+ *
+ * - Italic first would eat `**x**` as an empty emphasis wrapped around `x*`.
+ * - Bold anchored on `[^*]+` silently skips an entry with italics nested inside it —
+ *   0.13.6's *"The `*Reveal idle checkouts on hover*` switch sits beside its label"* is
+ *   exactly that, and it rendered as raw asterisks with no bold at all. So bold is
+ *   non-greedy over any content and the italic pass then runs *inside* what it produced.
+ *
+ * Italic stays anchored on a run with no `*` in it, which is what leaves an unpaired
+ * marker (`2 * 3`) alone instead of swallowing the rest of the line.
+ *
+ * **A code span is opaque**: it is lifted out before the emphasis passes and put back
+ * after, because its content is text and not markup. Substituting it in place instead
+ * left its asterisks exposed, so an entry that quotes `` `*` `` — such as this file's own
+ * note about asterisks — came back italicised from the inside out.
+ */
+export function inlineMd(s: string): string {
+  const spans: string[] = [];
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    // A NUL sentinel: it survives the emphasis passes untouched and cannot be written
+    // into a changelog by accident, which a printable placeholder could be.
+    .replace(/`([^`]+)`/g, (_m, c: string) => `\u0000${spans.push(`<code>${c}</code>`) - 1}\u0000`)
+    .replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>")
+    .replace(/\*([^*]+)\*/g, "<i>$1</i>")
+    .replace(/\u0000(\d+)\u0000/g, (m, i: string) => spans[+i] ?? m);
 }
 
 /// `1.2.3 — 2026-07-31` → `["1.2.3", "2026-07-31"]`. Returns no version for a heading

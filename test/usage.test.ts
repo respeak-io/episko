@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addUsage, costDelta, modelFamily, resetCostBaselines, setTokenDays, setUsageRange,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDelta, ioTotal,
+  modelFamily,
+  resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
@@ -21,6 +23,8 @@ beforeEach(() => {
   setTokenDays([]);
   setUsageRange(30);
   resetCostBaselines();
+  resetIoRollup();
+  resetUsageWrites();
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -185,19 +189,262 @@ describe("addUsage — the daily $ rollup", () => {
       addUsage(2, sess({ project: "", workdir: "" }));
       expect(usageDetail["2027-03-14"].projects).toEqual({ respeak: 1, unknown: 2 });
     });
-    it("records each contributing session once, however many deltas it sends", () => {
+    it("accumulates each contributing session's own spend, however many deltas it sends", () => {
       addUsage(1, sess({ id: "a" }));
       addUsage(1, sess({ id: "a" }));
       addUsage(1, sess({ id: "b" }));
-      expect(usageDetail["2027-03-14"].sessions).toEqual(["a", "b"]);
+      expect(usageDetail["2027-03-14"].sess!.a.usd).toBe(2);
+      expect(usageDetail["2027-03-14"].sess!.b.usd).toBe(1);
+    });
+    it("re-stamps the title, because a session earns its first dollar before it has one", () => {
+      // Claude names the conversation from its content, so the pane starts untitled and
+      // is already spending. Write-once here left the busiest rows permanently unnamed.
+      addUsage(1, sess({ id: "a", title: "" }));
+      addUsage(1, sess({ id: "a", title: "Fix the router" }));
+      expect(usageDetail["2027-03-14"].sess!.a.title).toBe("Fix the router");
+    });
+    it("keeps the last title rather than blanking it when one arrives empty", () => {
+      addUsage(1, sess({ id: "a", title: "Fix the router" }));
+      addUsage(1, sess({ id: "a", title: "" }));
+      expect(usageDetail["2027-03-14"].sess!.a.title).toBe("Fix the router");
     });
     it("persists the split under its own key, leaving the totals alone", () => {
-      addUsage(1, sess({ id: "a", model: "Haiku 4.5", project: "epi" }));
+      addUsage(1, sess({ id: "a", model: "Haiku 4.5", project: "epi", title: "t" }));
       expect(JSON.parse(store.get("cc-usage-detail")!)).toEqual({
-        "2027-03-14": { models: { Haiku: 1 }, projects: { epi: 1 }, sessions: ["a"] },
+        "2027-03-14": {
+          models: { Haiku: 1 }, projects: { epi: 1 },
+          sess: { a: { usd: 1, title: "t", project: "epi" } },
+        },
       });
       expect(JSON.parse(store.get("cc-usage")!)).toEqual({ "2027-03-14": 1 });
     });
+  });
+
+  describe("what gets written, and how often", () => {
+    it("writes the day's money on every delta — it is small and nobody can rebuild it", () => {
+      addUsage(1, sess({}));
+      addUsage(2, sess({}));
+      expect(JSON.parse(store.get("cc-usage")!)["2027-03-14"]).toBe(3);
+    });
+
+    it("does NOT rewrite the 25KB split on every delta", () => {
+      // Measured on a real store: `cc-usage-detail` is 24,586 chars against
+      // `cc-usage`'s 980, and both were written on the same trigger — a statusLine per
+      // session every 3s. Attribution can lag by a minute; money cannot.
+      addUsage(1, sess({}));            // the first write establishes the key
+      store.clear();
+      addUsage(2, sess({}));
+      expect(usageDetail["2027-03-14"].projects.epi).toBe(3); // memory, current
+      expect(store.get("cc-usage-detail")).toBeUndefined();   // disk, not yet
+    });
+
+    it("writes the split once the floor has passed", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      vi.advanceTimersByTime(30_000);
+      addUsage(2, sess({}));
+      expect(JSON.parse(store.get("cc-usage-detail")!)["2027-03-14"].projects.epi).toBe(3);
+    });
+
+    it("writes the split across a midnight regardless of the floor", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      vi.setSystemTime(noon(2027, 3, 15));
+      addUsage(2, sess({}));
+      expect(Object.keys(JSON.parse(store.get("cc-usage-detail")!))).toEqual(["2027-03-14", "2027-03-15"]);
+    });
+
+    it("flushUsageDetail writes what the floor is holding", () => {
+      addUsage(1, sess({}));
+      store.clear();
+      addUsage(2, sess({}));
+      flushUsageDetail();
+      expect(JSON.parse(store.get("cc-usage-detail")!)["2027-03-14"].projects.epi).toBe(3);
+    });
+
+    it("caps both rollups by day, so a daily key cannot grow forever", () => {
+      // 33 days after two months and unbounded; the Usage panel's widest range is 12
+      // months, so a year and a bit is everything anything reads.
+      for (let i = 0; i < 425; i++) {
+        vi.setSystemTime(new Date(2027, 0, 1 + i, 12, 0, 0));
+        addUsage(1, sess({}));
+      }
+      flushUsageDetail();
+      expect(Object.keys(usage)).toHaveLength(420);
+      expect(Object.keys(usageDetail)).toHaveLength(420);
+      expect(usage["2027-01-01"]).toBeUndefined();  // the oldest days fell off
+    });
+  });
+});
+
+describe("costDelta — what it persists, and when", () => {
+  it("writes the baseline when the figure moved", () => {
+    costDelta("conv", 5);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(5);
+    store.clear();
+    costDelta("conv", 9);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(9);
+  });
+
+  it("writes NOTHING when a repeated statusLine reports the same total", () => {
+    // The statusLine fires every 3s per session whether or not anything was spent, so
+    // this used to write the whole map to disk once a second on an idle fleet — the
+    // same bytes, for a change of `at` alone, which only orders eviction.
+    costDelta("conv", 5);
+    store.clear();
+    expect(costDelta("conv", 5)).toBe(0);
+    expect(store.get("cc-cost-base")).toBeUndefined();
+  });
+
+  it("still writes when a counter restarts below its baseline", () => {
+    costDelta("conv", 40);
+    store.clear();
+    expect(costDelta("conv", 0.5)).toBe(0.5);
+    expect(JSON.parse(store.get("cc-cost-base")!).conv.t).toBe(0.5);
+  });
+});
+
+describe("daySpend — where today's money went", () => {
+  const detail = (o: Partial<(typeof usageDetail)[string]>) =>
+    ({ "2027-03-14": { models: {}, projects: {}, ...o } });
+
+  it("ranks projects and sessions by spend, biggest first", () => {
+    const d = daySpend(detail({
+      projects: { epi: 1, gb: 4, other: 2 },
+      sess: { a: { usd: 1, title: "small", project: "epi" }, b: { usd: 6, title: "big", project: "gb" } },
+    }), "2027-03-14", 7);
+    expect(d.projects.map((r) => r.label)).toEqual(["gb", "other", "epi"]);
+    expect(d.sessions.map((r) => r.label)).toEqual(["big", "small"]);
+    expect(d.sessions[0].sub).toBe("gb"); // the project rides along as the subtitle
+  });
+
+  it("names what the split cannot account for rather than dropping it", () => {
+    // The whole reason this row exists: a list that summed lower than the footer segment
+    // it opened from would read as money going missing.
+    const d = daySpend(detail({ projects: { epi: 2 } }), "2027-03-14", 5);
+    expect(d.projects.at(-1)).toEqual({ key: "", label: "unattributed", sub: "", usd: 3 });
+    expect(d.split).toBe(2);
+  });
+
+  it("gives the SESSION list its own remainder — the two splits fall short separately", () => {
+    // The day you upgrade, exactly: the day's total is already banked and the projects
+    // split with it, while a per-session split introduced by that build starts from
+    // whatever is spent after it. Covering only projects left this list quietly short.
+    const d = daySpend(detail({
+      projects: { epi: 5 },
+      sess: { a: { usd: 2, title: "late starter", project: "epi" } },
+    }), "2027-03-14", 5);
+    expect(d.projects.map((r) => r.label)).toEqual(["epi"]);          // complete
+    expect(d.sessions.map((r) => r.label)).toEqual(["late starter", "unattributed"]);
+    expect(d.sessions.at(-1)!.usd).toBe(3);
+  });
+
+  it("does not invent a remainder out of floating-point dust", () => {
+    // Both figures are sums of the same deltas in a different order, so a fully
+    // attributed day still differs in the last place. A "$0.00 unattributed" row is
+    // noise that reads as a bug.
+    const d = daySpend(detail({ projects: { epi: 0.1 + 0.2 } }), "2027-03-14", 0.3);
+    expect(d.projects.map((r) => r.label)).toEqual(["epi"]);
+  });
+
+  it("leaves a split with nothing in it empty rather than adding a lone mystery row", () => {
+    // A day that predates the record entirely. One anonymous row claiming the whole day
+    // reads as a session nobody can identify; the reader says so in words instead.
+    const d = daySpend({}, "2027-03-14", 12);
+    expect(d.projects).toEqual([]);
+    expect(d.sessions).toEqual([]);
+    expect(d.total).toBe(12); // the money is still stated, at the top
+  });
+});
+
+describe("ioDelta / addIo — banking a counter that restarts", () => {
+  it("books the whole first reading: this run spawned those processes", () => {
+    expect(ioDelta({ r: 5, w: 2 }, null)).toEqual({ r: 5, w: 2 });
+  });
+
+  it("books only the increment once there is a previous reading", () => {
+    expect(ioDelta({ r: 9, w: 4 }, { r: 5, w: 2 })).toEqual({ r: 4, w: 2 });
+  });
+
+  it("clamps a drop to zero instead of booking a negative day", () => {
+    // Not an edge case — every Episko launch is one. The counters belong to processes
+    // this run spawned, so they start near zero and the reading goes *down*.
+    expect(ioDelta({ r: 1, w: 0 }, { r: 900, w: 400 })).toEqual({ r: 0, w: 0 });
+  });
+
+  it("accumulates increments into today and persists them", () => {
+    addIo({ r: 10, w: 4 });
+    addIo({ r: 25, w: 9 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 25, w: 9 });
+    flushIo(); // the second reading is inside the write floor — see the tests below
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 25, w: 9 });
+  });
+
+  it("splits the increment across a midnight, leaving yesterday's alone", () => {
+    addIo({ r: 10, w: 4 });
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 30, w: 10 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 10, w: 4 });
+    expect(dayIo["2027-03-15"]).toEqual({ r: 20, w: 6 });
+  });
+
+  it("writes nothing when the disk was idle between polls", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    addIo({ r: 10, w: 4 });
+    expect(store.get("cc-io")).toBeUndefined();
+  });
+
+  // The poll behind this runs every 4s for as long as a session is on stage. Persisting
+  // every reading would make a *disk-I/O meter* one of the app's heaviest writers.
+  it("keeps accumulating in memory but does not write on every poll", () => {
+    addIo({ r: 10, w: 4 });   // the first write establishes the key
+    store.clear();
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 20, w: 8 });
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 30, w: 12 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 30, w: 12 }); // in memory, current
+    expect(store.get("cc-io")).toBeUndefined();            // on disk, not yet
+  });
+
+  it("writes once the floor has passed", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    vi.advanceTimersByTime(60_000);
+    addIo({ r: 30, w: 12 });
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 30, w: 12 });
+  });
+
+  it("writes across a midnight regardless of the floor", () => {
+    // Nothing adds to yesterday again, so a throttled write would drop its last minutes
+    // permanently rather than merely late.
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 12, w: 5 });
+    const saved = JSON.parse(store.get("cc-io")!);
+    expect(saved["2027-03-14"]).toEqual({ r: 10, w: 4 });
+    expect(saved["2027-03-15"]).toEqual({ r: 2, w: 1 });
+  });
+
+  it("flushIo writes what the floor is still holding, and is a no-op when clean", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    addIo({ r: 30, w: 12 });   // inside the floor — not written
+    flushIo();
+    expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 30, w: 12 });
+    store.clear();
+    flushIo();
+    expect(store.get("cc-io")).toBeUndefined();
+  });
+
+  it("sums every recorded day, and says zero when nothing is recorded", () => {
+    expect(ioTotal()).toEqual({ r: 0, w: 0 });
+    addIo({ r: 10, w: 4 });
+    vi.setSystemTime(noon(2027, 3, 15));
+    addIo({ r: 30, w: 10 });
+    expect(ioTotal()).toEqual({ r: 30, w: 10 });
   });
 });
 

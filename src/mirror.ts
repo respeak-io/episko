@@ -13,7 +13,7 @@
 // always lists every session for a folder, so nothing dropped here is ever lost.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
@@ -94,11 +94,11 @@ export async function refreshExternals() {
         setMirror({ kind: "ext", id: e.session_id, pid: e.pid });
         renderExtHeader(e); renderExtInspector(e);
       } else {
-        // Truly gone — fall back to an Episko session or the empty state.
+        // Truly gone — fall back to an Episko session, or to the empty card, which
+        // `closeExternalView` has already dropped the stage to.
         closeExternalView();
         const next = orderedSessions()[0];
         if (next) setActive(next.id);
-        else ($("empty") as HTMLElement).style.display = "grid";
       }
     }
     renderSidebar(); renderMini();
@@ -148,8 +148,7 @@ export function openExternal(sid: string) {
   setMirror({ kind: "ext", id: sid, pid: e.pid });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
-  ($("empty") as HTMLElement).style.display = "none";
-  ($("extPane") as HTMLElement).hidden = false;
+  takeStage("ext");
   document.documentElement.style.setProperty("--accent", accentFor(e.cwd));
   renderExtHeader(e); renderExtInspector(e); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
@@ -168,11 +167,14 @@ export function closeExternalView() {
   if (mirror == null) return;
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
-  ($("extPane") as HTMLElement).hidden = true;
   // The dashboard rides the same pointer, so it has the same lifetime: whatever took
-  // the stage just replaced it. Hidden here rather than through ./dashboard so this
-  // module keeps no dependency on it — one `hidden` flag is not worth an import edge.
-  ($("dashPane") as HTMLElement).hidden = true;
+  // the stage just replaced it. `takeStage` is what keeps this module free of a
+  // ./dashboard dependency — it lives in ./dom, which everything may import.
+  //
+  // `none` rather than `session`: every caller either activates a session immediately
+  // after (which re-takes the stage) or wants the empty card, and this one cannot tell
+  // which without importing state it has no other use for.
+  takeStage("none");
 }
 // ---------- dormant (restorable) sessions ----------
 // Clicking a dormant row mirrors its transcript read-only — the same pane an
@@ -184,8 +186,7 @@ export function openDormant(id: string) {
   setMirror({ kind: "past", id });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
-  ($("empty") as HTMLElement).style.display = "none";
-  ($("extPane") as HTMLElement).hidden = false;
+  takeStage("ext");
   clearInterval(extTranscriptTimer); // a finished transcript doesn't grow — no polling
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
@@ -230,10 +231,11 @@ export function resumeDormant(id: string) {
 export function forgetDormant(id: string) {
   setDormants(dormants.filter((x) => x.id !== id));
   if (pastMirrorId() === id) {
+    // The empty card is where `closeExternalView` leaves the stage, so only the
+    // "there is a session to fall back to" case needs saying.
     closeExternalView();
     const next = orderedSessions()[0];
     if (next) setActive(next.id);
-    else ($("empty") as HTMLElement).style.display = "grid";
   }
   flushRoster();
   renderAll();

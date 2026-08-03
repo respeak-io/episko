@@ -4,6 +4,7 @@ import type { HistEntry } from "../src/history";
 import { usage, usageWindow, type UDay } from "../src/usage";
 import {
   dayByProject, dayFacts, dayIsClosed, dayItems, dayKeyOf, deterministicHeadline, dominantProject,
+  humanAuthors, projectDayFacts, sharedDay,
   trailDays, trailSession, type TrailCommit, type TrailDay,
 } from "../src/trail";
 
@@ -181,6 +182,58 @@ describe("a day is split by project", () => {
   it("orders identically on a repaint of unchanged state", () => {
     const d = day({ sessions: [s("a", "/w/beta"), s("b", "/w/alpha")] });
     expect(dayByProject(d, names).map((g) => g.project)).toEqual(dayByProject(d, names).map((g) => g.project));
+  });
+});
+
+describe("the project's own day, as opposed to yours", () => {
+  const day = (over: Partial<TrailDay>): TrailDay =>
+    ({ key: "2027-03-13", when: 0, cost: 0, tokens: 0, sessions: [], commits: [], events: [], ...over });
+  const by = (author: string, subject = "fix: a thing"): TrailCommit =>
+    ({ sha: "a", author, when: 1, subject, root: "/w/episko" });
+
+  it("does not count a bot as company", () => {
+    // A release tag pushed by CI is not a colleague, and a day it touched is still
+    // a day you worked alone.
+    expect(humanAuthors(day({ commits: [by("Tim"), by("github-actions[bot]")] }))).toEqual(["Tim"]);
+    expect(sharedDay(day({ commits: [by("Tim"), by("github-actions[bot]")] }))).toBe(false);
+    expect(sharedDay(day({ commits: [by("Tim"), by("Frederic")] }))).toBe(true);
+  });
+
+  it("orders the byline busiest-first and breaks ties by name", () => {
+    const d = day({ commits: [by("Frederic"), by("Tim"), by("Tim")] });
+    expect(humanAuthors(d)).toEqual(["Tim", "Frederic"]);
+    expect(humanAuthors(d)).toEqual(humanAuthors(d)); // stable across repaints
+  });
+
+  it("shows nothing to share on a day nobody committed", () => {
+    expect(sharedDay(day({ sessions: [] }))).toBe(false);
+    expect(projectDayFacts(day({}))).toBe("");
+  });
+
+  it("keeps every per-machine fact out of the record that gets committed", () => {
+    // The whole reason this function exists: sessions and spend differ per person, so
+    // a sentence built from them cannot be a shared one — and $ must not reach a file
+    // that gets pushed.
+    const d = day({
+      cost: 58.23,
+      sessions: [{ id: "a", title: "Usage forecast colours", project: "episko", colorKey: "k", branch: "dev", cwd: "/w", when: 0, exists: true }],
+      commits: [by("Tim", "feat: the dashboard header acts on its project")],
+      events: [{ number: 58, kind: "pr", event: "merged", title: "dev → main", url: "u", at: "" }],
+    });
+    const facts = projectDayFacts(d);
+    expect(facts).toContain("commit: feat: the dashboard header acts on its project");
+    expect(facts).toContain("merged pr #58: dev → main");
+    expect(facts).toContain("contributors: Tim");
+    expect(facts).not.toContain("58.23");
+    expect(facts).not.toContain("session:");
+    expect(facts).not.toContain("Usage forecast colours");
+  });
+
+  it("bounds a heavy day like dayFacts does", () => {
+    const many = Array.from({ length: 30 }, (_, i) => by("Tim", `c${i}`));
+    const facts = projectDayFacts(day({ commits: many }), 5);
+    expect(facts).toContain("… and 25 more commits");
+    expect(facts.split("\n").filter((l) => l.startsWith("commit:"))).toHaveLength(5);
   });
 });
 

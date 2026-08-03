@@ -20,7 +20,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
@@ -38,10 +38,11 @@ import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose } from "./grouping";
 import { probeIcon } from "./icons";
+import { addIo } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, dashMirror, dirtyByFolder, dormants, engineDef, externals, extMirrorId,
-  ioAll, pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants,
+  FAVORITES, ioAll, pastMirrorId, permMode, permModeDef, sessions, setActiveId, setDormants,
   termEngine, termFontSize, worktreesByRepo, wtSig,
 } from "./state";
 
@@ -51,7 +52,13 @@ let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
 // ---------- launch ----------
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}) {
+// Returns the new session id, or null if the spawn failed. Most callers ignore it —
+// but the dashboard's dispatch paths need it to type the prompt in and to write the
+// claim, and "did this start?" is a question only this function can answer. It used to
+// return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
+// `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
+// the toast said it hadn't, and neither the prompt nor the claim was ever sent.
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
   const accent = accentFor(colorKey);
@@ -105,11 +112,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const mode = permMode === "default" ? null : permMode;
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permModeDef(permMode).label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
+  let spawned = true;
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
     else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
   } catch (e) {
+    spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
     toast("launch failed: " + e);
     if (term) term.writeln(`\r\n\x1b[31m[launch error] ${e}\x1b[0m`);
@@ -119,6 +128,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
+  return spawned ? id : null;
 }
 
 // Offer a worktree when launching into a repo that already has a session.
@@ -289,7 +299,7 @@ export function closeSession(id: string) {
     setActiveId(null);
     if (next) { setActive(next.id); return; }
     document.documentElement.style.setProperty("--accent", "#a78bfa");
-    ($("empty") as HTMLElement).style.display = "grid";
+    takeStage("none");
   }
   renderAll();
 }
@@ -298,9 +308,12 @@ export function closeSession(id: string) {
 export function setActive(id: string) {
   const s = sessions.get(id);
   if (!s) return;
+  // The pointer and the transcript timer, then the panes: `closeExternalView` owns the
+  // first pair, `takeStage` the second. It is called after, not instead — that one drops
+  // the stage to the empty card, which this immediately replaces with the pane.
   closeExternalView();
   setActiveId(id);
-  ($("empty") as HTMLElement).style.display = "none";
+  takeStage("session");
   for (const x of sessions.values()) x.pane.classList.toggle("active", x.id === id);
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
   if (s.term && s.fit) {
@@ -338,6 +351,9 @@ export async function refreshSessionStats(s: Sess) {
     ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
     ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
     ioAll.primed = res.primed;
+    // Bank the increment into today off the SAME sample the bars above are drawn from,
+    // so the rollup and the live figure can never describe different readings.
+    addIo({ r: res.read_mb, w: res.written_mb });
   }
   if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
@@ -364,11 +380,38 @@ async function refreshBranches(): Promise<boolean> {
 // it. Returns true if any repo's roster moved. Repos with nothing live are pruned: the
 // sidebar is a view of what is in play, and listing the worktrees of a project you
 // aren't working in would be noise rather than information.
+/// How often a project with *nothing running* has its checkouts re-read. Same
+/// stale-driven shape as `refreshDirtyStates`: the live set rides the 4s tick because a
+/// worktree an agent just created must appear at once, while a repo nobody is working in
+/// changes on human timescales. Reading every favourite every 4s would be ~20 IPC calls
+/// a tick to learn nothing.
+const IDLE_WT_SWEEP_MS = 20_000;
+let idleWtSweptAt = 0;
+
 async function refreshWorktrees(): Promise<boolean> {
-  const roots = new Set<string>();
-  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) roots.add(s.colorKey);
-  for (const e of externals) if (e.repo_root) roots.add(e.repo_root);
-  for (const k of [...worktreesByRepo.keys()]) if (!roots.has(k)) worktreesByRepo.delete(k);
+  const live = new Set<string>();
+  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
+  for (const e of externals) if (e.repo_root) live.add(e.repo_root);
+  // **A favourite with nothing running needs a roster too.** This set used to be
+  // sessions and externals alone, which quietly made the sidebar's peek rows a feature
+  // of *busy* projects only: `clusterByWorktree(p, true)` folds in
+  // `worktreesByRepo.get(p.path)`, so a project you had not started anything in offered
+  // no checkouts to hover for — and closing the last session in one took its rows away
+  // again, since the entry was then deleted below. The rule was invisible and read as
+  // "the bar sometimes doesn't come".
+  const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
+  const roots = new Set(live);
+  for (const f of FAVORITES) {
+    if (live.has(f.path)) continue;
+    // Never read: seed it now, so the rows are there the first time you hover rather
+    // than up to a sweep later. Otherwise wait for the slow tick.
+    if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
+  }
+  if (sweep) idleWtSweptAt = Date.now();
+  // Keep what is live OR a favourite — dropping an idle favourite's roster on the tick
+  // that stops reading it would undo the whole point.
+  const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
+  for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
   let changed = false;
   await Promise.all([...roots].map(async (root) => {
     const list = await invoke<WtHead[]>("worktree_heads", { dir: root }).catch(() => null);

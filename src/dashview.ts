@@ -6,6 +6,10 @@
 // mostly re-asserts itself.
 
 import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
+// A platform *constant*, not DOM access — the `*view` rule bars `$()`, `innerHTML` and
+// renderer calls, and ./dom is the shared leaf everything may import (it touches no DOM
+// at module scope, which is what keeps it safe in vitest's node environment).
+import { FILE_MANAGER } from "./dom";
 import type { Pulse, ProjectFacts, ProjectTier } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
@@ -14,6 +18,23 @@ import type { ClaimAllow, ClaimPolicy } from "./claim";
 import type { GhThread, Holder, KeptIssue } from "./ghwork";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// The provenance mark on anything a model wrote — on your line, on the project's, and
+/// on both of their waiting states. Declared once because a reader learns "a model wrote
+/// this" from the *shape* long before the word, so the shape must not vary.
+///
+/// **Deliberately just the word.** A ✨ was tried here and pulled the eye straight to the
+/// least important thing on the row: the mark exists so a reader can tell an observation
+/// from a generated sentence, which needs it to be *findable*, not *loud*.
+///
+/// The caller passes the whole label, because the two placements need different ones: an
+/// inline mark takes a `·` to separate it from the sentence it follows, and the cornered
+/// one is already separated by being in the corner — a `·` there points at nothing.
+const aiMark = (text: string, cls = "") =>
+  `<span class="ai${cls ? " " + cls : ""}">${text}</span>`;
+/// The shared box's copy, in its own bottom-right corner rather than trailing the
+/// sentence — inline it read as the last words of the sentence it labels.
+const AI_MARK = aiMark("ai", "ai-cnr");
 
 // ---------- the pulse strip ----------
 // Five numbers before any detail, so the window answers itself at a glance. Which five
@@ -24,6 +45,13 @@ function tile(k: string, v: string, d = ""): string {
   return `<div class="db-tile"><span class="k">${esc(k)}</span><span class="v">${v}</span>`
     + (d ? `<span class="d">${d}</span>` : "") + `</div>`;
 }
+
+/// The range picker is not data — it is a preference, and it answers instantly whether
+/// or not anything else has. So it is shared with the skeleton below, where every tile
+/// beside it is a bar.
+const rangeTile = (range: number) => `<div class="db-tile win"><span class="db-seg">
+      ${[7, 14, 30].map((r) => `<button${r === range ? ` class="on"` : ""} data-dashrange="${r}">${r}d</button>`).join("")}
+    </span></div>`;
 
 export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: number[]): string {
   const tiles: string[] = [];
@@ -43,28 +71,144 @@ export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: num
       : `<span class="dim">—</span>`;
     tiles.push(tile("Contributors", String(p.authors.length), who));
   }
-  return `<div class="db-pulse">${tiles.join("")}
-    <div class="db-tile win"><span class="db-seg">
-      ${[7, 14, 30].map((r) => `<button${r === range ? ` class="on"` : ""} data-dashrange="${r}">${r}d</button>`).join("")}
-    </span></div></div>`;
+  return `<div class="db-pulse">${tiles.join("")}${rangeTile(range)}</div>`;
+}
+
+// ---------- skeletons ----------
+//
+// WHY THESE EXIST. Opening a project costs a `git` process for the facts, a scan of
+// every transcript on the machine, a `git log`, a worktree probe and a digest read —
+// and then, on a GitHub repo, two `gh` calls *after* all of that, plus a model call per
+// day for the sentences. Every one of those used to land in silence: the strip showed a
+// confident row of zeros, the aside was simply short a card or two, and nothing on
+// screen told "there is nothing here" apart from "this has not been read yet". Those
+// are opposite answers, and they looked identical.
+//
+// Each skeleton is drawn in the geometry of what replaces it, so the answer arriving is
+// a substitution rather than a jump. The bars carry no text and `./dashboard` marks the
+// pane `aria-busy` instead — grey rectangles are decoration, and a reader who isn't
+// looking at them wants the sentence at the foot of the timeline.
+//
+// The shimmer (`.db-sk`) and the spinner (`.u-spin`) are the usage screen's own. A
+// second loading vocabulary would only be a second thing to keep in step.
+
+const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
+
+/**
+ * The strip, before it knows anything.
+ *
+ * The tile *labels* are bars too, not the real words. Which tiles exist depends on the
+ * tier — a folder with no git has neither Commits nor Contributors — and `project_facts`
+ * is one of the calls still out, so naming them here would be a guess the answer then
+ * contradicts by removing two tiles.
+ */
+export function pulseSkeleton(range: number): string {
+  const tiles = [["52px", "44px"], ["48px", "62px"], ["62px", "38px"], ["58px", "54px"]]
+    .map(([k, v]) => `<div class="db-tile"><span class="k">${sk(k, 7)}</span>`
+      + `<span class="v">${sk(v, 15)}</span><span class="d">${sk("40px", 7)}</span></div>`).join("");
+  return `<div class="db-pulse">${tiles}${rangeTile(range)}</div>`;
+}
+
+/**
+ * The timeline, before it has any days.
+ *
+ * Three rows in the real `.db-day` geometry — gutter, spine dot, summary line, facts —
+ * so the first real day lands where the first bar was. Three, and not enough to fill the
+ * column, because the window is a preference this doesn't read: a skeleton that runs to
+ * the fold promises a length it has no way to know.
+ *
+ * The sentence underneath is the part a skeleton can't say. It is the usage screen's
+ * spinner-and-line pattern, for the same reason it has one.
+ */
+export function spineSkeleton(): string {
+  const row = (w: string) => `<div class="db-day">
+      <div class="db-gut">${sk("30px", 8)}</div>
+      <div class="db-dbody">
+        <p class="db-sum">${sk(w, 11)}</p>
+        <div class="db-facts">${sk("54px", 8)}${sk("60px", 8)}</div>
+      </div></div>`;
+  return ["88%", "72%", "80%"].map(row).join("")
+    + `<p class="db-skhint"><span class="u-spin"></span>Reading this project's history…</p>`;
+}
+
+/**
+ * One aside card, before its rows exist.
+ *
+ * Used for two different waits. The local reads get one because the aside would
+ * otherwise be a lone Notes box; the GitHub half gets one because it fires *after* the
+ * rest and was the most silent wait of the lot — the Open work card was simply not
+ * there, which on a repo whose issues are the point reads as `gh` being broken rather
+ * than as `gh` being slow.
+ */
+export function cardSkeleton(rows = 3): string {
+  const body = ["78%", "62%", "88%", "70%"].slice(0, rows).map((w) =>
+    `<div class="cr">${sk("13px", 13)}<span class="ti">${sk(w, 9)}</span>`
+    + `<span class="rt">${sk("30px", 9)}</span></div>`).join("");
+  return `<div class="ac sk"><div class="ac-h">${sk("58px", 8)}<span class="n">${sk("24px", 8)}</span></div>
+    <div class="ac-b">${body}</div></div>`;
 }
 
 // ---------- the timeline ----------
 
-/// A generated sentence is marked, always. The reader has to be able to tell what the
-/// app observed from what a model wrote about it, and the mark is the only difference
-/// between a log and a claim.
-export function dayHtml(d: TrailDay, summary: string | null, headline: string, open: boolean): string {
+/**
+ * A generated sentence is marked, always. The reader has to be able to tell what the
+ * app observed from what a model wrote about it, and the mark is the only difference
+ * between a log and a claim.
+ *
+ * `summary` is **your** day and is the headline; `team` is the **project's**, and sits
+ * above it in a box of its own. The box is contained rather than plain because it is the
+ * one thing on the timeline that came out of the repo rather than out of this machine —
+ * a colleague's copy of Episko produced the same sentence, and it is the same sentence
+ * they are reading. `team` arrives already gated (see `sharedDay`): the caller decides
+ * whether it is worth showing, this only decides how.
+ */
+export interface DayPending {
+  /// Your own line, `dayFacts` → `summarize_day`.
+  mine?: boolean;
+  /// The project's line — the shared box, which on this day will exist.
+  team?: boolean;
+}
+
+export function dayHtml(
+  d: TrailDay, summary: string | null, headline: string, open: boolean,
+  team: string | null = null, authors: string[] = [], pend: DayPending = {},
+): string {
   const dt = new Date(d.when);
   const rows = dayRows(d);
   const hidden = rows.length;
+  // A pending line is not an absent one, and the two want opposite treatments. Your own
+  // sentence has a deterministic headline standing in for it that is already correct and
+  // already readable, so waiting is a mark *beside* it — replacing a sentence somebody
+  // can read with a grey bar to promise a nicer one is a bad trade. The shared box has no
+  // such stand-in: it is a block that would otherwise appear out of nothing, and its
+  // heading is known (this day has more than one human committer, and who they were) long
+  // before its sentence is, so only the sentence is a bar.
+  // The `ai` mark sits in the box's own bottom-right rather than trailing the last word:
+  // inline it read as part of the sentence, which is the one thing a provenance mark must
+  // never do, and it landed wherever the text happened to wrap.
+  //
+  // **The paragraph is not clamped, and must not be.** A three-line clamp with a
+  // click-to-expand lived here briefly and was pure loss: `prompt_for` caps this sentence
+  // at 22 words, so it cannot reach three lines at this width — the fold could never fire
+  // for the reason it existed, while the measurement behind its "· more" was wrong often
+  // enough to advertise a fold on every box on screen. A length the generator guarantees
+  // does not need a length control.
+  const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}">
+        <span class="tl"><span class="sh">shared</span>The project${
+          authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
+        <p>${body}</p>${mark}
+      </div>`;
   return `<div class="db-day${open ? " open" : ""}" data-dashday="${esc(d.key)}">
     <div class="db-gut">
       <span class="dd">${WEEKDAY[dt.getDay()]} ${dt.getDate()}</span>
       ${d.cost > 0 ? `<span class="cc">${esc(uUsd2(d.cost))}</span>` : ""}
     </div>
     <div class="db-dbody">
-      <p class="db-sum">${esc(summary || headline)}${summary ? `<span class="ai">· ai</span>` : ""}</p>
+      ${team ? teamBox(esc(team), "", AI_MARK)
+        : pend.team ? teamBox(sk("84%", 10), " sk") : ""}
+      <p class="db-sum">${esc(summary || headline)}${
+        summary ? aiMark("· ai")
+        : pend.mine ? aiMark("· writing", "wr") : ""}</p>
       <div class="db-facts">
         ${d.commits.length ? `<span>${d.commits.length} commit${d.commits.length === 1 ? "" : "s"}</span>` : ""}
         ${d.commits.length && d.sessions.length ? `<span class="dot">·</span>` : ""}
@@ -167,6 +311,28 @@ export function notesCard(notes: Note[]): string {
     <div class="ac-b">${body}</div></div>`;
 }
 
+/**
+ * The one-time offer to start a shared work log, at the foot of the timeline.
+ *
+ * It lives *here*, under the sentences it is talking about, because that is the only
+ * place the offer explains itself. It was reachable from nowhere before this, which for
+ * a feature whose whole point is *sharing* meant nobody used it.
+ *
+ * Absent once the project has a digest: from then on every closed day is contributed
+ * automatically, because whoever committed the file already made the decision. `n` is
+ * how many days the first write would carry, so the offer never proposes to commit
+ * nothing — and it counts the **project's** lines, which are the only ones that go in.
+ */
+export function workLogOffer(n: number): string {
+  if (!n) return "";
+  return `<div class="miss db-share"><span class="t">Not written down anywhere</span>
+    <p>Episko has read ${n === 1 ? "one day" : `${n} days`} of this project's history and can keep the
+       result in <code>.episko/digest.md</code>. Committed, everyone who pulls gets the same account of
+       what the project did — instead of re-deriving, and paying for, their own.</p>
+    <p>Only the commits and pull requests go in. Your own sessions and spend stay on this machine.</p>
+    <button class="act" data-dashworklog>↑ Start the work log</button></div>`;
+}
+
 /// What this folder can't do, said once and plainly. Rendered *instead of* the cards
 /// it replaces, never alongside empty ones.
 export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
@@ -187,18 +353,25 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
 
 // ---------- the inspector: the project's context menu, standing open ----------
 
+/// `known` is whether `project_facts` has answered *for this project yet*. It is not the
+/// same question as "is anything loading": a range change reloads the timeline without
+/// putting the tier back in doubt, and blanking the repo verbs for it would be a flicker
+/// that says nothing. False only between clicking a new project and its facts landing —
+/// during which `tier` reads `none`, which is an assertion, not an absence.
 export function dashInspector(
   root: string, tier: ProjectTier, f: ProjectFacts | null,
   live: { id: string; label: string; glyph: string; cls: string; ctx: string }[],
-  shared: boolean,
+  shared: boolean, known = true,
 ): string {
   const act = (a: string, ic: string, lb: string, sb = "", cls = "") =>
     `<button class="ia ${cls}" data-dashact="${a}"><span class="ic">${ic}</span>`
     + `<span><span class="lb">${esc(lb)}</span>${sb ? `<span class="sb">${esc(sb)}</span>` : ""}</span></button>`;
+  const repo = known && tier !== "none";
   const chips = [
     f?.slug ? `<span class="chip">${esc(f.slug)}</span>` : "",
     f?.host && !f.slug ? `<span class="chip">${esc(f.host)}</span>` : "",
-    tier === "none" ? `<span class="chip warn">not a repo</span>` : "",
+    !known ? `<span class="chip sk">${sk("62px", 8)}</span>`
+      : tier === "none" ? `<span class="chip warn">not a repo</span>` : "",
     shared ? `<span class="chip acc" title="This project has a committed .episko/digest.md">.episko/ shared</span>` : "",
   ].filter(Boolean).join("");
   return `
@@ -206,15 +379,18 @@ export function dashInspector(
       `<div class="srow" data-sel="${esc(s.id)}"><span class="sglyph ${s.cls}">${s.glyph}</span>`
       + `<span class="sbranch">${esc(s.label)}</span><span class="sctx">${esc(s.ctx)}</span></div>`).join("")}</div></div>` : ""}
     <div><span class="label">Do something here</span><div class="ip-acts">
-      ${act("launch", "＋", "New session", live.length ? `${live.length} already running here` : "start Claude Code in this folder")}
-      ${tier !== "none" ? act("worktree", "⑃", "New worktree session…", "on a branch of its own") : ""}
-      ${act("terminal", "❯", "Open terminal here")}
-      ${act("run", "▶", "Run a task…")}
+      ${act("launch", "＋", repo ? "New session…" : "New session",
+        live.length ? `${live.length} already running here`
+          : repo ? "here, or on a branch of its own" : "start Claude Code in this folder")}
+      ${act("terminal", "❯", "Open terminal here", "a plain shell, no Claude")}
+      ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
       <div class="ip-sep"></div>
-      ${tier !== "none" ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
+      ${repo ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
       ${act("history", "◷", "History…", "reopen a session you closed")}
-      ${act("folder", "⌂", "Open project folder")}
-      ${act("copypath", "⧉", "Copy path")}
+      ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
+      ${act("copypath", "⧉", "Copy path", "the full path, to the clipboard")}
+      ${repo && !shared
+        ? act("worklog", "↑", "Share the work log…", "commit each day's summary to .episko/") : ""}
     </div></div>
     ${chips ? `<div><span class="label">Repository</span><div class="db-chips">${chips}</div></div>` : ""}
     <p class="ihint">${esc(tilde(root))}</p>`;
@@ -227,20 +403,22 @@ export function dashInspector(
 /// survives the collapse.
 export function dashStrip(
   accent: string, initial: string, tier: ProjectTier,
-  live: { id: string; glyph: string; cls: string; label: string }[],
+  live: { id: string; glyph: string; cls: string; label: string }[], known = true,
 ): string {
   const b = (a: string, ic: string, t: string, cls = "") =>
     `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}">${ic}</button>`;
+  // Same `known` gate as the inspector: the rail is the *same* verbs, and two surfaces
+  // offering a different set of them for a second is worse than either alone.
+  const repo = known && tier !== "none";
   return `<span class="sglyphs">
       <span class="pglyph" style="background:${esc(accent)}">${esc(initial)}</span>
       ${live.map((s) => `<button class="isb live ${s.cls}" data-sel="${esc(s.id)}" title="${esc(s.label)}">${s.glyph}</button>`).join("")}
     </span>
-    ${b("launch", "＋", "New session")}
-    ${tier !== "none" ? b("worktree", "⑃", "New worktree session…") : ""}
+    ${b("launch", "＋", repo ? "New session…" : "New session")}
     ${b("terminal", "❯", "Open terminal here")}
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>
-    ${tier !== "none" ? b("graph", "⑂", "Commit graph…") : ""}
+    ${repo ? b("graph", "⑂", "Commit graph…") : ""}
     ${b("history", "◷", "History…")}
     ${b("folder", "⌂", "Open project folder")}
     ${b("copypath", "⧉", "Copy path")}`;

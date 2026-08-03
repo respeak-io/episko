@@ -397,7 +397,11 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       expect(after.cost).toBe(30);
       expect(Object.values(usage)[0]).toBeCloseTo(30, 10); // not 58
       // Both panes are still named — the money moved once, the attribution didn't.
-      expect(Object.values(usageDetail)[0].sessions).toEqual(["sid", "relaunched"]);
+      expect(Object.keys(Object.values(usageDetail)[0].sess!)).toEqual(["sid", "relaunched"]);
+      // …and it lands where it was earned: the first pane booked 28 before the move,
+      // the relaunched one only the 2 it added on top.
+      expect(Object.values(usageDetail)[0].sess!.sid.usd).toBeCloseTo(28, 10);
+      expect(Object.values(usageDetail)[0].sess!.relaunched.usd).toBeCloseTo(2, 10);
     });
     it("counts a rotated conversation from scratch, since its counter restarted too", () => {
       // /clear mints a new runtime id *and* zeroes the total. main.ts re-points

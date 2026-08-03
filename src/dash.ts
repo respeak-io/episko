@@ -45,8 +45,9 @@ export type ProjectTier = "github" | "git" | "none";
 
 export function projectTier(f: ProjectFacts | null | undefined): ProjectTier {
   if (!f?.is_repo) return "none";
-  // A slug is minted only for github.com (see `parse_remote`), so this cannot be
-  // fooled by a GitLab or self-hosted remote — which is the whole point of it.
+  // A slug is minted only for github.com — an `~/.ssh/config` alias that resolves to
+  // it included (see `parse_remote`) — so this cannot be fooled by a GitLab or
+  // self-hosted remote, nor fooled *out* of GitHub by a two-account ssh setup.
   return f.slug ? "github" : "git";
 }
 

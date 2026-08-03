@@ -286,3 +286,71 @@ export function dayFacts(d: TrailDay, limit = 12): string {
 /// A day is only worth summarising once it can't change again. Today is still being
 /// written, so it re-summarises; every earlier day is final and is cached forever.
 export const dayIsClosed = (d: TrailDay, now = Date.now()) => d.key !== uDkey(new Date(now));
+
+// ---------- the project's own day, as opposed to yours ----------
+//
+// `dayFacts` above describes a day *as seen from this machine*: session titles read out
+// of the local `~/.claude`, and spend read out of this install's rollup. Neither is
+// reproducible by anybody else, which is what makes that sentence unfit to commit — two
+// people summarising the same day hand the model different records and get different
+// answers, and whoever writes last wins.
+//
+// So the shared artefact is built from the other half only: the commits and the pull
+// requests, which are in the repo and identical for everyone who has it. Same day, same
+// facts, therefore a sentence that means the same thing to the whole team.
+
+/// A commit author that is a person. GitHub's own convention is a `[bot]` suffix on the
+/// login, and it is the only marker available here — `git_log_days` returns `%an`, which
+/// carries no account type. Anything cleverer would be guessing at names.
+export const isBotAuthor = (name: string) => /\[bot\]$/i.test(name.trim());
+
+/// Everyone who committed that day and isn't a bot, busiest first. Ties break by name so
+/// a repaint of unchanged state can never reorder the byline.
+export function humanAuthors(d: TrailDay): string[] {
+  const n = new Map<string, number>();
+  for (const c of d.commits) {
+    if (isBotAuthor(c.author)) continue;
+    n.set(c.author, (n.get(c.author) || 0) + 1);
+  }
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x]) => x);
+}
+
+/**
+ * Whether the project's own line is worth *showing* on this day.
+ *
+ * Not whether it is worth writing — every closed day with commits is written, because a
+ * colleague reading `digest.md` wants the project's whole history and a file with the
+ * solo days missing is not that. This is the narrower display question, and the answer
+ * is: only when it would say something your own line doesn't.
+ *
+ * **The test is more than one human author**, and the limit is deliberate. It cannot ask
+ * "did somebody *else* commit", because that needs to know who you are — `%an` matched
+ * against `git config user.name` breaks on a second machine, a different spelling of
+ * your own name, and every co-authored commit, and a wrong answer here puts the wrong
+ * box on screen. One human author means either it was you (your line covers it) or it
+ * was one colleague whose commits your line already carries as context. Two means no
+ * single narrative is "your day".
+ */
+export const sharedDay = (d: TrailDay): boolean => humanAuthors(d).length > 1;
+
+/**
+ * The record handed to the summariser for the **project's** line.
+ *
+ * Commits and pull requests only. No sessions and no spend — not merely because they
+ * are noise here, but because they are the two things that differ per machine, and this
+ * sentence gets committed. Keeping them out is what makes the output reproducible, and
+ * it is also what keeps `spend: $58.23` out of a file that gets pushed.
+ *
+ * Bounded like `dayFacts`, and for the same reason.
+ */
+export function projectDayFacts(d: TrailDay, limit = 16): string {
+  const lines: string[] = [];
+  const who = humanAuthors(d);
+  if (who.length) lines.push(`contributors: ${who.join(", ")}`);
+  for (const c of d.commits.slice(0, limit)) lines.push(`commit: ${c.subject}`);
+  if (d.commits.length > limit) lines.push(`… and ${d.commits.length - limit} more commits`);
+  for (const e of (d.events ?? []).slice(0, limit)) {
+    lines.push(`${e.event} ${e.kind} #${e.number}: ${e.title}`);
+  }
+  return lines.join("\n");
+}

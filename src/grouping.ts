@@ -24,7 +24,10 @@ import { taskPrefs } from "./tasks";
 // rather than the worktree clusters: a dormant session has no live checkout state
 // to cluster by, and pinning them below the live rows keeps the distinction between
 // "running now" and "was running before" visually obvious.
-export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string }
+/// `repoRoot` is set only on the groups `splitByWorktree` mints — a checkout is not a
+/// project, it is one folder of one. Anything that wants "the project this row belongs
+/// to" reads `repoRoot ?? path`; anything that wants the folder itself reads `path`.
+export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string; repoRoot?: string }
 // A worktree cluster = the sessions of one project that share a checkout dir. Order
 // follows first appearance in the (already-sorted) session list, so the active/
 // attention sort still decides which worktree floats up. The repo-root checkout
@@ -88,7 +91,10 @@ export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
     // Keep the root group only when it carries something — root-checkout rows or a
     // favourite (a launch target). Drops the phantom empty root of a worktree-only repo.
     if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
-    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch });
+    // `repoRoot` is what the group was split OUT of. Splitting drops it otherwise, and
+    // then nothing downstream can get back to the project — which is how a worktree
+    // group's dashboard came to be keyed by its checkout dir and show no sessions at all.
+    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch, repoRoot: p.path });
   }
   return out;
 }

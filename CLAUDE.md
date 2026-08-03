@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **631 vitest + cargo (140 on macOS, 137 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **644 vitest + cargo (144 on macOS, 141 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are); the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -267,6 +267,21 @@ GitHub release body, and `ci.yml` refuses a `dev → main` pull request whose
   demanding generated prose would make writing your own notes a CI failure.
 - **Three markers, not six headings**: `+` new, `~` changed, `!` fixed. Keep-a-Changelog's
   sections force a judgement call per line and leave headings with one bullet under them.
+- **A section with no entries and no lede is dropped at parse time**, and that is not
+  tidiness: `changelog release` opens a fresh empty `## Unreleased` and the tag builds
+  from that state, so **every released build ships one**. Kept, it rendered as a "next"
+  row in the rail that opened on a heading, the words "not released yet", and nothing
+  else. Whether `## Unreleased` is non-empty stays a *branch* policy enforced by
+  `changelog.mjs check` on the PR — that script has its own parser, so this does not
+  weaken the gate.
+- **`inlineMd` renders bold, italic and code, and the ordering is load-bearing.** Bold
+  runs first and must tolerate a `*` inside it, or an entry with italics nested in bold
+  is skipped entirely — 0.13.6 shipped one and it showed raw asterisks with no bold.
+  Italic then runs *inside* what bold produced, anchored on a run with no `*` so an
+  unpaired marker (`2 * 3`) is left alone. It lives in `changelog.ts`, not the DOM
+  module, because it is string-in-string-out and therefore the half of the dialog that
+  can be tested — where it used to live, the missing italic rule went unnoticed through
+  nine releases of a file that uses italics constantly. The lede goes through it too.
 - **`shouldAnnounce` opens once per released version, and the record is a set.**
   `cc-seen-versions` lists every version *What's new* has been opened for here (0.13.0's
   single-value `cc-seen-version` is still read once and folded in), so a version already
@@ -297,6 +312,22 @@ sorted first, so one gesture meant two different things depending on state, and 
 is going on in this repo" lived in a right-click menu nobody opens. The sessions are
 the rows directly beneath the header; this is the header's own answer.
 
+**Every header, whatever put the project in the list** — `renderSidebar` builds three
+shapes (has sessions / favourite / discovered) and for two releases only the first two
+carried `data-dash`, so a folder known only from an external session, only from past
+ones, or from a worktree whose session had ended was inert on click. Nothing refused it;
+the attribute was absent, so `closest()` returned null and the handler returned before
+the branch written for it — the same silent shape `test/dispatch.test.ts` guards the
+*other* half of. "Has an Episko session or is a favourite" is not a fact worth gating a
+view on, and the empty-but-real dashboard those folders get is the answer.
+
+**The key is `repoRoot ?? path`, because a checkout is not a project.** `splitByWorktree`
+mints one group per worktree keyed by its checkout dir, and `dashDays` filters history
+through `histProject`, which regrafts every row onto the repo root — so a dashboard keyed
+by a worktree dir matches no sessions at all and renders a timeline of commits nobody
+appears to have worked on. Splitting is the only thing that severs a group from its
+project, so `splitByWorktree` now carries `repoRoot` for whatever needs to get back.
+
 The split is `graph.ts`/`graphview.ts` again: **`dash.ts` is pure and tested**
 (`projectTier`, `dashDays`, `dashPulse`, `projectCost`, `densePerDay`), **`dashview.ts`
 takes data and returns a string**, **`dashboard.ts`** owns the pane, the IPC, the
@@ -315,12 +346,44 @@ from one `project_facts` call):
 - **git** — the commit half of the timeline, the checkouts card, and *everything
   shared*: `.episko/` only means anything if it can be committed, so **sharing needs
   git, not GitHub**. A GitLab or self-hosted remote is this tier, which is why
-  `parse_remote` mints a slug for `github.com` and nothing else.
+  `parse_remote` mints a slug for `github.com` and nothing else — but **the host in a
+  remote URL is not necessarily a hostname**. Someone with two GitHub accounts keeps
+  them apart with an `~/.ssh/config` `Host github.com-work` alias, and it is the alias
+  that lands in the URL, so a string match files a GitHub repo under "no GitHub" for
+  exactly the people with the most repos. `ssh -G <name>` answers it (config only, no
+  connection; an unknown name echoes back), memoised for the process. That is also a
+  test trap: `git remote get-url` applies the developer's `url.*.insteadOf` rewrites, so
+  a fixture naming a real owner can come back rewritten — fixtures use `example-org`.
 - **neither** — sessions, spend and personal notes. None of those ever cared about git.
 
 A card with nothing to say is **absent, not empty** — an "Issues" panel in a folder
 that has no issues reads as breakage — and `missingCard` says once, plainly, what this
 folder cannot do instead.
+
+**And a card not read yet is neither**, which is what the skeletons are for. Opening a
+project is a whole-machine transcript scan, three git calls, and then two `gh` calls
+*after* those; every one of them used to land in silence, so "nothing here" and "not
+read yet" — opposite answers — looked identical, and the strip led with a confident row
+of zeros. Four things about that are worth keeping:
+
+- **The waits are separate flags on purpose.** `loading` (the local reads), `ghLoading`
+  (the GitHub half, which starts later and ends later) and `writing`/`stage` (the model
+  calls) each darken a different surface. One `isLoading` over the lot would skeleton
+  something that already has its answer.
+- **`factsKnown` is not `loading`.** It asks whether `project_facts` has answered *for
+  the project on screen*, and it is what the inspector's repo verbs and the `not a repo`
+  chip hang off — because `tier` defaults to `none`, which is an assertion, not an
+  absence. Keeping it separate is what stops a range change (which reloads the timeline
+  but settles nothing about the tier) blinking ⑃ and ⑂ off and on.
+- **Every write in `loadDash` is guarded by `root() !== r`, including `loading` itself.**
+  Two awaits, and a click on another project during either one leaves a continuation
+  that would otherwise land the previous folder's answers under the new folder's name —
+  or clear the new load's skeletons while it is still running.
+- **A pending sentence is not an absent one.** Your day already has a deterministic
+  headline that reads correctly, so waiting is a mark *beside* it; the shared box has no
+  such stand-in, so that one is a real skeleton. The shimmer and spinner are the usage
+  screen's `.u-skel`/`.u-spin` — a second loading vocabulary is a second thing to keep in
+  step.
 
 Three things that are easy to get wrong:
 
@@ -328,7 +391,21 @@ Three things that are easy to get wrong:
   is every project's spend that day at once, so attributing it to whichever dashboard
   is open would invent a number. The detail split only exists going forward, so older
   days legitimately have none, and the strip shows a dash rather than `$0.00` — "we
-  didn't keep this" and "it was free" are different facts.
+  didn't keep this" and "it was free" are different facts. `DayDetail` also carries a
+  **per-session** `sess` map, which the footer's spend popover (`daySpend` →
+  `costPopHtml`) reads; it replaced a `sessions: string[]` that recorded *which* ids
+  contributed but not what any cost, and was therefore write-only for its whole life.
+  **A split can fall short of the day's total, and each split falls short separately** —
+  `cc-usage` banks the day's money from the first dollar, while a split introduced by a
+  later build starts from whatever is spent after it lands. That makes **the day you
+  upgrade** the ordinary case, not an exotic one: the projects list can be complete while
+  the sessions list covers only the afternoon. So `daySpend` gives **both** lists their
+  own `unattributed` row rather than dropping the difference — a list that summed lower
+  than the footer segment that opened it would read as money going missing. A split with
+  *nothing* in it stays empty instead, and the reader says the day predates the record:
+  one anonymous row claiming the whole day reads as a session nobody can identify. The
+  half-cent floor is not tidiness either — both figures are sums of the same deltas in a
+  different order, so a fully attributed day still differs in the last place.
 - **The list drops empty days and the sparkline must not.** `trailDays` omits a day
   nothing happened on (a column of blank rows reads as broken); `densePerDay` fills
   them back in, because two busy days a week apart otherwise render as two adjacent
@@ -345,6 +422,15 @@ Three things that are easy to get wrong:
   `project_facts` and `worktree_heads` for this folder, so the answer is passed in
   rather than asked for again, and the click stays synchronous (see the comment on
   `requestLaunch` for why nothing may be awaited before that dialog is on screen).
+  **The inspector's ＋ is that same call**, and there is only one of it. It used to be a
+  bare launch in the project root sitting above a separate *New worktree session…*, so
+  which row you wanted depended on knowing whether the folder was a repo — a question
+  the dashboard has already answered on screen, and the dialog asks anyway. One ＋ that
+  means "start a session here" and opens the dialog when there is a branch to pick is
+  the whole verb; `dashInspector` keeps the ellipsis only on a repo, since on a plain
+  folder it launches outright and an ellipsis that opens nothing is a lie. `DashHost`
+  therefore carries **both** `launch` and `requestLaunch`: a dispatch has already decided
+  where it is going, a person clicking ＋ has not.
 - **⌘I collapses to a 44px rail here, not to nothing.** The dashboard's own verbs — the
   worktree dialog, the commit graph, the folder, the live-session strip — exist only in
   the inspector, so hiding the panel outright would hide real verbs. On a session ⌘I
@@ -380,6 +466,13 @@ false` plus a reason, shown as one quiet row like a blocked runnable.
   human presses Enter" rule — deliberately, and only here: that rule exists so nothing
   is sent you did not read, and a dispatch confirmed in a sheet *is* the reading. A
   colleague's shared note is still prefilled-not-sent: that is somebody else's sentence.
+  **Both halves need the session id back from `launch`**, which is why `panes.ts`'s
+  returns `string | null` and `DashHost.launch` is typed to match rather than
+  `Promise<unknown>`. It returned nothing at all under that `unknown` for a release: the
+  pane opened, `typeof sid !== "string"` was permanently true, and every dispatch said
+  *Could not start a session* while starting one — no prompt, no claim, and a note eaten
+  on the way past. **A hook typed `unknown` whose callers narrow it is the whole bug**;
+  `tsc` is the only thing that can catch this class, so type the seam, not the call site.
 - **The viewer is cached for the process, not per repo.** `gh api user` returns the
   same login whichever folder it runs in, so keying it by root spent a process per
   project for an answer already in hand.
@@ -392,10 +485,39 @@ survives, all three refuse to create themselves without an explicit yes, and all
 need **git, not GitHub**: they are files, and a file only means anything to a team if
 it can be committed.
 
+**A day gets TWO generated sentences, and the split is what makes one of them
+committable.** They are not one prompt over different facts — `Scope` in `summarize.rs`
+picks a different instruction as well as a different record, because a model told it is
+reading a developer's day will narrate an afternoon out of a list of commit subjects:
+
+- **Yours** (`dayFacts`) — your session titles and your spend, read from *this* machine's
+  `~/.claude` and `cc-usage-detail`. Nobody else can reproduce it, so it never reaches a
+  file: it lives in `trail-summaries.json` in the app config dir, and it is the day's
+  headline.
+- **The project's** (`projectDayFacts`) — commit subjects, authors and PR events, which
+  everyone with the checkout has. Same facts for the whole team, therefore safe to
+  commit, and this is the half `.episko/digest.md` holds.
+
+Committing the *mixture* is the bug this split fixes, and it would never have looked like
+one: two people summarising the same day hand Haiku different records, `write_digest`
+replaces the day's key, and the committed line becomes whoever wrote last describing
+their own half. It reads perfectly well. It is just not the day. Keeping the private half
+out is also what keeps `spend: $58.23` out of a file that gets pushed.
+
+**Written for every day, shown for some.** Every closed day with commits is generated and
+committed — a colleague reading `digest.md` wants the project's whole history, solo days
+included. Display is the narrower question and `sharedDay` answers it: the box appears
+only when more than one *human* committed (`isBotAuthor` — a `[bot]` tagging a release is
+not company). On a solo day it would restate the line directly beneath it. `sharedDay`
+deliberately does **not** ask "did somebody *else* commit": that needs to know who you
+are, and `%an` against `git config user.name` breaks on a second machine, a different
+spelling of your own name, and every co-authored commit.
+
 **The work log is the one thing Episko generates and then commits.** `summarize_day`
-spends money (one `claude -p` per day, Haiku), so it is cached, opt-in, and **read
-before it is generated**: `read_digest` parses `.episko/digest.md` first, which means
-the second person to open a week pays nothing for it. Writing it is gated on an
+spends money (one `claude -p` per day per scope, Haiku), so it is cached, opt-in, and
+**read before it is generated**: `read_digest` parses `.episko/digest.md` first, which
+means the second person to open a week pays nothing for the shared half — so on a team
+repo the split is *cheaper* in aggregate than one sentence per person was. Writing it is gated on an
 explicit per-project yes (`cc-digest-ok`), because a new committable file in someone's
 repo is a real side effect — the same stance `tasks.rs` takes with `tasks.toml`. This
 is the **third** thing Episko writes outside its own config, after `.episko/tasks.toml`
@@ -525,7 +647,7 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 
 ## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12025 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12220 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
@@ -539,7 +661,7 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 | `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `github.rs` | 816 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
 | `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
-| `summarize.rs` | 446 | `summarize_day` (Haiku via `claude -p`) + the committed `.episko/digest.md` |
+| `summarize.rs` | 561 | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | 184 | project favicon/logo probing |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
@@ -552,17 +674,38 @@ Four conventions hold across them:
 
 `AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see External sessions), `io_samples` (the previous disk-I/O reading per pid, which is what turns the kernel's lifetime byte counters into the inspector's rate) and `io_retired` (the bytes of sessions that have since exited, so the app-wide total doesn't fall when a pane closes), the held-open `pending` permission requests, and `caffeinate`.
 
+**Both of those I/O fields are in-memory, so what `all_sessions_resources` reports is a
+*run* figure — and that is why `cc-io` exists.** The counters belong to processes this
+Episko spawned, so they start near zero on every launch; the inspector called the sum
+"total", which is neither daily nor lifetime and reads as the latter. `addIo` banks each
+poll's increment into a per-day rollup off the *same* sample the live bars are drawn
+from, and `ioDelta` clamps a drop to zero because a restart is the normal case here, not
+an edge one — the same reasoning as `costDelta`'s drop branch, reached independently.
+There is no back-fill: days before it shipped have no entry and render as "not
+recorded", never as zero.
+
+**The write is floored at a minute, and a disk meter is exactly the wrong thing to be
+sloppy about here.** The poll behind it runs every 4s for as long as a session is on
+stage, so persisting each reading would mean ~900 synchronous `stringify` + `setItem`
+calls an hour to record a number read once a day. Accumulation stays per-poll (free);
+only `flushIo` writes, and it is forced across a midnight (nothing adds to yesterday
+again) and on `quit-requested`. **Skipping polls costs nothing** — the counters are
+cumulative and `io_retired` outlives a session's exit, so the next reading carries the
+whole gap, which is also why the poll's `if (mirror) return` doesn't skew a day. The one
+real loss is the stretch after a run's last reading; `flushIo` persists what was read,
+it does not take a reading.
+
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 49 modules
 
-**No framework, and no longer one file.** ~12623 lines across 49 modules; `main.ts` is 777 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~13065 lines across 49 modules; `main.ts` is 777 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 631 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 644 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it):
 
 | Module | What |
 | --- | --- |
@@ -570,7 +713,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts — data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
-| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup |
 | `phase.ts` | `applyHook` / `applyStatusline` — telemetry → session state. The heart of the display |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
@@ -579,11 +722,11 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
-| `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` |
+| `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
-| `changelog.ts` | CHANGELOG.md → releases, and the one moment *What's new* opens by itself |
+| `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
 | `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
@@ -601,15 +744,42 @@ Four rules keep that graph honest. **There are no import cycles across the 49 mo
 - **A `*view.ts` takes data and returns a string** — no `$()`, no `innerHTML`, no renderer call. The `render*` function that paints the result stays with whoever owns the element, its timers and its delegated handlers. If a candidate seems to need a `setSomething`, it is a `render*` and should stay behind.
 - **`state.ts`'s `setX` setters assign and nothing else.** Persistence and `renderAll()` belong to the call site — that is what `actions.ts` is for. (Conflating the two is a bug this codebase has already shipped once: a settings picker called `state.ts`'s `setWtGroup` instead of `actions.ts`'s, so the choice never persisted.) Reads are the live ESM binding and stay bare identifiers (`activeId`, never `state.activeId`).
 
-**Two surfaces on `renderAll`'s path are guarded, and the guard is a pattern, not a
-one-off.** `renderSidebar` builds its markup every time but assigns `#projects.innerHTML`
-only when the string differs from what it last wrote; `updateTray` diffs a signature
-before rebuilding the native menu. Both exist because `renderAll()` fires on *every*
-telemetry event and most events change nothing those surfaces show — 84.5% of sidebar
-repaints were byte-identical under a realistic event stream. This is **not** render
-diffing (no DOM is compared or patched) and it does not weaken the render-everything
-rule; it is "skip when nothing changed", applied where it was measured to matter. If
-you add a surface to `renderAll`, measure it before assuming it is free.
+**Every `innerHTML` surface on `renderAll`'s path is guarded, and the guard is a
+pattern, not a one-off.** `renderSidebar` (`#projects`), `renderMini` (`#railmini`) and
+`renderInspector` (`#inspector`) each build their markup every time but assign only when
+the string differs from what they last wrote; `updateTray` diffs a signature before
+rebuilding the native menu; `dashboard.ts`'s `paint(id, html)` does the same for each of
+the dashboard's seven surfaces. `renderFoot`, `renderAttn`, `syncStageButtons` and
+`reconcileCaf` need no guard — they assign `textContent`, class names and properties,
+which replace no nodes. All of them exist because `renderAll()` fires on
+*every* telemetry event and most events change nothing those surfaces show — 84.5% of
+sidebar repaints were byte-identical under a realistic event stream. This is **not**
+render diffing (no DOM is compared or patched) and it does not weaken the
+render-everything rule; it is "skip when nothing changed", applied where it was measured
+to matter. If you add a surface to `renderAll`, measure it before assuming it is free.
+
+**On an interactive surface the guard is a correctness fix, not an optimisation.** Cost
+is what the sidebar's guard bought; on every other surface what it buys is that **an
+`innerHTML` assignment destroys the node under the pointer**, which costs three things
+in rising order of seriousness — a restarted CSS transition (the dashboard's `▶ Start`
+visibly pulsed under a still mouse), an emptied `<input>` (`#dashNote` lost a note
+mid-typing), and **a dropped click**: replace a node between mousedown and mouseup and
+the `click` fires on the container, so `closest("[data-perm]")` finds nothing and a
+permission *Allow* is silently discarded on a session blocked waiting for it. None of
+these is visible on an idle fleet, which is the state this app gets developed in. **A
+repaint-per-event surface carrying buttons or inputs needs this guard before it ships.**
+
+Two things make a guard *effective* rather than merely present, and both were needed
+here. **A per-second clock in the markup defeats it entirely** — `dwellText` is `m:ss`,
+so while it was rendered the inspector's string differed every second by construction
+and no repaint could ever be skipped. It is now emitted empty and filled by `tickDwell`
+(`textContent`), which main.ts's one-second tick already did for the neighbouring reason
+that an `innerHTML` assignment restarts the heartbeat animation. And **the cache must be
+invalidated wherever another module writes the same element**: `#inspector` belongs to
+whoever holds the stage, so `paintInspector` keys on `dom.ts`'s `stageGen` — a counter
+`takeStage` bumps — and `openDashboard` clears its own cache on every entry. `dom.ts`
+owning that counter is what keeps a leaf module free of any dependency on the three
+that need it.
 
 **When you measure a render function, force layout or the number is a lie.** An
 `innerHTML` assignment defers style recalc and layout to the next frame, which a
@@ -657,7 +827,28 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **A `localStorage` write on the telemetry path is a disk write, and there are three
+  cadences here — pick deliberately.** The statusLine fires **every 3s per session**
+  (`refreshInterval` in `write_instrument_settings`), so anything `applyStatusline`
+  reaches runs ~once a second on a working fleet. Measured on a real store: `cc-usage`
+  980 chars, `cc-usage-detail` **24,586**, `cc-cost-base` 718, `cc-icons` 91,882.
+  - **Eager** — `cc-usage`, the day's money. Small, and a crash-lost dollar cannot be
+    reconstructed from anything.
+  - **Only when the value changed** — `cc-cost-base`. An unchanged total leaves nothing
+    to persist but `at`, which orders eviction and does not need second accuracy; it
+    used to write the whole map on every statusLine, so an *idle* fleet wrote the same
+    bytes once a second forever.
+  - **Floored** — `cc-usage-detail` (30s) and `cc-io` (60s), both flushed on
+    `quit-requested` and forced across a midnight, since nothing adds to yesterday
+    again. Both are derived or approximate, and `daySpend`'s `unattributed` row already
+    renders exactly what a crash-lost minute of attribution looks like.
+
+  Also **cap anything keyed by day** — `cc-usage`, `cc-usage-detail` and `cc-io` are all
+  bounded at `USAGE_MAX_DAYS`/`IO_MAX_DAYS` (420, past the Usage panel's widest 12-month
+  range), because a daily key with no cap grows forever *and* is re-serialised on every
+  write. `cc-icons` is the largest key by far but is written once per project ever, so
+  it needs neither.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-io` daily disk-I/O rollup and its `cc-io-scope` pick, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
 
@@ -740,6 +931,15 @@ things about it are load-bearing:
   pointer passing *over* the rail; one already inside it is not passing over anything.
 - **Off keeps the old behaviour** rather than hiding the rows for good — the wrapper
   renders already-open, so nothing that used to be reachable stops being so.
+- **The rows need a roster, so an idle project must be polled for one too.** The rows
+  come from `clusterByWorktree(p, true)`, which folds in `worktreesByRepo.get(p.path)` —
+  and `refreshWorktrees` built that set from *sessions and externals only*, so a project
+  you had not started anything in produced zero clusters and no bar at all, and closing
+  the last session in one deleted the entry and took its rows away again. It now also
+  reads **favourites**, on the stale-driven shape `refreshDirtyStates` uses: never-read
+  ones are seeded on the next tick so the first hover already has them, and the rest ride
+  a 20s sweep, because a repo nobody is working in changes on human timescales and
+  reading every favourite every 4s would be ~20 IPC calls a tick to learn nothing.
 
 Timings live in `cc-peek` and are set in Settings › Worktrees, where the control is a
 pair of steppers over a **live preview built from the real `.pgroup`/`.pgpeek`/`.pkrow`
@@ -776,6 +976,19 @@ It closes the Episko sessions living there (the backend refuses while one runs),
 **refuses outright when an external session is in the checkout**: the backend can't see
 one, so `git worktree remove` would delete the folder out from under an agent in someone
 else's terminal. The menu says so on the row rather than letting the click fail.
+
+**Ask the question the folder's state actually poses.** A checkout removed *outside*
+Episko — a PR landing, a `git worktree remove` in your own terminal — leaves git's record
+in `.git/worktrees` and a cluster here for as long as one of our sessions still names
+that path, so removal remains reachable for a folder that is gone. Both flows now branch
+on `exists` (`worktree_heads`, already in memory from the sidebar's roster): present →
+the removal warning, gone → *"the folder is already gone; this only clears git's record
+of it, nothing is lost"*. `wtConfirmHtml` always did this; `removeWorktreeAt` did not, so
+it asked a destructive-sounding question about nothing and then reported "its folder was
+already gone" from the backend's prune fallback — the fallback working exactly as
+designed, arrived at by the worst possible route. **An unknown roster means "assume it is
+there"**: guessing that way costs one honest sentence, where the reverse would offer to
+prune a live checkout.
 
 ## Drift — the agent left the checkout it was launched in
 
@@ -960,7 +1173,10 @@ Episko surfaces Claude sessions started *outside* it, discovered from `~/.claude
 
 - **Filter owned sessions by pid, never by session id.** Episko's own sessions register there too (confirmed CC 2.1.211), and `/resume`/`/clear` rewrite `<pid>.json` with a *new* id — so an id-based exclude lets a live, Episko-owned session reappear as "external" showing the resumed transcript. `AppState.owned_pids` holds every claude pid Episko spawned; the ancestry walk (`ProcTable::is_descendant_of`) also catches child-terminal launches.
 - **That ancestry walk is deliberately broad, and it bites during development.** Anything started from a terminal *inside* Episko — notably `pnpm tauri dev` — becomes its descendant, so a second Episko instance's sessions are silently filtered out of the first's external list. **Run dev builds from a real terminal, not an Episko pane.** (Dev and installed share one `episko-debug.json` — it is keyed by `$TMPDIR`, not by build — so prefer quitting the installed app entirely. They do **not** share a localStorage: WebKit keys the store by the identifier the binary runs under, and `pnpm tauri dev` runs the bare `episko` binary rather than the bundle, so the two rollups live in separate files under `~/Library/WebKit/`. That is measured, not inferred, and `scripts/reconcile-usage.mjs` depends on it — it targets `io.respeak.episko` explicitly rather than guessing, because an earlier draft that picked the most recently written store repaired the dev history and reported success.)
-- `read_transcript` mirrors a session read-only (decoding the cwd→`<enc>` path scheme). `focus_external_session` — still **macOS-only** — jumps to its terminal: exact tab focus by tty via AppleScript for Terminal.app/iTerm2, else `open` on the owning top-level `.app`. That `.app` fallback is **required** for Electron hosts like VS Code — their integrated terminal runs under a *helper* process System Events can't target by unix id (fails `-1719`); the tradeoff is we can only front VS Code, not the specific panel.
+- `read_transcript` mirrors a session read-only (decoding the cwd→`<enc>` path scheme). `focus_external_session` jumps to its terminal, and is the one thing here written **twice**, because "which window is that pid's terminal" has no portable answer:
+  - **macOS** — exact tab focus by tty via AppleScript for Terminal.app/iTerm2, else `open` on the owning top-level `.app`. That `.app` fallback is **required** for Electron hosts like VS Code — their integrated terminal runs under a *helper* process System Events can't target by unix id (fails `-1719`); the tradeoff is we can only front VS Code, not the specific panel.
+  - **Windows** — no tty, so no tab: walk the process tree to the first ancestor owning a visible top-level window (`EnumWindows`), then `SetForegroundWindow`. Three things that walk must get right, each verified against a live Windows process table rather than reasoned about: VS Code puts a **windowless** `Code.exe` pty host between the shell and the windowed one, so it must not stop at the first ancestor; the classic `conhost.exe` owns the window but is a **child** of the console process, so no upward walk reaches it (hence the per-level child scan); and a shell started from the Run box has **`explorer.exe`** as its parent, whose window must never be the answer — a wrong window looks like success, so the walk gives up instead. The known gap is the inverse of the conhost case: with Windows Terminal set as the *default* console host, a `powershell.exe` launched outside it is handed off to a WT that is nowhere in its ancestry, and nothing links the two.
+  - A host process can own one window per project (three VS Code windows here, one `code.exe`), and Z-order alone then sends **every** jump to whichever was last in front. So the window is chosen by matching the session's project folder against the caption, falling back to topmost. The hint is read from the session's own registry file, which keeps the command's signature — and the whole macOS half — untouched.
 - **Known gap:** sessions launched into an external Terminal.app/iTerm (via `open -a`) aren't in Episko's process tree, so they still rely on the session-id `exclude` and can leak after a `/resume`.
 
 ## Restorable sessions (surviving a restart)
@@ -978,6 +1194,7 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
   **The baseline is persisted (`cc-cost-base`), and it has to be**: held only in memory it covered a *Move session* and an in-session History reopen but not the commonest route of all — quit, reopen, restore. `cc-usage` is localStorage and survives that; a run-scoped map does not, so the restored pane's first statusLine met an empty baseline and booked the carried-over total into a day that already had it. The obvious worry about persisting — a baseline outliving the counter it describes would *swallow* real spend, the failure nobody can see — is what the **drop branch** answers: a restarted counter reads below its old baseline, so the whole new reading is booked as fresh. Retention is therefore deliberately generous and capped by count, not by age; the drop branch, not an expiry, is what makes a stale entry harmless.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
 - **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
+- **And one function decides what is *on* it.** `takeStage(show)` in `dom.ts` — `"session" | "ext" | "dash" | "none"` — is the only thing that may touch `#extPane`, `#dashPane`, `#empty` or `insp-mini`. It lives in the leaf module so every opener can call it without an import edge (it is why `mirror.ts` still needs no `./dashboard` dependency). Each opener used to hide its rivals by hand and **only two of four did it completely**, which is not a class of bug the type checker or a unit test can see: `#extPane` and `#dashPane` are both `position:absolute; inset:0` with **no `z-index`**, so DOM order alone decides and `#dashPane` is second — an opener that shows the mirror without hiding the dashboard puts it *behind* a fully opaque pane. Nothing errors, nothing logs, and the header, inspector and `--accent` all update correctly, so the click reads as "it only changed the colours". `insp-mini` rides along because the 44px rail is a **dashboard-only** mode; anything else taking the stage must clear it or the next session inherits a rail holding the wrong buttons. Add a fourth pane by extending `Stage`, never by poking `hidden` at the call site.
 
 ## History (`◷ History`, ⌘⇧H, `list_session_history`)
 
@@ -1051,7 +1268,7 @@ the `palette`/`palui` split, and what makes the rules testable.
 
 ## Notes on scope & doc drift
 
-macOS-first assumptions remain in the window/terminal layer: `osascript`, `open -a`, external-terminal engines, terminal-window focus. Windows has a working embedded-only port (PowerShell/`curl.exe` hook variants behind `#[cfg(windows)]`, cross-platform external-session listing); Linux is unported but the non-`ps` paths are written to be OS-agnostic. Resource reporting is **no longer** one of the macOS-bound bits: `all_sessions_resources` reports disk I/O through `sysinfo` (one refresh, every OS) rather than shelling out to `ps`, so `ps_one` is now reached only from the macOS-only terminal-focus path.
+macOS-first assumptions remain in the window/terminal layer: `osascript`, `open -a`, external-terminal engines. Terminal-window focus is **no longer** one of them — `focus_external_session` has a win32 half (see External sessions), though only macOS can address an individual tab. Windows has a working embedded-only port (PowerShell/`curl.exe` hook variants behind `#[cfg(windows)]`, cross-platform external-session listing); Linux is unported but the non-`ps` paths are written to be OS-agnostic. Resource reporting is **no longer** one of the macOS-bound bits: `all_sessions_resources` reports disk I/O through `sysinfo` (one refresh, every OS) rather than shelling out to `ps`, so `ps_one` is now reached only from the macOS-only terminal-focus path.
 
 **`SPIKE.md` is a historical record and is not maintained.** It describes the Phase-0 spike — single-session, "observe-only" permissions, one file per side — and is kept because it is the record of where this started, not because it is true. It carries a banner saying so. Don't consult it for how the app works today, and don't edit it to match; `README.md` is current.
 

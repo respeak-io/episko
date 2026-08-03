@@ -195,6 +195,20 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
     expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
+  it("gives a project with NOTHING running every checkout it has", () => {
+    // The reported "the hover bar sometimes doesn't come". This function was always
+    // willing; what was missing is the roster, which `refreshWorktrees` only built for
+    // repos with a live session — so an idle project reached `peekBody` with zero
+    // clusters and rendered no rows at all. Both checkouts are vacant here, which is
+    // exactly what the peek exists to reveal.
+    roster([main(), linked()]);
+    const cl = clusterByWorktree(grp({ sessions: [] }), true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl.every((c) => !clusterIsLive(c))).toBe(true);
+    // The main checkout is a launchable row too, and keeps its identity so the sidebar
+    // can give it the ⌂ glyph rather than a branch's.
+    expect(cl[0].isMain).toBe(true);
+  });
 });
 
 describe("splitByWorktree — toplevel mode explodes a multi-checkout project", () => {
@@ -215,6 +229,23 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     expect(ids(out[1].sessions)).toEqual(["b"]);
     expect(out[0].wtBranch).toBeUndefined();      // the root keeps the project's identity
     expect(out[1]).toMatchObject({ name: "epi", accent: "#fff", wtBranch: "feature" });
+  });
+  it("carries the repo root onto every worktree group, and onto no other", () => {
+    // A checkout is not a project, and splitting is the only thing that severs the two.
+    // The sidebar's project header opens `repoRoot ?? path`, so losing it here keys a
+    // worktree's dashboard by its checkout dir — where `histProject` regrafts every
+    // history row onto the repo root, so the timeline matches no sessions at all.
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi", branch: "main" }),
+      sess({ id: "b", workdir: "/w/wt", branch: "feature" }),
+    ] });
+    const out = splitByWorktree([p]);
+    expect(out[0].repoRoot).toBeUndefined();   // the root group IS the project
+    expect(out[1].repoRoot).toBe("/w/epi");
+  });
+  it("leaves an unsplit project without a repoRoot, so `repoRoot ?? path` is its own path", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(splitByWorktree([p])[0].repoRoot).toBeUndefined();
   });
   it("drops the phantom root of a worktree-only repo", () => {
     const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt", branch: "feature" })] });
