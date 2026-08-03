@@ -2213,6 +2213,19 @@ canonicalizehostname false
         git(Path::new(&made), &["checkout", "-q", "--detach"]);
         assert_eq!(worktree_heads(repo.clone()).iter().find(|w| !w.is_main).unwrap().branch, "(detached)");
 
+        // A checkout whose folder has gone stays LISTED, flagged `exists: false`. Both
+        // halves matter and they pull in opposite directions: git keeps its record in
+        // `.git/worktrees` until pruned, so dropping the row would hide the one thing
+        // that still needs cleaning up — while treating it as a place to work would
+        // spawn a PTY into nothing. The frontend reads this flag to decide between
+        // "remove this worktree" and "prune git's record of it", which is the difference
+        // between a destructive warning and a housekeeping one.
+        std::fs::remove_dir_all(&made).expect("hand-delete the checkout");
+        let heads = worktree_heads(repo.clone());
+        let linked = heads.iter().find(|w| !w.is_main).expect("still listed once pruned-pending");
+        assert!(!linked.exists, "the folder is gone: {linked:?}");
+        assert!(heads.iter().find(|w| w.is_main).expect("main").exists, "the repo itself is fine");
+
         // A directory that is not a repo answers empty rather than erroring.
         let plain = scratch_dir();
         assert!(worktree_heads(plain.to_str().unwrap().to_string()).is_empty());

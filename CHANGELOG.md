@@ -78,6 +78,16 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+! **Removing a worktree that is already gone says so up front.** A checkout merged and
+  deleted outside Episko still asked the full "the folder goes, its branch is deleted"
+  warning, and only after you clicked through did it report that the folder had been gone
+  all along. It now offers to prune git's leftover record of it instead, and says plainly
+  that nothing is lost.
+! **The hover bar of checkouts appears on projects with nothing running.** Resting on a
+  project revealed its idle worktrees only if something was already running in that repo —
+  and closing the last session made the rows disappear again. Episko now knows a
+  project's checkouts whether or not it is busy, which is exactly when you want to start
+  one.
 ! **A permission decision can no longer be swallowed by a repaint.** The inspector was
   rebuilt on every telemetry event — several times a second with a few agents running —
   so a click on *Allow* that happened to span one of those rebuilds landed on nothing,

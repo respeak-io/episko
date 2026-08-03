@@ -931,6 +931,15 @@ things about it are load-bearing:
   pointer passing *over* the rail; one already inside it is not passing over anything.
 - **Off keeps the old behaviour** rather than hiding the rows for good — the wrapper
   renders already-open, so nothing that used to be reachable stops being so.
+- **The rows need a roster, so an idle project must be polled for one too.** The rows
+  come from `clusterByWorktree(p, true)`, which folds in `worktreesByRepo.get(p.path)` —
+  and `refreshWorktrees` built that set from *sessions and externals only*, so a project
+  you had not started anything in produced zero clusters and no bar at all, and closing
+  the last session in one deleted the entry and took its rows away again. It now also
+  reads **favourites**, on the stale-driven shape `refreshDirtyStates` uses: never-read
+  ones are seeded on the next tick so the first hover already has them, and the rest ride
+  a 20s sweep, because a repo nobody is working in changes on human timescales and
+  reading every favourite every 4s would be ~20 IPC calls a tick to learn nothing.
 
 Timings live in `cc-peek` and are set in Settings › Worktrees, where the control is a
 pair of steppers over a **live preview built from the real `.pgroup`/`.pgpeek`/`.pkrow`
@@ -967,6 +976,19 @@ It closes the Episko sessions living there (the backend refuses while one runs),
 **refuses outright when an external session is in the checkout**: the backend can't see
 one, so `git worktree remove` would delete the folder out from under an agent in someone
 else's terminal. The menu says so on the row rather than letting the click fail.
+
+**Ask the question the folder's state actually poses.** A checkout removed *outside*
+Episko — a PR landing, a `git worktree remove` in your own terminal — leaves git's record
+in `.git/worktrees` and a cluster here for as long as one of our sessions still names
+that path, so removal remains reachable for a folder that is gone. Both flows now branch
+on `exists` (`worktree_heads`, already in memory from the sidebar's roster): present →
+the removal warning, gone → *"the folder is already gone; this only clears git's record
+of it, nothing is lost"*. `wtConfirmHtml` always did this; `removeWorktreeAt` did not, so
+it asked a destructive-sounding question about nothing and then reported "its folder was
+already gone" from the backend's prune fallback — the fallback working exactly as
+designed, arrived at by the worst possible route. **An unknown roster means "assume it is
+there"**: guessing that way costs one honest sentence, where the reverse would offer to
+prune a live checkout.
 
 ## Drift — the agent left the checkout it was launched in
 

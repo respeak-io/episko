@@ -195,6 +195,20 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
     expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
+  it("gives a project with NOTHING running every checkout it has", () => {
+    // The reported "the hover bar sometimes doesn't come". This function was always
+    // willing; what was missing is the roster, which `refreshWorktrees` only built for
+    // repos with a live session — so an idle project reached `peekBody` with zero
+    // clusters and rendered no rows at all. Both checkouts are vacant here, which is
+    // exactly what the peek exists to reveal.
+    roster([main(), linked()]);
+    const cl = clusterByWorktree(grp({ sessions: [] }), true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl.every((c) => !clusterIsLive(c))).toBe(true);
+    // The main checkout is a launchable row too, and keeps its identity so the sidebar
+    // can give it the ⌂ glyph rather than a branch's.
+    expect(cl[0].isMain).toBe(true);
+  });
 });
 
 describe("splitByWorktree — toplevel mode explodes a multi-checkout project", () => {
