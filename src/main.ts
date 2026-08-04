@@ -28,7 +28,7 @@ import {
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal,
+  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal, pollIo,
   refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
   scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
 } from "./panes";
@@ -754,6 +754,19 @@ setInterval(() => {
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (s) void refreshSessionStats(s);
 }, 4000);
+
+// Keep the disk-I/O rollup sampled when the poll above cannot run — a mirror or the
+// dashboard owns the stage, nothing is selected, or the window is in the background and
+// the WebView is throttling its timers. The counters are cumulative, so a gap loses no
+// bytes; what it loses is the ability to say WHICH DAY they belong to, and a gap over a
+// night booked a whole evening's churn to the next morning. `splitIo` makes a long
+// window honest; this keeps the window short.
+//
+// One minute, matching `IO_SAVE_FLOOR_MS` exactly, so this cannot raise the write rate
+// above what an on-stage session already produces: `addIo` returns before touching
+// anything when the disk was idle, and flushes at most once per floor when it wasn't.
+// It carries no `git_diffstat` — see `pollIo`.
+setInterval(() => { void pollIo(); }, 60_000);
 
 // discover Claude Code sessions running outside Episko and keep them fresh.
 refreshExternals();

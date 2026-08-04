@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Today's disk figure is today's, rather than last night's arriving late.** The daily
+  I/O rollup credited a reading to the day the *poll* happened, and the poll only runs
+  while a session is on stage — so a stretch with the dashboard up, or the window in the
+  background, went unsampled and the next reading dropped the whole gap on whichever day
+  it landed in. Across a midnight that meant a full evening of churn appearing as a
+  morning's work: 530MB reported on a day that had done about 25MB, while the evening
+  that earned it showed 54MB. An increment measured across a boundary is now spread over
+  the days it actually covers, and a minute-by-minute heartbeat keeps the window short
+  even with nothing on stage. The heartbeat reads only the counters — no `git` call
+  beside it, and no more writing than before, because a disk meter that churns the disk
+  is measuring itself.
+
 ! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
   written anything to GitHub. The call was one argument short, and a call that is one
   argument short is not a partial call — it is no call at all, so no assignee, no label

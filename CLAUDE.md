@@ -719,11 +719,42 @@ sloppy about here.** The poll behind it runs every 4s for as long as a session i
 stage, so persisting each reading would mean ~900 synchronous `stringify` + `setItem`
 calls an hour to record a number read once a day. Accumulation stays per-poll (free);
 only `flushIo` writes, and it is forced across a midnight (nothing adds to yesterday
-again) and on `quit-requested`. **Skipping polls costs nothing** — the counters are
+again) and on `quit-requested`. **Skipping polls loses no bytes** — the counters are
 cumulative and `io_retired` outlives a session's exit, so the next reading carries the
-whole gap, which is also why the poll's `if (mirror) return` doesn't skew a day. The one
-real loss is the stretch after a run's last reading; `flushIo` persists what was read,
-it does not take a reading.
+whole gap. The one real loss is the stretch after a run's last reading; `flushIo`
+persists what was read, it does not take a reading.
+
+**What a gap did cost is the day the bytes are filed under, and that used to be silently
+wrong.** A bucket is credited when the poll *lands*, and the poll is gated three ways —
+`if (mirror) return`, a session must be on stage, and a backgrounded WebView throttles
+its timers regardless. So the sampler goes quiet for hours, and a quiet stretch spanning
+a midnight booked the whole of yesterday's churn to today. Observed on this machine: an
+evening's ~480MB of writes landed in a morning that had done ~25MB of work, while the
+day that earned them read 54MB — one unsampled night, wrong in both directions. Two
+halves fix it, and both are needed:
+
+- **`splitIo` (pure, tested) spreads an increment over the days its window covers**,
+  weighted by each day's wall-clock share. Nothing knows *when* inside a window a byte
+  was written, so this is a guess — but a bounded, unbiased one, and the parts sum to
+  exactly the increment so the rollup can't drift from the counter. A window inside one
+  day is a single bucket and the arithmetic is untouched. A window no polling gap
+  explains (a clock jump, a month asleep) is clamped rather than smeared across days the
+  app wasn't running.
+- **A 60s heartbeat in `main.ts` keeps the window short** when the 4s poll can't run. It
+  calls `pollIo` — the I/O half of `refreshSessionStats`, split out precisely so the
+  heartbeat does **not** drag `git_diffstat` and its `git` subprocess along with it. The
+  cadence is `IO_SAVE_FLOOR_MS` exactly, so it cannot raise the write rate above what an
+  on-stage session already produces: `addIo` returns before touching anything when the
+  disk was idle, and flushes at most once per floor when it wasn't. **A meter must not
+  add to what it measures** — keep any new sampler on that footing.
+
+**And be honest about what the number covers: the `claude` processes themselves, nothing
+they spawn.** Verified on macOS rather than assumed — a child writing 64MB moves the
+parent's `proc_pid_rusage` counter by 0.0MB, while the same write in-process moves it by
+exactly 64.0MB. So `cargo`, `pnpm`, `git` and test runs are invisible here and the real
+churn an agent causes is *higher* than the row shows. Also expect physical writes to run
+several times the logical bytes (measured ~5×: 92KB written for 17.4KB of transcript
+growth) — APFS is copy-on-write, and a transcript grows by constant small appends.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.

@@ -331,30 +331,46 @@ export function setActive(id: string) {
 // (all_sessions_resources). The two have different scopes on purpose — a working set
 // belongs to one checkout, while the I/O bars answer "how hard is Episko working the
 // disk", which is not a per-pane question. See `ioAll` in state.ts.
+/// Take ONE reading of the app-wide disk-I/O counters and bank it.
+///
+/// Split out of `refreshSessionStats` so the rollup can be kept sampled without paying
+/// for the `git_diffstat` that used to travel beside it — that one spawns a `git`
+/// process per call, which is precisely the kind of churn a disk meter must not add to
+/// the thing it is measuring. This half spawns nothing: the backend answers it from one
+/// `sysinfo` refresh over the pids we already own, which is a syscall per pid and no
+/// disk traffic at all. Persisting stays floored inside `addIo`, so a caller polling
+/// this more often does not write more often.
+export async function pollIo(): Promise<void> {
+  const res = await invoke<
+    { read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null
+  >("all_sessions_resources").catch(() => null);
+  if (!res) return;
+  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
+  ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
+  ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
+  ioAll.primed = res.primed;
+  // Bank the increment off the SAME sample the bars are drawn from, so the rollup and
+  // the live figure can never describe different readings.
+  addIo({ r: res.read_mb, w: res.written_mb });
+}
+
 export async function refreshSessionStats(s: Sess) {
   if (!isAgent(s) || s.external) return;
-  const [git, res] = await Promise.all([
-    invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
-    invoke<{ read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null>(
-      "all_sessions_resources").catch(() => null),
-  ]);
   // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
   // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
   const sig = (g: DiffStat | null, r: Res) =>
     (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
     + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
+  // Sampled BEFORE the awaits: `pollIo` writes straight into `ioAll`, so reading the
+  // "before" state afterwards would compare the new values against themselves and the
+  // inspector would never repaint.
   const before = sig(s.git, ioAll);
+  const [git] = await Promise.all([
+    invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
+    pollIo(),
+  ]);
   s.git = git ?? null;
-  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
-  if (res) {
-    ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
-    ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
-    ioAll.primed = res.primed;
-    // Bank the increment into today off the SAME sample the bars above are drawn from,
-    // so the rollup and the live figure can never describe different readings.
-    addIo({ r: res.read_mb, w: res.written_mb });
-  }
   if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
