@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtSession, Restorable, Sess } from "../src/types";
+import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, sessions, setDormants, setExternals, setFavorites,
-  setProjOrder, setSortMode, setWtGroup,
+  setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, foldRunGroups, groupPhase, needsYou, needsYouSessions,
-  nextAfterClose, nextInGroup, orderedSessions, projectList, reactorLabel, reactorState,
+  allProjects, clusterByWorktree, clusterIsLive, foldRunGroups, groupPhase, needsYou,
+  needsYouSessions, nextAfterClose, nextInGroup, orderedSessions, projectList,
+  reactorLabel, reactorState,
   splitByWorktree, urgencyRank, type ProjGroup,
 } from "../src/grouping";
 import { taskPrefs } from "../src/tasks";
@@ -20,7 +21,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [],
@@ -46,6 +47,7 @@ beforeEach(() => {
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
   setSortMode("manual"); setWtGroup("off");
+  worktreesByRepo.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
   taskPrefs.attention = true; // needsYou reads it; restore the shipped default
   store.clear();
@@ -139,6 +141,100 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
   });
 });
 
+// The line the sidebar draws: live clusters are rows, the rest are peek rows that
+// only appear while the pointer rests on the project (./peek, ./sidebarview).
+describe("clusterIsLive", () => {
+  it("counts a checkout with an Episko session as live", () => {
+    const p = grp({ sessions: [sess({ workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p).map(clusterIsLive)).toEqual([true]);
+  });
+  it("counts an EXTERNAL session as live too — a colleague's pane still holds the row", () => {
+    const p = grp({ externals: [ext({ cwd: "/w/wt" })] });
+    expect(clusterByWorktree(p).map(clusterIsLive)).toEqual([true]);
+  });
+  it("is false for a roster checkout nobody has started anything in", () => {
+    worktreesByRepo.set("/w/epi", [
+      { path: "/w/epi", branch: "main", is_main: true, exists: true },
+      { path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true },
+    ]);
+    const p = grp({ sessions: [sess({ workdir: "/w/epi" })] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => [c.key, clusterIsLive(c)])).toEqual([["/w/epi", true], ["/w/wt-x", false]]);
+  });
+});
+
+// The roster half: checkouts that exist on disk with nothing running in them. Off
+// unless asked for, because only the sidebar body wants them — see the note on the
+// parameter for why splitByWorktree must not get them.
+describe("clusterByWorktree — session-less checkouts from the worktree roster", () => {
+  const roster = (l: WtHead[]) => { worktreesByRepo.set("/w/epi", l); };
+  const main = (o: Partial<WtHead> = {}): WtHead =>
+    ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
+  const linked = (o: Partial<WtHead> = {}): WtHead =>
+    ({ path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true, ...o });
+
+  it("ignores the roster entirely unless withEmpty is asked for", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi"]);
+  });
+  it("adds a checkout with no session, after the ones that have sessions", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl[1]).toMatchObject({ branch: "feat/x", isMain: false });
+    expect(cl[1].sessions).toEqual([]);
+    expect(cl[1].externals).toEqual([]);
+  });
+  it("does not duplicate a checkout that already has a session", () => {
+    roster([main(), linked()]);
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi" }),
+      sess({ id: "b", workdir: "/w/wt-x", branch: "feat/x" }),
+    ] });
+    const cl = clusterByWorktree(p, true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(ids(cl[1].sessions)).toEqual(["b"]);
+  });
+  it("prefers the roster's branch over a session's cached one — it read HEAD directly", () => {
+    roster([main(), linked({ branch: "renamed" })]);
+    const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt-x", branch: "stale" })] });
+    expect(clusterByWorktree(p, true).find((c) => c.key === "/w/wt-x")!.branch).toBe("renamed");
+  });
+  it("skips a registered checkout whose folder is gone — that is git bookkeeping", () => {
+    roster([main(), linked({ exists: false })]);
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
+  });
+  // The guard: a project pinned AT a linked worktree resolves to the same repo, and
+  // folding the roster in there would sprout a row for the main checkout and every
+  // sibling — silently redefining what that group means.
+  it("leaves a group alone when it is not the repo's main checkout", () => {
+    worktreesByRepo.set("/w/wt-x", [main(), linked()]);
+    const p = grp({ path: "/w/wt-x", sessions: [sess({ id: "b", workdir: "/w/wt-x" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/wt-x"]);
+  });
+  it("adds nothing when the repo has no roster yet", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
+  });
+  it("gives a project with NOTHING running every checkout it has", () => {
+    // The reported "the hover bar sometimes doesn't come". This function was always
+    // willing; what was missing is the roster, which `refreshWorktrees` only built for
+    // repos with a live session — so an idle project reached `peekBody` with zero
+    // clusters and rendered no rows at all. Both checkouts are vacant here, which is
+    // exactly what the peek exists to reveal.
+    roster([main(), linked()]);
+    const cl = clusterByWorktree(grp({ sessions: [] }), true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl.every((c) => !clusterIsLive(c))).toBe(true);
+    // The main checkout is a launchable row too, and keeps its identity so the sidebar
+    // can give it the ⌂ glyph rather than a branch's.
+    expect(cl[0].isMain).toBe(true);
+  });
+});
+
 describe("splitByWorktree — toplevel mode explodes a multi-checkout project", () => {
   it("passes a single-checkout project through untouched", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
@@ -157,6 +253,23 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     expect(ids(out[1].sessions)).toEqual(["b"]);
     expect(out[0].wtBranch).toBeUndefined();      // the root keeps the project's identity
     expect(out[1]).toMatchObject({ name: "epi", accent: "#fff", wtBranch: "feature" });
+  });
+  it("carries the repo root onto every worktree group, and onto no other", () => {
+    // A checkout is not a project, and splitting is the only thing that severs the two.
+    // The sidebar's project header opens `repoRoot ?? path`, so losing it here keys a
+    // worktree's dashboard by its checkout dir — where `histProject` regrafts every
+    // history row onto the repo root, so the timeline matches no sessions at all.
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi", branch: "main" }),
+      sess({ id: "b", workdir: "/w/wt", branch: "feature" }),
+    ] });
+    const out = splitByWorktree([p]);
+    expect(out[0].repoRoot).toBeUndefined();   // the root group IS the project
+    expect(out[1].repoRoot).toBe("/w/epi");
+  });
+  it("leaves an unsplit project without a repoRoot, so `repoRoot ?? path` is its own path", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(splitByWorktree([p])[0].repoRoot).toBeUndefined();
   });
   it("drops the phantom root of a worktree-only repo", () => {
     const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt", branch: "feature" })] });

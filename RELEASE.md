@@ -15,8 +15,8 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 417 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 91 tests on macOS, 84 on
+- `pnpm test` — 744 vitest tests over the logic modules
+- `cargo check --locked` and `cargo test --locked` — 160 tests on macOS, 156 on
   Windows (the platform tests are `cfg`-gated, so the count differs by leg)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
@@ -30,18 +30,26 @@ permission round trip, and whether Claude Code's own interfaces still match ours
 
 ## Before tagging
 
-### 1. The CLI contract test — run it, it is not in CI
+### 1. The CLI contract tests — run them, they are not in CI
 
 ```sh
 cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Runs one real `claude -p` against a throwaway session in a temp dir and asserts our
-hooks reach our server, that routing still uses our launch id, and that the
-transcript still carries the fields the cost ledger reads. **It needs `claude` on
-PATH and an authenticated account, and it spends tokens** — which is exactly why it
-is `#[ignore]`d and lives here rather than in the PR gate.
+Two tests, both against the real binary, in one pass:
+
+- `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
+  throwaway session in a temp dir and asserts our hooks reach our server, that routing
+  still uses our launch id, and that the transcript still carries the fields the cost
+  ledger reads. **It needs `claude` on PATH and an authenticated account, and it spends
+  tokens** — which is exactly why it is `#[ignore]`d and lives here rather than in the
+  PR gate.
+- `claude_cli_still_accepts_every_permission_mode_we_offer` runs `claude
+  --permission-mode <m> --version` for each mode Settings offers. Claude Code validates
+  the flag against its own choice list, so a mode renamed or dropped upstream turns
+  every launch in that mode into a pane that dies before it starts. This one costs **no
+  tokens and needs no auth** — it is `#[ignore]`d only because CI has no `claude`.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
@@ -109,10 +117,43 @@ A regression in either is silent.
       In a **shell** pane the same keystroke must still kill the process outright.
 - [ ] **Windows only: Ctrl+V pastes an image** into a claude pane (copy a screenshot
       first). Plain text paste must still work in the same pane.
+- [ ] **Ctrl+Shift+C / Ctrl+Shift+V copy and paste** in a **shell** pane and in a
+      **task** pane. Select output with the mouse, Ctrl+Shift+C (a "Copied" toast, and
+      it must land in another app's clipboard), then Ctrl+Shift+V into a prompt and see
+      the text arrive intact. Neither chord may raise an OS clipboard-permission
+      prompt — one means the WebView served it rather than the plugin. Plain Ctrl+C in
+      those panes must still interrupt, and on macOS ⌘C/⌘V must still work.
 - [ ] **The sidebar still repaints when it should.** `renderSidebar` now skips the
       `innerHTML` write when the markup is byte-identical, so watch that a phase
       change, an arriving permission, a new session, and closing one *all* still move
       the sidebar — and that a drag-reorder leaves it correct.
+
+### The three surfaces with no automated cover at all
+
+All CSS/markup or native chrome, so `tsc` and the suites say nothing about any of them.
+
+- [ ] **The tray menu's status dots are in colour, and grouped.** Open the menu-bar
+      icon with two projects running. Each project is a greyed heading with its
+      sessions under it, and every session carries a *coloured* dot — amber working,
+      green ✓, pink ◆, red ✕ — not a grey character. A grey dot means the icon reached
+      AppKit as a template image; a missing dot means the rasteriser handed over a
+      buffer of the wrong length, which the unit tests cover but the wiring does not.
+      Click a heading: nothing must happen (it is `enabled(false)`; a clickable one
+      would fall through the handler's `sid` catch-all and emit a `tray-select` for an
+      id that is not a session). Click a session row: it takes the stage.
+      **Windows too** — muda blits these into a hard-coded 16×16 bitmap there, so this
+      is the only check that the shapes survive the halving.
+- [ ] **The inspector's I/O block is app-wide.** Run two agents, give one of them
+      something that churns the disk, and read the block on the *other* one: it must
+      show the same figures, headed `all sessions · N running`. The rate is the sum,
+      so it must exceed what either agent alone is doing. Then close a pane — the
+      **total must not fall** (`io_retired` is what keeps it monotonic), while the
+      running count drops. With nothing running the rates read `—`, not `0 B/s`.
+- [ ] **Settings toggles sit beside their label, not under it.** Settings ⌘, →
+      **Tasks**: "Let trusted projects introspect themselves" and "Raise attention
+      when a run fails" must each be a row — text left, switch right — not a centred
+      stack. This is a cascade order that has broken once (`.set-inline` has to stay
+      after `.set-group`), and it fails silently and only visually.
 
 ### The blocking path
 
@@ -122,6 +163,12 @@ A regression in either is silent.
       is a *blocking* hook — if the UI doesn't answer, Claude hangs, so a failure here
       is a hard blocker.
 - [ ] **Answering in the CLI instead** also clears the badge on the next lifecycle event.
+- [ ] **A non-default permission mode reaches the session.** Settings › Sessions →
+      **Plan**, then `＋ Session`: the new-session dialog shows the Plan chip and the
+      pane comes up in plan mode (Claude's own indicator says so, and it refuses to
+      edit). Set it back to **Manual** afterwards — every launch, including a restore,
+      reads this preference. Worth one pass in an *external* engine too, since that is
+      the only path where the flag goes through a generated shell script.
 
 ### Identity across rotations
 
@@ -132,6 +179,35 @@ A regression in either is silent.
 - [ ] **Resume works after a restart.** Quit with a live session, reopen, resume it
       from the roster. It must resume the *same* conversation — that is `resumeId`, not
       the launch id, doing its job.
+
+### Drift — an agent that changes checkout
+
+**Two cases, and they behave as opposites** — one is not a spot check for the other.
+Nothing here can be checked headlessly: the rules are unit-tested and the CLI contract is
+pinned by the `--ignored` test above, but every surface below is DOM.
+
+- [ ] **Case 1 — writes move, the session does not.** In a session launched in one
+      checkout, have the agent `git worktree add` a **sibling** worktree (outside the
+      project dir) and **write a file in it**. The sidebar row gains `⤳ <branch>`, the
+      header chip reads `old ⤳ ⑃ new`, and the inspector shows the *Working in* card
+      above the vital, offering **Move session here**.
+- [ ] **The row does not move**, and does not flicker as the agent reads its old files.
+      (Only a *write* back home clears the marker — reads must not.)
+- [ ] **Move session here** confirms, ends the session, and resumes it in the new
+      checkout with its history intact (ask it about something from before the move).
+      Afterwards: marker gone, chip shows the new branch alone, and
+      `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
+- [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+
+- [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
+      run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`
+      tool into `<repo>/.claude/worktrees/<name>`. **No file need be written.** The same
+      marker and card appear, but the button reads **Follow it here**.
+- [ ] **Follow it here is instant and lossless** — no confirm, no restart, the pane does
+      not blink and the terminal keeps its scrollback. Afterwards the header path, the
+      branch, ▶ Run and ❯ Terminal all point at the new checkout.
+- [ ] **The conversation is still resumable afterwards** (Claude had already re-homed the
+      transcript; Episko must not have moved it a second time).
 
 ### Panes that aren't agents
 
@@ -186,12 +262,50 @@ A regression in either is silent.
       decision half is unit-testable off Windows — the resolution half needs a real
       Windows PATH, so this checkbox is the only proof it works.
 
+### Reading the repo
+
+- [ ] **The commit graph draws a real history.** Right-click a project → `Commit
+      graph…` on a repo that has merges. The lanes must be unbroken from row to row
+      (a break means `.grow`'s height and `ROW_H` disagree), a merge must fork and
+      converge, and HEAD/branch/remote/tag chips must land on the right commits.
+      Then **scroll to the bottom**: the next page appends and the lanes continue
+      across the seam — the panel must never load a whole history, so a big repo is
+      the interesting case here. `This branch` narrows it; ⟳ re-reads it.
+- [ ] **The chips stay legible on a branchy repo.** On one with local branches, their
+      remote twins and a tag on a release commit: a branch and its remote must be ONE
+      chip (`main ⇡`, hover says "also on origin"), `origin/HEAD` must not appear, HEAD
+      must be the leftmost chip, and a commit carrying many refs must fold into `+N`
+      rather than slicing a name mid-word. Every subject in the panel starts at the same
+      x, while the chips hug the graph's own width row by row. A truncated chip keeps
+      its `⇡`, and hovering it names the branch.
+- [ ] **A whole commit message is readable — all of it.** Pick the longest commit message
+      in the repo (`git log --format='%H %b' | …`, or just a big merge write-up) and press ⏎
+      (or `⤢`, or double-click): the overlay shows the full message, ↑/↓ still move
+      through commits with it open, and **Esc closes the overlay first and the panel
+      second**. Both closes work — the header's ✕ and the
+      `✕ Close` at the bottom right, which must sit on **exactly** the pixels the
+      `⤢ Full message` button occupied, so opening and closing a message needs no mouse
+      movement at all. Check that by clicking one and then the other without moving. A truncated subject in a row is readable by hovering it.
+- [ ] **The table collapses in the right order.** Narrow the window: the date shortens
+      (`2d`), then the sha column goes, then the author — and the *subject* keeps a
+      usable width throughout, never squeezed to nothing.
+- [ ] **The lanes say what they are.** Hover a node, and select one: the tooltip and the
+      detail strip must name the branch that lane leads up to, and a merge must name what
+      it took in. Check a commit *below* a branch tip on a busy line — the label is the
+      nearest ref above it, so a stale side branch further up must not claim it, and a
+      release tag must not name a stretch of history at all. This wording is a claim
+      about ancestry; if it reads wrong, it is wrong.
+
 ### Sessions Episko doesn't own
 
 - [ ] **An external session appears.** Start `claude` in a plain terminal; it shows in
       the sidebar within ~3s as a read-only mirror. Then `/clear` inside it and confirm
       it does **not** duplicate or vanish (pid-based filtering, not id-based).
-- [ ] **macOS only:** clicking it fronts its terminal window.
+- [ ] **↗ fronts its terminal.** macOS picks the exact *tab* (Terminal.app / iTerm2);
+      Windows picks the *window*, so check it with two windows of one app open — two VS
+      Code windows on different projects, or two Windows Terminal windows — and confirm
+      the jump lands on the one running that session, not merely on the app. That
+      tiebreak reads the window title, so it is the half no unit test can hold.
 
 ### The OS edge
 
@@ -199,6 +313,26 @@ A regression in either is silent.
 - [ ] **Quit guard** warns about live sessions.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
+
+### The title bar, which is the header (no native one behind it)
+
+Nothing here has automated cover: the frame is drawn by the OS on one side and by
+`#winCtl` on the other, and each platform only ever sees its own half.
+
+- [ ] **There is one bar, not two**, and the window still moves: drag the header
+      (its background, the logo, the empty space around ⌘K) and the window follows;
+      double-clicking it maximizes. **⌘K still opens on a single click** — the search
+      bar opts out of the drag region, and a regression there is silent.
+- [ ] **Windows:** minimize / maximize / close all work from the header, the middle
+      glyph flips to the restore pair when maximized **and back** (also after Win+↑
+      and a snap, which don't go through our button), and ✕ still raises the quit
+      guard rather than killing live sessions. Then **resize from every edge and
+      corner** and drag the window to a screen edge to snap — an undecorated window
+      resizes through a child window tauri only attaches at creation, so this is what
+      catches it having been lost.
+- [ ] **macOS:** the traffic lights sit in the header, vertically centred, without
+      overlapping the logo — and all three work, the green one included (both zoom
+      and, held, fullscreen). In fullscreen the header must close the gap they leave.
 
 ### Logs, after all of the above
 
@@ -218,9 +352,43 @@ A regression in either is silent.
 
 ## Cutting it
 
+**The order matters, and it is not the obvious one.** `changelog release` closes
+`## Unreleased` into a version section and opens a fresh empty one — which is exactly
+what the `dev → main` gate refuses. So the roll cannot happen on the branch the pull
+request is cut from, and every release since 0.13.x has done it on `main` afterwards
+(`d673829`, `4cdf601`, `105d069` — each three files, on main, after the merge commit).
+
 ```sh
-git tag v0.11.1 && git push origin v0.11.1
+# 1. on dev: `## Unreleased` is FULL. Open the PR and let CI read it.
+gh pr create --base main --head dev --title "release: 0.14.0"
+gh pr merge <n> --merge            # a merge commit, not a squash
+
+# 2. on main, after the merge — the roll and the version bump are one commit
+git checkout main && git pull --ff-only
+pnpm changelog release 0.14.0      # then re-read it: it does NOT write the lede
+$EDITOR CHANGELOG.md               # add the one-line lede under the heading
+#   …and bump `version` in package.json AND src-tauri/tauri.conf.json to match
+git commit -am "release: 0.14.0" && git push origin main
+
+# 3. the tag, from main
+git tag v0.14.0 && git push origin v0.14.0
+
+# 4. put main back into dev, or the next release ships these notes twice
+git checkout dev && git merge --ff-only main && git push origin dev
 ```
+
+**Step 4 is not tidying.** The merge leaves `main` with the entries rolled into a
+version section and `dev` still holding the same entries under `## Unreleased`, so the
+*next* dev → main PR re-proposes all of them and the release after that ships the
+section twice. `dev` is a strict ancestor of `main` at this point, so it fast-forwards.
+Afterwards `changelog check` fails on `dev` — correct, and not a problem: that gate only
+runs on a pull request onto `main`, and the first entry of the next release clears it.
+
+**The lede is worth the extra minute.** `changelog release` writes only the heading;
+*What's new* renders the line under it as the release's headline, and `release.yml`
+lifts the whole section into the GitHub release body. A section with no entries **and**
+no lede is dropped at parse time, so a botched roll ships a release describing nothing.
+Check it before tagging: `node scripts/changelog.mjs section 0.14.0 | head -3`.
 
 `release.yml` builds both platforms against that tag, and both jobs append to the one
 GitHub Release: macOS `aarch64` produces the `.dmg` + the updater artifact, Windows

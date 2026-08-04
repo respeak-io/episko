@@ -12,10 +12,11 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { esc, fmtDur, fmtDwell, fmtLatency, sparkline } from "./format";
+import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
-import { isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { sessions } from "./state";
+import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
+import { ioAll, ioScope, sessions, type IoScope } from "./state";
+import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
 // disabled while one is.
@@ -47,7 +48,7 @@ export function verbFor(s: Sess): string {
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
   if (s.phase === "done") return "Your turn";
-  if (s.phase === "error") return "Error";
+  if (s.phase === "error") return s.apiErr ? apiErrText(s.apiErr) : "Error";
   if (s.phase === "ended") return "Ended";
   return "Idle";
 }
@@ -86,7 +87,7 @@ export function vitalHtml(s: Sess): string {
   const longest = s.phase === "done" && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
-    <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell">${esc(dwellText(s))}</span></div>
+    <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
     ${doing}${meta}</div>`;
 }
 export function gaugesHtml(s: Sess): string {
@@ -117,6 +118,30 @@ export function planHtml(s: Sess): string {
   }).join("");
   const more = total > 5 ? `<div class="todo-more">+${total - 5} more</div>` : "";
   return `<div class="plan"><div class="ph"><span class="lab">Plan</span><span class="frac">${done} / ${total}</span></div><div class="pbar"><i style="width:${pct}%"></i></div>${rows}${more}</div>`;
+}
+// "This session is somewhere else." Sits at the top of the inspector because it
+// reframes every figure below it: the working set, the branch and the fetch/pull/push
+// buttons all read the *launch* folder, and while a drift is showing, that is not where
+// the work is going.
+//
+// The copy and the button differ by `via`, because the two drifts are genuinely
+// different situations rather than one situation with two causes — one is Episko being
+// behind (free to fix), the other is a relocation only Episko can perform. Saying
+// "move" for the first would overstate what happens; saying "follow" for the second
+// would understate it.
+export function driftHtml(s: Sess): string {
+  const d = s.drift!;
+  const here = esc(s.branch || basename(s.workdir));
+  const cwdMove = d.via === "cwd";
+  const note = cwdMove
+    ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span> — following it costs nothing and interrupts nothing.`
+    : `The session is still running in <span class="b">${here}</span>, so its branch, working set and git buttons read that checkout. Moving it takes the conversation along.`;
+  return `<div class="drift">
+    <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
+    <div class="drift-path" title="${esc(d.dir)}">${esc(tilde(d.dir))}</div>
+    <div class="drift-note">${note}</div>
+    <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">${cwdMove ? "Follow it here" : "Move session here"}</button></div>
+  </div>`;
 }
 export function wsetHtml(s: Sess): string {
   const g = s.git!;
@@ -188,10 +213,71 @@ export function timelineHtml(s: Sess): string {
   }).join("");
   return `<div><div class="lab" style="margin-bottom:6px">Activity · by tool</div><div class="tl2">${rows}</div></div>`;
 }
-export function resHtml(s: Sess): string {
-  const r = s.res!;
-  const cpu = Math.min(100, r.cpu), memPct = Math.min(100, (r.memMb / 2048) * 100);
-  return `<div class="res">
-    <div class="rr"><span class="rk">cpu</span><span class="rbar ${mc(cpu)}"><i style="width:${cpu}%"></i></span><span class="rv">${r.cpu.toFixed(0)}%</span></div>
-    <div class="rr"><span class="rk">mem</span><span class="rbar ${mc(memPct)}"><i style="width:${memPct}%"></i></span><span class="rv">${r.memMb.toFixed(0)} MB</span></div></div>`;
+// Disk I/O for the session's `claude` process. Replaced cpu/mem, which measured the one
+// thing a Claude session is never short of: this is an I/O-bound workload — it reads
+// your tree and writes files — and a runaway agent shows up as sustained throughput
+// long before it shows up as CPU.
+//
+// The bar is log-scaled against a 32 MB/s reference rather than linear: real rates span
+// idle-KB/s to burst-MB/s, and a linear bar would sit at zero for everything short of a
+// pathological write storm, which is precisely the case it needs to show.
+const IO_REF_BPS = 32 * 1024 * 1024;
+function ioPct(bps: number): number {
+  if (bps <= 0) return 0;
+  return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
 }
+// App-wide, not per-session: `ioAll` sums every claude process Episko owns, so this
+// block reads the same on whichever pane you happen to have open — like the rate
+// limits, and labelled so nobody mistakes it for the session in front of them.
+/// The three windows the total row can show, and what each honestly covers. `run` is
+/// the raw reading; the other two come from the `cc-io` rollup, which only starts the
+/// day it shipped — so a machine that has just updated has a `today` smaller than its
+/// `run`, which is correct rather than a bug.
+const IO_SCOPE_LABEL: Record<IoScope, string> = { today: "today", run: "this run", all: "recorded" };
+function ioFigures(scope: IoScope): { r: number; w: number; known: boolean } {
+  if (scope === "run") return { r: ioAll.readMb, w: ioAll.writtenMb, known: true };
+  const v = scope === "today" ? dayIo[todayKey()] : ioTotal();
+  return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
+}
+/// What one scope reads as. The note below compares these strings rather than the
+/// floats, because two figures that round to the same text are the same figure to
+/// whoever is looking at the row.
+function ioText(scope: IoScope): string {
+  const f = ioFigures(scope);
+  return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
+}
+export function resHtml(): string {
+  const r = ioAll;
+  // Before the second sample there is no window to average over, so the rate is unknown
+  // rather than zero — say so instead of showing a confident "0 B/s".
+  const rd = r.primed ? fmtRate(r.readBps) : "—";
+  const wr = r.primed ? fmtRate(r.writeBps) : "—";
+  const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
+  const n = [...sessions.values()].filter((x) => isAgent(x) && !x.external).length;
+  // The total is a *window*, and which window was never stated — it said "total" while
+  // showing the current run, so it read as a lifetime figure that reset overnight. The
+  // scope is now named on the row and the whole row cycles it.
+  const tot = ioText(ioScope);
+  // The `⟳` is permanent, not a hover reveal. This row sits directly under two static
+  // ones it is pixel-identical to at rest, so the only thing that said "clickable" was
+  // a hover highlight — which nobody finds, because nobody hovers a label. A cycling
+  // control has to look like one before it is touched.
+  //
+  // The note below it is the other half: the three windows legitimately coincide on a
+  // machine's first day (see `ioSameNote`), and a click that visibly changes nothing is
+  // indistinguishable from a broken one unless the row says why.
+  const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
+  return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
+    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
+    <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
+    <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
+    <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
+    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}</div>`;
+}
+/// Spelled out per scope rather than one generic hint, because the difference between
+/// them is the whole point and two of the three have a caveat worth one sentence.
+const IO_SCOPE_TITLE: Record<IoScope, string> = {
+  today: "Disk I/O by Episko's claude sessions today — click for this run",
+  run: "Disk I/O since Episko started — the processes' own counters, which reset with the app. Click for everything recorded",
+  all: "Disk I/O across every day Episko has recorded one. Not a lifetime figure — it starts when this rollup shipped. Click for today",
+};

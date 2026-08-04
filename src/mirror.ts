@@ -13,7 +13,7 @@
 // always lists every session for a folder, so nothing dropped here is ever lost.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
@@ -23,8 +23,9 @@ import { dormantBusy, extWorking } from "./sidebarview";
 import { orderedSessions } from "./grouping";
 import { isAgent, type DiffStat, type ExtSession, type Restorable, type Sess } from "./types";
 import {
-  accentFor, dirtyByFolder, dormants, externals, extMirrorId, extMirrorPid, isDirty,
-  mirror, pastMirrorId, sessions, setActiveId, setDormants, setExternals, setMirror,
+  accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
+  isDirty, mirror, pastMirrorId, sessions, setActiveId, setDormants, setExternals,
+  setMirror,
 } from "./state";
 
 // Three callees this module does not own: putting an Episko pane on the stage when a
@@ -93,28 +94,46 @@ export async function refreshExternals() {
         setMirror({ kind: "ext", id: e.session_id, pid: e.pid });
         renderExtHeader(e); renderExtInspector(e);
       } else {
-        // Truly gone — fall back to an Episko session or the empty state.
+        // Truly gone — fall back to an Episko session, or to the empty card, which
+        // `closeExternalView` has already dropped the stage to.
         closeExternalView();
         const next = orderedSessions()[0];
         if (next) setActive(next.id);
-        else ($("empty") as HTMLElement).style.display = "grid";
       }
     }
     renderSidebar(); renderMini();
   } catch { /* backend not ready yet */ }
 }
-// Poll uncommitted git state for every folder in play (session workdirs + external
-// cwds), so the sidebar dot and the external diff card are accurate for all projects
-// at once — not just whichever session is active. git_diffstat is the same cheap
-// call the inspector already makes; here it fans out across the distinct folders.
-export async function refreshDirtyStates() {
+// The backstop sweep. Agent-driven edits arrive via `markWorkdirStale` and are picked
+// up on the very next tick; this interval exists only for the changes no hook can see —
+// you editing in your own editor, a build writing artefacts, an external session.
+const DIRTY_SWEEP_MS = 15_000;
+let dirtySweptAt = 0;
+// Uncommitted git state for every folder in play (session workdirs + external cwds), so
+// the sidebar dot and the external diff card are accurate for all projects at once —
+// not just whichever session is active.
+//
+// This used to re-read every folder every 5s, which on an idle fleet was pure waste: a
+// `git status` walk per open worktree, forever, to learn nothing. Now the hook stream
+// says which folders actually moved (a Write/Edit/Bash names its session, and the
+// session names its workdir), and everything else rides the slower sweep. An idle fleet
+// costs nothing; a busy one is *more* responsive than before, because a folder is
+// re-read on the tick after the edit rather than up to 5s later.
+export async function refreshDirtyStates(force = false) {
   const folders = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
+  const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
+  if (sweep) dirtySweptAt = Date.now();
+  // A folder never read is always read now — otherwise a newly launched session would
+  // show no dot until the first sweep happened to come round.
+  const targets = [...folders].filter((f) => sweep || dirtyStale.has(f) || !dirtyByFolder.has(f));
+  dirtyStale.clear();
+  if (!targets.length) return;
   const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
   let changed = false;
-  await Promise.all([...folders].map(async (f) => {
+  await Promise.all(targets.map(async (f) => {
     const g = await invoke<DiffStat | null>("git_diffstat", { workdir: f }).catch(() => null);
     if (sig(dirtyByFolder.get(f)) !== sig(g)) changed = true;
     dirtyByFolder.set(f, g ?? null);
@@ -129,12 +148,14 @@ export function openExternal(sid: string) {
   setMirror({ kind: "ext", id: sid, pid: e.pid });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
-  ($("empty") as HTMLElement).style.display = "none";
-  ($("extPane") as HTMLElement).hidden = false;
+  takeStage("ext");
   document.documentElement.style.setProperty("--accent", accentFor(e.cwd));
   renderExtHeader(e); renderExtInspector(e); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void refreshDirtyStates(); // fill the working-set card promptly, not on the next poll tick
+  // Fill the working-set card promptly, not on the next poll tick. Forced, because
+  // this folder is very likely already cached and would otherwise be skipped — the
+  // point is a fresh read for the card the user just opened.
+  void refreshDirtyStates(true);
   loadTranscript(e, true);
   clearInterval(extTranscriptTimer);
   extTranscriptTimer = window.setInterval(() => {
@@ -146,7 +167,14 @@ export function closeExternalView() {
   if (mirror == null) return;
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
-  ($("extPane") as HTMLElement).hidden = true;
+  // The dashboard rides the same pointer, so it has the same lifetime: whatever took
+  // the stage just replaced it. `takeStage` is what keeps this module free of a
+  // ./dashboard dependency — it lives in ./dom, which everything may import.
+  //
+  // `none` rather than `session`: every caller either activates a session immediately
+  // after (which re-takes the stage) or wants the empty card, and this one cannot tell
+  // which without importing state it has no other use for.
+  takeStage("none");
 }
 // ---------- dormant (restorable) sessions ----------
 // Clicking a dormant row mirrors its transcript read-only — the same pane an
@@ -158,8 +186,7 @@ export function openDormant(id: string) {
   setMirror({ kind: "past", id });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
-  ($("empty") as HTMLElement).style.display = "none";
-  ($("extPane") as HTMLElement).hidden = false;
+  takeStage("ext");
   clearInterval(extTranscriptTimer); // a finished transcript doesn't grow — no polling
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
@@ -204,10 +231,11 @@ export function resumeDormant(id: string) {
 export function forgetDormant(id: string) {
   setDormants(dormants.filter((x) => x.id !== id));
   if (pastMirrorId() === id) {
+    // The empty card is where `closeExternalView` leaves the stage, so only the
+    // "there is a session to fall back to" case needs saying.
     closeExternalView();
     const next = orderedSessions()[0];
     if (next) setActive(next.id);
-    else ($("empty") as HTMLElement).style.display = "grid";
   }
   flushRoster();
   renderAll();

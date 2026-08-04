@@ -35,6 +35,10 @@ base64 = "0.22.1"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Terminal copy/paste. The WebView's own `navigator.clipboard.readText()` is behind
+# a permission prompt in both WebView2 and WKWebView (see the comment in `run()`),
+# so the clipboard is read and written from the host side instead.
+tauri-plugin-clipboard-manager = "2"
 # Runnable discovery: .episko/tasks.toml, and format-preserving writes back to it.
 toml = "0.9"
 toml_edit = "0.25.13"
@@ -51,10 +55,16 @@ tauri-plugin-log = "2"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # `SetThreadExecutionState` for the keep-awake control — Windows' answer to
-# macOS `caffeinate`. 0.61 is the version tauri already resolves, so this adds
-# a feature to an existing crate rather than a second copy of windows-sys.
+# macOS `caffeinate` — and the window APIs behind `focus_external_session`
+# (`EnumWindows` + `SetForegroundWindow`, Windows' answer to the AppleScript
+# half). 0.61 is the version tauri already resolves, so this adds features to an
+# existing crate rather than a second copy of windows-sys.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
+windows-sys = { version = "0.61", features = [
+  "Win32_System_Power",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 # macOS-only: read the pre-rename WebKit localStorage SQLite to recover cost/
 # roster data stranded when the bundle id changed (`read_legacy_localstorage`).

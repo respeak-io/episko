@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtShort, fmtSpan,
-  fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd, uUsd2,
+  basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
+  uTok, uUsd, uUsd2,
 } from "../src/format";
 
 // A fixed epoch for everything that reads the clock, so "2h 10m from now" is a
@@ -98,6 +99,24 @@ describe("fmtLatency — the Pre→Post tool gap", () => {
     expect(fmtLatency(999.6)).toBe("1000ms"); // rounds within the ms branch
     expect(fmtLatency(1_000)).toBe("1.0s");
     expect(fmtLatency(1_499)).toBe("1.5s");
+  });
+});
+
+describe("fmtRate / fmtMb — the inspector's disk-I/O readout", () => {
+  it("picks the unit the number is readable in, and keeps a decimal only for MB/s", () => {
+    expect(fmtRate(0)).toBe("0 B/s");
+    expect(fmtRate(512)).toBe("512 B/s");
+    expect(fmtRate(1023)).toBe("1023 B/s");
+    expect(fmtRate(1024)).toBe("1 KB/s");        // whole KB — a fractional one is noise
+    expect(fmtRate(1024 * 1023)).toBe("1023 KB/s");
+    expect(fmtRate(1024 * 1024)).toBe("1.0 MB/s"); // …but MB/s keeps one, 1.2 vs 4.8 matters
+    expect(fmtRate(1024 * 1024 * 32.45)).toBe("32.5 MB/s");
+  });
+  it("promotes a total to GB only once it stops reading as MB", () => {
+    expect(fmtMb(0)).toBe("0 MB");
+    expect(fmtMb(1023.4)).toBe("1023 MB");
+    expect(fmtMb(1024)).toBe("1.0 GB");
+    expect(fmtMb(3891.2)).toBe("3.8 GB");
   });
 });
 

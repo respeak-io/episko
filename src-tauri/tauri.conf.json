@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Episko",
-  "version": "0.11.1",
+  "version": "0.14.0",
   "identifier": "io.respeak.episko",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -16,7 +16,11 @@
         "title": "Episko",
         "width": 1200,
         "height": 800,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "create": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 14, "y": 22 }
       }
     ],
     "security": {
@@ -35,7 +39,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     }
   },
   "plugins": {

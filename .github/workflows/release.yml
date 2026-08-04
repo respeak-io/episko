@@ -76,6 +76,23 @@ jobs:
         if: steps.sign.outputs.enabled == 'true'
         run: cargo install trusted-signing-cli
 
+      # Install instructions ride in every release body so the top-of-list (latest)
+      # release always carries them — GitHub cannot pin a release, so "always in the
+      # newest one" is the equivalent. A tag with no changelog section still releases:
+      # the notes say so rather than the build failing after the decision to ship.
+      - name: Build the release body
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo 'body<<EPISKO_BODY_EOF'
+            node scripts/changelog.mjs section "${{ github.ref_name }}" \
+              || echo "_This release has no changelog section._"
+            echo
+            cat .github/release-install.md
+            echo 'EPISKO_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -92,33 +109,12 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Episko ${{ github.ref_name }}"
-          # Install instructions are embedded in every release body so the
-          # top-of-list (latest) release always carries them — GitHub can't pin
-          # a release, so "always in the newest one" is the equivalent. The first
-          # matrix job to run creates the release with this body; later jobs append
-          # their assets, so it must cover every platform.
-          releaseBody: |
-            ## Install
-
-            **macOS (Apple Silicon)**
-
-            1. Download **Episko_*_aarch64.dmg** from the assets below.
-            2. Episko is self-signed (not notarized by Apple), so macOS Gatekeeper blocks the first launch. Clear the quarantine flag once:
-               ```sh
-               xattr -dr com.apple.quarantine ~/Downloads/Episko_*.dmg
-               ```
-            3. Open the `.dmg`, drag **Episko** into Applications, and launch it. If it's still blocked:
-               ```sh
-               xattr -dr com.apple.quarantine /Applications/Episko.app
-               ```
-            Apple Silicon (M-series) only — Intel Macs aren't supported by this build.
-
-            **Windows (x64)**
-
-            1. Download **Episko_*_x64-setup.exe** (or the **.msi**) from the assets below.
-            2. Episko isn't code-signed, so Windows SmartScreen may warn on first run — click **More info → Run anyway**.
-
-            Requires `claude` on your `PATH`. Episko keeps itself up to date after install (checks the latest release on launch; never auto-installs).
+          # What changed comes from CHANGELOG.md — the SAME lines the app's What's new
+          # screen shows, so a release and the app can never disagree about what a
+          # version did. The install block is concatenated in the step below rather than
+          # inlined here: a multi-line ${{ }} inside a YAML literal block indents only
+          # its first line, which silently mangles the rest of the body.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           # tauri-action generates and uploads latest.json when the updater is

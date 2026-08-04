@@ -16,6 +16,7 @@ import { basename } from "./format";
 import type { ExtSession, Phase, Restorable, Sess } from "./types";
 import {
   accentFor, dormants, externals, FAVORITES, projOrder, sessions, sortMode, wtGroup,
+  worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -23,7 +24,10 @@ import { taskPrefs } from "./tasks";
 // rather than the worktree clusters: a dormant session has no live checkout state
 // to cluster by, and pinning them below the live rows keeps the distinction between
 // "running now" and "was running before" visually obvious.
-export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string }
+/// `repoRoot` is set only on the groups `splitByWorktree` mints — a checkout is not a
+/// project, it is one folder of one. Anything that wants "the project this row belongs
+/// to" reads `repoRoot ?? path`; anything that wants the folder itself reads `path`.
+export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string; repoRoot?: string }
 // A worktree cluster = the sessions of one project that share a checkout dir. Order
 // follows first appearance in the (already-sorted) session list, so the active/
 // attention sort still decides which worktree floats up. The repo-root checkout
@@ -43,7 +47,13 @@ export function checkoutOf(s: Sess, fallback: string): string {
   return (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
 }
 
-export function clusterByWorktree(p: ProjGroup): WtCluster[] {
+// `withEmpty` folds in the roster's session-less checkouts, so a worktree an agent just
+// created is visible before anything runs in it. Off by default because only the
+// sidebar body wants them: `splitByWorktree` must not promote an empty checkout to a
+// top-level project group, which would be a lot of chrome for a folder with nothing in
+// it. Roster clusters land after the session-bearing ones (`order` is append-only),
+// which keeps "running now" above "available".
+export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] {
   const by = new Map<string, WtCluster>();
   const order: WtCluster[] = [];
   const bucket = (key: string, branch: string): WtCluster => {
@@ -54,11 +64,33 @@ export function clusterByWorktree(p: ProjGroup): WtCluster[] {
   };
   for (const s of p.sessions) bucket(checkoutOf(s, p.path), s.branch || s.worktree || "").sessions.push(s);
   for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
+  if (withEmpty) {
+    const roster = worktreesByRepo.get(p.path) ?? [];
+    // Only fold the roster in when this group really is the repo — i.e. the repo's main
+    // checkout IS p.path. A project pinned *at* a linked worktree resolves to the same
+    // repo, and without this guard that group would suddenly sprout a row for the main
+    // checkout and every sibling worktree, silently redefining what the group means.
+    if (roster.some((w) => w.is_main && w.path === p.path)) {
+      for (const w of roster) {
+        // A registered-but-deleted checkout is git bookkeeping, not a place to work —
+        // the ⑃ dialog is where you prune those, so the sidebar stays quiet about them.
+        if (!w.exists) continue;
+        const c = bucket(w.path, w.branch);
+        // The roster read HEAD directly, so it wins over a session's cached label.
+        c.branch = w.branch || c.branch;
+      }
+    }
+  }
   // Label clusters that never carried a branch: the repo-root checkout is "main",
   // any other bare dir falls back to its folder name.
   for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
   return order;
 }
+// Does anything actually run in this checkout? The line the sidebar now draws: live
+// clusters are rows, everything else is a peek row that only appears when you rest on
+// the project (./peek, ./sidebarview). Externals count — a colleague's session in a
+// checkout is still a reason for it to hold its place in the list.
+export const clusterIsLive = (c: WtCluster): boolean => c.sessions.length + c.externals.length > 0;
 // toplevel mode: explode any project whose sessions span >1 worktree into one group
 // per worktree. The root checkout keeps the project's identity (path/favourite/
 // externals); each worktree gets its own group keyed by its checkout dir, carrying
@@ -73,7 +105,10 @@ export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
     // Keep the root group only when it carries something — root-checkout rows or a
     // favourite (a launch target). Drops the phantom empty root of a worktree-only repo.
     if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
-    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch });
+    // `repoRoot` is what the group was split OUT of. Splitting drops it otherwise, and
+    // then nothing downstream can get back to the project — which is how a worktree
+    // group's dashboard came to be keyed by its checkout dir and show no sessions at all.
+    for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch, repoRoot: p.path });
   }
   return out;
 }

@@ -17,7 +17,7 @@ import { burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from 
 import { accentFor } from "./state";
 import {
   tokenDays, U_MONTHS, uBuckets, uDkey, uModels, usage, usageRange, usageWindow,
-  uSum, type UDay,
+  uSum, type DaySpend, type UDay,
 } from "./usage";
 
 // Plain-language forecast line for a window ("→ ~86% by reset" / "runs out …").
@@ -54,6 +54,54 @@ export function usageRow(label: string, sub: string, f: Forecast): string {
     <div class="up-reset">${resetTxt}</div>
   </div>`;
 }
+/**
+ * Today's spend, split by project and by session — the popover behind the footer's
+ * `today $x.xx`.
+ *
+ * Two rules it inherits from the dashboard's cost strip, for the same reasons:
+ *
+ *   • **A day with no split says so, rather than showing zeros.** `cc-usage-detail`
+ *     records from the day it shipped, so an older day legitimately has a total and no
+ *     breakdown — "we didn't keep this" and "it was free" are different facts.
+ *   • **`unattributed` is a row, not a rounding-away.** `daySpend` puts the difference
+ *     between the authoritative total and what the split accounts for on screen, so the
+ *     popover can never read lower than the footer segment that opened it.
+ *
+ * A session still running is a button (jumping to it is the obvious next move); one that
+ * has ended is a plain row, because there is nothing to jump to and a dead button that
+ * looks live is worse than a line of text.
+ */
+export function costPopHtml(d: DaySpend, live: Set<string>): string {
+  const maxP = d.projects[0]?.usd || 1;
+  const rows = d.projects.map((r) => `<div class="cp-row">
+      <div class="cp-top"><span class="cp-l${r.key ? "" : " cp-un"}">${esc(r.label)}</span><span class="cp-v">${uUsd2(r.usd)}</span></div>
+      <div class="cp-bar"><i style="width:${Math.max(2, r.usd / maxP * 100).toFixed(1)}%;${r.key ? `background:${esc(accentFor(r.key))}` : ""}"></i></div>
+    </div>`).join("");
+  const sess = d.sessions.map((r) => {
+    const on = live.has(r.key);
+    const inner = `<span class="cp-sl">${esc(r.label)}</span><span class="cp-ss">${esc(r.sub)}</span><span class="cp-v">${uUsd2(r.usd)}</span>`;
+    return on
+      ? `<button class="cp-s on" data-sel="${esc(r.key)}" title="Jump to this session">${inner}</button>`
+      : `<div class="cp-s">${inner}</div>`;
+  }).join("");
+  // Three different silences, and telling them apart is the whole honesty of this
+  // popover: nothing spent, spent-but-nothing-recorded, and recorded-by-project-only
+  // (the shape of the day you upgrade). One catch-all note would call the second of
+  // those "nothing yet" while a real figure sat above it.
+  const note = !d.total && !d.projects.length
+    ? "Nothing recorded today yet. A session's spend appears here as soon as one reports it."
+    : !d.projects.length && !d.sessions.length
+      ? "No breakdown for this day — it predates the record."
+      : !d.sessions.length
+        ? "No per-session split for this day — it predates the record."
+        : "";
+  return `<div class="up-h">Today's spend</div>
+    <div class="cp-tot">${uUsd2(d.total)}</div>
+    ${rows ? `<div class="cp-lbl">By project</div>${rows}` : ""}
+    ${sess ? `<div class="cp-lbl">By session</div><div class="cp-sess">${sess}</div>` : ""}
+    ${note ? `<div class="up-note">${note}</div>` : ""}`;
+}
+
 export let tokenScanning = false;
 export function setTokenScanning(v: boolean) { tokenScanning = v; }
 const USAGE_RANGES: [number, string][] = [[7, "7D"], [30, "30D"], [90, "90D"], [365, "12M"]];

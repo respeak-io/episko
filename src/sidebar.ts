@@ -15,9 +15,13 @@ import { dlog } from "./debug";
 import { esc, tilde } from "./format";
 import { iconFor, projGlyph } from "./icons";
 import { projectList } from "./grouping";
-import { dormantRows, groupBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, saveProjOrder, sessions,
+  PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
+  type PeekState,
+} from "./peek";
+import { dormantRows, groupBody, peekBody } from "./sidebarview";
+import {
+  activeId, extMirrorId, FAVORITES, folderDirty, peekPrefs, saveProjOrder, sessions,
   setProjOrder, sortMode, type SortMode,
 } from "./state";
 
@@ -82,24 +86,148 @@ export function renderSidebar() {
     const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
     const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
     const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
+    // **Every project header opens the dashboard, whatever put it in the list.** It used
+    // to depend on which of the three shapes below a project happened to land in, so a
+    // folder Episko only knew about from an external session, from a past one, or from a
+    // worktree whose session had ended was simply not clickable — with no disabled state
+    // to say so, because the attribute was absent rather than refused. "Has an Episko
+    // session or is a favourite" is not a fact about a project worth having a view gated
+    // on; the empty-but-real dashboard those folders get is the answer.
+    //
+    // Keyed to `repoRoot ?? path`: a checkout is not a project. `dashDays` filters
+    // history by `histProject().colorKey`, which regrafts every row onto the repo root —
+    // so a dashboard keyed by a worktree dir matches no sessions at all and renders a
+    // timeline of commits with nobody having worked on them. The checkouts are a card
+    // *inside* the project's dashboard, which is where a worktree belongs.
+    const dashRoot = p.repoRoot ?? p.path;
+    const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
     let head: string;
     if (p.sessions.length) {
-      head = `<div class="phead" data-sel="${p.sessions[0].id}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span></div>`;
+      head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
     } else if (isFav) {
-      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">launch →</span>`;
-      head = `<div class="phead empty-p" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span></div>`;
+      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
+      head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
     } else {
       // discovered via an external session or a restorable one only — not a saved project
       const tail = p.externals.length
         ? `<span class="pcount ext">${p.externals.length} ext</span>`
         : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span></div>`;
+      head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
     }
-    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}</div>`;
+    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
   }).join("");
   if (html === lastHtml) return; // nothing the sidebar shows has changed
   lastHtml = html;
   $("projects").innerHTML = html;
+  // The DOM the expansion lives on was just replaced, so re-apply it. This is the
+  // whole reason ./peek tracks a project *path* rather than an element.
+  applyPeek();
+}
+
+// ---------- peek: resting on a project reveals its idle checkouts ----------
+// ./peek owns the rules and is pure; this is the driver. Three things it has to get
+// right, and each of them is why the state does not live in the DOM:
+//
+//   1. **Hover must not be a render input.** renderSidebar skips its (7ms) DOM write
+//      when the markup is unchanged; making the expansion part of the string would
+//      bust that on every mouse move. So peekBody always renders the rows and this
+//      only toggles a class.
+//   2. **A repaint must not collapse an open group.** renderAll() fires on every
+//      telemetry event, so #projects is rebuilt under the pointer constantly —
+//      applyPeek() above re-applies the class to the new nodes.
+//   3. **An idle sidebar must cost nothing.** One timeout scheduled to the next
+//      deadline, not an interval.
+let peek: PeekState = PEEK_IDLE;
+let peekTimer: number | null = null;
+/// Which group the pointer is in. mouseover fires for every descendant, so this is
+/// what turns that stream into "entered a different group".
+let peekHover: string | null = null;
+
+function applyPeek() {
+  for (const el of $("projects").querySelectorAll<HTMLElement>(".pgroup")) {
+    el.classList.toggle("peek", el.dataset.path === peek.open);
+    // The arming hairline. Without it the group expands out of nowhere a second after
+    // you stopped moving, which reads as a glitch rather than as a deliberate delay —
+    // you cannot tell the app is counting unless it shows you.
+    const arming = !!peek.arming && el.dataset.path === peek.arming.path;
+    if (arming) {
+      // Re-run the fill, but from where the *timer* is rather than from zero. The class
+      // alone won't restart it on a group that was armed, cancelled and re-entered — and
+      // a plain restart is wrong the rest of the time, because this also runs after every
+      // repaint that changed the markup. renderAll() fires on each telemetry event, and a
+      // project with a live session repaints several times a second, so a bar that
+      // restarted here would crawl back to empty under the pointer while the timeout it
+      // depicts ran on to its original deadline: the one thing worse than no countdown is
+      // one that lies about how much is left. A negative delay offsets into the animation
+      // by however much has already elapsed.
+      const elapsed = Math.max(0, peekPrefs.openMs - (peek.arming!.at - Date.now()));
+      el.classList.remove("arming");
+      void el.offsetWidth;
+      el.style.setProperty("--peek-open", `${peekPrefs.openMs}ms`);
+      el.style.setProperty("--peek-arm-delay", `${-elapsed}ms`);
+    }
+    el.classList.toggle("arming", arming);
+  }
+}
+function peekSchedule() {
+  if (peekTimer !== null) { clearTimeout(peekTimer); peekTimer = null; }
+  const at = peekNextDeadline(peek);
+  if (at === null) return;
+  peekTimer = window.setTimeout(() => {
+    peekTimer = null;
+    peekAdvance(peekTick(peek, Date.now()));
+  }, Math.max(0, at - Date.now()));
+}
+/// Commit a new state: repaint only when what's on screen actually changed, then
+/// re-arm the timer.
+///
+/// **Both fields are on screen**, which is easy to forget: `open` is the expansion and
+/// `arming` is the hairline counting down to it. Comparing only `open` meant entering a
+/// group changed `arming` alone, no repaint happened, and the bar never appeared — the
+/// panel then opened a second later out of nowhere.
+function peekAdvance(next: PeekState) {
+  const before = peek.open + "|" + (peek.arming?.path ?? "");
+  peek = next;
+  if (peek.open + "|" + (peek.arming?.path ?? "") !== before) applyPeek();
+  peekSchedule();
+}
+
+export function initSidebarPeek() {
+  const container = $("projects");
+  // mouseover/mouseout rather than mouseenter/mouseleave: these bubble, so one pair
+  // of delegated listeners survives every re-render. Per-group listeners would have
+  // to be re-attached on each repaint, which is the bug this shape avoids.
+  container.addEventListener("mouseover", (e) => {
+    const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
+    const path = g?.dataset.path;
+    if (!path || path === peekHover) return;
+    peekHover = path;
+    peekAdvance(peekEnter(peek, path, Date.now(), peekPrefs));
+  });
+  container.addEventListener("mouseout", (e) => {
+    const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
+    const path = g?.dataset.path;
+    if (!path) return;
+    // mouseout also fires when crossing between children of the same group; only a
+    // pointer that has genuinely left the group's subtree counts as leaving it.
+    const to = e.relatedTarget as Node | null;
+    if (to && g!.contains(to)) return;
+    if (peekHover === path) peekHover = null;
+    peekAdvance(peekLeave(peek, path, Date.now(), peekPrefs));
+  });
+  // Leaving the rail through a gap between groups fires no group mouseout, so the
+  // container gets its own (non-bubbling, but bound directly) leave.
+  container.addEventListener("mouseleave", () => {
+    peekHover = null;
+    peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
+  });
+}
+
+/// Collapse whatever is expanded — called when peek is switched off in Settings, and
+/// after a launch, so the rail doesn't stay open over a pane you just started.
+export function closePeek() {
+  peekHover = null;
+  peekAdvance(PEEK_IDLE);
 }
 // Reordering of project groups, on pointer events (not HTML5 drag). The window now
 // sets dragDropEnabled:true so external file drops paste a path instead of navigating
@@ -134,8 +262,9 @@ export function initProjectDnD() {
   container.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !e.isPrimary) return;
     const t = e.target as HTMLElement;
-    // Leave the interactive bits (launch +, remove ✕, colour dot) to their own clicks.
-    if (t.closest(".padd, .plaunch, .premove, .pdot, .pdirty")) return;
+    // Leave the interactive bits (launch +, per-worktree +, remove ✕, colour dot) to
+    // their own clicks.
+    if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
     const g = t.closest<HTMLElement>(".pgroup");
     if (!g) return;
     candidate = g;
@@ -212,9 +341,16 @@ export function initFileDrop() {
 function shellEscapePath(p: string): string {
   return p.replace(/[^A-Za-z0-9_@%+=:,./-]/g, "\\$&");
 }
+// Guarded like `renderSidebar` above, and for the sharper of its two reasons: the rail
+// is nothing BUT buttons, and it rides `renderAll` — so on a busy fleet every one of
+// them was destroyed and rebuilt several times a second. That loses `:hover` under a
+// stationary pointer, and loses a click outright when the node is replaced between
+// mousedown and mouseup. What the rail shows (a glyph, an accent, an attention dot)
+// changes far more rarely than the events that repaint it.
+let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
-  $("railmini").innerHTML =
+  const html =
     `<button class="rm-btn" data-rail="1" title="Expand sidebar (${chord("B")})">»</button>` +
     projectList().map((p) => {
       const first = p.sessions[0];
@@ -230,4 +366,7 @@ export function renderMini() {
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
     `<button class="rm-btn rm-add" data-pal="1" title="New session (${chord("K")})">＋</button>`;
+  if (html === lastMiniHtml) return;
+  lastMiniHtml = html;
+  $("railmini").innerHTML = html;
 }

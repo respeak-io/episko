@@ -342,6 +342,8 @@ mod tests {
             port,
             sessions: Mutex::new(HashMap::new()),
             owned_pids: Mutex::new(HashSet::new()),
+            io_samples: Mutex::new(HashMap::new()),
+            io_retired: Mutex::new((0, 0)),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             caffeinate: Mutex::new(None),
@@ -706,9 +708,19 @@ mod tests {
         // child runs, so a chatty response could fill the buffer and deadlock.
         let out_path = cwd.join("claude-stdout.txt");
         let err_path = cwd.join("claude-stderr.txt");
+        // The prompt asks for a *tool call*, not just a reply, and that is deliberate:
+        // assertion 5 below checks `tool_input.command`, which only exists on a
+        // PostToolUse hook. The old prompt ("reply with pong") used no tools at all, so
+        // the whole tool-call half of the hook schema went unexercised — including the
+        // field the sidebar's git invalidation now reads. `--allowedTools Bash` is what
+        // lets it run without a UI to answer the permission prompt.
         let mut child = std::process::Command::new(&claude)
             .arg("-p")
-            .arg("Reply with exactly the word pong and nothing else.")
+            .arg("Do exactly two things and reply with nothing else: run the shell \
+                  command `echo pong` using the Bash tool, then use the Write tool to \
+                  create a file named pong.txt containing the word pong.")
+            .arg("--allowedTools")
+            .arg("Bash,Write")
             .arg("--session-id")
             .arg(&sid)
             .arg("--settings")
@@ -783,6 +795,64 @@ mod tests {
                 "no {want} hook arrived — got {names:?}"
             );
         }
+
+        // --- 3b. the tool-call fields, which only a hook from a *tool* carries ---
+        // `tool_name` drives the activity timeline and the risk label; `tool_input`
+        // carries the argument each surface shows. `tool_input.command` in particular
+        // is the app's only warning that an agent moved HEAD or added a worktree —
+        // `gitMutates` reads it off PostToolUse, and nothing else watches the
+        // filesystem, so if this field goes away the sidebar silently stops noticing
+        // a branch switch rather than failing. It is asserted here, against the real
+        // binary, because no local test can see Claude Code changing its own schema.
+        let tool_hook = events
+            .iter()
+            .find(|e| e["kind"] == "hook" && e["data"]["hook_event_name"] == "PostToolUse")
+            .unwrap_or_else(|| panic!(
+                "no PostToolUse hook arrived, though the prompt asked for a Bash call. \
+                 Either the hook name changed, or `--allowedTools Bash` no longer \
+                 permits one non-interactively. Got: {names:?}"
+            ));
+        assert_eq!(
+            tool_hook["data"]["tool_name"], "Bash",
+            "PostToolUse arrived without the tool name the timeline reads: {tool_hook}"
+        );
+        assert!(
+            tool_hook["data"]["tool_input"]["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("echo")),
+            "PostToolUse no longer carries `tool_input.command`; the sidebar's git \
+             invalidation reads it to know a checkout may have moved: {tool_hook}"
+        );
+
+        // --- 3c. `file_path`, absolute — the only signal that an agent changed checkout ---
+        // Claude Code pins a session's `cwd` to its launch directory and actively undoes
+        // any `cd` that leaves it ("Shell cwd was reset to …"), verified against 2.1.220.
+        // So when an agent creates a worktree and moves into it, `cwd` never changes and
+        // the sidebar would go on naming the checkout it left. What *does* name the new
+        // one is a write's `file_path` — which is why `driftTarget` reads it, and why it
+        // has to be absolute: a path relative to a cwd that never moved would resolve
+        // back into the old checkout and the drift would be invisible.
+        let write_hook = events
+            .iter()
+            .find(|e| e["kind"] == "hook"
+                && e["data"]["hook_event_name"] == "PostToolUse"
+                && e["data"]["tool_name"] == "Write")
+            .unwrap_or_else(|| panic!(
+                "no PostToolUse hook for a Write arrived, though the prompt asked for \
+                 one. Got tools: {:?}",
+                events.iter().filter_map(|e| e["data"]["tool_name"].as_str()).collect::<Vec<_>>()
+            ));
+        let fp = write_hook["data"]["tool_input"]["file_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!(
+                "Write's PostToolUse no longer carries `tool_input.file_path`; drift \
+                 detection has no other signal that an agent changed checkout: {write_hook}"
+            ));
+        assert!(
+            std::path::Path::new(fp).is_absolute(),
+            "Write's `file_path` is no longer absolute ({fp:?}); driftTarget matches it \
+             against checkout roots, which only works for an absolute path"
+        );
 
         // `cwd` is how a hook is correlated with the pane's workdir.
         let hook = events.iter().find(|e| e["kind"] == "hook").expect("a hook event");

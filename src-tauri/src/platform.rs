@@ -59,6 +59,45 @@ pub(crate) fn norm_path(p: &str) -> String {
     }
 }
 
+/// Windows `canonicalize` returns the *verbatim* form — `\\?\C:\Work` — which encodes
+/// to a different directory than the `C:\Work` Claude records, so the prefix has to
+/// come back off. Split out from `physical_cwd` because it is the half that can be
+/// tested on every OS: the other half needs a real symlink on disk.
+pub(crate) fn strip_verbatim(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        p.to_string()
+    }
+}
+
+/// The *physical* spelling of `cwd` — the one Claude will have recorded, and the one
+/// `git` reports back.
+///
+/// This is not Claude being clever: a process that `chdir`s through a symlink still
+/// reports the resolved path from `getcwd()`, so a session launched in `/tmp/x` (on
+/// macOS a symlink to `/private/tmp/x`) writes its transcript under the
+/// `-private-tmp-x` encoding and under no other. Encoding the spelling the *user*
+/// picked would look in a directory that never exists, and the caller would read that
+/// as "this project has no past sessions" rather than as a failure.
+///
+/// It lives here rather than in `usage.rs` because the transcript encoder is no longer
+/// the only caller: `git::repo_root_of` needs the same resolution for the same
+/// underlying reason — `git` resolves symlinks too, so a root read off the filesystem
+/// only equals the one `git_repo_info` reports if both are physical.
+///
+/// Falls back to the input when the path won't resolve. A workdir that has been
+/// deleted is a real case here (worktrees go away), and a best-effort spelling is
+/// worth more to every caller than an error none can act on.
+pub(crate) fn physical_cwd(cwd: &str) -> String {
+    match std::fs::canonicalize(cwd) {
+        Ok(p) => strip_verbatim(&p.to_string_lossy()),
+        Err(_) => cwd.to_string(),
+    }
+}
+
 /// A `std::process::Command` that never flashes a console window on Windows. A GUI
 /// app spawning a console subprocess (git, where, curl, taskkill) pops a black
 /// window for each call without `CREATE_NO_WINDOW`; on other platforms this is a
@@ -247,15 +286,24 @@ pub(crate) fn sh_quote(s: &str) -> String {
 }
 
 /// One `ps -o <fields>=` line for a single pid (trimmed), or None if the process
-/// is gone / no output. Windows has no `ps`; the remaining `ps` consumers
-/// (per-session CPU/RAM, terminal-window focus) are macOS-only for now, so this
-/// is None there. External-session listing does NOT go through here — it uses
-/// the cross-platform `ProcTable` (in `lib.rs`, and `external.rs` once split).
-#[cfg(windows)]
-pub(crate) fn ps_one(_pid: u32, _fields: &str) -> Option<String> {
-    None
-}
-
+/// is gone / no output.
+///
+/// **Not compiled on Windows at all**, and that is now load-bearing rather than tidy.
+/// There used to be a `cfg(windows)` stub returning None, because `session_resources`
+/// called this on every platform for per-session CPU/RAM; that reader now measures disk
+/// I/O through `sysinfo` instead, which leaves the *macOS half* of
+/// `focus_external_session` as the sole caller — the Windows half now exists too, but
+/// finds its window through the win32 window APIs and never asks `ps` anything. A stub
+/// with no callers is `dead_code`, which is a **CI failure** under `-D warnings`, and
+/// one only the Windows leg can see.
+///
+/// The general shape of that trap: removing the last cross-platform caller of a
+/// cfg-gated helper breaks the *other* platform's build, invisibly from this one. The
+/// cfg flip in CLAUDE.md is what catches it; "I added no cfg arms" is not a reason to
+/// skip it, because deleting a call is enough.
+///
+/// External-session *listing* does NOT go through here — it uses the cross-platform
+/// `ProcTable` in `external.rs`.
 #[cfg(not(windows))]
 pub(crate) fn ps_one(pid: u32, fields: &str) -> Option<String> {
     let out = sys_command("ps")
@@ -733,6 +781,20 @@ mod tests {
     fn norm_path_is_identity_off_windows() {
         assert_eq!(norm_path("/Users/tim/dev/episko"), "/Users/tim/dev/episko");
         assert_eq!(norm_path("a\\b"), "a\\b"); // a backslash is a legal filename char here
+    }
+
+    /// The verbatim prefix Windows' `canonicalize` adds, which must reach neither the
+    /// transcript encoder nor a repo root the frontend compares as a string. Pure
+    /// string work, so it is checked on every OS rather than only on the leg that can
+    /// produce one — this is the half of the symlink fix that a macOS developer would
+    /// otherwise never run.
+    #[test]
+    fn verbatim_prefixes_are_stripped() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Work\Respeak"), r"C:\Work\Respeak");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\proj"), r"\\srv\share\proj");
+        // Anything already in its normal form is returned untouched, on either OS.
+        assert_eq!(strip_verbatim(r"C:\Work\Respeak"), r"C:\Work\Respeak");
+        assert_eq!(strip_verbatim("/Users/tim/dev"), "/Users/tim/dev");
     }
 
     /// The external-terminal engines hand `open -a` a generated `.command` *script*,

@@ -1,8 +1,10 @@
-// The project context menu and the appearance panel it shares with the sidebar's
-// colour dots. One module because they are one interaction: the panel opens either
-// standalone at the cursor or as the menu's Appearance submenu, and each closes the
-// other — the panel clears the menu's `.sub-open` row, and every button in it commits
-// and so closes the whole stack.
+// The project context menu, the worktree one, and the appearance panel they share
+// with the sidebar's colour dots. One module because they are one interaction: the
+// panel opens either standalone at the cursor or as the menu's Appearance submenu,
+// and each closes the other — the panel clears the menu's `.sub-open` row, and every
+// button in it commits and so closes the whole stack. The two menus share the one
+// `#ctxMenu` element and its `.mp-*` skin for the same reason; only one can be open,
+// so each opener clears the other's target.
 //
 // Cosmetic, in Phase-1 terms: nothing here is on renderAll()'s path. It paints on
 // right-click and on a dot click, and nowhere else.
@@ -11,25 +13,29 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import { closeFootMenus } from "./footer";
+import { openGraph } from "./graphview";
 import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
-import { openWt } from "./worktree";
+import { openWt, removeWorktreeAt } from "./worktree";
+import { copyPath, openTerminalIn } from "./actions";
 import { isAgent } from "./types";
 import {
-  accentFor, activeId, colorOverrides, engineDef, FAVORITES, sessions, termEngine,
+  accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, sessions,
+  termEngine,
 } from "./state";
 
-// The six things a menu row does that this module does not own — panes, the project
+// The seven things a menu row does that this module does not own — panes, the project
 // list and the repaint all belong to main.ts. Past the ~4 where per-callee setters
 // stop reading as anything but noise, so it takes one host (settings.ts's deviation).
 let host: {
   renderAll: () => void;
   requestLaunch: (project: string, path: string) => void;
+  launchWorktree: (project: string, root: string, dir: string, branch: string) => void;
   launchShell: (project: string, workdir: string, opts: { colorKey?: string }) => void;
   openProjectFolder: (key: string) => void;
   addProjectPath: (dir: string) => void;
   removeFavorite: (path: string) => void;
 } = {
-  renderAll: () => {}, requestLaunch: () => {}, launchShell: () => {},
+  renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
   openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
@@ -125,9 +131,12 @@ const ctxRowHtml = (r: CtxRow) =>
   `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}"><span class="mp-ic">${r.ic}</span>`
   + `<span class="mp-main"><span class="mp-l">${esc(r.label)}</span>${r.sub ? `<span class="mp-s">${esc(r.sub)}</span>` : ""}</span>`
   + (r.chev ? `<span class="mp-chev">›</span>` : "") + `</button>`;
+const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
+  rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
+  wtTarget = null; // one #ctxMenu, one target — see the module header
   ctxKey = key;
   const fav = FAVORITES.some((f) => f.path === key);
   const live = [...sessions.values()].filter((s) => s.colorKey === key && isAgent(s)).length;
@@ -137,6 +146,9 @@ function openCtxMenu(key: string, x: number, y: number) {
     { act: "worktree", ic: "⑃", label: "New worktree session…", sub: "on a branch of its own" },
     { act: "terminal", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
     null,
+    // Dropped below unless the probe says this folder is a repo — a graph row on a
+    // plain directory would open a panel with nothing but an error in it.
+    { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
     { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
@@ -155,34 +167,97 @@ function openCtxMenu(key: string, x: number, y: number) {
     `<div class="mp-head">`
     + (ic ? `<img class="mp-hico" src="${ic}" alt="" />` : `<span class="mp-hsw" style="background:${accentFor(key)}"></span>`)
     + `<span class="mp-hmain"><span class="mp-hname">${esc(projName(key))}</span><span class="mp-hpath">${esc(tilde(key))}</span></span></div>`
-    + rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
+    + ctxRowsHtml(rows);
   placePop(menu, x, y);
-  // A worktree only means something in a git repo. Ask *after* opening — the menu
-  // must feel instant — then either name the branch it would fork from or drop the
-  // row entirely. (A detached HEAD also answers None and loses the row; forking a
-  // worktree from one is a corner case not worth a second probe.)
-  invoke<string | null>("git_branch", { workdir: key }).then((b) => {
+  // Two rows only mean something in a git repo. Ask *after* opening — the menu must
+  // feel instant — then drop what doesn't apply and re-place the (now shorter) menu.
+  // One probe answers both: `git_head` returns None for anything that isn't a repo
+  // with a commit, and a null `branch` inside it means a detached HEAD, which still
+  // has a history to graph but no branch to fork a worktree from.
+  invoke<{ branch: string | null; short: string } | null>("git_head", { workdir: key }).then((h) => {
     if (ctxKey !== key) return; // menu closed or moved to another project meanwhile
-    const row = menu.querySelector<HTMLElement>('[data-ctx="worktree"]');
-    if (!row) return;
-    if (!b) { row.remove(); placePop(menu, x, y); return; }
-    const sub = row.querySelector(".mp-s");
-    if (sub) sub.textContent = `branch off ${b}`;
+    const drop = (act: string) => menu.querySelector<HTMLElement>(`[data-ctx="${act}"]`)?.remove();
+    if (!h) { drop("worktree"); drop("graph"); placePop(menu, x, y); return; }
+    if (!h.branch) { drop("worktree"); placePop(menu, x, y); return; }
+    const sub = menu.querySelector('[data-ctx="worktree"] .mp-s');
+    if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
-// A plain shell in this project's folder — embedded gets an in-app pane, the
-// external engines their own window (the same split as openPlainTerminal).
-function openTerminalIn(project: string, dir: string) {
-  if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
-  void host.launchShell(project, dir, { colorKey: dir });
+// ---------- worktree cluster context menu ----------
+// Right-clicking a ⑃ cluster header in the sidebar. The header's ＋ already covers
+// the one verb worth a single click; everything else a checkout can be — opened,
+// walked to in a terminal, pruned — lives here rather than as four more glyphs
+// crowding an 11px row.
+//
+// Deliberately NOT the project menu with different rows: a cluster is one checkout,
+// and its verbs act on `dir` while still belonging to `root` (the colorKey the whole
+// project groups under). Conflating them is what would put a worktree session in a
+// project group of its own — the same trap `launchWorktree` exists to avoid.
+type WtTarget = { dir: string; root: string; project: string; branch: string; isMain: boolean };
+let wtTarget: WtTarget | null = null;
+
+// What removing this checkout would actually cost, said before it is clicked. An
+// external session blocks it outright (the backend can't see one, and git would
+// delete the folder out from under it), so that row is disabled rather than offered.
+function removeRow(t: WtTarget): CtxRow {
+  const ext = externals.filter((e) => e.cwd === t.dir).length;
+  if (ext) return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub: `blocked — ${ext} session${ext > 1 ? "s" : ""} running outside Episko`, cls: "dis" };
+  const live = [...sessions.values()].filter((s) => s.workdir === t.dir).length;
+  const sub = live
+    ? `closes ${live} session${live > 1 ? "s" : ""}, then deletes the folder`
+    : "deletes the folder; the branch only if merged";
+  return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub, cls: "mp-danger" };
 }
-async function copyPath(dir: string) {
-  try { await navigator.clipboard.writeText(dir); toast("Path copied"); }
-  catch { toast(dir); } // clipboard denied — at least show what it was
+
+function openWtMenu(t: WtTarget, x: number, y: number) {
+  closeColorPop();
+  ctxKey = null; // one #ctxMenu, one target — see the module header
+  wtTarget = t;
+  const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isAgent(s)).length;
+  const rows: (CtxRow | null)[] = [
+    { act: "wtlaunch", ic: "＋", label: "New session here", sub: live ? `${live} already running in this checkout` : "start Claude Code on this branch" },
+    { act: "wtterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
+    null,
+    { act: "wtfolder", ic: "⌂", label: "Open checkout folder", sub: FILE_MANAGER },
+    { act: "wtcopy", ic: "⧉", label: "Copy path" },
+    null,
+    { act: "wtdialog", ic: "⑃", label: "All worktrees…", sub: "create, switch, prune" },
+    null,
+    // The main checkout is not removable and never will be — git refuses it. Saying so
+    // beats dropping the row, which would read as "Episko forgot how to prune this one".
+    t.isMain
+      ? { act: "", ic: "⌫", label: "Remove worktree…", sub: "this is the repo's main checkout", cls: "dis" }
+      : removeRow(t),
+  ];
+  const menu = $("ctxMenu");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(t.branch || t.dir)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">⑃ ${esc(t.branch)}</span><span class="mp-hpath">${esc(tilde(t.dir))}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
 }
+
+$("ctxMenu").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
+  if (!b || !wtTarget || b.classList.contains("dis")) return;
+  const t = wtTarget;
+  closeCtxMenu(); closeColorPop();
+  switch (b.dataset.ctx) {
+    case "wtlaunch": host.launchWorktree(t.project, t.root, t.dir, t.branch); break;
+    case "wtterm": openTerminalIn(t.project, t.dir); break;
+    case "wtfolder": host.openProjectFolder(t.dir); break;
+    case "wtcopy": copyPath(t.dir); break;
+    // The dialog is the repo's, not the checkout's — it opens on the root, which is
+    // also the only cwd `git worktree add` can be driven from. But in *manage* mode
+    // and focused at this checkout: reached from a cluster header it is the worktree
+    // list, not the launcher, and every difference between the two is in `openWt`.
+    case "wtdialog": openWt(t.project, t.root, null, { manage: true, focusDir: t.dir }); break;
+    case "wtremove": void removeWorktreeAt(t.project, t.root, t.dir, t.branch); break;
+  }
+});
 
 // Appearance is the one row that opens rather than commits: the menu stays put and
 // the swatch panel hangs off its edge. Re-entrant — `mouseover` fires again for
@@ -214,13 +289,29 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "launch": host.requestLaunch(name, key); break;
     case "worktree": openWt(name, key); break;
     case "terminal": openTerminalIn(name, key); break;
+    case "graph": void openGraph(key, name); break;
     case "folder": host.openProjectFolder(key); break;
     case "copypath": copyPath(key); break;
     case "addproj": host.addProjectPath(key); break;
     case "removeproj": host.removeFavorite(key); toast(`Removed ${name}`); break;
   }
 });
+// `data-wt` is matched first and on its own element: a ⑃ cluster header sits inside a
+// project group, so a single `[data-key],[data-wt]` closest() would be decided by
+// which happens to be nearer in the tree rather than by what was actually clicked.
 document.addEventListener("contextmenu", (e) => {
+  const wt = (e.target as HTMLElement).closest<HTMLElement>("[data-wt]");
+  if (wt?.dataset.wt) {
+    e.preventDefault();
+    openWtMenu({
+      dir: wt.dataset.wt,
+      root: wt.dataset.root || wt.dataset.wt,
+      project: wt.dataset.proj || basename(wt.dataset.wt),
+      branch: wt.dataset.branch || basename(wt.dataset.wt),
+      isMain: wt.dataset.main === "1",
+    }, e.clientX, e.clientY);
+    return;
+  }
   const el = (e.target as HTMLElement).closest<HTMLElement>("[data-key]");
   if (!el || !el.dataset.key) return;
   e.preventDefault();

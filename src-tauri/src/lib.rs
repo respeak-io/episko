@@ -9,9 +9,12 @@
 
 mod external;
 mod git;
+mod github;
 mod icons;
+mod notes;
 mod platform;
 mod pty;
+mod summarize;
 mod tasks;
 mod telemetry;
 mod usage;
@@ -23,9 +26,9 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use portable_pty::{ChildKiller, MasterPty};
-use tauri::menu::MenuBuilder;
+use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
-use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::SubmenuBuilder;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -53,6 +56,16 @@ pub(crate) struct AppState {
     /// as "external" — robust to the session id changing under /resume or /clear
     /// (which rewrites `~/.claude/sessions/<pid>.json` with the new id).
     owned_pids: Mutex<HashSet<u32>>,
+    /// Last disk-I/O reading per owned pid: (total_read, total_written, when).
+    /// `all_sessions_resources` differences against this to turn the kernel's lifetime
+    /// byte counters into a rate — see there for why sysinfo's own deltas aren't used,
+    /// and why the differencing is per pid rather than over the summed total.
+    io_samples: Mutex<HashMap<u32, (u64, u64, std::time::Instant)>>,
+    /// (read, written) bytes belonging to sessions that have since exited. Their pids
+    /// leave `io_samples` when they stop being owned, and without this their bytes would
+    /// leave the app-wide total with them — so closing a pane would walk the run's churn
+    /// backwards.
+    io_retired: Mutex<(u64, u64)>,
     /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
@@ -113,21 +126,38 @@ fn confirm_quit(app: AppHandle) {
 
 // ---------- macOS menu-bar (tray) ----------
 
+/// One row of the tray menu, as the frontend lays it out. It sends a *rendered
+/// list* rather than a set of sessions because the order and the grouping are the
+/// sidebar's own (`projectList`), and only that side knows them.
+///
+/// `shape` and `rgb` come from the frontend for the same reason: `GCLASS` already
+/// maps a status to a class and `styles.css` gives that class its hue, so choosing
+/// here would be a second copy of the palette — one that would silently part company
+/// with the sidebar the first time a colour is re-stepped for the light theme.
 #[derive(serde::Deserialize)]
-struct TrayItem {
-    id: String,
-    label: String,
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum TrayRow {
+    /// A clickable session. `id` is the session id the `sid` catch-all in the tray's
+    /// menu handler turns back into a `tray-select`.
+    Session { id: String, label: String, shape: String, rgb: [u8; 3] },
+    /// A project heading, rendered as a *disabled* item — the standard macOS idiom,
+    /// and it keeps every session one click away where a submenu per project would
+    /// cost a hover each. Disabled also means it fires no `MenuEvent`, which matters:
+    /// the handler treats every id it doesn't recognise as a session to select.
+    Header { label: String },
+    Sep,
 }
 
-/// Rebuild the tray menu to mirror the sidebar: one clickable row per session
-/// (with its status), plus Show / Quit. `title` is the short text shown next to
-/// the menu-bar icon (macOS); `tooltip` is the hover text.
+/// Rebuild the tray menu to mirror the sidebar: the sessions grouped under their
+/// projects, each carrying its status as a coloured icon, plus Show / Quit. `title`
+/// is the short text shown next to the menu-bar icon (macOS); `tooltip` is the hover
+/// text.
 #[tauri::command]
 fn update_tray(
     app: AppHandle,
     title: String,
     tooltip: String,
-    items: Vec<TrayItem>,
+    items: Vec<TrayRow>,
 ) -> Result<(), String> {
     let tray = match app.tray_by_id("main") {
         Some(t) => t,
@@ -137,8 +167,29 @@ fn update_tray(
     if items.is_empty() {
         mb = mb.text("none", "No active sessions");
     } else {
-        for it in &items {
-            mb = mb.text(it.id.clone(), it.label.clone());
+        for row in &items {
+            mb = match row {
+                TrayRow::Sep => mb.separator(),
+                TrayRow::Header { label } => {
+                    let it = MenuItemBuilder::new(label)
+                        .enabled(false)
+                        .build(&app)
+                        .map_err(|e| e.to_string())?;
+                    mb.item(&it)
+                }
+                TrayRow::Session { id, label, shape, rgb } => {
+                    // NOT a template image: muda hands the icon to AppKit untouched,
+                    // and a template one would be re-tinted to the menu's text colour,
+                    // which is the exact greyness this replaces. (The *tray* icon in
+                    // `run()` is a template on purpose — it must adapt to the bar.)
+                    let icon = tauri::image::Image::new_owned(crate::icons::glyph_rgba(shape, *rgb), 32, 32);
+                    let it = IconMenuItemBuilder::with_id(id.clone(), label)
+                        .icon(icon)
+                        .build(&app)
+                        .map_err(|e| e.to_string())?;
+                    mb.item(&it)
+                }
+            };
         }
     }
     let menu = mb
@@ -212,6 +263,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Terminal copy/paste (Ctrl+Shift+C / Ctrl+Shift+V) reads and writes the
+        // clipboard from here rather than through `navigator.clipboard`: reading it
+        // in the WebView needs the `clipboard-read` permission, which wry only
+        // auto-grants when the webview was built with `enable_clipboard_access()`
+        // (Tauri leaves it off), so WebView2 would raise its own permission prompt
+        // and WKWebView its paste-confirmation button. See `clipboardKeys`.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // Windows analog of the macOS Cmd+Q catcher in `setup` below: Windows gets
         // no app menu (see there), so quitting means closing the window. Intercept
         // the close and run the same frontend confirm flow — only `confirm_quit`
@@ -243,6 +301,8 @@ pub fn run() {
                 port,
                 sessions: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
+                io_samples: Mutex::new(HashMap::new()),
+                io_retired: Mutex::new((0, 0)),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
@@ -250,6 +310,52 @@ pub fn run() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || run_telemetry_server(server, handle));
+
+            // ---- The window (one title bar, not two) ----
+            // The app draws its own header, so the native title bar above it is a
+            // second one saying less. macOS can hide it and keep the parts worth
+            // keeping: `titleBarStyle: "Overlay"` + `hiddenTitle` in tauri.conf.json
+            // float the real traffic lights over our header (the green one is
+            // *zoom/fullscreen* — no <button> reproduces that), and
+            // `trafficLightPosition` centres them in its 40px. Windows has no such
+            // style, so there the frame goes entirely and the header draws its own
+            // minimize/maximize/close (`#winCtl`).
+            //
+            // `trafficLightPosition.y` is *not* the gap above the buttons, which is
+            // why 14 looked top-heavy for a year: tao resizes the titlebar container
+            // to `button_height + y` and pins it to the window top, but never moves
+            // the button inside it — and AppKit leaves it at `origin.y = 9` of a
+            // 14pt-tall button. So the visible gap is `y - 9`, and centring in a
+            // 40px header wants `9 + (40 - 14) / 2` = **22**. Change `.top`'s height
+            // and this number moves with it.
+            //
+            // Hence this window is built here rather than by the config (`create:
+            // false` above): `decorations` is not a per-platform config key, and a
+            // `tauri.windows.conf.json` would replace the whole `windows` array —
+            // json merge-patch, so every shared key would exist twice and drift.
+            // Flipping it *after* creation is not the same thing either: tauri only
+            // attaches its undecorated-resize child window when the webview is
+            // created over an already-undecorated window, so a late flip yields a
+            // window whose edges cannot be dragged at all (the WebView2 child
+            // swallows the hit test). `from_config` keeps one definition and
+            // cfg-gates the single flag that differs.
+            //
+            // One thing falls out for free: the webview now starts *after*
+            // `app.manage`, so the frontend cannot invoke a command before the
+            // state that command expects exists.
+            #[allow(unused_mut)] // `mut` is only used by the windows arm below
+            let mut win_cfg = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .expect("main window config in tauri.conf.json");
+            #[cfg(windows)]
+            {
+                win_cfg.decorations = false;
+            }
+            tauri::WebviewWindowBuilder::from_config(app, &win_cfg)?.build()?;
 
             // macOS menu-bar (tray) icon — its menu mirrors the sidebar and is
             // rebuilt from the frontend via `update_tray`.
@@ -396,17 +502,33 @@ pub fn run() {
             git::git_head,
             git::git_diffstat,
             git::git_diff,
+            git::git_graph,
+            git::git_commit_message,
             git::git_action,
-            pty::session_resources,
+            pty::all_sessions_resources,
             git::create_worktree,
             platform::set_caffeinate,
             telemetry::resolve_permission,
             git::list_worktrees,
+            git::worktree_heads,
             git::remove_worktree,
             git::git_branch_list,
             git::delete_branch,
             git::switch_branch,
             git::git_commit_info,
+            git::git_log_days,
+            git::project_facts,
+            github::gh_threads,
+            github::gh_invalidate,
+            github::gh_claim,
+            github::gh_release,
+            github::gh_close_issue,
+            github::gh_day_activity,
+            github::claim_policy,
+            github::list_kept,
+            github::set_kept,
+            notes::list_shared_notes,
+            notes::set_shared_note,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,
@@ -424,8 +546,14 @@ pub fn run() {
             external::list_external_sessions,
             external::focus_external_session,
             usage::read_transcript,
+            usage::move_session_transcript,
             usage::list_past_sessions,
+            usage::list_session_history,
             usage::token_usage_by_day,
+            summarize::summarize_day,
+            summarize::read_digest,
+            summarize::has_digest,
+            summarize::write_digest,
             icons::find_project_icon,
             icons::read_custom_icon,
             platform::read_legacy_localstorage,

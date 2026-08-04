@@ -35,26 +35,446 @@ export function modelFamily(m: string): string {
 // which the Usage analytics tab reads. The split is telemetry-only, so it records
 // from the day this ships forward; the totals (and the transcript-scanned tokens)
 // still carry full history. See the Usage panel section below.
-export interface DayDetail { models: Record<string, number>; projects: Record<string, number>; sessions: string[] }
+/// What one session spent on one day. This replaced a bare `sessions: string[]`, which
+/// recorded *which* ids contributed but not what any of them cost — write-only for its
+/// whole life, and unable to answer the only question anyone asks of it ("where did
+/// today go?"). Old stored days therefore have no `sess` at all, exactly as they have no
+/// `projects`: the split records from the day it ships forward, and a day without one
+/// says so rather than showing zeros.
+export interface DaySess { usd: number; title: string; project: string }
+export interface DayDetail {
+  models: Record<string, number>;
+  projects: Record<string, number>;
+  sess?: Record<string, DaySess>;
+}
 export const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
 export const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
-export function todayKey() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+export function todayKey() { return dayKeyOf(Date.now()); }
+/// `todayKey` for an arbitrary instant. Local wall-clock, like every key in both stores:
+/// a calendar day in the user's own timezone, never a UTC one.
+export function dayKeyOf(ms: number) { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+
+/**
+ * The two rollups are written on different terms, and the split is the point.
+ *
+ * `cc-usage` is the day's money and the footer reads it directly — it stays **eager**,
+ * because losing spend to a crash is the one thing here nobody can reconstruct, and it
+ * is small (measured: 980 chars over 33 days).
+ *
+ * `cc-usage-detail` is *attribution*, it is **25× bigger** (24,586 chars over the same
+ * 33 days, and growing with every session now that it carries a per-session map), and
+ * it was written on the same trigger — every cost delta, so up to once per session per
+ * `refreshInterval` (3s). That is a 25KB `stringify` + synchronous `setItem` roughly
+ * once a second on a working fleet, to record a breakdown read once a day.
+ *
+ * So the detail write is floored. Divergence after a crash is not a silent loss:
+ * `daySpend` already puts what the split cannot account for on screen as
+ * `unattributed`, which is exactly what a lost minute of attribution looks like.
+ */
+const DETAIL_SAVE_FLOOR_MS = 30_000;
+/// Both rollups were unbounded, which on a daily key means "grows forever". The Usage
+/// panel's widest range is 12 months, so a year and a bit is everything anything reads.
+const USAGE_MAX_DAYS = 420;
+let detailSavedAt = 0;
+let detailDirty = false;
+let detailDay = "";
+function trimDays(o: Record<string, unknown>) {
+  const keys = Object.keys(o).sort();
+  for (const old of keys.slice(0, Math.max(0, keys.length - USAGE_MAX_DAYS))) delete o[old];
+}
+/// Write the attribution split out now — on the floor, across a midnight, and from the
+/// quit path. Kept separate from `flushIo` because the two have different triggers and
+/// only ./main's quit handler ever wants both.
+/// Only a test needs this: the floor's bookkeeping is module state that outlives one
+/// `it`, so without it a later case inherits an earlier one's "written just now" and
+/// sees a write it expected to be held back (or the reverse).
+export function resetUsageWrites() { detailSavedAt = 0; detailDirty = false; detailDay = ""; }
+export function flushUsageDetail(): void {
+  if (!detailDirty) return;
+  detailDirty = false;
+  detailSavedAt = Date.now();
+  trimDays(usageDetail);
+  localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
+}
+
 export function addUsage(delta: number, s?: Sess) {
   if (!(delta > 0)) return;
   const k = todayKey();
   usage[k] = (usage[k] || 0) + delta;
+  trimDays(usage);
   localStorage.setItem("cc-usage", JSON.stringify(usage));
   if (!s || !isAgent(s)) return;
   // Attribute the cost delta to whichever model is active right now and to the
   // session's project — the closest honest split the statusLine data allows.
-  const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {}, sessions: [] });
+  const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {} });
   const fam = modelFamily(s.model);
   d.models[fam] = (d.models[fam] || 0) + delta;
   const proj = s.project || basename(s.workdir) || "unknown";
   d.projects[proj] = (d.projects[proj] || 0) + delta;
-  if (s.id && !d.sessions.includes(s.id)) d.sessions.push(s.id);
-  localStorage.setItem("cc-usage-detail", JSON.stringify(usageDetail));
+  if (!s.id) return;
+  const bag = d.sess || (d.sess = {});
+  const e = bag[s.id] || (bag[s.id] = { usd: 0, title: "", project: proj });
+  e.usd += delta;
+  // Re-stamped on every increment, not written once: a session's title arrives *after*
+  // its first dollar — Claude sets it from the conversation, and the pane starts with
+  // an empty one — so first-write-wins would leave the busiest rows unnamed.
+  if (s.title) e.title = s.title;
+  e.project = proj;
+  // A day left behind is written regardless of the floor — nothing adds to it again,
+  // so a throttled write would drop its tail permanently rather than merely late.
+  const rolled = detailDay !== "" && detailDay !== k;
+  detailDay = k;
+  detailDirty = true;
+  if (rolled || Date.now() - detailSavedAt >= DETAIL_SAVE_FLOOR_MS) flushUsageDetail();
 }
+
+/// One day's spend, split the two ways anyone actually asks for it. Pure arithmetic over
+/// the stored rollup so ./footer only has to paint it.
+///
+/// **The remainder is part of the answer, and BOTH splits need one.** `total` is
+/// `cc-usage` for that day; each split is a different slice of `cc-usage-detail` for the
+/// same day, and each can fall short on its own. The case is not exotic — it is the day
+/// you upgrade: the day's total is already banked, and a split introduced by that build
+/// starts from whatever is spent after it. So the two lists routinely disagree with each
+/// other as well as with the total, and a list that quietly summed lower than the footer
+/// segment that opened it would be the exact defect the projects row was added to avoid.
+///
+/// A split with *nothing* in it is left empty rather than given a lone `unattributed`
+/// row: the reader says "this day predates the record", which is the true statement, and
+/// one anonymous row claiming the whole day reads like a session nobody can identify.
+export interface SpendRow { key: string; label: string; sub: string; usd: number }
+export interface DaySpend { total: number; projects: SpendRow[]; sessions: SpendRow[]; split: number }
+/// Half a cent, not zero: both figures are sums of the same deltas in a different order,
+/// so a fully attributed day still differs in the last place, and a `$0.00 unattributed`
+/// row is noise that reads as a bug.
+const SPEND_EPS = 0.005;
+export function daySpend(
+  detail: Record<string, DayDetail | undefined>, day: string, total: number,
+): DaySpend {
+  const d = detail[day];
+  const rest = (rows: SpendRow[]): SpendRow[] => {
+    const missing = total - rows.reduce((n, r) => n + r.usd, 0);
+    if (rows.length && missing > SPEND_EPS) rows.push({ key: "", label: "unattributed", sub: "", usd: missing });
+    return rows;
+  };
+  const projects = Object.entries(d?.projects || {}).filter(([, v]) => v > 0)
+    .map(([k, v]) => ({ key: k, label: k, sub: "", usd: v }))
+    .sort((a, b) => b.usd - a.usd);
+  const split = projects.reduce((n, r) => n + r.usd, 0);
+  const sessions = Object.entries(d?.sess || {}).filter(([, v]) => v.usd > 0)
+    .map(([id, v]) => ({ key: id, label: v.title || "untitled session", sub: v.project, usd: v.usd }))
+    .sort((a, b) => b.usd - a.usd);
+  return { total, projects: rest(projects), sessions: rest(sessions), split };
+}
+
+// ---------- the daily disk-I/O rollup ----------
+
+/// Bytes read and written per day, in MiB. **This is the only durable record of it.**
+///
+/// `all_sessions_resources` reports a *run* figure — the kernel's per-process counters
+/// for every claude pid Episko owns, plus `io_retired` for the ones that have exited —
+/// and all of that lives in `AppState`, so quitting the app takes it with it. "Total
+/// read/written" therefore meant "since this Episko started", which is a window nobody
+/// chose and which reads as a lifetime figure sitting next to a lifetime-shaped label.
+///
+/// So the increments are banked here, keyed by day, in the shape `cc-usage` already
+/// uses. There is deliberately no back-fill: days before this shipped have no entry,
+/// which the reader renders as "not recorded" rather than as zero.
+export interface DayIo { r: number; w: number }
+const IO_KEY = "cc-io";
+/// ~14 months of days at ~40 bytes each. Same reasoning as `COST_BASE_MAX`: bounded by
+/// count so the key can't grow without limit on a machine that is never cleared.
+const IO_MAX_DAYS = 420;
+export const dayIo: Record<string, DayIo> = ((): Record<string, DayIo> => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(IO_KEY) || "{}") as Record<string, DayIo>;
+    const out: Record<string, DayIo> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (v && typeof v.r === "number" && typeof v.w === "number") out[k] = v;
+    }
+    return out;
+  } catch { return {}; }
+})();
+
+/// The increment between two readings of a cumulative counter that restarts.
+///
+/// A restart is the *normal* case here, not an edge one: every Episko launch begins a
+/// new run whose counters start near zero, so the reading routinely goes down. Clamping
+/// at zero rather than trusting the difference is what keeps a restart from booking a
+/// negative day — the same drop-branch reasoning as `costDelta` above, arrived at for
+/// the same reason. With no previous reading the whole figure is the increment: this
+/// process spawned those pids, so everything they have churned belongs to this run.
+export function ioDelta(cur: DayIo, prev: DayIo | null): DayIo {
+  const p = prev ?? { r: 0, w: 0 };
+  return { r: Math.max(0, cur.r - p.r), w: Math.max(0, cur.w - p.w) };
+}
+
+/// Local midnight *after* `ms`. Built by rolling the hour past 24 rather than by adding
+/// 86_400_000, so the two days a year that aren't 24 hours long land on the right side.
+const nextMidnight = (ms: number): number => {
+  const d = new Date(ms);
+  d.setHours(24, 0, 0, 0);
+  return d.getTime();
+};
+
+/// Beyond this, a window is a clock jump or a laptop that slept through a holiday, not a
+/// polling gap — smearing across it would invent activity on days the app wasn't running.
+/// The excess is dropped onto the end day, which is where the un-splittable case belongs.
+const IO_SPLIT_MAX_MS = 7 * 86_400_000;
+
+/**
+ * Spread an increment over the days its sampling window covers.
+ *
+ * **A day bucket is credited when the poll lands, not when the bytes were written**, and
+ * those are the same thing only while polling is continuous — which it is not. The poll
+ * behind `addIo` is gated on a session being on stage, and a backgrounded WebView
+ * throttles its timers besides, so the sampler can go quiet for hours. The counters are
+ * cumulative, so nothing is *lost* by that; but the next reading carries the whole gap,
+ * and if the gap crossed a midnight the whole of yesterday's churn was booked to today.
+ *
+ * That is not hypothetical. Measured here: an evening's ~480MB of writes landed in a
+ * morning that had done ~25MB of work, while the day that actually earned them showed
+ * 54MB — the same error twice, once in each direction, from one unsampled night.
+ *
+ * Nothing knows *when* inside the window a byte was written, so the split is by each
+ * day's wall-clock share of it. That is a guess, but a bounded and unbiased one, and the
+ * heartbeat poll keeps the window it applies to short. Within a single day — the
+ * overwhelmingly common case — there is one bucket and the arithmetic is untouched.
+ *
+ * The remainder rides on the last bucket so the parts sum to exactly the increment: a
+ * rollup that quietly shed a float's worth per poll would drift away from the counter it
+ * exists to mirror.
+ */
+export function splitIo(d: DayIo, fromMs: number, toMs: number): Array<[string, DayIo]> {
+  // No previous reading (the first poll of a run) or a clock that went backwards: there
+  // is no window to spread over, so the whole increment belongs to the day we are in.
+  // Tested BEFORE the clamp below, which would otherwise turn an absent window into a
+  // full-width one and spread the first reading of every run over the past week.
+  if (!(fromMs > 0) || fromMs >= toMs) return [[dayKeyOf(toMs), { r: d.r, w: d.w }]];
+  const from = Math.max(fromMs, toMs - IO_SPLIT_MAX_MS);
+  if (dayKeyOf(from) === dayKeyOf(toMs)) return [[dayKeyOf(toMs), { r: d.r, w: d.w }]];
+
+  const span = toMs - from;
+  const out: Array<[string, DayIo]> = [];
+  let r = 0, w = 0;
+  for (let cur = from; cur < toMs;) {
+    const end = Math.min(nextMidnight(cur), toMs);
+    const share = (end - cur) / span;
+    const part = { r: d.r * share, w: d.w * share };
+    out.push([dayKeyOf(cur), part]);
+    r += part.r; w += part.w;
+    cur = end;
+  }
+  const last = out[out.length - 1][1];
+  last.r += d.r - r; last.w += d.w - w;
+  return out;
+}
+
+/// **A disk-I/O meter must not be a heavy writer**, and the naive version was one: the
+/// poll behind it runs every 4s for as long as a session is on stage, so persisting on
+/// every reading meant a synchronous `JSON.stringify` + `setItem` ~900 times an hour,
+/// forever, to record a figure nobody reads more than once a day. The accumulation is
+/// free and stays per-poll; only the *write* is floored.
+///
+/// Losing up to a minute of it to a crash is the right trade — this is a disk meter, not
+/// money, and `cc-usage`'s own baselines are the thing that gets flushed eagerly.
+const IO_SAVE_FLOOR_MS = 60_000;
+let ioPrev: DayIo | null = null;
+/// When `ioPrev` was taken. The increment belongs to `[ioPrevAt, now]`, not to the
+/// instant the poll happened to land on — see `splitIo`.
+let ioPrevAt = 0;
+let ioSavedAt = 0;
+let ioDirty = false;
+let ioDay = "";
+/// Bank a fresh `all_sessions_resources` reading into today. Called from the same poll
+/// that updates `ioAll`, so the rollup and the live bars can never describe different
+/// samples.
+///
+/// **A gap in the polling costs nothing**, which is why the floor above is safe and why
+/// the poll stopping while the dashboard is on stage doesn't skew the day: the counters
+/// are cumulative and `io_retired` preserves a session's bytes past its exit, so the
+/// first reading after a quiet hour carries the whole hour, and `setActive` takes one
+/// the moment a pane is back on stage.
+///
+/// A gap does, however, decide *which day* the bytes are booked to, and that is what
+/// `splitIo` is for: the increment is spread over the window it was measured across
+/// rather than dropped on whichever day the poll landed in. The heartbeat in `main.ts`
+/// is the other half — it keeps that window short even with nothing on stage.
+///
+/// The one genuine loss is the stretch after the *last* reading of a run — quitting
+/// leaves up to one heartbeat unsampled. `flushIo` does not rescue that: it persists
+/// what has been read, it does not take a reading. Living with it is deliberate — the
+/// alternative is an IPC on the quit path to improve a disk meter, and the figure is a
+/// rough one by nature.
+///
+/// `now` is a parameter so the split is testable without a fake clock reaching into it;
+/// the app always calls it with the default.
+export function addIo(cur: DayIo, now: number = Date.now()): void {
+  const d = ioDelta(cur, ioPrev);
+  const from = ioPrevAt;
+  // Advanced even when the increment is zero, so an idle stretch shortens the next
+  // window instead of being spread across as though it had been busy.
+  ioPrev = cur;
+  ioPrevAt = now;
+  if (d.r <= 0 && d.w <= 0) return;
+  const parts = splitIo(d, from, now);
+  const k = parts[parts.length - 1][0];
+  // A day that has been left behind must be written before the floor would allow it:
+  // nothing adds to yesterday again, so a throttled write would drop its last minutes
+  // permanently rather than merely late. A split that touched more than one day has
+  // left one behind by construction, whatever `ioDay` said.
+  const rolled = parts.length > 1 || (ioDay !== "" && ioDay !== k);
+  ioDay = k;
+  for (const [key, part] of parts) {
+    const day = dayIo[key] || (dayIo[key] = { r: 0, w: 0 });
+    day.r += part.r;
+    day.w += part.w;
+  }
+  ioDirty = true;
+  if (rolled || now - ioSavedAt >= IO_SAVE_FLOOR_MS) flushIo();
+}
+
+/// Write the rollup out now. Called on the floor above, across a midnight, and from the
+/// quit path — the one moment there is no later poll to catch what is pending.
+export function flushIo(): void {
+  if (!ioDirty) return;
+  ioDirty = false;
+  ioSavedAt = Date.now();
+  const keys = Object.keys(dayIo).sort();
+  for (const old of keys.slice(0, Math.max(0, keys.length - IO_MAX_DAYS))) delete dayIo[old];
+  localStorage.setItem(IO_KEY, JSON.stringify(dayIo));
+}
+
+/// Only a test needs to clear it; the app's own copy is meant to outlive the run.
+export function resetIoRollup() {
+  for (const k of Object.keys(dayIo)) delete dayIo[k];
+  ioPrev = null;
+  ioPrevAt = 0;
+  ioSavedAt = 0;
+  ioDirty = false;
+  ioDay = "";
+  localStorage.removeItem(IO_KEY);
+}
+
+/// Everything the rollup has ever recorded. Not a lifetime figure and does not pretend
+/// to be one — it starts the day this ships, which is why the label says "recorded"
+/// rather than "all time".
+///
+/// **Null when nothing has been recorded**, never `{r:0,w:0}`: an empty rollup means we
+/// did not keep this, and a confident zero would say the disk was idle. Same distinction
+/// the per-project cost strip makes with its dash.
+export function ioTotal(): DayIo | null {
+  const days = Object.values(dayIo);
+  if (!days.length) return null;
+  let r = 0, w = 0;
+  for (const v of days) { r += v.r; w += v.w; }
+  return { r, w };
+}
+
+/** How many days the rollup holds — what tells `all` apart from `today`. */
+export function ioDayCount(): number {
+  return Object.keys(dayIo).length;
+}
+
+/**
+ * Why the I/O row does not change when you click it.
+ *
+ * The three windows *genuinely* coincide in the ordinary early case, and the arithmetic
+ * makes it more common than it sounds. `all` equals `today` whenever one day is
+ * recorded — which is every install for the first day after the rollup ships. And `run`
+ * equals `today` whenever the run's first poll is also the day's first: `ioDelta` banks
+ * the entire cumulative counter when there is no previous reading, so a single run
+ * started today telescopes to exactly today's total.
+ *
+ * That is correct, and it is indistinguishable from a broken control. A cycling row
+ * whose three positions carry identical numbers reads as a click that does nothing, so
+ * it has to say why. Returns null once they diverge, so the note is absent rather than
+ * empty — the same stance as `missingCard`.
+ *
+ * Compared on the RENDERED strings, not the floats: two figures that differ by a byte
+ * are the same figure to the person reading the row, and that reader is who the note is
+ * for.
+ */
+export function ioSameNote(today: string, run: string, all: string, days: number): string | null {
+  if (today === run && run === all) {
+    return days <= 1
+      ? "All three windows are the same so far: today is the only day recorded, and all of it is this run."
+      : "All three windows happen to read the same right now.";
+  }
+  if (today === run) return "Today is all this run — nothing was recorded earlier today.";
+  if (today === all) return "Today is everything recorded so far.";
+  return null;
+}
+
+// What the statusLine reports is a running total, so the day only wants the increment
+// — and the thing that total belongs to is the *conversation*, not the pane showing it.
+// Claude's counter survives a relaunch: `--resume` hands the new process a figure that
+// already includes everything the old one spent. Diffing against the pane therefore
+// books that carried-over total a second time, because a fresh `Sess` starts at
+// `cost: null`. It is not hypothetical — one drift `Move session` (kill, move the
+// transcript, relaunch seconds later) put ~$28 into the day twice, so the day read $68
+// while the pane that had earned all of it read $39. Restore and a History reopen take
+// the same path and had the same bug.
+//
+// So the baseline is keyed by Claude's runtime session id, which `--resume` preserves
+// and which main.ts keeps on `Sess.resumeId`. A reading *below* the baseline means the
+// counter itself restarted — `/clear`, `/compact`, or a cold start hours later — so the
+// whole new reading is fresh spend and the baseline follows it down.
+//
+// **Persisted, because a restart is the same case.** Held only in memory this covered a
+// `Move session` and an in-session History reopen, and still booked the whole total again
+// for the commonest path of all: quit Episko with the day's spend recorded, reopen, and
+// restore. `cc-usage` survives that — it is localStorage — while an in-memory baseline
+// does not, so the first statusLine of the restored pane met an empty map and counted its
+// carried-over total into a day that already had it.
+//
+// An earlier note here worried that a baseline outliving the counter it describes would
+// *swallow* real spend, which is the failure nobody can see. That is what the drop branch
+// below is for: a counter that restarted reads below its old baseline, so the whole new
+// reading is booked as fresh and the baseline follows it down. The one shape that gets
+// past it is a counter that reset and then climbed back above the old baseline before we
+// read it even once — which needs the statusLine at session start to be missed, and it
+// fires on start and every refreshInterval regardless. Retention is therefore generous:
+// the drop branch, not an expiry, is what makes a stale entry harmless.
+const COST_BASE_KEY = "cc-cost-base";
+/// Enough that no realistic history evicts a conversation still being resumed, small
+/// enough that the key stays a few tens of KB on a machine that never clears it.
+const COST_BASE_MAX = 500;
+interface CostBase { t: number; at: number }
+const costBaseline = ((): Map<string, CostBase> => {
+  const m = new Map<string, CostBase>();
+  try {
+    const raw = JSON.parse(localStorage.getItem(COST_BASE_KEY) || "{}") as Record<string, CostBase>;
+    for (const [k, v] of Object.entries(raw)) {
+      if (v && typeof v.t === "number" && typeof v.at === "number") m.set(k, v);
+    }
+  } catch { /* a corrupt key costs one over-counted session, not a boot */ }
+  return m;
+})();
+function saveBaselines() {
+  if (costBaseline.size > COST_BASE_MAX) {
+    // Oldest touch goes first — a conversation nobody has resumed in months is the one
+    // least likely to still be carrying a live counter.
+    const keep = [...costBaseline.entries()].sort((a, b) => b[1].at - a[1].at).slice(0, COST_BASE_MAX);
+    costBaseline.clear();
+    for (const [k, v] of keep) costBaseline.set(k, v);
+  }
+  localStorage.setItem(COST_BASE_KEY, JSON.stringify(Object.fromEntries(costBaseline)));
+}
+export function costDelta(conv: string, total: number): number {
+  const prev = costBaseline.get(conv)?.t;
+  costBaseline.set(conv, { t: total, at: Date.now() });
+  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (3s) per
+  // session whether or not anything was spent, and this used to serialise and write the
+  // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
+  // forever. An unchanged total leaves nothing to persist but `at`, and `at` exists
+  // solely to order eviction, where seconds do not matter: it rides along on the next
+  // write this conversation earns.
+  if (prev !== total) saveBaselines();
+  return prev === undefined || total < prev ? total : total - prev;
+}
+// Only a test needs to clear it; the app's own copy is meant to outlive the run.
+export function resetCostBaselines() { costBaseline.clear(); localStorage.removeItem(COST_BASE_KEY); }
 
 // ---------- Usage analytics (the Usage settings tab) ----------
 // Money comes from the rollup above: full history for the daily *totals*, plus the

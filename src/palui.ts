@@ -23,6 +23,7 @@ import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palett
 import { isAgent, taskStateText, type Runnable, type Sess } from "./types";
 import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
+import { openHistory } from "./historyui";
 import {
   askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
 } from "./taskui";
@@ -105,6 +106,8 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc
   { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, sc: [MOD, "⏎"] },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
+  { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, sc: [MOD, "⇧", "H"] },
+  { key: "cmd:histall", label: "Session history — every project…", glyph: "◷", run: () => { void openHistory(false); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },
@@ -186,7 +189,7 @@ function renderPal() {
   const html = palGroups.map((g) => {
     const rows = g.items.map((it) => {
       const i = idx++;
-      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
+      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="pal-sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
       const sh = it.shortcut ? `<span class="pal-sh">${it.shortcut.map((k) => `<span class="k">${esc(k)}</span>`).join("")}</span>`
         : it.session ? `<span class="pal-sh actions"><span class="k">${chord("K")}</span></span>` : "";
       return `<div class="pal-item ${i === palSel ? "on" : ""}" data-i="${i}"><span class="pal-ic">${ic}</span><span class="pal-main"><span class="pm">${it.labelHtml}</span>${it.sub ? `<span class="ps">${esc(it.sub)}</span>` : ""}</span>${sh}</div>`;

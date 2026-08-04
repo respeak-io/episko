@@ -26,7 +26,7 @@ import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
 import type { Runnable } from "./types";
-import { activeId, externals, extMirrorId, sessions } from "./state";
+import { activeId, dashMirror, externals, extMirrorId, sessions } from "./state";
 import { bumpFrec, frecScore } from "./palette";
 import {
   applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
@@ -284,9 +284,12 @@ export function runTargetCtx() {
   if (!wd) return null;
   const s = activeId ? sessions.get(activeId) : null;
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
+  // The dashboard names its own project; basename(root) would usually agree, but the
+  // sidebar's label is the one the run's pane should carry.
+  const dm = dashMirror();
   return {
     workdir: wd,
-    project: s ? s.project : e ? basename(e.repo_root || e.cwd) : basename(wd),
+    project: s ? s.project : e ? basename(e.repo_root || e.cwd) : dm ? dm.name : basename(wd),
     colorKey: s ? s.colorKey : e ? (e.repo_root || e.cwd) : wd,
     worktree: s ? s.worktree : null,
     branch: s ? s.branch : (e?.branch || ""),

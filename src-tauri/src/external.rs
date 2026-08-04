@@ -16,11 +16,13 @@
 // included), so LISTING is fully cross-platform: liveness/ownership checks go
 // through `ProcTable`, an in-process `sysinfo` snapshot that works the same on
 // macOS, Windows and Linux. Only `focus_external_session` (jumping to the
-// owning terminal window) remains platform-specific — macOS-only today.
+// owning terminal window) is written twice — AppleScript on macOS, the window
+// APIs on Windows — because "which window is that pid's terminal" has no
+// portable answer.
 
 use tauri::State;
 
-// `ps_one` is reached only from the macOS-only focus path, so on Windows an
+// `ps_one` is reached only from the macOS focus path, so on Windows an
 // unconditional import is an unused-import warning; `sys_command` isn't wanted at
 // all here — `osascript` is spawned directly.
 #[cfg(not(windows))]
@@ -215,11 +217,176 @@ fn owning_terminal(pid: u32) -> Option<(u32, String)> {
     None
 }
 
-/// External-session surfacing (and thus focusing) is macOS-only for now.
+/// One visible top-level window: who owns it, which window, and its caption.
+#[cfg(windows)]
+struct Win {
+    pid: u32,
+    hwnd: isize,
+    title: String,
+}
+
+/// Every visible top-level window on the desktop, in Z-order — `EnumWindows`
+/// enumerates front-to-back, so the *first* entry for a pid is that app's most
+/// recently fronted window. The filter is the one that decides a taskbar button:
+/// visible, unowned, and titled. Without it a single app answers with the
+/// invisible message-only and tool windows it also owns, and raising one of
+/// those does nothing the user can see.
+///
+/// `GetWindowTextW` is safe to call across processes — for a window owned by
+/// another process it reads the stored caption rather than sending `WM_GETTEXT`,
+/// so a wedged terminal can't hang this walk.
+#[cfg(windows)]
+fn top_level_windows() -> Vec<Win> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        GW_OWNER,
+    };
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
+        unsafe {
+            let out = &mut *(lparam as *mut Vec<Win>);
+            if IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+                let len = GetWindowTextLengthW(hwnd);
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                if len > 0 && pid != 0 {
+                    let mut buf = vec![0u16; len as usize + 1];
+                    let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+                    out.push(Win { pid, hwnd: hwnd as isize, title: String::from_utf16_lossy(&buf[..n]) });
+                }
+            }
+        }
+        1 // keep enumerating
+    }
+    let mut out: Vec<Win> = Vec::new();
+    unsafe { EnumWindows(Some(collect), &mut out as *mut Vec<Win> as LPARAM) };
+    out
+}
+
+/// Pick one of `pid`'s windows. Z-order makes the first its most recently
+/// fronted, which is the right default — but one process can own a window per
+/// project, and then the default is right once and wrong every other time: three
+/// VS Code windows here are all owned by a single `code.exe`, so every jump
+/// landed on whichever was last in front. `hint` (the session's project folder)
+/// breaks that tie against the caption, which both VS Code and Windows Terminal
+/// put the folder in. A hint that matches nothing falls back to the topmost, and
+/// a hint that matches the *wrong* window can only ever pick another window of
+/// the terminal we already resolved — never a different app.
+#[cfg(windows)]
+fn pick_window(pid: u32, wins: &[Win], hint: &str) -> Option<isize> {
+    let mine = || wins.iter().filter(|w| w.pid == pid);
+    let hint = hint.to_lowercase();
+    if !hint.is_empty() {
+        if let Some(w) = mine().find(|w| w.title.to_lowercase().contains(&hint)) {
+            return Some(w.hwnd);
+        }
+    }
+    mine().next().map(|w| w.hwnd) // Z-order: this app's most recently fronted window
+}
+
+/// Processes a console session can hang off that are never "its terminal". Only
+/// `explorer.exe` really matters — the others own no titled window anyway — but
+/// it matters a lot: a shell started from the Run box or a shortcut has the
+/// desktop shell as its parent, and returning *that* would front a File Explorer
+/// window (or the desktop) instead of admitting we didn't find the terminal.
+#[cfg(windows)]
+const NOT_A_TERMINAL: [&str; 6] = [
+    "explorer.exe",
+    "services.exe",
+    "svchost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "system",
+];
+
+/// Walk up from `pid` to the window of the terminal hosting it, taking the
+/// desktop as data (`wins`) so the whole walk is testable without one.
+///
+/// Two shapes have to come out right, and only one of them walks upward:
+///
+/// - **The terminal is an ancestor** — Windows Terminal (`WindowsTerminal.exe` →
+///   `OpenConsole.exe` → shell → claude) and Electron hosts alike. VS Code puts a
+///   *windowless* `Code.exe` pty-host between the shell and the windowed
+///   `Code.exe`, so this must not stop at the first ancestor, only at the first
+///   ancestor that owns a window (verified against live VS Code-hosted sessions).
+/// - **The console host is a CHILD** — the classic `conhost.exe` case. It owns
+///   the window but is spawned *by* the console process, so no upward walk can
+///   reach it; hence the per-level child scan. Verified on Win11 with the console
+///   delegation GUIDs unset.
+///
+/// The 16-level cap is not decoration: pid reuse hands a dead parent's pid to a
+/// new process, and this machine's own table contains a two-process ppid cycle.
+#[cfg(windows)]
+fn terminal_window_for(pid: u32, table: &ProcTable, wins: &[Win], hint: &str) -> Option<isize> {
+    let mut cur = pid;
+    for _ in 0..16 {
+        if let Some(h) = pick_window(cur, wins, hint) {
+            return Some(h);
+        }
+        if let Some(h) = table
+            .procs
+            .iter()
+            .filter(|(_, (ppid, name))| *ppid == Some(cur) && (name.contains("conhost") || name.contains("openconsole")))
+            .find_map(|(child, _)| pick_window(*child, wins, hint))
+        {
+            return Some(h);
+        }
+        let ppid = table.procs.get(&cur).and_then(|(ppid, _)| *ppid)?;
+        if ppid <= 1 || ppid == cur {
+            return None;
+        }
+        if table.procs.get(&ppid).is_some_and(|(_, name)| NOT_A_TERMINAL.contains(&name.as_str())) {
+            return None;
+        }
+        cur = ppid;
+    }
+    None
+}
+
+/// Bring the terminal window hosting an external session to the front.
+///
+/// Window-level only: Windows has no tty to match a tab by, so a Windows
+/// Terminal window with five tabs comes forward showing whichever tab it was
+/// last on — the same tradeoff macOS accepts for Electron hosts, one rung
+/// coarser. `SetForegroundWindow` is allowed here because Episko *is* the
+/// foreground process when the user clicks the jump button; if that ever isn't
+/// true Windows silently refuses, so say so rather than reporting success.
+///
+/// The session's own registry file supplies the project folder used to
+/// disambiguate a host that owns several windows — the frontend already knows
+/// that cwd, but re-reading one small file keeps this command's signature (and
+/// the whole macOS half) untouched.
 #[cfg(windows)]
 #[tauri::command]
-pub(crate) fn focus_external_session(_pid: u32) -> Result<(), String> {
-    Err("focusing external sessions isn't supported on Windows yet".to_string())
+pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE};
+
+    let hint = std::fs::read_to_string(
+        std::path::Path::new(&home_dir()).join(".claude").join("sessions").join(format!("{pid}.json")),
+    )
+    .ok()
+    .and_then(|txt| parse_registry_entry(&txt))
+    .and_then(|s| std::path::Path::new(&s.cwd).file_name().map(|n| n.to_string_lossy().into_owned()))
+    .unwrap_or_default();
+
+    let table = ProcTable::snapshot();
+    let wins = top_level_windows();
+    let hwnd = terminal_window_for(pid, &table, &wins, &hint)
+        .ok_or_else(|| "couldn't find the terminal window for this session".to_string())?;
+
+    let hwnd = hwnd as HWND;
+    unsafe {
+        // Foreground and minimised are independent: raising a minimised window
+        // leaves it minimised, so restore first or the jump does nothing visible.
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        if SetForegroundWindow(hwnd) == 0 {
+            return Err("Windows wouldn't bring that terminal window forward".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Bring the terminal window/tab hosting an external session to the front.
@@ -317,6 +484,88 @@ mod tests {
         let me = std::process::id();
         assert!(t.procs.contains_key(&me), "own pid missing from process snapshot");
         assert!(t.is_descendant_of(me, me));
+    }
+
+    #[cfg(windows)]
+    fn wins(entries: &[(u32, isize, &str)]) -> Vec<Win> {
+        entries.iter().map(|&(pid, hwnd, title)| Win { pid, hwnd, title: title.to_string() }).collect()
+    }
+
+    /// The window walk, exercised over the three process shapes a Windows session
+    /// actually comes in. No desktop involved — `wins` is the desktop.
+    #[cfg(windows)]
+    #[test]
+    fn terminal_window_finds_the_host_in_every_shape() {
+        let win = |pid: u32| wins(&[(pid, 0x1234, "a terminal")]);
+
+        // VS Code (the shape live sessions on this machine have): a *windowless*
+        // Code.exe pty host between the shell and the windowed Code.exe. Stopping
+        // at the first ancestor would find nothing.
+        let vscode = table(&[
+            (300, Some(200), "claude.exe"),
+            (200, Some(100), "code.exe"),
+            (100, Some(50), "code.exe"),
+            (50, Some(1), "explorer.exe"),
+        ]);
+        assert_eq!(terminal_window_for(300, &vscode, &win(100), ""), Some(0x1234));
+
+        // Windows Terminal: the terminal really is an ancestor.
+        let wt = table(&[
+            (300, Some(200), "claude.exe"),
+            (200, Some(100), "openconsole.exe"),
+            (100, Some(50), "windowsterminal.exe"),
+            (50, Some(1), "explorer.exe"),
+        ]);
+        assert_eq!(terminal_window_for(300, &wt, &win(100), ""), Some(0x1234));
+
+        // Classic conhost: the host owns the window but is a CHILD of the shell,
+        // so only the per-level child scan can reach it.
+        let conhost = table(&[
+            (300, Some(200), "claude.exe"),
+            (200, Some(50), "powershell.exe"),
+            (400, Some(200), "conhost.exe"),
+            (50, Some(1), "explorer.exe"),
+        ]);
+        assert_eq!(terminal_window_for(300, &conhost, &win(400), ""), Some(0x1234));
+    }
+
+    /// The two ways the walk must give up rather than guess. Both are failures
+    /// the user sees as a wrong window, not as an error, if they aren't caught.
+    #[cfg(windows)]
+    #[test]
+    fn terminal_window_refuses_the_desktop_shell_and_survives_pid_reuse() {
+        // A shell started from the Run box: no conhost, and explorer.exe owns a
+        // real (File Explorer) window. Fronting it would be a wrong answer that
+        // looks like a right one.
+        let orphan = table(&[
+            (300, Some(200), "claude.exe"),
+            (200, Some(50), "powershell.exe"),
+            (50, Some(1), "explorer.exe"),
+        ]);
+        assert_eq!(terminal_window_for(300, &orphan, &wins(&[(50, 0x1234, "Downloads")]), ""), None);
+
+        // Pid reuse produces ppid cycles — this machine's own process table has
+        // one. The walk must terminate instead of spinning.
+        let cycle = table(&[(300, Some(10), "claude.exe"), (10, Some(20), "a.exe"), (20, Some(10), "b.exe")]);
+        assert_eq!(terminal_window_for(300, &cycle, &[], ""), None);
+    }
+
+    /// One host process, one window per project — the live VS Code case, where
+    /// Z-order alone sends every jump to the same window.
+    #[cfg(windows)]
+    #[test]
+    fn pick_window_prefers_the_project_over_the_topmost() {
+        let desktop = wins(&[
+            (21388, 0x10, "Investigate CI - document_expert - Visual Studio Code"),
+            (21388, 0x20, "Refactor head animation - fabraham - Visual Studio Code"),
+            (76700, 0x30, "wirksam"),
+        ]);
+        assert_eq!(pick_window(21388, &desktop, "fabraham"), Some(0x20), "hint wins over Z-order");
+        assert_eq!(pick_window(21388, &desktop, "document_expert"), Some(0x10));
+        assert_eq!(pick_window(21388, &desktop, "some-other-repo"), Some(0x10), "no match → topmost");
+        assert_eq!(pick_window(21388, &desktop, ""), Some(0x10), "no hint → topmost");
+        assert_eq!(pick_window(76700, &desktop, "WIRKSAM"), Some(0x30), "matching is case-insensitive");
+        assert_eq!(pick_window(999, &desktop, "fabraham"), None, "a hint must not cross processes");
     }
 
     #[test]

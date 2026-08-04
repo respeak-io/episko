@@ -11,11 +11,27 @@
 //   writes none. `read_transcript` mirrors one read-only, decoding the cwd -> <enc>
 //   path scheme.
 // - **The token ledger.** `scan_usage` folds every project's `.jsonl` into per-day
-//   totals by model family. It does **not** deduplicate messages — every line with a
-//   `message.usage` record is summed once, which is correct because `--resume`
-//   appends to the *same* transcript rather than replaying it. What is deduplicated
-//   is the *session count*: `file_days` counts one file once per day it touched,
-//   however many messages it holds.
+//   totals by model family, and it deduplicates on `message.id`, because **a line is
+//   not a request**: Claude Code writes one line per *content block* (text, thinking,
+//   tool_use) and repeats the whole `usage` object on each. Summing per line — which
+//   this scan did until it was measured — counted one API response up to four times,
+//   inflating every token figure the Usage tab shows by ~1.8x. It shipped that way
+//   because the reasoning was aimed at the wrong duplicate: `--resume` genuinely does
+//   append rather than replay, which is true and does not license per-line summing.
+//   Two other counts are deduplicated on their own axes and must stay that way: the
+//   *session count* (`file_days`, one file once per day it touched, however many
+//   messages it holds) and the *project label* (`project_label`, memoised per cwd).
+//
+//   `message.id` is deduplicated across the whole scan rather than per file, so a
+//   response that survives a `/compact` rotation into a second transcript is still
+//   billed once. A record with no id is counted unconditionally — it cannot be
+//   matched to anything, and dropping it would lose real tokens.
+//
+//   The remaining known gap is an *under*-count, and it is not fixable from here:
+//   compaction and title-generation requests bill but never land as assistant
+//   records, so the deduped total runs ~20% below what `claude -p "/usage"` reports
+//   as the request count for the same window. The $ figures do not share this gap —
+//   they come from the statusLine's own `total_cost_usd`, not from this scan.
 //
 // **Every reader here takes its base directory as an argument.** `~/.claude` is
 // resolved once, by `claude_dir()`, and only the three `#[tauri::command]` wrappers
@@ -26,7 +42,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::home_dir;
+use crate::git::repo_root_of;
+use crate::platform::{home_dir, norm_path, physical_cwd};
 
 /// The `~/.claude` Episko reads. None when there is no home directory at all, which
 /// every caller reports rather than silently returning nothing.
@@ -42,39 +59,6 @@ fn claude_dir() -> Option<PathBuf> {
 pub(crate) struct TranscriptMsg {
     role: String,
     text: String,
-}
-
-/// Windows `canonicalize` returns the *verbatim* form — `\\?\C:\Work` — which encodes
-/// to a different directory than the `C:\Work` Claude records, so the prefix has to
-/// come back off. Split out from `physical_cwd` because it is the half that can be
-/// tested on every OS: the other half needs a real symlink on disk.
-fn strip_verbatim(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else {
-        p.to_string()
-    }
-}
-
-/// The *physical* spelling of `cwd` — the one Claude will have recorded.
-///
-/// This is not Claude being clever: a process that `chdir`s through a symlink still
-/// reports the resolved path from `getcwd()`, so a session launched in `/tmp/x` (on
-/// macOS a symlink to `/private/tmp/x`) writes its transcript under the
-/// `-private-tmp-x` encoding and under no other. Encoding the spelling the *user*
-/// picked would look in a directory that never exists, and the caller would read that
-/// as "this project has no past sessions" rather than as a failure.
-///
-/// Falls back to the input when the path won't resolve. A workdir that has been
-/// deleted is a real case here (worktrees go away), and a best-effort encoding is
-/// worth more to both callers than an error neither can act on.
-fn physical_cwd(cwd: &str) -> String {
-    match std::fs::canonicalize(cwd) {
-        Ok(p) => strip_verbatim(&p.to_string_lossy()),
-        Err(_) => cwd.to_string(),
-    }
 }
 
 /// Claude stores a project's transcripts under `<base>/projects/<enc>/`, where
@@ -157,21 +141,60 @@ fn list_past_sessions_in(base: &Path, workdir: &str) -> Result<Vec<PastSession>,
 /// `list_past_sessions` so it can be tested against a fixture file without
 /// touching `$HOME` (which the parallel test threads share).
 fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
+    // Two-step, and the result is identical to always reading CAP_FULL.
+    //
+    // Measured over a real 244-transcript corpus, the newest `ai-title` / `last-prompt`
+    // record sits a median of 0.3KB from EOF and **never** more than 30.5KB — so the
+    // small read answers every file, while cutting what History has to pull off disk
+    // from 101MB to 15MB. The widen is not a heuristic escape hatch: it fires only when
+    // NEITHER record was found, which is exactly when the answer would come from the
+    // `first_user` fallback, and that one does depend on how far back we looked. So the
+    // cheap path is taken only where it cannot change the answer.
+    const CAP_FAST: u64 = 64 * 1024;
+    const CAP_FULL: u64 = 512 * 1024;
+    let (title, last_prompt, found) = transcript_meta_within(path, CAP_FAST)?;
+    if found {
+        return Some((title, last_prompt));
+    }
+    let (title, last_prompt, _) = transcript_meta_within(path, CAP_FULL)?;
+    Some((title, last_prompt))
+}
+
+/// One pass over the last `cap` bytes. The third field is "both recurring records
+/// were seen in this window", which is exactly the condition under which reading
+/// further back cannot change either output: each is a last-occurrence-wins record, so
+/// once one is in range the newest one is too.
+fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(String, String, bool)> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    const CAP: u64 = 512 * 1024;
+    let cap = cap.min(512 * 1024);
     let mut reader = BufReader::new(file);
-    if len > CAP {
-        reader.seek(SeekFrom::Start(len - CAP)).ok()?;
+    if len > cap {
+        reader.seek(SeekFrom::Start(len - cap)).ok()?;
         let mut discard = String::new(); // drop the partial first line
         let _ = reader.read_line(&mut discard);
     }
 
     let (mut title, mut last_prompt, mut first_user) = (String::new(), String::new(), String::new());
+    // Which of the two recurring records were seen. BOTH are required before the
+    // caller may stop reading, and the reason is the bug this replaced: a window
+    // holding `last-prompt` but not `ai-title` yields the raw prompt as the title,
+    // while the full read finds Claude's summary further back and yields that. Ten of
+    // 244 real transcripts were labelled with the prompt instead of the title before
+    // this was tightened.
+    let (mut saw_title, mut saw_prompt) = (false, false);
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
+            continue;
+        }
+        // Substring gate before the parse. Only three record types can change the
+        // outcome, and once a user turn has been seen only two can — the rest of a
+        // 512KB tail is assistant prose and tool traffic. Skipping their parse is
+        // behaviour-neutral (their match arms do nothing) and is what makes the
+        // whole-machine scan behind `list_session_history` affordable.
+        if !(first_user.is_empty() || line.contains("ai-title") || line.contains("last-prompt")) {
             continue;
         }
         let v: serde_json::Value = match serde_json::from_str(line) {
@@ -182,11 +205,13 @@ fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
             // Both records recur through the file and are rewritten as the session
             // evolves — the LAST occurrence is the current one, so keep overwriting.
             "ai-title" => {
+                saw_title = true;
                 if let Some(s) = v.get("aiTitle").and_then(|x| x.as_str()) {
                     title = s.trim().to_string();
                 }
             }
             "last-prompt" => {
+                saw_prompt = true;
                 if let Some(s) = v.get("lastPrompt").and_then(|x| x.as_str()) {
                     last_prompt = s.trim().to_string();
                 }
@@ -207,7 +232,195 @@ fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
     if title.chars().count() > 120 {
         title = title.chars().take(120).collect::<String>() + "…";
     }
-    Some((title, last_prompt))
+    Some((title, last_prompt, saw_title && saw_prompt))
+}
+
+/// The `(cwd, git_branch)` a transcript was recorded under, read from the HEAD of
+/// the file.
+///
+/// Load-bearing for history, and the mirror image of `project_transcript_dir`: that
+/// function encodes a cwd into a folder name, replacing every non-alphanumeric char
+/// with `-`, and the encoding is **lossy** — `/a/b` and `-a-b` collapse to the same
+/// name, and a Windows drive colon is unrecoverable. So going the other way is not
+/// possible, and the real path can only come from inside the file, where every user
+/// and assistant record carries `cwd` (and `gitBranch`) verbatim. The first such
+/// record is within the first few lines, hence a bounded head read rather than the
+/// tail scan `transcript_meta` needs for the title.
+fn transcript_origin(path: &Path) -> (String, String) {
+    use std::io::{BufRead, BufReader, Read};
+    const CAP: u64 = 64 * 1024;
+    let none = (String::new(), String::new());
+    let Ok(file) = std::fs::File::open(path) else {
+        return none;
+    };
+    for line in BufReader::new(file).take(CAP).lines().map_while(Result::ok) {
+        if !line.contains("\"cwd\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        let cwd = v.get("cwd").and_then(|x| x.as_str()).unwrap_or("");
+        if cwd.is_empty() {
+            continue;
+        }
+        let branch = v.get("gitBranch").and_then(|x| x.as_str()).unwrap_or("");
+        return (cwd.to_string(), branch.to_string());
+    }
+    none
+}
+
+/// One row of the History panel: a conversation Claude has on disk anywhere on this
+/// machine, whether Episko launched it or not.
+#[derive(serde::Serialize)]
+pub(crate) struct HistorySession {
+    session_id: String,
+    cwd: String,
+    project: String, // basename of cwd — the label, before the frontend regroups it
+    branch: String,
+    title: String,
+    last_prompt: String,
+    mtime: u64,
+    bytes: u64,
+    exists: bool, // its folder is still there — a resume into a deleted worktree fails
+    // The repo's MAIN worktree, so every worktree of one repo groups under it — the
+    // same enrichment `list_external_sessions` does, and what makes History's "this
+    // project" filter catch a session that ran in a worktree *beside* the repo
+    // rather than inside it. None when the folder is gone or isn't a repo.
+    repo_root: Option<String>,
+}
+
+/// Every session on this machine, newest first — the backing store for the History
+/// panel, and the answer to "reopen the session I closed".
+///
+/// `list_past_sessions` above cannot answer that: it takes a `workdir`, and Episko's
+/// own roster (`cc-restore`) deliberately forgets a session the moment it's closed
+/// and only ever knew the ones Episko launched. Claude's transcripts forget nothing,
+/// so this walks all of `<base>/projects/*/*.jsonl` instead — making the list a
+/// superset of the sidebar's dormant rows that also covers sessions started from a
+/// plain terminal or an IDE.
+///
+/// Bounded because that corpus runs to ~1GB: the cheap `(mtime, len)` pass over dir
+/// entries picks the newest `limit` files *before* anything is read, and only those
+/// get the tail scan for a title. So `limit` caps the I/O, not the row count — a
+/// transcript with no recoverable cwd is dropped afterwards and the result can come
+/// back shorter. Like `token_usage_by_day` this is the heavy path, so it runs on a
+/// blocking thread — a synchronous command would hold the main thread and freeze the
+/// UI for the length of the scan.
+#[tauri::command]
+pub(crate) async fn list_session_history(limit: usize) -> Result<Vec<HistorySession>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+        Ok(scan_history_in(&base, limit))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
+    let root = base.join("projects");
+    let projects = match std::fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(_) => return vec![], // no transcripts yet — not an error
+    };
+
+    // The Trail summariser is a `claude -p` like any other, so it leaves a transcript
+    // per day summarised. Those are Episko talking to itself — not a conversation the
+    // user had — and they are skipped by DIRECTORY, here in pass 1, rather than
+    // filtered out of the results: they are the newest thing on disk after any Trail
+    // view, so filtering later would let them take the top `limit` slots and push real
+    // sessions off the end of a list they never appear in.
+    let summariser = crate::summarize::scratch_cwd();
+    let summariser_dir = project_transcript_dir(base, &summariser.to_string_lossy());
+
+    // Pass 1 — metadata only, no file contents. This is what keeps the scan bounded:
+    // ranking by mtime here means the expensive pass never sees the old 95%.
+    let mut files: Vec<(u64, u64, PathBuf)> = Vec::new();
+    for proj in projects.flatten() {
+        let pdir = proj.path();
+        if !pdir.is_dir() || pdir == summariser_dir {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&pdir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() == 0 {
+                continue; // a session that was launched but never prompted
+            }
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            files.push((mtime, meta.len(), path));
+        }
+    }
+    files.sort_by_key(|(mtime, _, _)| std::cmp::Reverse(*mtime));
+    files.truncate(if limit == 0 { 200 } else { limit });
+
+    // Pass 2 — read the winners. Everything keyed by cwd is memoised: a project folder
+    // owns many transcripts and the answer is identical for all of them, which matters
+    // because `git_repo_info` spawns a process. Unique cwds are a few dozen even when
+    // the file list is hundreds.
+    let mut by_dir: std::collections::HashMap<String, (bool, Option<String>)> =
+        std::collections::HashMap::new();
+    let mut out: Vec<HistorySession> = Vec::with_capacity(files.len());
+    for (mtime, bytes, path) in files {
+        let session_id = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+        let (cwd, branch) = transcript_origin(&path);
+        // No cwd, no honest row: `claude --resume` must run in the session's original
+        // directory, and the folder name on disk can't be decoded back into one.
+        if cwd.is_empty() {
+            continue;
+        }
+        // Claude records the cwd exactly as it was typed, so the same folder shows up
+        // as both `e:\proj` and `E:\proj`. Normalise to the spelling everything else in
+        // the app compares against (`git_repo_info`'s root, a live session's workdir) —
+        // otherwise a repo's own checkout never equals its repo_root and every row
+        // reads as a worktree. Safe for the transcript lookup: off Windows this is the
+        // identity, and on Windows it only touches the drive letter and separators,
+        // which the case-insensitive filesystem and the `<enc>` scheme both absorb.
+        let cwd = norm_path(&cwd);
+        let (title, last_prompt) = transcript_meta(&path).unwrap_or_default();
+        let project = cwd
+            .rsplit(['/', '\\'])
+            .find(|s| !s.is_empty())
+            .unwrap_or(&cwd)
+            .to_string();
+        let (exists, repo_root) = by_dir
+            .entry(cwd.clone())
+            .or_insert_with(|| {
+                // Nothing to resolve for a folder that's gone.
+                if !Path::new(&cwd).is_dir() {
+                    return (false, None);
+                }
+                (true, repo_root_of(&cwd))
+            })
+            .clone();
+        out.push(HistorySession {
+            session_id,
+            cwd,
+            project,
+            branch,
+            title,
+            last_prompt,
+            mtime,
+            bytes,
+            exists,
+            repo_root,
+        });
+    }
+    out
 }
 
 /// The three model tiers collapsed to a family (matches the frontend's `modelFamily`).
@@ -229,7 +442,21 @@ struct LineUsage {
     day: String,           // YYYY-MM-DD from the line's own ISO timestamp (UTC)
     tokens: [u64; 4],      // [input, output, cache_read, cache_write]
     family: &'static str,  // opus | sonnet | haiku | other
-    project: String,       // basename of the line's cwd ("by working directory")
+    cwd: String,           // the line's cwd verbatim; `project_label` groups it
+    /// `message.id` — the id of the API response this line belongs to, and the
+    /// only thing that makes the scan's arithmetic correct. Claude Code writes
+    /// **one transcript line per content block** (text, thinking, tool_use), and
+    /// every one of them repeats the *same* `usage` object in full. Summing per
+    /// line therefore counts one response two, three or four times over: measured
+    /// against this machine's corpus, 4,381 usage lines in 24h carried only 2,066
+    /// distinct ids, and `/usage` independently reported 2,561 requests for the
+    /// same window — so the per-line total was ~1.8x the truth and the deduped one
+    /// is close to it (the remainder is compaction and title-generation calls,
+    /// which bill but never land as assistant records).
+    ///
+    /// `None` for a record with no id, which is then counted unconditionally: it
+    /// cannot be matched to anything, and dropping it would lose real tokens.
+    id: Option<String>,
 }
 
 /// Parse one transcript line into a `LineUsage`, or `None` for the many lines with no
@@ -255,12 +482,16 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
         .and_then(|m| m.get("model"))
         .and_then(|x| x.as_str())
         .unwrap_or("");
-    let project = v
+    let cwd = v
         .get("cwd")
         .and_then(|x| x.as_str())
-        .and_then(|c| c.rsplit(['/', '\\']).find(|s| !s.is_empty()))
-        .unwrap_or("unknown")
+        .unwrap_or("")
         .to_string();
+    let id = v
+        .get("message")
+        .and_then(|m| m.get("id"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
     Some(LineUsage {
         day,
         tokens: [
@@ -270,8 +501,38 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
             g("cache_creation_input_tokens"),
         ],
         family: model_family(model),
-        project,
+        cwd,
+        id,
     })
+}
+
+/// What to file a transcript line's tokens under, keyed by the line's own `cwd`.
+///
+/// The **repo root**, not the cwd's own basename: a worktree is a sibling
+/// directory, so a basename splits `…/.cc-worktrees/cc-launcher-spike/dev` off
+/// its own repo and files it under `dev`. That disagreed with the $ split, which
+/// rides on the frontend's `Sess.project` and groups worktrees under the repo —
+/// so the same day's work landed under two different names depending on which
+/// half of the Usage tab you read.
+///
+/// `repo_root_of` walks the `.git` layout without spawning git, but it is still
+/// filesystem I/O per call, hence `memo` — a scan touches a few dozen distinct
+/// cwds across thousands of lines. A cwd that is gone, or was never a repo,
+/// falls back to its own basename rather than being dropped.
+fn project_label(cwd: &str, memo: &mut std::collections::HashMap<String, String>) -> String {
+    if let Some(hit) = memo.get(cwd) {
+        return hit.clone();
+    }
+    let root = repo_root_of(cwd);
+    let label = root
+        .as_deref()
+        .unwrap_or(cwd)
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    memo.insert(cwd.to_string(), label.clone());
+    label
 }
 
 /// One calendar day, aggregated across every transcript: token totals by type, token
@@ -330,6 +591,13 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
         .checked_sub(std::time::Duration::from_secs(days.saturating_mul(86_400)));
 
     let mut acc: HashMap<String, DayUsage> = HashMap::new();
+    // Every `message.id` already counted, across the whole scan rather than per
+    // file: one API response is billed once no matter how many lines — or how
+    // many transcripts, after a `/compact` rotation — happen to carry it.
+    let mut seen: HashSet<String> = HashSet::new();
+    // cwd -> repo-root basename, so `repo_root_of` runs per distinct directory
+    // rather than per line. See `project_label`.
+    let mut projects_memo: HashMap<String, String> = HashMap::new();
     let projects = match std::fs::read_dir(&root) {
         Ok(e) => e,
         Err(_) => return Ok(vec![]), // no transcripts yet — not an error
@@ -362,7 +630,19 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
             let mut file_days: HashSet<String> = HashSet::new();
             for line in BufReader::new(file).lines().map_while(Result::ok) {
                 let Some(lu) = parse_usage_line(&line) else { continue };
-                let LineUsage { day, tokens, family, project } = lu;
+                let LineUsage { day, tokens, family, cwd, id } = lu;
+                // The session was active on this day whether or not this
+                // particular line is a repeat of a message already counted, so
+                // the per-day roster is claimed before the dedupe gate — else a
+                // day whose every line is a duplicate would stop counting as a
+                // session at all.
+                file_days.insert(day.clone());
+                if let Some(id) = id {
+                    if !seen.insert(id) {
+                        continue; // another content block of a response already counted
+                    }
+                }
+                let project = project_label(&cwd, &mut projects_memo);
                 let tot: u64 = tokens.iter().sum();
                 let e = acc.entry(day.clone()).or_default();
                 if e.day.is_empty() {
@@ -379,7 +659,6 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
                     _ => e.other += tot,
                 }
                 *e.projects.entry(project).or_insert(0) += tot;
-                file_days.insert(day);
             }
             for d in file_days {
                 let e = acc.entry(d.clone()).or_default();
@@ -476,10 +755,477 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
     Ok(msgs)
 }
 
+/// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`.
+///
+/// This is the **only** thing Episko ever writes inside `~/.claude`, and it exists
+/// because the alternative does not work: `--resume` takes a session id, never a path
+/// (verified against 2.1.220 — there is no path-based resume flag), and it looks the
+/// conversation up in `<projects>/<enc(cwd)>/`. So a session whose agent moved to
+/// another checkout cannot be resumed there by any incantation a user could type; the
+/// transcript has to move with it.
+///
+/// Three things make that safe rather than reckless, and all three are load-bearing:
+///
+/// - **Rename, never copy.** Two files with one id in two project dirs would list the
+///   same conversation twice in History (which walks `projects/*/*.jsonl`) and leave
+///   `--resume` ambiguous about which one it appends to.
+/// - **The sidecar travels too.** Claude keeps tool results in a `<session_id>/`
+///   directory beside the `.jsonl`; leaving it behind orphans the artifacts an older
+///   turn refers to. It is optional — plenty of sessions never make one.
+/// - **Never clobber.** An existing transcript at the destination is a different
+///   conversation with the same id (or this move already happened); either way it is
+///   refused, not overwritten.
+///
+/// The caller must have stopped the session **and waited for it to actually exit**.
+/// Nothing here can tell whether a `claude` process still holds the source open, and on
+/// a live one the rename would leave it appending to a path that no longer resolves
+/// where anyone will look. Note that killing is not the same as having exited: the
+/// frontend waits for `pty-exit`, which the reaper emits only after `child.wait()`
+/// returns, because `kill_session` merely sends the signal and returns.
+#[tauri::command(async)]
+pub(crate) fn move_session_transcript(
+    session_id: String,
+    from_workdir: String,
+    to_workdir: String,
+) -> Result<String, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    move_session_transcript_in(&base, &session_id, &from_workdir, &to_workdir)
+}
+
+fn move_session_transcript_in(
+    base: &Path,
+    session_id: &str,
+    from_workdir: &str,
+    to_workdir: &str,
+) -> Result<String, String> {
+    // A session id reaches us from the frontend and is pasted into a filename, so it is
+    // restricted to the characters a uuid is made of. That is a character-class test,
+    // not a shape test — `abc` passes — but it is the part that matters here: no dot, no
+    // separator, so no `..` or path fragment can escape the projects tree. Rejected
+    // outright rather than sanitised, because a sanitised id would name the wrong file.
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(format!("not a valid session id: {session_id}"));
+    }
+    let from_dir = project_transcript_dir(base, from_workdir);
+    let to_dir = project_transcript_dir(base, to_workdir);
+    if from_dir == to_dir {
+        return Err("that session is already in this folder".to_string());
+    }
+    let src = from_dir.join(format!("{session_id}.jsonl"));
+    if !src.is_file() {
+        return Err(format!(
+            "no transcript for this session in {}",
+            from_dir.display()
+        ));
+    }
+    let dst = to_dir.join(format!("{session_id}.jsonl"));
+    if dst.exists() {
+        return Err("a transcript with this id is already in the target folder".to_string());
+    }
+    std::fs::create_dir_all(&to_dir).map_err(|e| format!("could not create {}: {e}", to_dir.display()))?;
+    std::fs::rename(&src, &dst).map_err(|e| format!("could not move the transcript: {e}"))?;
+
+    // The tool-results sidecar, if this session made one. A failure here is reported
+    // but must not fail the move: the transcript is already across, and the sidecar
+    // only holds artifacts from earlier turns.
+    let side_src = from_dir.join(session_id);
+    if side_src.is_dir() {
+        let side_dst = to_dir.join(session_id);
+        if !side_dst.exists() {
+            if let Err(e) = std::fs::rename(&side_src, &side_dst) {
+                log::warn!("moved transcript but not its tool-results sidecar: {e}");
+            }
+        }
+    }
+    Ok(dst.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::scratch_dir;
+    use crate::testutil::{git, scratch_dir};
+
+    /// Fixture: a transcript (and optionally its tool-results sidecar) where Claude
+    /// would have written it for `workdir`.
+    fn seed_transcript(base: &Path, workdir: &Path, id: &str, body: &str, sidecar: bool) -> PathBuf {
+        let dir = project_transcript_dir(base, &workdir.to_string_lossy());
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&f, body).unwrap();
+        if sidecar {
+            let s = dir.join(id).join("tool-results");
+            std::fs::create_dir_all(&s).unwrap();
+            std::fs::write(s.join("artifact.html"), "<p>kept</p>").unwrap();
+        }
+        f
+    }
+
+    /// The move is what makes "resume in the checkout the agent moved to" possible at
+    /// all — `--resume` looks a conversation up by `<enc(cwd)>/<id>.jsonl` and takes no
+    /// path — so this asserts the shape that lookup depends on, from both ends.
+    #[test]
+    fn move_session_transcript_rehomes_the_conversation_and_its_sidecar() {
+        let root = scratch_dir();
+        let base = root.join("claude");
+        let (from, to) = (root.join("exp-overview"), root.join("overview"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let id = "acdc250f-a7af-4655-bb87-8ee83731b586";
+        let body = "{\"type\":\"user\",\"cwd\":\"/somewhere\"}\n";
+        let src = seed_transcript(&base, &from, id, body, true);
+
+        let dst = move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &to.to_string_lossy(),
+        )
+        .expect("the move should succeed");
+
+        // Where `--resume` will look, once the session is relaunched in `to`.
+        let want = project_transcript_dir(&base, &to.to_string_lossy()).join(format!("{id}.jsonl"));
+        assert_eq!(PathBuf::from(&dst), want);
+        assert_eq!(std::fs::read_to_string(&want).unwrap(), body, "content travels intact");
+
+        // A rename, not a copy: one id must not name two conversations. History walks
+        // `projects/*/*.jsonl`, so a leftover would list this session twice, under two
+        // different projects.
+        assert!(!src.exists(), "the source transcript must not be left behind");
+
+        // The sidecar carries the tool results older turns refer to.
+        let side = project_transcript_dir(&base, &to.to_string_lossy())
+            .join(id).join("tool-results").join("artifact.html");
+        assert_eq!(std::fs::read_to_string(&side).unwrap(), "<p>kept</p>");
+        assert!(
+            !project_transcript_dir(&base, &from.to_string_lossy()).join(id).exists(),
+            "the sidecar must move rather than be duplicated",
+        );
+    }
+
+    #[test]
+    fn move_session_transcript_refuses_what_it_cannot_do_safely() {
+        let root = scratch_dir();
+        let base = root.join("claude");
+        let (from, to) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let id = "acdc250f-a7af-4655-bb87-8ee83731b586";
+        seed_transcript(&base, &from, id, "{}\n", false);
+
+        // Same folder: nothing to do, and the rename would be onto itself.
+        assert!(move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &from.to_string_lossy(),
+        ).is_err());
+
+        // No such transcript — a session launched but never prompted writes none.
+        assert!(move_session_transcript_in(
+            &base, "11111111-2222-3333-4444-555555555555",
+            &from.to_string_lossy(), &to.to_string_lossy(),
+        ).is_err());
+
+        // An id that is not the uuid shape gets nowhere near a filename: `..` here
+        // would otherwise walk straight out of the projects tree.
+        for bad in ["../../etc/passwd", "a/b", "", "id with space"] {
+            assert!(
+                move_session_transcript_in(
+                    &base, bad, &from.to_string_lossy(), &to.to_string_lossy(),
+                ).is_err(),
+                "must reject session id {bad:?}",
+            );
+        }
+
+        // A different conversation already at the destination is never overwritten.
+        seed_transcript(&base, &to, id, "{\"other\":true}\n", false);
+        assert!(move_session_transcript_in(
+            &base, id, &from.to_string_lossy(), &to.to_string_lossy(),
+        ).is_err());
+        assert_eq!(
+            std::fs::read_to_string(
+                project_transcript_dir(&base, &to.to_string_lossy()).join(format!("{id}.jsonl"))
+            ).unwrap(),
+            "{\"other\":true}\n",
+            "the destination must be left exactly as it was",
+        );
+    }
+
+    /// The two-step tail read must never change an answer, only the cost of getting it.
+    ///
+    /// The trap, and a real regression: a 64KB window that holds `last-prompt` but not
+    /// `ai-title` looks conclusive and isn't — the title Claude wrote sits further back,
+    /// and stopping there labels the row with the raw prompt instead. It mislabelled 10
+    /// of 244 real transcripts before the accept condition required *both* records.
+    #[test]
+    fn transcript_meta_widens_when_the_title_is_out_of_the_fast_window() {
+        let dir = scratch_dir();
+        let filler = format!(
+            "{}\n",
+            serde_json::json!({ "type": "assistant", "message": { "content": "x".repeat(4000) } })
+        );
+
+        // ai-title far back, last-prompt near EOF: only the full read sees both.
+        let split = dir.join("split.jsonl");
+        let mut body = String::from("{\"type\":\"ai-title\",\"aiTitle\":\"The summary Claude wrote\"}\n");
+        while body.len() < 120 * 1024 {
+            body.push_str(&filler);
+        }
+        body.push_str("{\"type\":\"last-prompt\",\"lastPrompt\":\"do the thing\"}\n");
+        std::fs::write(&split, &body).unwrap();
+        assert!(body.len() > 64 * 1024, "fixture must exceed the fast window");
+        assert_eq!(
+            transcript_meta(&split).unwrap(),
+            ("The summary Claude wrote".to_string(), "do the thing".to_string()),
+            "the title must win over the prompt even when only the prompt is in fast range",
+        );
+        // …and that is exactly what a single full-cap read says.
+        let full = transcript_meta_within(&split, 512 * 1024).map(|(t, l, _)| (t, l));
+        assert_eq!(Some(transcript_meta(&split).unwrap()), full);
+
+        // Both records near EOF: the fast pass is final, and still agrees with the full read.
+        let near = dir.join("near.jsonl");
+        let mut body = String::new();
+        while body.len() < 200 * 1024 {
+            body.push_str(&filler);
+        }
+        body.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Close enough\"}\n");
+        body.push_str("{\"type\":\"last-prompt\",\"lastPrompt\":\"the latest\"}\n");
+        std::fs::write(&near, &body).unwrap();
+        let fast = transcript_meta_within(&near, 64 * 1024).unwrap();
+        assert!(fast.2, "both records are in range, so the fast read is final");
+        assert_eq!((fast.0, fast.1), transcript_meta(&near).unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// History rows live or die on this: `project_transcript_dir` encodes a cwd
+    /// lossily, so the real path (and the branch) can only come from inside the file —
+    /// including a Windows path, whose backslashes and drive colon are exactly what the
+    /// folder name destroys.
+    #[test]
+    fn transcript_origin_recovers_the_cwd_from_inside_the_file() {
+        let dir = scratch_dir();
+
+        let a = dir.join("a.jsonl");
+        std::fs::write(
+            &a,
+            concat!(
+                r#"{"type":"mode","mode":"normal"}"#, "\n",
+                r#"{"type":"user","message":{"content":"hi"},"cwd":"E:\\Programming\\episko","gitBranch":"dev"}"#, "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            transcript_origin(&a),
+            ("E:\\Programming\\episko".to_string(), "dev".to_string())
+        );
+
+        // A repo with no branch (detached, or not a repo at all) still yields its cwd.
+        let b = dir.join("b.jsonl");
+        std::fs::write(&b, "{\"type\":\"user\",\"cwd\":\"/home/me/proj\"}\n").unwrap();
+        assert_eq!(transcript_origin(&b), ("/home/me/proj".to_string(), String::new()));
+
+        // No cwd anywhere → empty, and scan_history drops the row rather than guessing.
+        let c = dir.join("c.jsonl");
+        std::fs::write(&c, "{\"type\":\"ai-title\",\"aiTitle\":\"no cwd here\"}\n").unwrap();
+        assert_eq!(transcript_origin(&c), (String::new(), String::new()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rules that decide what History can offer: newest first, capped by `limit`,
+    /// no row without a resumable cwd, a worktree resolved back to its repo, and a
+    /// folder that's gone flagged rather than hidden (a deleted worktree still reads).
+    #[test]
+    fn scan_history_ranks_by_mtime_and_drops_what_cannot_resume() {
+        let dir = scratch_dir();
+        let base = dir.join("claude");
+        let root = base.join("projects");
+        let live = dir.join("live-project");
+        std::fs::create_dir_all(root.join("proj-a")).unwrap();
+        std::fs::create_dir_all(root.join("proj-b")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let live_s = live.to_string_lossy().replace('\\', "\\\\");
+
+        // A repo plus a linked worktree BESIDE it — the layout no path-prefix test can
+        // group, and the reason rows carry a backend-resolved repo_root at all.
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let wt = dir.join("repo-wt");
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        let wt_s = wt.to_string_lossy().replace('\\', "\\\\");
+
+        // mtimes are set explicitly: writing the files back to back lands them in the
+        // same second, which would make the ordering assertion below pass by accident.
+        let touch = |name: &str, body: &str, age_secs: u64| {
+            let p = root.join(name);
+            std::fs::write(&p, body).unwrap();
+            let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+            f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 - age_secs)).unwrap();
+        };
+        // A transcript is newline-delimited JSON, and every brace in these records is a
+        // literal — so the record itself has to be a raw string with `{{`/`}}` escapes,
+        // and the line terminator is appended rather than being part of that string. A
+        // `format!` wrapping a `format!` would read more naturally and is what clippy's
+        // `format_in_format_args` rejects.
+        touch(
+            "proj-a/newest.jsonl",
+            &(format!(r#"{{"type":"user","cwd":"{live_s}","gitBranch":"dev"}}"#)
+                + "\n"
+                + r#"{"type":"ai-title","aiTitle":"The newest one"}"#
+                + "\n"),
+            0,
+        );
+        touch(
+            "proj-b/older.jsonl",
+            &(format!(r#"{{"type":"user","cwd":"{live_s}","message":{{"content":"an older chat"}}}}"#) + "\n"),
+            60,
+        );
+        touch(
+            "proj-a/worktree.jsonl",
+            &(format!(r#"{{"type":"user","cwd":"{wt_s}","gitBranch":"side"}}"#) + "\n"),
+            90,
+        );
+        // Deleted worktree: readable, but not resumable — it must still be listed.
+        let missing = dir.join("removed-worktree");
+        let missing_s = missing.to_string_lossy().replace('\\', "\\\\");
+        touch(
+            "proj-a/gone.jsonl",
+            &(format!(r#"{{"type":"user","cwd":"{missing_s}","gitBranch":"wip"}}"#) + "\n"),
+            120,
+        );
+        // Dropped: no cwd to resume into, empty file, and a non-transcript.
+        touch("proj-b/nocwd.jsonl", "{\"type\":\"ai-title\",\"aiTitle\":\"orphan\"}\n", 30);
+        touch("proj-a/empty.jsonl", "", 10);
+        touch("proj-a/notes.txt", "not a transcript\n", 5);
+
+        let out = scan_history_in(&base, 0);
+        let ids: Vec<&str> = out.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["newest", "older", "worktree", "gone"], "newest first, unresumable rows dropped");
+
+        // The whole point of repo_root: a session that ran in the worktree resolves to
+        // the repo, so "this project" in History covers both checkouts.
+        let side = out.iter().find(|h| h.session_id == "worktree").unwrap();
+        assert_eq!(side.repo_root.as_deref(), Some(norm_path(&repo.to_string_lossy()).as_str()));
+        assert_eq!(side.branch, "side");
+        assert_eq!(out[0].repo_root, None, "a folder that isn't a repo has no root to group under");
+
+        assert_eq!(out[0].title, "The newest one");
+        assert_eq!(out[0].branch, "dev");
+        assert_eq!(out[0].cwd, norm_path(&live.to_string_lossy()));
+        assert_eq!(out[0].project, "live-project", "labelled by the leaf of its own cwd");
+        assert!(out[0].exists);
+
+        assert_eq!(out[1].title, "an older chat", "no ai-title → the first user message stands in");
+
+        let gone = out.iter().find(|h| h.session_id == "gone").unwrap();
+        assert_eq!(gone.project, "removed-worktree");
+        assert!(!gone.exists, "a vanished folder is flagged, not hidden");
+        assert_eq!(gone.repo_root, None, "no git is run on a folder that isn't there");
+
+        // `limit` bounds the files READ, not the rows returned — it exists to cap I/O,
+        // and the unresumable ones are dropped after. Asking for 2 here reads the two
+        // newest transcripts (`newest` and the cwd-less `nocwd`) and yields just one.
+        let capped = scan_history_in(&base, 2);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].session_id, "newest");
+        assert!(scan_history_in(&dir.join("nope"), 0).is_empty(), "a missing base is empty, not an error");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Trail summariser is a `claude -p`, so it leaves a transcript per day it
+    /// summarises — 27 of them on the machine this was found on, all reading "Below is
+    /// a factual record of one day of …". They are Episko talking to itself and must
+    /// not appear in History.
+    ///
+    /// The assertion that matters is the second one: the skip is computed from
+    /// `summarize::scratch_cwd()`, and it only lines up with what is on disk because
+    /// that function resolves `$TMPDIR` before appending. Encode the unresolved
+    /// spelling and this test still passes its first assertion on Linux while silently
+    /// missing every real transcript on a Mac, where `/var/folders` is a symlink.
+    #[test]
+    fn scan_history_hides_the_trail_summarisers_own_transcripts() {
+        let dir = scratch_dir();
+        let base = dir.join("claude");
+        let root = base.join("projects");
+
+        let scratch = crate::summarize::scratch_cwd();
+        let scratch_s = scratch.to_string_lossy().replace('\\', "\\\\");
+        let enc: String = scratch
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        std::fs::create_dir_all(root.join(&enc)).unwrap();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+
+        let live = dir.join("live-project");
+        std::fs::create_dir_all(&live).unwrap();
+        let live_s = live.to_string_lossy().replace('\\', "\\\\");
+
+        // The summariser's row is the NEWER of the two, which is the case that matters:
+        // it is skipped in pass 1, so it must not consume the single `limit` slot below
+        // and push the real session off a list it never appears in.
+        std::fs::write(
+            root.join(&enc).join("summary.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{scratch_s}","message":{{"content":"Below is a factual record of one day of a developer's work"}}}}"#) + "\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("real").join("mine.jsonl"),
+            format!(r#"{{"type":"user","cwd":"{live_s}","message":{{"content":"a real conversation"}}}}"#) + "\n",
+        )
+        .unwrap();
+
+        let out = scan_history_in(&base, 0);
+        let ids: Vec<&str> = out.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["mine"], "the summariser's transcripts are not sessions the user had");
+
+        // The directory really was the one on disk — otherwise the line above passes
+        // for the wrong reason (nothing matched, nothing was skipped).
+        assert_eq!(
+            project_transcript_dir(&base, &scratch.to_string_lossy()),
+            root.join(&enc),
+            "the skip must name the folder Claude actually writes into",
+        );
+
+        let capped = scan_history_in(&base, 1);
+        assert_eq!(capped.len(), 1, "the skipped rows never took the limit slot");
+        assert_eq!(capped[0].session_id, "mine");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Claude writes the cwd exactly as the user typed it, so the same folder appears
+    /// as both `e:\proj` and `E:\proj` across transcripts. Everything History compares
+    /// against — `git_repo_info`'s root, a live session's workdir — is normalised, so
+    /// a raw cwd made a repo's own checkout unequal to its own repo_root and every row
+    /// in it read as a worktree.
+    #[cfg(windows)]
+    #[test]
+    fn scan_history_normalises_the_cwd_it_reads_from_a_transcript() {
+        let dir = scratch_dir();
+        let base = dir.join("claude");
+        std::fs::create_dir_all(base.join("projects/p")).unwrap();
+
+        let real = norm_path(&dir.to_string_lossy()); // C:\Users\…\episko_git_diff_test_N
+        let typed = format!("{}{}", real[..1].to_ascii_lowercase(), &real[1..]).replace('\\', "/");
+        assert_ne!(typed, real, "fixture must actually differ in spelling");
+        std::fs::write(
+            base.join("projects/p/s.jsonl"),
+            format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}\n", typed.replace('\\', "\\\\")),
+        )
+        .unwrap();
+
+        let out = scan_history_in(&base, 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].cwd, real, "the row carries the app-wide spelling, not the typed one");
+        assert!(out[0].exists, "and it still resolves on disk");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
 
     #[test]
@@ -489,13 +1235,69 @@ mod tests {
         assert_eq!(lu.day, "2026-07-21");
         assert_eq!(lu.tokens, [10, 20, 300, 4]);
         assert_eq!(lu.family, "opus");
-        assert_eq!(lu.project, "episko"); // basename of cwd
-        // Missing token fields default to 0; unknown model → "other"; no cwd → "unknown".
+        assert_eq!(lu.cwd, "/Users/tim/dev/episko"); // verbatim; grouped by project_label
+        // Missing token fields default to 0; unknown model → "other"; no cwd → empty
+        // (which `project_label` renders as "unknown"); no message.id → None, so the
+        // line is counted rather than deduped away.
         let partial = r#"{"timestamp":"2026-07-21T10:00:00Z","message":{"usage":{"output_tokens":7}}}"#;
         let lu = parse_usage_line(partial).expect("should parse");
         assert_eq!(lu.tokens, [0, 7, 0, 0]);
         assert_eq!(lu.family, "other");
-        assert_eq!(lu.project, "unknown");
+        assert_eq!(lu.cwd, "");
+        assert_eq!(lu.id, None);
+        assert_eq!(project_label("", &mut std::collections::HashMap::new()), "unknown");
+    }
+
+    /// The bug this scan shipped with: Claude Code writes one transcript line per
+    /// content block and repeats the whole `usage` object on each, so summing per
+    /// line counted a single API response once per block. Three lines sharing a
+    /// `message.id` are one response; a fourth without an id can't be matched to
+    /// anything and is counted on its own.
+    #[test]
+    fn scan_usage_counts_each_message_once_however_many_lines_carry_it() {
+        let base = scratch_dir();
+        let d = base.join("projects").join("-work-alpha");
+        std::fs::create_dir_all(&d).unwrap();
+        let block = |id: &str| {
+            format!(
+                concat!(
+                    r#"{{"type":"assistant","timestamp":"2026-07-20T10:00:00.000Z","cwd":"/work/alpha","#,
+                    r#""message":{{"id":"{}","model":"claude-opus-4-8","#,
+                    r#""usage":{{"input_tokens":10,"output_tokens":1}}}}}}"#,
+                    "\n"
+                ),
+                id
+            )
+        };
+        // One response written as three blocks, a second response, and an
+        // id-less record. Naive per-line summing would report 5 × 11 = 55.
+        let idless = concat!(
+            r#"{"type":"assistant","timestamp":"2026-07-20T10:00:00.000Z","cwd":"/work/alpha","#,
+            r#""message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n"
+        );
+        std::fs::write(
+            d.join("s1.jsonl"),
+            format!("{}{}{}{}{}", block("msg_a"), block("msg_a"), block("msg_a"), block("msg_b"), idless),
+        )
+        .unwrap();
+
+        let days = scan_usage_in(&base, 3650).unwrap();
+        assert_eq!(days.len(), 1);
+        let d20 = &days[0];
+        assert_eq!((d20.input, d20.output), (30, 3), "3 counted responses, not 5 lines");
+        assert_eq!(d20.opus, 33);
+        assert_eq!(d20.projects.get("alpha"), Some(&33));
+        assert_eq!(d20.sessions, 1);
+
+        // The same response appearing in a second transcript — what a `/compact`
+        // rotation produces — is still one response, so dedupe spans files.
+        std::fs::write(d.join("s2.jsonl"), block("msg_a")).unwrap();
+        let days = scan_usage_in(&base, 3650).unwrap();
+        assert_eq!((days[0].input, days[0].output), (30, 3), "cross-file duplicate not re-counted");
+        assert_eq!(days[0].sessions, 2, "but the second file is still a session active that day");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -647,19 +1449,6 @@ mod tests {
             base.join("projects").join("-a-b--git--ber")
         );
         assert_eq!(project_transcript_dir(base, ""), base.join("projects").join(""));
-    }
-
-    /// The verbatim prefix Windows' `canonicalize` adds, which must not reach the
-    /// encoder. Pure string work, so it is checked on every OS rather than only on the
-    /// leg that can produce one — this is the half of the symlink fix that a macOS
-    /// developer would otherwise never run.
-    #[test]
-    fn verbatim_prefixes_are_stripped_before_encoding() {
-        assert_eq!(strip_verbatim(r"\\?\C:\Work\Respeak"), r"C:\Work\Respeak");
-        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\proj"), r"\\srv\share\proj");
-        // Anything already in its normal form is returned untouched, on either OS.
-        assert_eq!(strip_verbatim(r"C:\Work\Respeak"), r"C:\Work\Respeak");
-        assert_eq!(strip_verbatim("/Users/tim/dev"), "/Users/tim/dev");
     }
 
     /// A project reached through a symlink must resolve to the same transcript folder

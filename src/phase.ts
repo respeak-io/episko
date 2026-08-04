@@ -13,7 +13,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Phase, Risk, Sess } from "./types";
-import { addUsage } from "./usage";
+import { addUsage, costDelta } from "./usage";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
@@ -22,6 +22,23 @@ import { mergeRl, onRlUpdate, rl } from "./rl";
 // tests, the end of a turn is just the end of a turn.
 let onTurnEnd: (s: Sess) => void = () => {};
 export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
+
+// A tool call settled, or a turn ended: this session may have moved HEAD, added a
+// worktree, dirtied its working tree, or written into a checkout it wasn't launched in
+// — and this is the app's *only* warning that it did. Nothing watches the filesystem,
+// so without a nudge from here the sidebar waits for the next poll to notice a branch
+// switch and never notices a new checkout at all.
+//
+// The whole payload travels, not a field or two: the git half reads `tool_input.command`,
+// and the drift half needs BOTH `tool_input.file_path` and `cwd` — the two ways an agent
+// changes checkout are invisible to each other's signal (see ./gitwatch). Passing `data`
+// rather than growing the parameter list keeps that from happening a third time.
+//
+// A seam rather than a direct call for the same reason as `onTurnEnd`: acting on it
+// means git commands, the roster and a repaint, none of which belong in the phase state
+// machine. main.ts wires it; in a test a settled tool is just a settled tool.
+let onSessionTouched: (s: Sess, tool: string, data: any) => void = () => {};
+export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
 
 // Set the phase and, when it actually changes, stamp phaseSince — the anchor for
 // the inspector's dwell timer ("0:42 in state") and the "your turn" wait clock.
@@ -112,6 +129,20 @@ export function clearPending(s: Sess) {
   s.attention = null; s.pendingPermId = null; s.pendingCmd = "";
 }
 
+// The one place that decides how a turn ended, because two events reach it and only
+// one of them knows anything: `Stop` fires when the turn completed, and Claude Code
+// fires the *same* 60-second idle Notification whether the turn completed or died on
+// an API error. Unguarded, that idle nudge turned the red ✕ a 529 had just earned
+// back into a green "your turn" a minute later — the pane still showing "API Error:
+// 529 Overloaded", the sidebar claiming the agent was waiting on the human. So a
+// known-failed turn (`apiErr`, set by StopFailure and cleared only when the session
+// genuinely starts another one) stays failed until it does.
+function endTurn(s: Sess) { setPhase(s, s.apiErr ? "error" : "done"); }
+// A new turn is under way, so whatever killed the last one is history. Both signals
+// count: a retry the user typed (UserPromptSubmit) and one the model started on its
+// own (PreToolUse) — after `/resume` or a queued message there may be no prompt.
+function newTurn(s: Sess) { s.apiErr = null; }
+
 export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";
   s.lastEvent = ev;
@@ -120,29 +151,54 @@ export function applyHook(s: Sess, data: any) {
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
     // OR directly in the CLI), so reset the pending/attention state either way.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); break;
-    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
+    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); break;
+    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";
       const arg = toolArg(tool, data.tool_input);
       if (tool === "TodoWrite") applyTodos(s, data.tool_input);
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
       else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
-      if (!bg()) { setPhase(s, "working"); clearPending(s); s.curTool = tool; s.curArg = arg; }
+      if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
-    case "PostToolUse": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "working"); break;
-    case "PostToolUseFailure": closeActivity(s, data.tool_name); if (!bg()) setPhase(s, "error"); break;
+    // Failure counts as "touched" too: a compound shell command whose tail failed may
+    // still have run the git half, and a failed Edit may have written before it failed.
+    case "PostToolUse":
+    case "PostToolUseFailure": {
+      const tool = data.tool_name || "";
+      closeActivity(s, data.tool_name);
+      onSessionTouched(s, tool, data);
+      if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
+      break;
+    }
     // The turn is over — which is exactly when a project's run-on-stop rule, if it
     // has one, gets to check the agent's work.
-    case "Stop": setPhase(s, "done"); clearPending(s); s.curTool = ""; s.curArg = ""; onTurnEnd(s); break;
-    case "StopFailure": setPhase(s, "error"); clearPending(s); break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); s.curTool = ""; s.curArg = ""; break;
+    case "Stop": endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
+      // Reconcile the working set even if the last tool looked read-only, so the state
+      // you come back to read is the state after the whole turn.
+      onSessionTouched(s, "Stop", data);
+      // Only a turn that really ended gets its work checked: an unattended run
+      // against a turn the API cut short would be verifying half-written files.
+      if (!s.apiErr) onTurnEnd(s);
+      break;
+    // "The turn ended because the API failed" — the only hook that says so, and the
+    // only place the reason exists. `error` is an enum (overloaded, rate_limit,
+    // authentication_failed, max_output_tokens…), `error_details` the message the
+    // pane shows; both are worth far more than a bare red glyph, since they are the
+    // difference between "retry in a minute" and "go re-authenticate".
+    case "StopFailure":
+      s.apiErr = { kind: String(data.error ?? "unknown"), detail: abbr(String(data.error_details ?? data.message ?? "")), at: Date.now() };
+      setPhase(s, "error"); clearPending(s); s.curTool = ""; s.curArg = "";
+      break;
+    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "Notification": {
       const nt: string = data.notification_type ?? "";
       const msg: string = typeof data.message === "string" ? data.message : "";
       if (nt.includes("permission") || /permission/i.test(msg)) { s.attention = "permission needed"; if (msg) s.pendingCmd = abbr(msg); }
-      else if (nt === "idle_prompt") { setPhase(s, "done"); clearPending(s); }
+      // The REPL has been sitting at the prompt for a minute. That is the turn being
+      // over, not the turn having succeeded — endTurn is what knows the difference.
+      else if (nt === "idle_prompt") { endTurn(s); clearPending(s); }
       else { s.attention = nt || msg || "notification"; if (msg) s.pendingCmd = abbr(msg); }
       break;
     }
@@ -164,7 +220,10 @@ export function applyStatusline(s: Sess, data: any) {
   const tok = data.context_window?.used_tokens ?? data.context_window?.tokens;
   if (typeof tok === "number") s.ctxTokens = tok;
   const cost = data.cost?.total_cost_usd;
-  if (typeof cost === "number") { addUsage(cost - (s.cost ?? 0), s); s.cost = cost; pushHist(s.costHist, cost); }
+  // The day's increment comes from the conversation's own baseline, not from this
+  // pane's last reading — a resumed session inherits Claude's running total, and a
+  // pane that started at `cost: null` would book the whole of it again. See costDelta.
+  if (typeof cost === "number") { addUsage(costDelta(s.resumeId || s.id, cost), s); s.cost = cost; pushHist(s.costHist, cost); }
   const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
   const r5 = data.rate_limits?.five_hour;
   if (r5) {

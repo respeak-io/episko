@@ -9,9 +9,16 @@
   </head>
   <body>
     <div class="app" id="app">
-      <header class="top">
+      <!--
+        This header IS the title bar — there is no native one behind it (see the
+        window block in lib.rs). `deep` makes the whole strip draggable except its
+        clickable elements, which tauri's drag script excludes for us; the ⌘K bar
+        opts out explicitly because it is a <div> that listens for a click, and a
+        drag would eat the mouseup that click needs.
+      -->
+      <header class="top" data-tauri-drag-region="deep">
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
-        <div class="kbar" id="kbar"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+        <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
@@ -30,8 +37,28 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode">▾</button>
           </div>
+          <button class="ibtn" id="histBtn" title="Session history — every past conversation, all projects" aria-label="Session history">◷</button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
+        </div>
+        <!--
+          Window controls. Windows only (html.win) — macOS keeps its real traffic
+          lights, which float over this header instead. A child of the header
+          rather than of .top-right, because only there can it stretch to the full
+          40px and sit flush in the corner, which is where a thrown pointer lands.
+          The middle button swaps glyph via .maxed.
+        -->
+        <div class="wctl" id="winCtl">
+          <button class="wc" id="winMin" title="Minimize" aria-label="Minimize">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
+          </button>
+          <button class="wc" id="winMax" title="Maximize" aria-label="Maximize">
+            <svg class="ic-max" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" /></svg>
+            <svg class="ic-restore" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5v-2h7v7h-2" /><rect x=".5" y="2.5" width="7" height="7" /></svg>
+          </button>
+          <button class="wc wclose" id="winClose" title="Close" aria-label="Close">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
+          </button>
         </div>
       </header>
 
@@ -43,21 +70,29 @@
         <div class="railmini" id="railmini"></div>
       </aside>
 
-      <main class="stage">
-        <div class="stage-head">
-          <div class="st-title">
-            <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
-            <span class="stitle" id="hTitle"></span>
-            <span class="path" id="hPath"></span>
-          </div>
-          <div class="st-actions">
-            <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
-            <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
-            <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
-            <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
-            <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
-          </div>
+      <!--
+        A sibling of .stage rather than a child of it, so it can own a grid row of its
+        own that spans the stage AND the inspector (see the `head` area in styles.css).
+        The title and the six verbs all act on what is on the stage, so the panel beside
+        it starts underneath — and the row gets the whole width to lay them out in.
+      -->
+      <div class="stage-head">
+        <div class="st-title">
+          <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
+          <span class="stitle" id="hTitle"></span>
+          <span class="path" id="hPath"></span>
         </div>
+        <div class="st-actions">
+          <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
+          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
+          <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
+          <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
+          <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
+          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
+        </div>
+      </div>
+
+      <main class="stage">
         <div id="terminals">
           <div class="empty" id="empty">
             <div class="empty-card">
@@ -70,21 +105,56 @@
             <div class="ext-view-bar"><span class="ext-view-dot"></span>Read-only mirror · this session runs in another terminal</div>
             <div class="ext-body" id="extBody"></div>
           </div>
+          <!-- The project dashboard. Nothing inside it runs until a project is
+               clicked: ./dashboard fills every one of these on open, and the pane
+               stays hidden (and empty) for the whole life of the app otherwise. -->
+          <div class="dash-view" id="dashPane" hidden>
+            <div class="dash" id="dashJotHost">
+              <div id="dashPulse"></div>
+              <div class="db-body">
+                <div class="db-spine" id="dashSpine"></div>
+                <div class="db-aside" id="dashAside"></div>
+              </div>
+            </div>
+            <div class="ovl" id="dashOverlay"></div>
+            <!-- Both writes this pane can make to GitHub are public, so neither
+                 happens without a sheet showing exactly what will be written. -->
+            <div class="dsh-scrim" id="dashScrim"></div>
+            <div class="dsh" id="dashSheet"></div>
+          </div>
         </div>
       </main>
 
       <aside class="insp">
+        <!-- The 44px rail ⌘I collapses to on the dashboard, where the inspector holds
+             the only copy of History / Terminal / Run. Empty (and display:none) on
+             every other view. -->
+        <div class="insp-strip" id="dashStrip"></div>
         <div class="insp-head"><span class="label">Session</span><span class="pill idle" id="iPill"><span class="pd"></span><span id="iPillTxt">–</span></span></div>
         <div class="insp-scroll" id="inspector"></div>
       </aside>
 
       <footer class="foot">
         <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko — open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
-        <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
+        <!-- Release notes sit to the RIGHT of the version number and hug it: the glyph
+             explains that number, and at the footer's own 15px gap it would read as one
+             more independent segment. Inline SVG rather than a character — no document
+             glyph renders on both macOS and Windows, and ▤ already means "embedded
+             pane" everywhere else in the app. -->
+        <span class="fvern">
+          <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
+          <button class="clbtn" id="clBtn" title="What's new">
+            <svg class="clico" viewBox="0 0 14 14" aria-hidden="true">
+              <path class="cl-pg" d="M3.6 1.6h4L10.4 4.4v8H3.6z"/>
+              <path class="cl-pg" d="M7.6 1.7V4.4h2.7"/>
+              <path class="cl-tx" d="M5.5 6.9h3.3M5.5 8.9h3.3M5.5 10.9h2"/>
+            </svg>
+          </button>
+        </span>
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv"></span>
-        <span class="fseg">today <b id="fCost">$0.00</b></span>
+        <span class="fseg fclick" id="fCostSeg" title="Today's spend — click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
         <span class="fdiv"></span>
         <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast — click for detail">
           <span class="flabel">limits</span>
@@ -151,10 +221,12 @@
     -->
     <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true" aria-label="New session">
       <div class="wt-head">
-        <div class="wt-title"><b>New session</b><span class="wt-proj" id="wtProj"></span></div>
+        <div class="wt-title"><b id="wtTitle">New session</b><span class="wt-proj" id="wtProj"></span></div>
         <div class="wt-headrow">
           <span class="wt-path" id="wtPath"></span>
           <span class="wt-eng" id="wtEng"></span>
+          <!-- Only shown when the launch is NOT the standard ask-me mode (see openWt). -->
+          <span class="wt-eng" id="wtMode" hidden></span>
           <button class="wt-chip" id="wtRefresh" type="button" title="Re-read worktrees and branches">
             <span class="ic">⟳</span><span id="wtAge">now</span>
           </button>
@@ -178,12 +250,69 @@
       </div>
     </div>
 
+    <!--
+      History. Same shape as the new-session dialog (and the same .wt-* skin): one
+      scrolling list of past conversations on the left, the consequences of the
+      highlighted one — where it ran, what was said, whether it can come back — on
+      the right. Reuses the transcript mirror's .tvmsg markup for the preview.
+    -->
+    <div class="wtdlg histdlg" id="histDlg" role="dialog" aria-modal="true" aria-label="Session history">
+      <div class="wt-head">
+        <div class="wt-title"><b>History</b><span class="wt-proj" id="histCount"></span></div>
+        <div class="wt-headrow">
+          <span class="wt-path">Every Claude Code conversation on this machine — pick one up where it left off.</span>
+          <button class="wt-chip" id="histScope" type="button" title="Limit the list to the project on screen">
+            <span class="ic">◧</span><span id="histScopeTxt">all projects</span>
+          </button>
+          <button class="wt-chip" id="histRefresh" type="button" title="Re-read the transcripts on disk">
+            <span class="ic">⟳</span><span id="histAge">now</span>
+          </button>
+        </div>
+      </div>
+      <div class="wt-q">
+        <span class="wt-caret">◷</span>
+        <input id="histQ" spellcheck="false" autocomplete="off" aria-label="Search past sessions"
+               placeholder="Search by title, project, branch or path…" />
+        <span class="wt-count" id="histN"></span>
+      </div>
+      <div class="wt-body">
+        <div class="wt-list" id="histList" role="listbox" aria-label="Past sessions"></div>
+        <div class="wt-detail" id="histDetail" aria-live="polite"></div>
+      </div>
+      <div class="wt-foot">
+        <span><span class="k">↑</span><span class="k">↓</span> move</span>
+        <span><span class="k">⏎</span> resume</span>
+        <span class="sp"></span>
+        <span><span class="k">esc</span> close</span>
+      </div>
+    </div>
+
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
       <div class="diff-body" id="diffBody"></div>
+    </div>
+
+    <!--
+      Project history. Opened from a project's right-click menu, and paged: the list
+      holds the newest 60 commits and asks for the next 60 only when you scroll to the
+      end of it (graphview.ts). Head and detail strip are pinned; the list scrolls.
+    -->
+    <div class="graphdlg" id="graphDlg" role="dialog" aria-modal="true" aria-label="Commit graph">
+      <div class="graph-head">
+        <div class="diff-title-wrap"><b id="graphTitle"></b><span class="diff-sub" id="graphSub"></span></div>
+        <span class="graph-path" id="graphPath"></span>
+        <div class="gseg" id="graphScope"></div>
+        <button class="graph-ref" id="graphRefresh" type="button" title="Re-read history from git">⟳</button>
+        <button class="diff-x" id="graphClose" title="Close (Esc)">✕</button>
+      </div>
+      <div class="graph-body" id="graphBody" tabindex="0"></div>
+      <div class="graph-detail" id="graphDetail"></div>
+      <!-- One commit, in full. Lives inside the dialog and covers its list, because the
+           strip below can only ever show a subject and a commit message is prose. -->
+      <div class="gcommit" id="graphCommit" tabindex="0" hidden></div>
     </div>
 
     <div class="setdlg" id="setDlg" role="dialog" aria-modal="true" aria-label="Settings">
@@ -216,10 +345,27 @@
     <div class="menupop cafpop" id="cafPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
+    <div class="menupop costpop" id="costPop"></div>
     <div class="menupop shortpop" id="shortPop"></div>
     <!-- branch chooser for the new-session dialog (worktree base / root switch target).
          Lives out here with its siblings, not inside #wtDlg: that dialog is
          overflow:hidden, so an in-dialog popover would be clipped. -->
     <div class="menupop bpop" id="bPop"></div>
+  <!-- What's new. Content comes from CHANGELOG.md, bundled at build time — this
+       reaches no network, and a build can only ever describe itself. -->
+  <div class="cl-dlg" id="clDlg">
+    <div class="cl-head">
+      <h3>What's new</h3><span class="cl-sub" id="clSub"></span>
+      <span class="rt"><button class="act icon" id="clClose" title="Close (Esc)">✕</button></span>
+    </div>
+    <div class="cl-body">
+      <div class="cl-rail" id="clRail"></div>
+      <div class="cl-main" id="clMain"></div>
+    </div>
+    <div class="cl-foot">
+      <span>Shipped with this build — no network needed.</span>
+      <span class="rt"><button class="act" id="clGh">↗ On GitHub</button></span>
+    </div>
+  </div>
   </body>
 </html>

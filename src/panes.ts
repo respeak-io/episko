@@ -21,28 +21,35 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { $, toast } from "./dom";
+import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, statusKey, taskStateText, type DiffStat, type GitActionResult,
-  type Runnable, type Sess,
+  isAgent, statusKey, taskStateText, type DiffStat, type GitActionResult, type Res,
+  type Runnable, type Sess, type WtHead,
 } from "./types";
-import { claudeInput, cleanTitle, fitSession, loadWebgl, macShellKeys, MONO, refit, winClaudePaste } from "./terminal";
+import { driftUpdate, gitMutates } from "./gitwatch";
+import { fmtMb, fmtRate } from "./format";
+import {
+  claudeInput, cleanTitle, clipboardKeys, fitSession, loadWebgl, MONO, refit, shellKeys,
+  winClaudePaste,
+} from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar } from "./sidebar";
 import { renderFoot } from "./footer";
 import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
-import { openWt } from "./worktree";
+import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose, nextInGroup } from "./grouping";
 import { probeIcon } from "./icons";
+import { addIo } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, collapsedRuns, dirtyByFolder, dormants, engineDef, externals,
-  extMirrorId, pastMirrorId, sessions, setActiveId, setDormants, setStageGroup,
-  stageGroup, termEngine, termFontSize,
+  accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dormants, engineDef,
+  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permMode, permModeDef,
+  sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
+  termFontSize, worktreesByRepo, wtSig,
 } from "./state";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
@@ -51,7 +58,13 @@ let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
 // ---------- launch ----------
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}) {
+// Returns the new session id, or null if the spawn failed. Most callers ignore it —
+// but the dashboard's dispatch paths need it to type the prompt in and to write the
+// claim, and "did this start?" is a question only this function can answer. It used to
+// return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
+// `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
+// the toast said it hadn't, and neither the prompt nor the claim was ever sent.
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
   const accent = accentFor(colorKey);
@@ -82,9 +95,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
   };
   sessions.set(id, s);
@@ -97,13 +110,21 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // sidebar doesn't show the same conversation twice, live and dormant.
   if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
-  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
+  // The permission mode a launch starts in (Settings › Sessions). "default" is
+  // Claude's own ask-me behaviour, which is what passing NO flag means — so it goes
+  // over the wire as null rather than as a spelling of the standard mode. Read here
+  // rather than taken as an opt, exactly like termEngine: it is a preference, and a
+  // restore is as much a new launch as anything else.
+  const mode = permMode === "default" ? null : permMode;
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permModeDef(permMode).label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
+  let spawned = true;
   try {
-    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null });
-    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null });
+    if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
+    else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
   } catch (e) {
+    spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
     toast("launch failed: " + e);
     if (term) term.writeln(`\r\n\x1b[31m[launch error] ${e}\x1b[0m`);
@@ -113,6 +134,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
+  return spawned ? id : null;
 }
 
 // Offer a worktree when launching into a repo that already has a session.
@@ -125,7 +147,12 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
 //   • an external session carries the branch the registry reported
 //   • dirtyByFolder holds a non-null diffstat for anything that IS a git repo
 // so repo-ness and the branch label both come for free, with zero IPC.
-export function requestLaunch(project: string, path: string) {
+//
+// All three of those only cover a folder something is *running* in, which is exactly
+// what a project dashboard is not — so a caller that already knows better passes
+// `known`. It is still not an await: the dashboard bought that answer when it opened.
+export function requestLaunch(project: string, path: string, known?: { branch: string } | null) {
+  if (known) { openWt(project, path, known.branch); return; }
   // "Is anything already running here?" must include EXTERNAL sessions: they live in
   // their own array, not in `sessions`, so checking only the map sent a click straight
   // to a bare launch in the repo root even when the dialog was the obvious answer.
@@ -138,6 +165,16 @@ export function requestLaunch(project: string, path: string) {
     if (branch || dirtyByFolder.get(path) != null) { openWt(project, path, branch); return; }
   }
   launch(project, path, { colorKey: path });
+}
+
+// The sidebar's per-worktree ＋ (subheader grouping). Unlike requestLaunch this never
+// opens the worktree dialog: the cluster header the button sits on *is* the answer
+// that dialog asks for, so offering it again would only re-ask what was just clicked.
+// `root` is the repo root — the colorKey every session in the project groups by, which
+// a worktree's own path is not (get that wrong and the new session splits off into a
+// project group of its own).
+export function launchWorktree(project: string, root: string, dir: string, branch: string) {
+  launch(project, dir, { colorKey: root, worktree: dir === root ? null : branch, branch });
 }
 
 // A plain login shell in an embedded xterm pane — no Claude, no telemetry.
@@ -159,14 +196,15 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   loadWebgl(term);
   term.open(pane);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
-  term.attachCustomKeyEventHandler(macShellKeys(id)); // Terminal.app-style ⌥/⌘ nav for the shell
+  // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
+  term.attachCustomKeyEventHandler(shellKeys(id, term));
   const s: Sess = {
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
     kind: "shell", external: false, term, fit, pane,
   };
@@ -221,15 +259,17 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   term.open(pane);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+  // …and a run's output is the thing you most want out of a pane, so it copies too.
+  term.attachCustomKeyEventHandler(clipboardKeys(term));
 
   const cmd = execCmd(r);
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null, res: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
     resumeId: id, kind: "task", external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
@@ -312,7 +352,7 @@ export function closeSession(id: string) {
     setStageGroup(null);
     $("terminals").classList.remove("tiled");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
-    ($("empty") as HTMLElement).style.display = "grid";
+    takeStage("none");
   }
   // Closing a tile that wasn't the focused one still reflows the grid — every
   // surviving cell changed size. #terminals itself did not, so the ResizeObserver
@@ -430,6 +470,9 @@ export function focusInGroup(id: string) {
 export function setActive(id: string, keepGroup = false) {
   const s = sessions.get(id);
   if (!s) return;
+  // The pointer and the transcript timer, then the panes: `closeExternalView` owns the
+  // first pair, `takeStage` the second. It is called after, not instead — that one drops
+  // the stage to the empty card, which this immediately replaces with the pane.
   closeExternalView();
   setActiveId(id);
   // Picking a row in the sidebar always means "show me that one", group member or not.
@@ -439,7 +482,7 @@ export function setActive(id: string, keepGroup = false) {
   // the header takes you back. Clicking a tile is `focusInGroup`, not this.
   if (stageGroup && !keepGroup) setStageGroup(null);
   const gid = stageGroup;
-  ($("empty") as HTMLElement).style.display = "none";
+  takeStage("session");
   $("terminals").classList.toggle("tiled", !!gid);
   for (const x of sessions.values()) {
     const on = gid ? x.run?.groupId === gid : x.id === id;
@@ -463,24 +506,52 @@ export function setActive(id: string, keepGroup = false) {
   void refreshSessionStats(s); // working-set diff + CPU/RAM for the inspector
 }
 
-// Poll the inspector's on-demand stats for the active session: the uncommitted
-// working-set diff (git_diffstat) and the claude process's CPU/RAM
-// (session_resources). Both are cheap and only fetched for the visible session.
+// Poll the inspector's on-demand stats: the visible session's uncommitted working-set
+// diff (git_diffstat), and Episko's disk I/O across *every* owned claude session
+// (all_sessions_resources). The two have different scopes on purpose — a working set
+// belongs to one checkout, while the I/O bars answer "how hard is Episko working the
+// disk", which is not a per-pane question. See `ioAll` in state.ts.
+/// Take ONE reading of the app-wide disk-I/O counters and bank it.
+///
+/// Split out of `refreshSessionStats` so the rollup can be kept sampled without paying
+/// for the `git_diffstat` that used to travel beside it — that one spawns a `git`
+/// process per call, which is precisely the kind of churn a disk meter must not add to
+/// the thing it is measuring. This half spawns nothing: the backend answers it from one
+/// `sysinfo` refresh over the pids we already own, which is a syscall per pid and no
+/// disk traffic at all. Persisting stays floored inside `addIo`, so a caller polling
+/// this more often does not write more often.
+export async function pollIo(): Promise<void> {
+  const res = await invoke<
+    { read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null
+  >("all_sessions_resources").catch(() => null);
+  if (!res) return;
+  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
+  ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
+  ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
+  ioAll.primed = res.primed;
+  // Bank the increment off the SAME sample the bars are drawn from, so the rollup and
+  // the live figure can never describe different readings.
+  addIo({ r: res.read_mb, w: res.written_mb });
+}
+
 export async function refreshSessionStats(s: Sess) {
   if (!isAgent(s) || s.external) return;
-  const [git, res] = await Promise.all([
-    invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
-    invoke<{ cpu: number; mem_mb: number } | null>("session_resources", { sessionId: s.id }).catch(() => null),
-  ]);
-  // Only re-render when the *displayed* values change — CPU/RAM jitter every poll,
-  // so comparing rounded values avoids a needless inspector rebuild (which would
+  // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
+  // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
-  const sig = (g: DiffStat | null, r: { cpu: number; memMb: number } | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|" + (r ? `${Math.round(r.cpu)}/${Math.round(r.memMb)}` : "-");
-  const before = sig(s.git, s.res);
+  const sig = (g: DiffStat | null, r: Res) =>
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
+    + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
+  // Sampled BEFORE the awaits: `pollIo` writes straight into `ioAll`, so reading the
+  // "before" state afterwards would compare the new values against themselves and the
+  // inspector would never repaint.
+  const before = sig(s.git, ioAll);
+  const [git] = await Promise.all([
+    invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
+    pollIo(),
+  ]);
   s.git = git ?? null;
-  s.res = res ? { cpu: res.cpu, memMb: res.mem_mb } : null;
-  if (sig(s.git, s.res) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
+  if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
 // Re-derive a session's branch label from its live git HEAD, so it reflects the
@@ -496,13 +567,121 @@ async function refreshBranch(s: Sess): Promise<boolean> {
   s.branch = label;
   return true;
 }
-export async function refreshBranches() {
+async function refreshBranches(): Promise<boolean> {
   const changed = await Promise.all([...sessions.values()].map(refreshBranch));
-  if (changed.some(Boolean)) {
-    renderSidebar();
-    const a = activeId ? sessions.get(activeId) ?? null : null;
-    if (a) renderHeader(a);
+  return changed.some(Boolean);
+}
+
+// Re-read the set of checkouts for every repo that currently has something running in
+// it. Returns true if any repo's roster moved. Repos with nothing live are pruned: the
+// sidebar is a view of what is in play, and listing the worktrees of a project you
+// aren't working in would be noise rather than information.
+/// How often a project with *nothing running* has its checkouts re-read. Same
+/// stale-driven shape as `refreshDirtyStates`: the live set rides the 4s tick because a
+/// worktree an agent just created must appear at once, while a repo nobody is working in
+/// changes on human timescales. Reading every favourite every 4s would be ~20 IPC calls
+/// a tick to learn nothing.
+const IDLE_WT_SWEEP_MS = 20_000;
+let idleWtSweptAt = 0;
+
+async function refreshWorktrees(): Promise<boolean> {
+  const live = new Set<string>();
+  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
+  for (const e of externals) if (e.repo_root) live.add(e.repo_root);
+  // **A favourite with nothing running needs a roster too.** This set used to be
+  // sessions and externals alone, which quietly made the sidebar's peek rows a feature
+  // of *busy* projects only: `clusterByWorktree(p, true)` folds in
+  // `worktreesByRepo.get(p.path)`, so a project you had not started anything in offered
+  // no checkouts to hover for — and closing the last session in one took its rows away
+  // again, since the entry was then deleted below. The rule was invisible and read as
+  // "the bar sometimes doesn't come".
+  const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
+  const roots = new Set(live);
+  for (const f of FAVORITES) {
+    if (live.has(f.path)) continue;
+    // Never read: seed it now, so the rows are there the first time you hover rather
+    // than up to a sweep later. Otherwise wait for the slow tick.
+    if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
   }
+  if (sweep) idleWtSweptAt = Date.now();
+  // Keep what is live OR a favourite — dropping an idle favourite's roster on the tick
+  // that stops reading it would undo the whole point.
+  const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
+  for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
+  let changed = false;
+  await Promise.all([...roots].map(async (root) => {
+    const list = await invoke<WtHead[]>("worktree_heads", { dir: root }).catch(() => null);
+    if (!list) return;                                  // not a repo, or it vanished
+    const prev = worktreesByRepo.get(root);
+    if (prev && wtSig(prev) === wtSig(list)) return;    // the common case: nothing moved
+    // Announce only against a roster we already had. The first read of a repo is
+    // entirely "new", and toasting every checkout at launch would be pure noise.
+    if (prev) announceWtDelta(root, prev, list);
+    worktreesByRepo.set(root, list);
+    changed = true;
+  }));
+  return changed;
+}
+
+// Tell the user when a checkout appears or disappears underneath them — the event a
+// terminal would have shown in its scrollback and the sidebar used to swallow.
+function announceWtDelta(root: string, prev: WtHead[], next: WtHead[]) {
+  const was = new Set(prev.filter((w) => w.exists).map((w) => w.path));
+  const now = new Set(next.filter((w) => w.exists).map((w) => w.path));
+  const added = next.filter((w) => w.exists && !was.has(w.path));
+  const gone = prev.filter((w) => w.exists && !now.has(w.path));
+  // One toast, not one per checkout: `git worktree add` in a loop would otherwise fire
+  // a burst where only the last is readable (toast shows a single message at a time),
+  // and an add paired with a removal would hide the add entirely.
+  const parts: string[] = [];
+  if (added.length === 1) parts.push(`⑃ ${added[0].branch} added`);
+  else if (added.length > 1) parts.push(`⑃ ${added.length} worktrees added`);
+  if (gone.length === 1) parts.push(`⑃ ${gone[0].branch} removed`);
+  else if (gone.length > 1) parts.push(`⑃ ${gone.length} worktrees removed`);
+  if (parts.length) toast(`${parts.join(" · ")} — ${basename(root)}`);
+}
+
+// The single place every git-derived label is re-read and repainted. Both the poll and
+// the hook-driven poke land here, so the sidebar, the header's branch chip and the ⑃
+// dialog can never disagree about what is checked out where.
+export async function refreshGitViews() {
+  const [branchMoved, wtMoved] = await Promise.all([refreshBranches(), refreshWorktrees()]);
+  if (!branchMoved && !wtMoved) return;
+  renderAll();                     // sidebar, header, mini-rail, inspector, tray
+  if (wtMoved) void refreshWtDialog();   // …and the ⑃ dialog, if it happens to be open
+}
+
+// A Bash call an agent just made is the earliest warning that HEAD moved or a checkout
+// appeared. `gitMutates` decides only whether it is worth looking; the re-read decides
+// what actually changed. Coalesced, because `git worktree add` immediately followed by
+// a checkout inside it is two hooks describing one change.
+const GIT_POKE_MS = 250;
+let gitPokeT: number | undefined;
+export function noteGitCommand(cmd: unknown) {
+  if (!gitMutates(cmd)) return;
+  clearTimeout(gitPokeT);
+  gitPokeT = window.setTimeout(() => { void refreshGitViews(); }, GIT_POKE_MS);
+}
+
+// The other half of the same hook: a write tells us *where* the agent is working, which
+// is the one thing a branch re-read can never discover — `refreshBranch` reads HEAD in
+// the session's own folder, so a session whose agent moved to a sibling checkout goes on
+// reporting the branch it left, forever and correctly.
+//
+// `driftUpdate` owns the rule (including which signal outranks which); this owns only
+// the repaint. Both fields it reads come off the same payload — `cwd` catches the moves
+// Claude Code makes itself, `file_path` the ones it doesn't know about.
+export function noteDrift(s: Sess, tool: string, data: any) {
+  if (!isAgent(s) || !s.workdir) return;
+  const roster = worktreesByRepo.get(s.colorKey);
+  if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);
+  // All three fields, not just the identity of the checkout: the branch on a drifted-into
+  // checkout can be switched underneath us, and it is what every drift surface spells out.
+  if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
+  s.drift = next;
+  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
+  renderAll();
 }
 
 // A green run shouldn't linger — tasks are far more numerous and shorter-lived
@@ -520,17 +699,37 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
-  const hb = $("hBranch"); hb.classList.remove("ext-chip");
+  // Reset every attribute a previous session may have left on the shared chip — the
+  // drift branch below sets `title`, and only one of the arms after it would clear it.
+  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
   if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
+  // A drifted session gets BOTH branches, in the order they happened: the chip is the
+  // only thing on screen that says which checkout the work is landing in, and showing
+  // just the new one would trade a stale label for a lie about where `--resume` goes.
+  else if (s.drift) {
+    hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
+    hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
+    hb.hidden = false; hb.classList.add("drifted");
+  }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
-  $("hPath").textContent = tilde(s.workdir);
+  // The path follows the work for the same reason — it is the answer to "where am I?".
+  $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }
 
-// The active project context is either an Episko session or an external one.
+// The active project context is an Episko session, an external one, or — when the
+// dashboard is on stage — the project the dashboard is *about*. That last case is the
+// whole reason these two resolvers are shared: a dashboard names its project more
+// plainly than any session does, so ＋ Session, ❯ Terminal, ▶ Run and ◷ History should
+// act on it exactly as they act on a session's project rather than greying out (or,
+// in ＋ Session's case, falling back to ⌘K and asking a question already answered).
 export function activeProjectCtx(): { project: string; path: string } | null {
+  // The dashboard's root *is* the repo key — the sidebar groups by it — so it needs no
+  // resolution, and it is checked first because all three mirror kinds share one pointer.
+  const dm = dashMirror();
+  if (dm) return { project: dm.name, path: dm.root };
   // For an external session use its repo root, not the worktree cwd, so launching a
   // session / opening a worktree from it operates on the repo (and groups under it).
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
@@ -542,6 +741,9 @@ export function activeProjectCtx(): { project: string; path: string } | null {
 // The active session's *actual* cwd (the worktree dir for worktree sessions, not
 // the color-grouping repo key) — used when opening a plain terminal there.
 export function activeCwd(): string | null {
+  // A dashboard is about a repo, not a checkout, so its root is both answers at once.
+  const dm = dashMirror();
+  if (dm) return dm.root;
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); return e ? e.cwd : null; }
   if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); return d ? d.workdir : null; }
   const s = activeId ? sessions.get(activeId) : null;
@@ -561,10 +763,13 @@ export function openPlainTerminal() {
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
   // A dormant session can also own the stage; it already stores the repo key.
   const d = pastMirrorId() ? dormants.find((x) => x.id === pastMirrorId()) : undefined;
+  // …and so can a dashboard, whose root is the repo key and whose name is the label
+  // the sidebar already uses — better than basename(), which is what the fallback gives.
+  const dm = dashMirror();
   const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : d ? d.colorKey : wd;
   const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : d ? d.worktree : null;
   const branch = s ? s.branch : (e?.branch || d?.branch || "");
-  launchShell(s ? s.project : (d?.project ?? basename(colorKey)), wd, { colorKey, worktree, branch });
+  launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch });
 }
 
 // terminal and put the command on the clipboard — honest about the extra paste.
@@ -589,13 +794,19 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
 // ⌘⇧R and ⌘T bypass the button entirely.
 export function syncStageButtons() {
   const wd = activeCwd();
-  const set = (id: string, enabled: string) => {
+  const set = (id: string, enabled: string, disabled = "Start a session first — this runs in the active project") => {
     const b = $(id) as HTMLButtonElement;
     b.disabled = !wd;
-    b.title = wd ? enabled : "Start a session first — this runs in the active project";
+    b.title = wd ? enabled : disabled;
   };
   set("btnRun", "Run a task or script from this project");
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
+  // ◷ History belongs to the same set — it opens scoped to the project on screen.
+  // Its disabled reason is different in kind, though: the whole-machine view is
+  // always one click away in the top bar, so say where it went rather than
+  // "start a session".
+  set("btnHist", "Reopen a past session in this project — including ones you closed (⌘⇧H)",
+      "No project selected — the ◷ button up top opens history for every project");
 }
 
 // Which session (if any) has a git action in flight — the buttons grey out while

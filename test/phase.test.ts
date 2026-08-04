@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { Sess } from "../src/types";
+import { apiErrText, phaseText, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
-import { usage, usageDetail } from "../src/usage";
+import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, permCmd,
   pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
@@ -27,7 +27,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [],
@@ -46,6 +46,7 @@ beforeEach(() => {
   fcLog.length = 0; midSnap.h5 = midSnap.d7 = null;
   for (const k of Object.keys(usage)) delete usage[k];
   for (const k of Object.keys(usageDetail)) delete usageDetail[k];
+  resetCostBaselines();
   setOnTurnEnd(() => {});
   store.clear();
 });
@@ -143,6 +144,64 @@ describe("applyHook — the lifecycle state machine", () => {
     it("calls the backend only when something is actually held", () => {
       clearPending(sess({ pendingPermId: null }));
       expect(ipc).toHaveLength(0);
+    });
+  });
+
+  // The bug this guards: a 529 killed the turn, StopFailure painted the row red —
+  // and sixty seconds later Claude Code's idle Notification painted it green again.
+  // Same nudge fires whether the turn finished or died, so nothing downstream could
+  // tell the difference, and the sidebar ended up claiming "your turn" over a pane
+  // reading "API Error: 529 Overloaded".
+  describe("a turn the API killed", () => {
+    it("records why, from the StopFailure hook", () => {
+      const s = sess({ phase: "working", curTool: "Bash", curArg: "ls" });
+      hook(s, "StopFailure", { error: "overloaded", error_details: "API Error: 529 Overloaded." });
+      expect(s).toMatchObject({ phase: "error", curTool: "", curArg: "" });
+      expect(s.apiErr).toMatchObject({ kind: "overloaded", detail: "API Error: 529 Overloaded." });
+    });
+    it("still records something when the payload carries no reason", () => {
+      const s = sess();
+      hook(s, "StopFailure");
+      expect(s.apiErr).toMatchObject({ kind: "unknown", detail: "" });
+    });
+    it("stays failed when the idle nudge arrives a minute later", () => {
+      const s = sess({ phase: "working" });
+      hook(s, "StopFailure", { error: "overloaded" });
+      vi.setSystemTime(NOW_MS + 60_000);
+      hook(s, "Notification", { notification_type: "idle_prompt" });
+      expect(s).toMatchObject({ phase: "error", attention: null }); // never "done"
+    });
+    it("stays failed even if a Stop somehow follows, and skips the run-on-stop rule", () => {
+      let runs = 0;
+      setOnTurnEnd(() => { runs++; });
+      const s = sess({ phase: "working" });
+      hook(s, "StopFailure", { error: "rate_limit" });
+      hook(s, "Stop");
+      expect(s.phase).toBe("error");
+      expect(runs).toBe(0); // verifying half-written files helps nobody
+    });
+    it("clears the moment the session starts another turn", () => {
+      for (const [ev, extra] of [["UserPromptSubmit", {}], ["PreToolUse", { tool_name: "Read" }], ["SessionStart", {}], ["SessionEnd", {}]] as const) {
+        const s = sess({ phase: "error", apiErr: { kind: "overloaded", detail: "", at: 1 } });
+        hook(s, ev, extra);
+        expect(s.apiErr, ev).toBeNull();
+      }
+    });
+    it("lets the next turn end green again", () => {
+      const s = sess({ phase: "working" });
+      hook(s, "StopFailure", { error: "overloaded" });
+      hook(s, "UserPromptSubmit");
+      hook(s, "Stop");
+      expect(s).toMatchObject({ phase: "done", apiErr: null });
+    });
+    it("names the failure wherever a state is spelled out", () => {
+      const s = sess({ phase: "error", apiErr: { kind: "overloaded", detail: "", at: 1 } });
+      expect(phaseText(s)).toBe("API overloaded");
+      expect(phaseText(sess({ phase: "error" }))).toBe("error");   // no reason to name
+      expect(phaseText(sess({ phase: "done" }))).toBe("your turn"); // unchanged otherwise
+      // An enum value Claude adds later still reads as itself, not as a blank.
+      expect(apiErrText({ kind: "teapot_error", detail: "", at: 1 })).toBe("teapot error");
+      expect(apiErrText({ kind: "", detail: "", at: 1 })).toBe("API error");
     });
   });
 
@@ -324,6 +383,34 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       applyStatusline(s, { cost: { total_cost_usd: 2 } });
       applyStatusline(s, { cost: { total_cost_usd: 2 } });
       expect(Object.values(usage)[0]).toBe(2);
+    });
+    it("does not re-book the running total when a resume replaces the pane", () => {
+      // The shipped bug, end to end. `Move session` (and restore, and a History
+      // reopen) closes the pane and launches a new `Sess` — `cost: null` — for the
+      // same conversation, which Claude resumes with its running total intact. The
+      // day used to gain that whole total a second time: $30 spent, $58 recorded.
+      const before = sess({ resumeId: "conv", model: "Opus 4.8" });
+      applyStatusline(before, { cost: { total_cost_usd: 28 } });
+      const after = sess({ id: "relaunched", resumeId: "conv", model: "Opus 4.8" });
+      applyStatusline(after, { cost: { total_cost_usd: 28 } });
+      applyStatusline(after, { cost: { total_cost_usd: 30 } });
+      expect(after.cost).toBe(30);
+      expect(Object.values(usage)[0]).toBeCloseTo(30, 10); // not 58
+      // Both panes are still named — the money moved once, the attribution didn't.
+      expect(Object.keys(Object.values(usageDetail)[0].sess!)).toEqual(["sid", "relaunched"]);
+      // …and it lands where it was earned: the first pane booked 28 before the move,
+      // the relaunched one only the 2 it added on top.
+      expect(Object.values(usageDetail)[0].sess!.sid.usd).toBeCloseTo(28, 10);
+      expect(Object.values(usageDetail)[0].sess!.relaunched.usd).toBeCloseTo(2, 10);
+    });
+    it("counts a rotated conversation from scratch, since its counter restarted too", () => {
+      // /clear mints a new runtime id *and* zeroes the total. main.ts re-points
+      // resumeId before the statusLine lands, so the new id starts its own baseline.
+      const s = sess({ resumeId: "conv" });
+      applyStatusline(s, { cost: { total_cost_usd: 5 } });
+      s.resumeId = "conv2";
+      applyStatusline(s, { cost: { total_cost_usd: 0.25 } });
+      expect(Object.values(usage)[0]).toBeCloseTo(5.25, 10);
     });
     it("keeps a history for the sparkline, capped", () => {
       const s = sess();
