@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **685 vitest + cargo (147 on macOS, 144 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **695 vitest + cargo (151 on macOS, 148 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -664,22 +664,22 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 
 ## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 518 lines out of ~12220 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 577 lines out of ~12824 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 518 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `git.rs` | 2,718 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `lib.rs` | 577 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `git.rs` | 2,891 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
 | `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
-| `usage.rs` | 1,613 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `usage.rs` | 1,685 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
 | `pty.rs` | 1,071 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
-| `telemetry.rs` | 926 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
-| `platform.rs` | 750 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
-| `external.rs` | 339 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
-| `github.rs` | 816 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
+| `telemetry.rs` | 927 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 752 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
+| `external.rs` | 588 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `github.rs` | 828 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
 | `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | 561 | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
-| `icons.rs` | 184 | project favicon/logo probing |
+| `icons.rs` | 314 | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
 | `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
@@ -762,11 +762,11 @@ growth) — APFS is copy-on-write, and a transcript grows by constant small appe
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 49 modules
 
-**No framework, and no longer one file.** ~13065 lines across 49 modules; `main.ts` is 777 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~14296 lines across 49 modules; `main.ts` is 805 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 685 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 695 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -1227,6 +1227,42 @@ Four things about that split are easy to get wrong:
   back, which is also what catches Win+↑, a snap, and the double-click the drag
   region handles itself. The same listener is what tells macOS it entered
   fullscreen.
+
+## The tray menu (`update_tray`, `tray.ts`, `icons.rs`'s `glyph_rgba`)
+
+The other native surface, and the one the app draws least of: the OS owns the font,
+the row height, the highlight and the corner radius, so **the only two things Episko
+controls are each row's string and each row's 16px image**. Sessions are grouped under
+their project and carry their status as a coloured icon; the label is the branch alone,
+since the header now says which repo.
+
+- **A menu item's text is always drawn in the menu's own colour.** So the glyph a label
+  spells — `◆` waiting on you, `✕` the turn died — arrived the same grey as "Quit", and
+  the two states you open this menu *for* were the two it could not show. An item's
+  icon is an image and is **not** tinted, which is the whole reason the icons exist.
+- **Therefore the icon must not be a template image** — the exact opposite of the tray
+  icon in `run()`, which *is* one so it adapts to the menu bar. Get these backwards and
+  every dot comes out menu-grey, i.e. the bug you set out to fix.
+- **The frontend picks the shape and the colour, Rust only rasterises.** `GCLASS` maps
+  a status to a class and `styles.css` gives that class its hue; `tray.ts` reads the
+  colour back out of the stylesheet (`classRgb`) rather than restating it. A palette
+  copied into Rust would part company with the sidebar the first time a hue is
+  re-stepped for the light theme — and `g-ended` already differs between them.
+- **32px source, because neither platform draws it at its own size**: muda scales the
+  image to an 18pt row on macOS and blits it into a hard-coded 16×16 bitmap on Windows,
+  so 32 halves exactly for one and still out-resolves the other on a retina display.
+- **A project header is a *disabled* item, and disabled is load-bearing.** The tray's
+  menu handler treats every id it doesn't recognise as a session to select
+  (the `sid` catch-all), so a clickable header would emit a `tray-select` for nothing.
+  Disabled items fire no `MenuEvent` at all. Anything new added to that menu needs
+  either an id the handler matches ahead of the catch-all, or `enabled(false)`.
+- The signature guard still stands, and now covers the icons too — a phase change that
+  doesn't change the wording (a shell going from live to ended) must still repaint, so
+  shape and colour are in the signature rather than just the label.
+
+Windows renders the same items its own way and has no `set_title`, so the bar shows the
+icon alone; whether a 16×16 blit of these shapes reads well there is a `RELEASE.md`
+click-through, not something either CI leg can assert.
 
 ## External (non-Episko) sessions
 

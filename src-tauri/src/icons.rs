@@ -155,10 +155,139 @@ pub(crate) fn read_custom_icon(path: String) -> Result<ProjectIcon, String> {
         .ok_or_else(|| "Not a usable image (PNG, SVG, ICO, JPEG, WEBP or GIF, max 512 KB)".to_string())
 }
 
+// ---------- tray status glyphs ----------
+
+// The sidebar's status vocabulary, rasterised so the tray menu can carry it in
+// colour. A menu item's *text* is always drawn in the menu's own colour, so the
+// glyph a text row spells (`◆`, `✕`) arrives the same grey as "Quit"; an item's
+// icon is an image and is not tinted, so this is the only way a status reaches
+// the menu as anything but a character.
+//
+// Two things this deliberately does NOT decide. **Which shape and which colour** —
+// the frontend sends both, because it already owns them (`GCLASS` maps a status to
+// a class, `styles.css` gives that class its hue). Deriving them again here would
+// be a second copy of the palette, and the copies would part company the first time
+// a hue is re-stepped for the light theme. And **the size on screen**: muda scales
+// the image to an 18pt row height on macOS and blits it into a hard-coded 16×16
+// bitmap on Windows, so 32px is a source that halves exactly for Windows and still
+// out-resolves the macOS row on a retina display.
+
+/// Distance from `p` to the segment `a`–`b`. The shapes below are strokes and
+/// outlines, so all of them are expressed as a distance to a line or a circle.
+fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let (vx, vy) = (bx - ax, by - ay);
+    let (wx, wy) = (px - ax, py - ay);
+    let len2 = vx * vx + vy * vy;
+    let t = if len2 <= f32::EPSILON { 0.0 } else { ((wx * vx + wy * vy) / len2).clamp(0.0, 1.0) };
+    let (dx, dy) = (wx - t * vx, wy - t * vy);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Signed distance to the named shape, in pixels on the 32px canvas, with the
+/// origin at its centre and **y running down** (image order, not maths order — the
+/// check mark's elbow is the lowest point on screen, so it has the largest `y`).
+/// An unknown name draws the plain disc: a new status should look like *a* status,
+/// not like a hole in the menu.
+fn shape_sdf(shape: &str, x: f32, y: f32) -> f32 {
+    let len = (x * x + y * y).sqrt();
+    match shape {
+        // `○` idle — an outline, so it reads as "nothing is happening here" against
+        // the filled shapes without needing a second colour.
+        "ring" => (len - 8.5).abs() - 1.3,
+        // `◆` attention. `/ √2` converts the octagonal-norm distance to a true one,
+        // which is what keeps the anti-aliased edge the same weight as the disc's.
+        "diamond" => (x.abs() + y.abs() - 11.0) * std::f32::consts::FRAC_1_SQRT_2,
+        // `✓` done — two strokes, elbow low and left.
+        "check" => seg_dist(x, y, -7.5, -0.5, -2.5, 5.0).min(seg_dist(x, y, -2.5, 5.0, 8.0, -6.0)) - 1.6,
+        // `✕` error.
+        "cross" => seg_dist(x, y, -6.5, -6.5, 6.5, 6.5).min(seg_dist(x, y, -6.5, 6.5, 6.5, -6.5)) - 1.5,
+        // `❯` a live shell pane — not a phase, which is why it isn't a dot at all.
+        "chevron" => seg_dist(x, y, -5.5, -7.5, 4.0, 0.0).min(seg_dist(x, y, 4.0, 0.0, -5.5, 7.5)) - 1.6,
+        // `·` ended. Small rather than grey-and-full-size, so it stays quiet even
+        // when the theme puts a light ground under it.
+        "small" => len - 4.5,
+        // `●` working / thinking, and the fallback.
+        _ => len - 9.0,
+    }
+}
+
+/// Rasterise one status glyph as 32×32 straight (non-premultiplied) RGBA, which is
+/// what `tauri::image::Image::new_owned` takes — so the seven states cost no asset
+/// files and re-colour from the app's own tokens.
+pub(crate) fn glyph_rgba(shape: &str, rgb: [u8; 3]) -> Vec<u8> {
+    const N: usize = 32;
+    const C: f32 = N as f32 / 2.0;
+    let mut out = vec![0u8; N * N * 4];
+    for y in 0..N {
+        for x in 0..N {
+            // Coverage from the signed distance, over one pixel of falloff. Cheap
+            // anti-aliasing, and enough for shapes this simple.
+            let d = shape_sdf(shape, x as f32 + 0.5 - C, y as f32 + 0.5 - C);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let i = (y * N + x) * 4;
+            out[i] = rgb[0];
+            out[i + 1] = rgb[1];
+            out[i + 2] = rgb[2];
+            out[i + 3] = (cov * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The buffer's shape is a contract with `Image::new_owned(rgba, 32, 32)`, which
+    /// takes the dimensions on trust — a short buffer is a panic or a garbled icon
+    /// somewhere inside AppKit, not a compile error here.
+    #[test]
+    fn glyph_rgba_is_a_full_32x32_rgba_buffer() {
+        assert_eq!(glyph_rgba("disc", [1, 2, 3]).len(), 32 * 32 * 4);
+        assert_eq!(glyph_rgba("check", [1, 2, 3]).len(), 32 * 32 * 4);
+    }
+
+    /// Every opaque pixel carries the colour it was asked for. This is the whole
+    /// point of the exercise: a text row's glyph arrives in the menu's grey, and an
+    /// icon's does not.
+    #[test]
+    fn glyph_rgba_paints_the_colour_it_was_given() {
+        let px = glyph_rgba("disc", [224, 164, 74]);
+        let centre = (16 * 32 + 16) * 4;
+        assert_eq!(&px[centre..centre + 4], &[224, 164, 74, 255]);
+        // ...and leaves the corner fully transparent, so the row's background shows
+        // through rather than a 32px square of colour.
+        assert_eq!(px[3], 0);
+    }
+
+    /// The shapes must actually differ, or the whole set collapses to "coloured dot"
+    /// and a red ✕ becomes indistinguishable from a red ● for anyone reading shape
+    /// before hue — which is most people, and all of the colourblind ones.
+    #[test]
+    fn each_shape_draws_something_different() {
+        let alpha = |s: &str| glyph_rgba(s, [255, 255, 255]).chunks(4).map(|p| p[3] as u32).sum::<u32>();
+        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small"];
+        let mut seen: Vec<u32> = names.iter().map(|s| alpha(s)).collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "two shapes rasterised identically");
+        // The ring is hollow and the disc is not — the pair most likely to collapse
+        // if the ring's stroke width is ever widened past its radius.
+        let centre = (16 * 32 + 16) * 4 + 3;
+        assert_eq!(glyph_rgba("ring", [255, 255, 255])[centre], 0);
+        assert_eq!(glyph_rgba("disc", [255, 255, 255])[centre], 255);
+    }
+
+    /// A status the frontend gains before this list does must still draw *a* glyph.
+    /// The tray is a mirror; a blank icon column reads as a broken menu.
+    #[test]
+    fn an_unknown_shape_falls_back_to_the_disc() {
+        assert_eq!(glyph_rgba("compacting", [9, 9, 9]), glyph_rgba("disc", [9, 9, 9]));
+    }
 
     /// Repos routinely ship a PNG named `favicon.ico`. Trusting the extension would
     /// emit `data:image/x-icon` wrapping PNG bytes, which the webview may refuse —
@@ -182,3 +311,4 @@ mod tests {
     }
 
 }
+

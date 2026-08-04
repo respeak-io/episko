@@ -26,9 +26,9 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use portable_pty::{ChildKiller, MasterPty};
-use tauri::menu::MenuBuilder;
+use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
-use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::SubmenuBuilder;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -126,21 +126,38 @@ fn confirm_quit(app: AppHandle) {
 
 // ---------- macOS menu-bar (tray) ----------
 
+/// One row of the tray menu, as the frontend lays it out. It sends a *rendered
+/// list* rather than a set of sessions because the order and the grouping are the
+/// sidebar's own (`projectList`), and only that side knows them.
+///
+/// `shape` and `rgb` come from the frontend for the same reason: `GCLASS` already
+/// maps a status to a class and `styles.css` gives that class its hue, so choosing
+/// here would be a second copy of the palette — one that would silently part company
+/// with the sidebar the first time a colour is re-stepped for the light theme.
 #[derive(serde::Deserialize)]
-struct TrayItem {
-    id: String,
-    label: String,
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum TrayRow {
+    /// A clickable session. `id` is the session id the `sid` catch-all in the tray's
+    /// menu handler turns back into a `tray-select`.
+    Session { id: String, label: String, shape: String, rgb: [u8; 3] },
+    /// A project heading, rendered as a *disabled* item — the standard macOS idiom,
+    /// and it keeps every session one click away where a submenu per project would
+    /// cost a hover each. Disabled also means it fires no `MenuEvent`, which matters:
+    /// the handler treats every id it doesn't recognise as a session to select.
+    Header { label: String },
+    Sep,
 }
 
-/// Rebuild the tray menu to mirror the sidebar: one clickable row per session
-/// (with its status), plus Show / Quit. `title` is the short text shown next to
-/// the menu-bar icon (macOS); `tooltip` is the hover text.
+/// Rebuild the tray menu to mirror the sidebar: the sessions grouped under their
+/// projects, each carrying its status as a coloured icon, plus Show / Quit. `title`
+/// is the short text shown next to the menu-bar icon (macOS); `tooltip` is the hover
+/// text.
 #[tauri::command]
 fn update_tray(
     app: AppHandle,
     title: String,
     tooltip: String,
-    items: Vec<TrayItem>,
+    items: Vec<TrayRow>,
 ) -> Result<(), String> {
     let tray = match app.tray_by_id("main") {
         Some(t) => t,
@@ -150,8 +167,29 @@ fn update_tray(
     if items.is_empty() {
         mb = mb.text("none", "No active sessions");
     } else {
-        for it in &items {
-            mb = mb.text(it.id.clone(), it.label.clone());
+        for row in &items {
+            mb = match row {
+                TrayRow::Sep => mb.separator(),
+                TrayRow::Header { label } => {
+                    let it = MenuItemBuilder::new(label)
+                        .enabled(false)
+                        .build(&app)
+                        .map_err(|e| e.to_string())?;
+                    mb.item(&it)
+                }
+                TrayRow::Session { id, label, shape, rgb } => {
+                    // NOT a template image: muda hands the icon to AppKit untouched,
+                    // and a template one would be re-tinted to the menu's text colour,
+                    // which is the exact greyness this replaces. (The *tray* icon in
+                    // `run()` is a template on purpose — it must adapt to the bar.)
+                    let icon = tauri::image::Image::new_owned(crate::icons::glyph_rgba(shape, *rgb), 32, 32);
+                    let it = IconMenuItemBuilder::with_id(id.clone(), label)
+                        .icon(icon)
+                        .build(&app)
+                        .map_err(|e| e.to_string())?;
+                    mb.item(&it)
+                }
+            };
         }
     }
     let menu = mb

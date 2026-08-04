@@ -128,10 +128,21 @@ A regression in either is silent.
       change, an arriving permission, a new session, and closing one *all* still move
       the sidebar — and that a drag-reorder leaves it correct.
 
-### The two surfaces with no automated cover at all
+### The three surfaces with no automated cover at all
 
-Both are CSS/markup, so `tsc` and the suites say nothing about either.
+All CSS/markup or native chrome, so `tsc` and the suites say nothing about any of them.
 
+- [ ] **The tray menu's status dots are in colour, and grouped.** Open the menu-bar
+      icon with two projects running. Each project is a greyed heading with its
+      sessions under it, and every session carries a *coloured* dot — amber working,
+      green ✓, pink ◆, red ✕ — not a grey character. A grey dot means the icon reached
+      AppKit as a template image; a missing dot means the rasteriser handed over a
+      buffer of the wrong length, which the unit tests cover but the wiring does not.
+      Click a heading: nothing must happen (it is `enabled(false)`; a clickable one
+      would fall through the handler's `sid` catch-all and emit a `tray-select` for an
+      id that is not a session). Click a session row: it takes the stage.
+      **Windows too** — muda blits these into a hard-coded 16×16 bitmap there, so this
+      is the only check that the shapes survive the halving.
 - [ ] **The inspector's I/O block is app-wide.** Run two agents, give one of them
       something that churns the disk, and read the block on the *other* one: it must
       show the same figures, headed `all sessions · N running`. The rate is the sum,

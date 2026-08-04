@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **The menu-bar menu shows status in colour, and groups sessions by project.** Every
+  row used to be one long string — glyph, project, branch and status — and a menu item's
+  text is always drawn in the menu's own colour, so `◆` (waiting on you) and `✕` (the
+  turn died) arrived the same grey as *Quit*: the two states you open that menu for were
+  the two it could not show. The double spaces meant to line the columns up did nothing
+  either, the menu font being proportional. Each session now carries its status as a
+  real coloured icon in the sidebar's own vocabulary — amber ●, green ✓, pink ◆, red ✕,
+  hollow ○ idle — under a heading naming its project, so the row itself is just the
+  branch. The colours are read from the app's stylesheet rather than restated, so they
+  cannot drift from the sidebar's.
+
 ! **Today's disk figure is today's, rather than last night's arriving late.** The daily
   I/O rollup credited a reading to the day the *poll* happened, and the poll only runs
   while a session is on stage — so a stretch with the dashboard up, or the window in the
