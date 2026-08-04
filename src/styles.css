@@ -882,13 +882,18 @@ html.win .wctl { display: flex; }
 .run-row .txt b { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .txt small { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .end { font: 9px var(--font-mono); color: var(--muted-2); flex: none; }
+/* The row runs the task; this asks what to run it with. It stays visible rather
+   than appearing on hover — a task you can pass parameters to is a fact about the
+   task, not about where the pointer is. */
+.run-params { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; cursor: pointer; border: 1px solid var(--hair); background: var(--surface); color: var(--muted-2); font: 11px var(--font-ui); line-height: 1; padding: 0; }
+.run-params:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 /* Blocked runnables stay listed — a missing row reads as "Episko didn't find it". */
 .run-row.blocked { opacity: .5; cursor: not-allowed; }
 .run-row.blocked .end { color: var(--st-working); }
 .run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
 .run-empty .dim { color: var(--muted-2); font-size: 10.5px; }
 .run-empty code { font: 10px var(--font-mono); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
-.run-foot { display: flex; gap: 14px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
+.run-foot { display: flex; flex-wrap: wrap; gap: 5px 14px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
 .run-foot kbd { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; margin-right: 2px; }
 
 /* task inspector actions */
@@ -915,6 +920,14 @@ html.win .wctl { display: flex; }
 .in-ctl { width: 100%; height: 32px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); padding: 0 10px; font: 12.5px var(--font-mono); outline: none; }
 .in-ctl:focus { border-color: var(--accent-line); }
 select.in-ctl { cursor: pointer; }
+/* The dialog's own footer. It had no rules at all once, which is what left Cancel
+   rendering as a raw platform button flush against the field above it. */
+.in-foot { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.in-hint { flex: 1; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 5px; }
+.in-hint kbd { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }
+.in-hint .in-dot { opacity: .5; }
+.in-cancel { font: 600 11.5px var(--font-ui); padding: 7px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: transparent; color: var(--muted); }
+.in-cancel:hover { color: var(--text); border-color: var(--accent-line); }
 
 /* Settings rows for the Tasks page. The window itself (rail, tabs, pane) is
    upstream's — these are just the row primitives its task settings need. */

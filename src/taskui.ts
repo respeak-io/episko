@@ -17,7 +17,9 @@
 // same reason: six separate setters would be noise.
 //
 // The ${input:…} prompt is at the bottom of this file rather than behind a hook: it
-// is the last step of the same launch, and both surfaces here reach it.
+// is the last step of the same launch, and both surfaces here reach it — but only
+// when something has to be asked. `runRunnable` is the single door every surface
+// launches through: Run prefills and goes, ⋯ Run with parameters… always asks.
 
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -30,9 +32,9 @@ import { activeId, dashMirror, externals, extMirrorId, sessions } from "./state"
 import { bumpFrec, frecScore } from "./palette";
 import {
   applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
-  PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, RUNNERS, runnerFor,
-  setRunner, stopRuleBlocked, stopRules, toggleHidden, togglePin, toggleStopRule,
-  trustProject,
+  prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, RUNNERS,
+  runnerFor, setRunner, stopRuleBlocked, stopRules, toggleHidden, togglePin,
+  toggleStopRule, trustProject,
   type Provider, type Runner, type TaskLaunchOpts,
 } from "./tasks";
 
@@ -432,25 +434,36 @@ function renderRunPicker(term: string) {
       const on = i === runSel ? " on" : "";
       const idx = i++;
       const pinned = runCtx && pinnedIds(runCtx.colorKey).includes(r.id);
-      return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(r))}">
+      // A task with ${input:…} gets a second verb rather than a forced dialog: the
+      // row runs it with what it already knows, ⋯ asks. The tooltip shows the
+      // command *as prefilled*, so what the row will run is never a surprise.
+      const asks = !!r.inputs.length && !r.blocked;
+      const ready = asks && runCtx ? prefillInputs(r, runCtx.project) : null;
+      return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+        ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
       </div>`;
     }).join("");
     return `<div class="run-grp">${esc(g.name)}${g.sub ? `<span class="n">${esc(g.sub)}</span>` : ""}</div>${rows}`;
   }).join("");
   body.querySelectorAll<HTMLElement>(".run-row").forEach((el) => {
-    el.addEventListener("click", () => { runSel = +el.dataset.i!; pickRun(false); });
+    el.addEventListener("click", () => { runSel = +el.dataset.i!; pickRun("run"); });
+  });
+  body.querySelectorAll<HTMLElement>(".run-params").forEach((el) => {
+    // The button sits inside the row, whose click runs immediately — so it has to
+    // stop there, or asking for parameters would also start a run without them.
+    el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.p!; pickRun("params"); });
   });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
 }
 
-function pickRun(pin: boolean) {
+function pickRun(how: "run" | "pin" | "params") {
   const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
   const r = flat[runSel];
   if (!r || !runCtx) return;
-  if (pin) { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
+  if (how === "pin") { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
   // The trust gate is the one blocked row you can act on: choosing it asks for
   // permission rather than shrugging.
   if (r.id === "just:__untrusted") { void askTrust(runCtx.colorKey, runCtx.project); return; }
@@ -458,9 +471,17 @@ function pickRun(pin: boolean) {
   const ctx = runCtx;
   closeRunPicker();
   bumpFrec("task:" + r.id);
-  const o = { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir };
-  if (r.inputs.length) { openInputPrompt(r, ctx.project, o); return; }
-  void launchWithDeps(r, ctx.project, o);
+  runRunnable(r, ctx.project, { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir }, how === "params");
+}
+
+/// Start a runnable, asking only for what it cannot answer itself. `withParams` is
+/// the explicit *Run with parameters…* verb and always asks — that is the whole
+/// difference between the two buttons, and every surface that runs a task goes
+/// through here so they cannot drift apart.
+export function runRunnable(r: Runnable, project: string, opts: TaskLaunchOpts, withParams = false) {
+  const ready = withParams && r.inputs.length ? null : prefillInputs(r, project);
+  if (!ready) { openInputPrompt(r, project, opts); return; }
+  void launchWithDeps(ready, project, opts);
 }
 
 // Trusting a folder means Episko may execute code from it to enumerate tasks, so
@@ -498,7 +519,7 @@ $("runInput").addEventListener("keydown", (e) => {
   const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
   if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
   else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
-  else if (e.key === "Enter") { e.preventDefault(); pickRun(meta); }
+  else if (e.key === "Enter") { e.preventDefault(); pickRun(meta ? "pin" : e.altKey ? "params" : "run"); }
   // ⌘⇧R inside the picker is a *real* rescan: drop the cache, then re-discover.
   else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
   else if (e.key === "Tab") { e.preventDefault(); cycleRunSource(e.shiftKey ? -1 : 1); }
@@ -525,7 +546,7 @@ export function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOp
     const val = remembered ?? i.default ?? "";
     const field = i.kind === "pickString"
       ? `<select class="in-ctl" data-n="${n}">${i.options.map((o) => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`
-      : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? "")}" spellcheck="false" autocomplete="off" />`;
+      : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? (i.optional ? "optional" : ""))}" spellcheck="false" autocomplete="off" />`;
     return `<div class="in-field">
       <label class="in-lbl">${esc(i.description)}<span class="in-id">${esc(i.id)}</span></label>
       ${field}

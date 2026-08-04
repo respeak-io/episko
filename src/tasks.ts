@@ -87,10 +87,14 @@ export function rememberedInput(project: string, taskId: string, inputId: string
 /// `${input:…}` prompt would block on a dialog nobody opened, a background task
 /// never exits so it could only pile up one dev server per turn, and a blocked one
 /// can't run at all.
+///
+/// An input that can answer *itself* — a default, or a just `*name` that is happy
+/// empty — is not a prompt and so is not a reason. Saying it was would refuse the
+/// rule while naming a dialog that never opens.
 export function stopRuleBlocked(r: Runnable): string {
   if (r.blocked) return r.blocked;
   if (r.background) return "a long-running task never finishes a turn";
-  if (r.inputs.length) return "it asks for input, which needs someone there";
+  if (r.inputs.some((i) => !i.optional && i.default == null)) return "it asks for input, which needs someone there";
   return "";
 }
 
@@ -109,6 +113,27 @@ export function applyInputs(r: Runnable, vals: Record<string, string>): Runnable
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(r.env)) env[k] = fill(v);
   return { ...r, exec, cwd: fill(r.cwd), env, inputs: [] };
+}
+
+/// What a task can be started with *without* asking: what you typed last for this
+/// exact input, else the definition's own default, else empty for an input that is
+/// allowed to be empty. `null` means at least one input has no answer anywhere, so
+/// running blind could only fail — and that is the one case still worth a dialog.
+///
+/// This is what makes Run and *Run with parameters…* two verbs rather than one:
+/// running a task is the common case and should not cost a dialog, while changing
+/// what it runs with is a deliberate act that gets its own button.
+export function prefillInputs(r: Runnable, project: string): Runnable | null {
+  if (!r.inputs.length) return r;
+  const vals: Record<string, string> = {};
+  for (const i of r.inputs) {
+    // A password is never remembered, so it is never prefilled either.
+    const v = (i.password ? undefined : rememberedInput(project, r.id, i.id))
+      ?? i.default ?? (i.optional ? "" : undefined);
+    if (v === undefined) return null;
+    vals[i.id] = v;
+  }
+  return applyInputs(r, vals);
 }
 
 // The most recent discovery result, so a re-run doesn't need the picker open.

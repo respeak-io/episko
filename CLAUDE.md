@@ -116,6 +116,24 @@ Three rules constrain `tasks.rs`:
   and substitutes via `applyInputs` just before launch. just recipe parameters
   without defaults become the same kind of prompt.
 
+**An input is a second verb, not a toll on the first.** Running a task is the common
+case and must not cost a dialog, so *Run* goes through `prefillInputs` — what you
+typed last for that exact input (`cc-task-inputs`), else the definition's own
+default, else empty for an `optional` one — and only opens the prompt when an input
+has no answer anywhere. Changing the values is the deliberate act, so it gets its own
+button: `⋯` on the picker row (⌥⏎), *⋯ Parameters* in a finished run's inspector.
+Every surface routes through `runRunnable` so the two verbs cannot drift apart, and
+the row's tooltip shows the command *as prefilled* — a value reused silently is fine
+only while it is also visible.
+
+**`optional` exists because `just` has two variadics and they are opposites.** A
+`*name` takes zero or more, so the recipe is complete without it; a `+name` wants at
+least one and `just` refuses the recipe without it. Reading both as required is what
+put a prompt in front of every run of a `*args` recipe. VS Code declares no such
+thing, so its inputs are never optional. It is also the one thing `stopRuleBlocked`
+softens on: an input that can answer itself is not a prompt, and refusing a rule over
+a dialog that never opens would be a lie about the reason.
+
 `dependsOn` is resolved **in the frontend** (`launchWithDeps`), because only the
 side that owns the panes can wait on an exit code. Dependencies are named by
 *label*, run in parallel unless `dependsOrder: "sequence"` (VS Code's default,
@@ -163,7 +181,10 @@ the project tasks panel, reviewed and revoked in Settings › Tasks.
 
 - **Unattended means unattended.** `stopRuleBlocked` refuses a background task (it
   never finishes a turn, so it could only pile up one dev server per turn), one
-  with `${input:…}` (it would block on a dialog nobody opened), and a blocked one.
+  whose `${input:…}` still needs a person (it would block on a dialog nobody opened —
+  one that can answer itself from a default or is `optional` is fine, and the launch
+  goes through `prefillInputs` so no placeholder ever reaches a command line), and a
+  blocked one.
 - **The run must not take the stage.** `launchTask` takes `focus: false` for this
   path only — the pane appears in the sidebar but the session you were reading
   stays on screen. Consequence: an unfocused pane can't be measured, so it starts

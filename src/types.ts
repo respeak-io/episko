@@ -106,6 +106,9 @@ export interface ExecShell { mode: "shell"; line: string }
 export interface InputSpec {
   id: string; kind: "promptString" | "pickString"; description: string;
   default: string | null; options: string[]; password: boolean;
+  // The task runs fine with this left empty (a just `*name` parameter). Plain Run
+  // skips the dialog for it; "Run with parameters…" still offers the field.
+  optional: boolean;
 }
 export interface Runnable {
   id: string; label: string; detail: string | null;

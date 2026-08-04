@@ -184,15 +184,16 @@
       <div class="run-tabs" id="runTabs" hidden></div>
       <div class="run-list" id="runList"></div>
       <div class="run-foot">
-        <span><kbd>⏎</kbd> run</span><span><kbd>⌘</kbd><kbd>⏎</kbd> pin</span><span><kbd>⇥</kbd> source</span><span><kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
+        <span><kbd>⏎</kbd> run</span><span><kbd>⌥</kbd><kbd>⏎</kbd> params</span><span><kbd>⌘</kbd><kbd>⏎</kbd> pin</span><span><kbd>⇥</kbd> source</span><span><kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
       </div>
     </div>
 
     <div class="indlg" id="inDlg" role="dialog" aria-modal="true">
       <div class="wt-h">Run<span class="in-sub" id="inSub"></span></div>
       <div class="in-body" id="inBody"></div>
-      <div class="wt-btns">
-        <button class="wt-cancel" id="inCancel">Cancel</button>
+      <div class="in-foot">
+        <span class="in-hint"><kbd>⏎</kbd> run<span class="in-dot">·</span><kbd>esc</kbd> cancel</span>
+        <button class="in-cancel" id="inCancel">Cancel</button>
         <button class="wt-go" id="inGo">Run ▸</button>
       </div>
     </div>
