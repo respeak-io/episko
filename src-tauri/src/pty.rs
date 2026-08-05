@@ -14,8 +14,10 @@
 //   exclude breaks the moment Claude rotates its session_id on /resume.
 // - `spawn_shell` is a plain login shell: no Claude, no instrumentation.
 // - `spawn_task` is deliberately un-instrumented too, and its pid never enters
-//   `owned_pids`. `Exec::Shell` runs through a *login* shell so a task inherits the
-//   PATH and version-manager shims the user's own terminal has.
+//   `owned_pids`. `Exec::Shell` runs through a *login* shell, but that is not what
+//   gives a task the user's PATH — see `task_shell`. `Exec::Argv` goes through
+//   `argv_command`, which on Windows is the difference between a package.json script
+//   running and not running at all.
 //
 // `--resume` and `--session-id` are mutually exclusive, so all three spawners branch
 // either/or on `resume: Option<String>` while `--settings` stays keyed to our launch
@@ -309,9 +311,18 @@ pub(crate) fn spawn_shell(
 
 /// The login shell used to run a `Shell` task, as `(program, args)` — the args end
 /// with the flag that takes the command string, so the caller just pushes the line.
-/// A *login* shell (not `-c` alone) so tasks inherit the same PATH, nvm/mise shims
-/// and aliases the user gets in their own terminal; a task that works in iTerm and
-/// fails in Episko is the whole class of bug this avoids.
+///
+/// A *login* shell, but **do not** rely on that for the user's PATH: it does not
+/// deliver one. zsh — macOS's default — sources `~/.zshrc` only when *interactive*,
+/// and `.zshrc` is where nvm, `PNPM_HOME` and Homebrew's `shellenv` are exported, so
+/// `-l -c` sees none of them. That is exactly how a task running `pnpm tauri dev`
+/// died with `command not found: pnpm` while the same line worked in iTerm.
+///
+/// What actually closes that gap is `platform::augmented_path`, which harvests the
+/// PATH from an *interactive* login shell once per run and is applied to every task's
+/// env in `spawn_task`. It stays out of here on purpose: an interactive shell prints
+/// its rc noise, which is fine to parse out of a one-off probe and unacceptable
+/// prepended to every task's pane.
 #[cfg(not(windows))]
 fn task_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -327,6 +338,88 @@ fn task_shell() -> (String, Vec<String>) {
         args.push("-Command".to_string());
     }
     (prog, args)
+}
+
+/// Build the command for an `Exec::Argv` task. On Unix this is the obvious thing;
+/// Windows needs a detour, which is why it exists at all.
+#[cfg(not(windows))]
+fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
+    let mut c = CommandBuilder::new(program);
+    for a in args {
+        c.arg(a);
+    }
+    c
+}
+
+/// Whether `CreateProcessW` can start this file on its own.
+///
+/// It can't start a *script*, and most of PATHEXT is scripts. portable-pty passes
+/// the resolved program as `lpApplicationName`, so a `.cmd`/`.bat` — or the
+/// extensionless `npm`/`yarn`/`pnpm` shell script Node's Windows installer ships
+/// beside them — comes back as ERROR_BAD_EXE_FORMAT, not as a run. That is why
+/// *every* `package.json` script failed to launch on Windows while the identical
+/// task ran fine on macOS: the npm provider emits `Argv`, and on Windows `npm` is
+/// never an executable.
+///
+/// Compiled on every platform, not `cfg(windows)`, for two reasons: the decision is
+/// then checkable from a Mac (the other half, resolution, needs a real Windows PATH),
+/// and CLAUDE.md's cfg-flip lint trick can reach it. Only the dead-code lint needs
+/// silencing off Windows — the code itself is portable and wants type-checking there.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn win_runs_directly(resolved: &str) -> bool {
+    let l = resolved.to_ascii_lowercase();
+    l.ends_with(".exe") || l.ends_with(".com")
+}
+
+/// Resolve a bare Windows program name the way `cmd.exe` would — PATHEXT across the
+/// augmented PATH — and hand back the first hit.
+///
+/// Deliberately *unlike* portable-pty's own `search_path`, which takes an exact
+/// extensionless match in preference to anything else: for `npm` that match is the
+/// bash script, i.e. the one file that cannot be launched.
+#[cfg(windows)]
+fn win_resolve(program: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(program);
+    // Already qualified — a path, or a name carrying its own extension. Trust it.
+    if p.components().count() > 1 || p.extension().is_some() {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    for dir in std::env::split_paths(&augmented_path()) {
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            let cand = dir.join(format!("{program}{ext}"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
+    let direct = win_resolve(program).filter(|p| win_runs_directly(&p.to_string_lossy()));
+    let mut c = match direct {
+        // Spawn the resolved absolute path, not the bare name: it stops portable-pty
+        // re-resolving it and preferring an extensionless sibling.
+        Some(exe) => CommandBuilder::new(exe),
+        // A `.cmd`/`.bat` shim, or nothing found. cmd.exe resolves PATHEXT itself and
+        // can actually run a script. Not-found lands here on purpose too, so the
+        // "'foo' is not recognized" line prints in the pane the user is watching
+        // instead of surfacing as a spawn error with no context.
+        None => {
+            let mut c = CommandBuilder::new(
+                std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()),
+            );
+            c.arg("/C");
+            c.arg(program);
+            c
+        }
+    };
+    for a in args {
+        c.arg(a);
+    }
+    c
 }
 
 /// Run a Runnable in an embedded PTY — the third kind of pane, after a `claude`
@@ -359,11 +452,7 @@ pub(crate) fn spawn_task(
             if program.trim().is_empty() {
                 return Err("task has no command".into());
             }
-            let mut c = CommandBuilder::new(&program);
-            for a in args {
-                c.arg(a);
-            }
-            c
+            argv_command(&program, args)
         }
         tasks::Exec::Shell { line } => {
             if line.trim().is_empty() {
@@ -996,6 +1085,26 @@ mod tests {
         // Shell syntax has to actually reach a shell, not be treated as one argv.
         let piped = run("printf 'a\\nb\\n' | wc -l | tr -d ' '");
         assert_eq!(String::from_utf8_lossy(&piped.stdout).trim(), "2");
+    }
+
+    /// The Windows `Argv` shim decision, checkable from a Mac. Everything the npm
+    /// provider emits — `npm`, `pnpm`, `yarn` — resolves on Windows to a script, and
+    /// a script must be routed through cmd.exe rather than handed to CreateProcessW.
+    /// A `.exe` must NOT be, because the cmd.exe detour would then have to survive
+    /// cmd's quoting rules for no reason.
+    #[test]
+    fn windows_only_spawns_real_executables_directly() {
+        for exe in ["node.exe", r"C:\Program Files\nodejs\node.exe", "PYTHON.EXE", "foo.com"] {
+            assert!(win_runs_directly(exe), "{exe} is directly executable");
+        }
+        for script in [
+            r"C:\Program Files\nodejs\npm.cmd",
+            r"C:\Program Files\nodejs\npm",   // the extensionless bash script beside it
+            r"C:\tools\build.bat",
+            r"C:\tools\deploy.ps1",
+        ] {
+            assert!(!win_runs_directly(script), "{script} needs a shell");
+        }
     }
 
     /// Every mode Settings offers, and nothing else. The whitelist is the security

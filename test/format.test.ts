@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  basename, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, fmtShort,
-  fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta, uTok, uUsd,
-  uUsd2,
+  basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
+  uTok, uUsd, uUsd2,
 } from "../src/format";
 
 // A fixed epoch for everything that reads the clock, so "2h 10m from now" is a
@@ -185,6 +185,38 @@ describe("basename", () => {
   it("falls back to the input when there is no leaf left", () => {
     expect(basename("/")).toBe("/");
     expect(basename("")).toBe("");
+  });
+});
+
+describe("elidePath — the Run header's path", () => {
+  it("keeps the last two segments, which is what a worktree is identified by", () => {
+    // The real case: the Run picker header, whose 480px popover cannot hold this.
+    // Losing the tail (all CSS ellipsis can do) would drop the one part that says
+    // which of several checkouts is about to be run in.
+    expect(elidePath("~/prog/work/.cc-worktrees/pii-reduction/feat-platform-groundwork"))
+      .toBe("~/…/pii-reduction/feat-platform-groundwork");
+  });
+  it("leaves anything that already fits completely alone", () => {
+    expect(elidePath("~/prog/work/muster")).toBe("~/prog/work/muster");
+    expect(elidePath("/a/b/c/d/e/f/g", 99)).toBe("/a/b/c/d/e/f/g");
+  });
+  it("keeps the root on an absolute path instead of doubling the separator", () => {
+    expect(elidePath("/Users/fabraham/prog/work/.cc-worktrees/pii/feat-groundwork"))
+      .toBe("/Users/…/pii/feat-groundwork");
+  });
+  it("elides a Windows path with backslashes", () => {
+    expect(elidePath("E:\\Programming\\Work\\.cc-worktrees\\repo\\feat-something-long"))
+      .toBe("E:\\…\\repo\\feat-something-long");
+  });
+  it("gives up rather than mangle a path with no middle to drop", () => {
+    const twoDeep = "/very-long-single-segment-that-will-not-fit-in-any-header/leaf";
+    expect(elidePath(twoDeep)).toBe(twoDeep);
+    expect(elidePath("one-enormous-segment-with-no-separators-at-all-abcdefghij"))
+      .toBe("one-enormous-segment-with-no-separators-at-all-abcdefghij");
+  });
+  it("returns the original when eliding would not actually be shorter", () => {
+    // head + "…" + last two is longer than the source once the middle is one char.
+    expect(elidePath("/a/b/c/d", 4)).toBe("/a/b/c/d");
   });
 });
 

@@ -13,6 +13,54 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Windows: a session no longer launches a PowerShell for every hook.** Each lifecycle
+  event — every tool call, every turn, every notification — used to start a whole
+  PowerShell just to reach `curl`, about 220ms and a second process each time, per
+  session. Claude Code can now be handed the command and its arguments directly, with no
+  shell in between, so a hook is one short-lived `curl` and nothing else. The statusLine
+  still needs a shell and is unchanged.
+! **The branch shown beside a session cost two `git` processes a session, every four
+  seconds.** With a few sessions open that was a git launched roughly twice a second to
+  re-read a file that hadn't changed — enough, on Windows, where starting a process is
+  the expensive part, to be a real share of what the machine was doing. It reads `.git`
+  directly now, like the worktree roster beside it already did. Nothing on screen
+  changes.
++ **Running a task that takes parameters no longer costs a dialog.** *Run* now starts it
+  with what it already knows — the values you gave last time, or the definition's own
+  defaults — and a `⋯` button beside the row (⌥⏎, or *⋯ Parameters* on a finished run)
+  is there for the times you want to change them. The row's tooltip shows the command as
+  it will actually run, so nothing is filled in behind your back, and the prompt still
+  opens by itself when a value genuinely has nowhere to come from.
+! **A `just` recipe taking `*args` stops asking for them.** A `*name` parameter takes
+  zero or more arguments, so `just saas-start` is a complete command — but it was read as
+  a required value and put a prompt in front of every run. `+name`, which does want at
+  least one, is unchanged. Such a recipe can also now be a run-on-stop rule.
+! **The parameter prompt looks like the rest of the app.** Its Cancel button was drawing
+  as a raw platform button, and the pair sat flush against the field above them.
+
+~ **The menu-bar menu shows status in colour, and groups sessions by project.** Every
+  row used to be one long string — glyph, project, branch and status — and a menu item's
+  text is always drawn in the menu's own colour, so `◆` (waiting on you) and `✕` (the
+  turn died) arrived the same grey as *Quit*: the two states you open that menu for were
+  the two it could not show. The double spaces meant to line the columns up did nothing
+  either, the menu font being proportional. Each session now carries its status as a
+  real coloured icon in the sidebar's own vocabulary — amber ●, green ✓, pink ◆, red ✕,
+  hollow ○ idle — under a heading naming its project, so the row itself is just the
+  branch. The colours are read from the app's stylesheet rather than restated, so they
+  cannot drift from the sidebar's.
+
+! **Today's disk figure is today's, rather than last night's arriving late.** The daily
+  I/O rollup credited a reading to the day the *poll* happened, and the poll only runs
+  while a session is on stage — so a stretch with the dashboard up, or the window in the
+  background, went unsampled and the next reading dropped the whole gap on whichever day
+  it landed in. Across a midnight that meant a full evening of churn appearing as a
+  morning's work: 530MB reported on a day that had done about 25MB, while the evening
+  that earned it showed 54MB. An increment measured across a boundary is now spread over
+  the days it actually covers, and a minute-by-minute heartbeat keeps the window short
+  even with nothing on stage. The heartbeat reads only the counters — no `git` call
+  beside it, and no more writing than before, because a disk meter that churns the disk
+  is measuring itself.
+
 ! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
   written anything to GitHub. The call was one argument short, and a call that is one
   argument short is not a partial call — it is no call at all, so no assignee, no label

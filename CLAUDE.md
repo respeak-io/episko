@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **685 vitest + 151 cargo (measured on Windows; the platform tests are `cfg`-gated, so the macOS leg swaps a few arms and counts differently — take the number CI prints, not this one)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **755 vitest + cargo (166 on macOS, 162 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -76,7 +76,8 @@ On every launch, the Rust backend (`write_instrument_settings`) generates a thro
 Three hard constraints shape this code:
 
 - **Claude runs hooks/statusLine with a stripped PATH.** Generated commands use absolute `/usr/bin/curl` and `/bin/cat`, never bare `curl`. Likewise `resolve_claude()` probes known install locations (and falls back to the login shell) and `augmented_path()` rebuilds a usable PATH, because a GUI app launched from Finder also gets a stripped PATH.
-- **On Windows the two halves run in different shells, and only the hooks can be told which.** `shell` is a *hook* field; Claude Code has no statusLine counterpart and routes that command through **Git Bash whenever Git Bash is installed** (else PowerShell). So the hooks are pinned to `powershell` and written in it, while the statusLine command must parse in *either* shell: no `&` call operator, no `$null`, no `Write-Output`, and forward slashes, which Git Bash won't eat as escapes. Get this wrong and there is no error and no lost hook — just every figure the statusLine carries (model, context %, cost, duration, **and the account-wide rate limits**) gone at once, while the hooks keep phases flowing and the pane looks healthy. That shipped once. Asserting the generated JSON cannot catch it: such a test agrees with our intent, and the intent was the bug. `statusline_command_posts_from_every_shell_claude_might_pick` executes the generated string through every shell Claude might pick instead — no Claude, no tokens, it's just curl.
+- **The hooks run no shell; the statusLine cannot avoid one.** A command hook takes an **exec form** — `command` (the binary itself) plus an `args` array, each element delivered verbatim — so the hooks spawn `curl` and nothing else. That is not a tidy-up: the shell form they replaced was pinned to `"shell": "powershell"`, so *every* PreToolUse, PostToolUse, Stop and Notification of every session paid a whole PowerShell launch (~220 ms, plus a second process) to reach curl. The statusLine gets no such escape — Claude Code defines neither `args` nor `shell` for it and routes it through **Git Bash whenever Git Bash is installed** (else PowerShell) — so that one command must still parse in *either* shell: no `&` call operator, no `$null`, no `Write-Output`, and forward slashes, which Git Bash won't eat as escapes. Get that wrong and there is no error and no lost hook — just every figure the statusLine carries (model, context %, cost, duration, **and the account-wide rate limits**) gone at once, while the hooks keep phases flowing and the pane looks healthy. That shipped once.
+  **Neither half can be checked by reading the generated JSON** — such a test agrees with our intent, and the intent was the bug — so both are *executed* against a mock telemetry server, for no tokens and no Claude: `statusline_command_posts_from_every_shell_claude_might_pick` runs the string through every shell Claude might pick, and `hook_exec_form_posts_without_any_shell` spawns the hook's argv directly. The two guard opposite hazards, which is why neither replaces the other: a shell might not *parse* our string, whereas with no shell nothing strips quotes or splits words, so an argument written the way you'd write it for a shell (`'X-CC-Session: …'`, or `-H foo` as one element) reaches curl with the quotes still on it. Both failures are silent — `-s` keeps curl quiet and `async` means Claude never waits.
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
 ## Runnables — tasks & scripts (`src-tauri/src/tasks.rs`, `▶ Run`)
@@ -114,7 +115,128 @@ Three rules constrain `tasks.rs`:
   `pathSeparator`, `env:X`. `${input:X}` is deliberately **left intact** by
   discovery — only the frontend knows the answer, so it prompts (`openInputPrompt`)
   and substitutes via `applyInputs` just before launch. just recipe parameters
-  without defaults become the same kind of prompt.
+  without defaults become the same kind of prompt. **An introspector that fails is
+  a blocked row too, never an empty list** (`IntrospectFail`): silence there is
+  unfalsifiable — it reads exactly like a project that declares no tasks, which is
+  how a working justfile stayed invisible. `NoProgram` names the *PATH* rather than
+  guessing "not installed", because installed-but-not-visible is the commoner case.
+
+### Run groups — one chain, one row
+
+A chain launches **one pane per step**, and that is not negotiable: a run's exit code
+*is* its phase, and you cannot get four exit codes out of one PTY. What was
+negotiable is how it reads, which used to be three loose rows interleaved with your
+agents. So `launchWithDeps` mints a **`run.groupId`** per *launch* and every step
+inherits it — including the chain's own pane, or the root of "build → test" would sit
+outside the group it created. Nesting inherits via `opts.groupId ?? crypto.randomUUID()`,
+which is what makes "outermost wins" true without threading a depth counter.
+
+- **Per launch, never per task.** Running `fe-check` twice gives two rows to compare,
+  which is the point.
+- **The fold is presentational.** `foldRunGroups` and `groupPhase` are pure and live in
+  `grouping.ts` (the tested layer); panes, PTYs and the phase machine are untouched.
+  A group takes the position of its **first member**, so whatever `projectList` already
+  sorted by still decides where it sits — re-sorting there would overrule it silently.
+- **Worktree clustering keys on the *checkout*, via `checkoutOf`, never on `workdir`.**
+  A task's `workdir` is where the **task** runs, and a VS Code `options.cwd` is routinely
+  a subfolder (`01_frontend`, `02_backend`) — which is not another worktree. Keying on it
+  gave one chain a "worktree" header per pane, all showing the same branch, and *also*
+  broke the fold: it happens inside a cluster, so members split across clusters could
+  never group. `run.root` (the discovery dir) is the checkout, which is why
+  `launchWithDeps` must pass `discoveredIn` down to dependencies rather than clearing it.
+- **A group of one renders as a plain row.** A header wrapping a single step is
+  overhead, and a chain whose dependencies all resolved to nothing is not a chain.
+- **`groupPhase` is worst-of, not last-of.** A failed build stops the chain, so the
+  steps behind it never run — last-of would report `done` on a broken chain. `working`
+  beats `done` in the other direction, and an `idle` step is one queued behind a
+  sequential dependency, so it counts as working too.
+- **The header is a block, not a `.srow`.** A summary of N runs is a different kind of
+  thing from a run, so `.rgroup` carries a surface with the steps inset inside it and
+  the set reads as one object; styling the parent like its own children is what made it
+  vanish into them. Two traps live in that markup: `.rgrow` **must** stay
+  `position: relative` so the ✕ stays absolutely positioned — an absolutely-positioned
+  child is not a grid item, and making it static claims a cell, wraps onto a second
+  implicit row and doubles the header's height. And the block's background is
+  `--surface`, never `--lift`: lift is a white veil, which reads as "raised" on the dark
+  ground and as *nothing* on a light one.
+- **Clicking the header tiles the group across the stage** (`openRunGroup` →
+  `stageGroup`), focused on the failure if there is one, else the last step to start.
+  `#terminals.tiled` turns the absolutely-positioned pane overlays into grid cells, so
+  several are `.active` at once; each gets a `.pane-cap` naming it (with a ✕ carrying
+  `data-close`, so the existing dispatcher closes it — persistent once the run has
+  finished, hover-only while it is alive), CSS-hidden until tiled. `refreshPaneCaps` is
+  called from `renderAll` because panes sit outside the render-everything sweep.
+  The twisty (▸) expands the step list instead — different question, so a separate hit
+  target, which only works because `[data-rgtoggle]` is in `main.ts`'s `closest`
+  selector list. **`refit()` must refit every visible pane when tiled**, not just the
+  focused one, or a resize leaves the others at the wrong geometry.
+- **A chain launch lands on the group, not on whichever step started last.** `launchTask`
+  calls `openRunGroup(opts.groupId)` instead of `setActive` when the pane belongs to a
+  chain — one chord starts a whole stack, so the stack is what you meant to look at, and
+  activating each member in turn both left the stage on an arbitrary step and untiled the
+  group on the way. It re-tiles as later steps appear **only while the stage is still on
+  that group**: a sequential chain can start step 3 minutes in, and it must not yank you
+  back from wherever you went.
+- **Closing one tile stays in the mosaic** (`nextInGroup`). `nextAfterClose` answers the
+  *sidebar's* question over the whole project, so on its own it handed the stage to
+  whichever Claude session sat beside the group — and untiled it on the way. A surviving
+  group sibling wins, focused next-then-previous because the grid reflows into the gap.
+  Closing a tile also has to `refit()`: every surviving cell changed size, but
+  `#terminals` did not, so the ResizeObserver never fires.
+- **Closing a group asks first if anything is still running** (`closeRunGroup`). One ✕
+  can stand for a dev server, a database container and four finished installs, and
+  killing a stack you meant to keep is not undoable. A chain that has already finished
+  closes instantly — that is tidying, not destruction.
+- **Header shows all of them, a row shows one.** `setActive` *leaves* the tiled view,
+  because keeping it and only moving the focus ring read as the click doing nothing.
+  `openRunGroup` therefore has to pass `setActive(id, keepGroup = true)` — the default
+  would clear the `stageGroup` it just set and never tile at all. Clicking a *tile* is
+  the third case, `focusInGroup`: it moves `activeId` (so header/inspector follow) and
+  keeps the layout, via one delegated `mousedown` on `#terminals`.
+- **A finished run's duration is frozen at `run.endedAt`, and `runElapsed` is the only
+  place that computes one.** It was three places — the sidebar column, a tiled pane's
+  caption and the inspector's "Took" row each did their own `Date.now() - startedAt`, so
+  all three kept counting after the process exited and a step that took 400ms read
+  "1m 23s" a minute later. Fixing two of the three is how that bug survived being
+  "fixed" once; the consolidation is the actual fix. Lives in `types.ts` beside the
+  other discriminants — pure, `now` injectable, and therefore tested.
+
+**`dependsOn` is a DAG, and it must be walked once — not once per path.** Every
+dependency of one launch is memoised in `launchWithDeps`'s `started` map (task id →
+"did it succeed"), claimed *synchronously* before the first await so two branches
+racing for the same dependency cannot both start it. Without it, one ⌘⇧B on a real
+`"Dev: Frontend + Backend"` launched **27 panes for 11 tasks** — `uv sync` six times,
+`pnpm install` and `docker compose up` four each — because a shared dependency was
+restarted down every path that named it. VS Code runs each task once per invocation.
+Two consequences worth keeping:
+
+- **Memoise the whole outcome, not just the launch.** `exitWaiters` holds one resolver
+  per session id, so two dependents each calling `waitForExit` on the same pane would
+  clobber one another's resolver and one branch would hang for ever.
+- **`findDepCycle` runs first, over the whole graph, before a single pane starts.**
+  Better on its own (the per-path check in `resolveDeps` only fires once part of the
+  chain is already running, leaving half a stack behind it) and *required* by the memo:
+  a branch that awaits a shared task instead of descending into it can end up waiting
+  on a branch that is waiting on it. Pure, so it is tested — including that it does not
+  mistake a diamond for a cycle.
+
+**An input is a second verb, not a toll on the first.** Running a task is the common
+case and must not cost a dialog, so *Run* goes through `prefillInputs` — what you
+typed last for that exact input (`cc-task-inputs`), else the definition's own
+default, else empty for an `optional` one — and only opens the prompt when an input
+has no answer anywhere. Changing the values is the deliberate act, so it gets its own
+button: `⋯` on the picker row (⌥⏎), *⋯ Parameters* in a finished run's inspector.
+Every surface routes through `runRunnable` so the two verbs cannot drift apart, and
+the row's tooltip shows the command *as prefilled* — a value reused silently is fine
+only while it is also visible.
+
+**`optional` exists because `just` has two variadics and they are opposites.** A
+`*name` takes zero or more, so the recipe is complete without it; a `+name` wants at
+least one and `just` refuses the recipe without it. Reading both as required is what
+put a prompt in front of every run of a `*args` recipe. VS Code declares no such
+thing, so its inputs are never optional. It is also the one thing `stopRuleBlocked`
+softens on: an input that can answer itself is not a prompt, and refusing a rule over
+a dialog that never opens would be a lie about the reason.
 
 `dependsOn` is resolved **in the frontend** (`launchWithDeps`), because only the
 side that owns the panes can wait on an exit code. Dependencies are named by
@@ -126,17 +248,104 @@ that went away.
 
 `launch.json` configs are offered as **run without debugging** (VS Code's ⌃F5).
 Episko has no debug adapter, so `request: "attach"` and compound configs are
-blocked rather than silently started as plain processes.
+blocked rather than silently started as plain processes. **A compound *task* is the
+opposite case and must not be confused with it** — see below.
+
+### Compound tasks, and ⌘⇧B
+
+A `tasks.json` entry with **no `command` but a `dependsOn` list** is VS Code's
+*compound task*: the dependencies are the work. `"Dev: Frontend + Backend"` is the
+canonical shape, and it is usually what `"group": {"kind":"build","isDefault":true}`
+marks — so blocking it as `"no command"` withheld precisely the task a whole stack
+gets started from. `Runnable.compound` says so explicitly rather than being inferred
+from an empty command line, and `launchWithDeps` runs the dependencies and stops.
+
+- **`compound` is not `blocked`.** Nothing is missing. Its `detail` names what it will
+  run (`runs Frontend (vite dev), Backend (uvicorn)`), because `"no command"` as a
+  subtitle read like a defect.
+- **`launchWithDeps` returns `{ok, id}`, not `string | null`.** The two are genuinely
+  independent: a compound *succeeds* while launching no pane. Reading that absence as
+  failure is what would stop a nested compound from ever satisfying its parent.
+- **A background dependency is satisfied once it starts, never awaited.** Both of
+  `"Dev: …"`'s dependencies are servers that never exit, so `waitForExit` on them hung
+  the chain forever and nothing downstream ran. VS Code behaves the same way. A
+  *non*-background dependency is still awaited — "build then test" only means something
+  if the build's exit code is read.
+- **A compound can't be a run-on-stop rule** (`stopRuleBlocked`): it has no pane, and
+  `forSession` is deliberately cleared for dependencies, so a failure would have
+  nowhere to be reported back to.
+- **`default_for` is separate from `group`.** The kind is a display bucket many tasks
+  share; `isDefault` is what makes exactly one of them the answer to ⌘⇧B. `runDefaultTask`
+  takes the marked one, else an unambiguous single member of the group, else **opens the
+  picker** — silently running the first build-ish task in the file is how you deploy
+  when you meant to compile.
+- **⌘⇧B / ⌘⇧T must be registered *before* plain ⌘B / ⌘T** in `main.ts`'s keydown chain,
+  which deliberately doesn't test `!e.shiftKey`. A shifted binding placed after its
+  unshifted twin silently never fires.
+
+The pay-off is that this needs no orchestration of its own: the chord resolves one
+task, and the existing `dependsOn` fan-out plus the run-group fold do the rest — the
+whole stack comes up as a single sidebar row you can click open into a tiled view.
 
 `spawn_task` is the third PTY entry point after `spawn_claude` / `spawn_shell`.
 It takes a `TaskSpec { exec, cwd, env }` — a resolved subset of a `Runnable` — and
 is deliberately **un-instrumented**: no `--settings` file, no telemetry, no cost,
-and its pid never enters `owned_pids`. `Exec::Shell` runs through a *login* shell
-so tasks inherit the same PATH and version-manager shims the user's own terminal
-has (a task that works in iTerm and fails in Episko is the bug class this avoids).
+and its pid never enters `owned_pids`. `Exec::Shell` runs through a *login* shell,
+and `Exec::Argv` through `argv_command` (see PATH and Windows argv, below).
 The `Exec` wire format is pinned by a round-trip test — the frontend hands a
 discovered `exec` straight back to `spawn_task`, so a rename there breaks every
 launch silently.
+
+### PATH, and why a login shell is not enough
+
+**A login shell does not give a task the user's PATH.** This looks like a detail and
+is worth three separate shipped bugs. zsh — macOS's default — sources `~/.zshrc`
+**only when interactive**, and `.zshrc` is where nvm, pnpm's `PNPM_HOME`, mise and
+Homebrew's `shellenv` are actually exported. So `zsh -l -c` sees none of them, and a
+Finder-launched app starts from `PATH=/usr/bin:/bin:/usr/sbin:/sbin`. That produced:
+
+- a task running `pnpm tauri dev` dying on `command not found: pnpm`, while the
+  identical line worked in iTerm;
+- a real `justfile` reported as **no tasks at all**, because `Command::new("just")`
+  failed with `NotFound` and the provider returned an empty list;
+- the same, silently, for any `cargo install`ed listing tool.
+
+The fix is `platform::augmented_path`, and it has two halves. It **harvests** the PATH
+from an *interactive* login shell (`$SHELL -i -l -c`) once per run, cached in a
+`LazyLock` and warmed off the UI thread by `warm_shell_path` in `run()`; and it
+appends hardcoded fallbacks (`~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, …)
+for when the probe fails. Four rules hold it together:
+
+- **The harvested PATH goes first, fallbacks after.** If nvm puts a node ahead of
+  `/usr/local/bin`, a task must get nvm's, or "works in iTerm, fails in Episko" is
+  back one layer down.
+- **The probe's output is fenced, not assumed.** An interactive shell runs rc files
+  and rc files talk (powerlevel10k's gitstatus warning, a motd). The PATH is wrapped
+  in `PATH_MARK` and extracted; anything that doesn't parse as a PATH is *refused*,
+  because a mangled value would shadow the fallbacks it sits in front of. fish is the
+  live case — it interpolates `$PATH` space-separated.
+- **Interactive is for the probe only, never for the task.** rc noise is fine to parse
+  out of one probe and unacceptable prepended to every task's pane.
+- **Anything that shells out needs it.** Every introspector goes through
+  `introspect_output`, which applies `augmented_path` *and* `sys_command`. A provider
+  that spawns a tool without both is the justfile bug again.
+
+### Windows argv: `CreateProcessW` cannot run a script
+
+portable-pty hands the resolved program to `CreateProcessW` as `lpApplicationName`,
+which starts PE executables and nothing else. On Windows `npm`/`pnpm`/`yarn` are a
+`.cmd` shim plus an extensionless bash script — and portable-pty's own `search_path`
+prefers the *extensionless* one. So every `package.json` script (the npm provider
+emits `Exec::Argv`) failed to launch there while running fine on macOS.
+
+`argv_command` resolves the program itself — PATHEXT over the augmented PATH, ignoring
+extensionless matches — and routes anything that isn't `.exe`/`.com` through
+`cmd.exe /C`, which resolves PATHEXT properly and can run a script. A program that
+resolves to nothing goes through `cmd.exe` too, on purpose: "'foo' is not recognized"
+then prints **in the pane the user is watching** instead of as a spawn error with no
+context. The pure half, `win_runs_directly`, is compiled on every platform
+(`cfg_attr(not(windows), allow(dead_code))`, not `cfg(windows)`) precisely so the
+decision is testable from a Mac and reachable by the cfg-flip trick.
 
 Surfaces: the `▶ Run` header button (picker: pinned, then a frecency-ranked
 **recent** group in the unfiltered view, then grouped by source), a **Tasks** group
@@ -163,7 +372,10 @@ the project tasks panel, reviewed and revoked in Settings › Tasks.
 
 - **Unattended means unattended.** `stopRuleBlocked` refuses a background task (it
   never finishes a turn, so it could only pile up one dev server per turn), one
-  with `${input:…}` (it would block on a dialog nobody opened), and a blocked one.
+  whose `${input:…}` still needs a person (it would block on a dialog nobody opened —
+  one that can answer itself from a default or is `optional` is fine, and the launch
+  goes through `prefillInputs` so no placeholder ever reaches a command line), and a
+  blocked one.
 - **The run must not take the stage.** `launchTask` takes `focus: false` for this
   path only — the pane appears in the sidebar but the session you were reading
   stays on screen. Consequence: an unfocused pane can't be measured, so it starts
@@ -664,23 +876,23 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 
 ## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 515 lines out of ~12280 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 582 lines out of ~14151 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 515 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `git.rs` | 2,890 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
-| `tasks.rs` | 2,214 | runnable discovery — see Runnables above |
-| `usage.rs` | 1,559 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
-| `platform.rs` | 1,028 | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
-| `pty.rs` | 1,004 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
-| `telemetry.rs` | 862 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
-| `github.rs` | 761 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
-| `external.rs` | 544 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
-| `summarize.rs` | 516 | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
-| `icons.rs` | 172 | project favicon/logo probing |
-| `notes.rs` | 162 | shared notes (`.episko/notes.toml`) |
-| `testutil.rs` | 46 | `git`, `scratch_dir`, `cfg(test)` only |
+| `lib.rs` | 582 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `git.rs` | 3,298 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `tasks.rs` | 2,649 | runnable discovery — see Runnables above |
+| `usage.rs` | 1,685 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
+| `pty.rs` | 1,180 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
+| `telemetry.rs` | 1,022 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 1,213 | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
+| `external.rs` | 588 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `github.rs` | 828 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
+| `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
+| `summarize.rs` | 561 | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
+| `icons.rs` | 314 | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
+| `testutil.rs` | 50 | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
 
@@ -719,11 +931,42 @@ sloppy about here.** The poll behind it runs every 4s for as long as a session i
 stage, so persisting each reading would mean ~900 synchronous `stringify` + `setItem`
 calls an hour to record a number read once a day. Accumulation stays per-poll (free);
 only `flushIo` writes, and it is forced across a midnight (nothing adds to yesterday
-again) and on `quit-requested`. **Skipping polls costs nothing** — the counters are
+again) and on `quit-requested`. **Skipping polls loses no bytes** — the counters are
 cumulative and `io_retired` outlives a session's exit, so the next reading carries the
-whole gap, which is also why the poll's `if (mirror) return` doesn't skew a day. The one
-real loss is the stretch after a run's last reading; `flushIo` persists what was read,
-it does not take a reading.
+whole gap. The one real loss is the stretch after a run's last reading; `flushIo`
+persists what was read, it does not take a reading.
+
+**What a gap did cost is the day the bytes are filed under, and that used to be silently
+wrong.** A bucket is credited when the poll *lands*, and the poll is gated three ways —
+`if (mirror) return`, a session must be on stage, and a backgrounded WebView throttles
+its timers regardless. So the sampler goes quiet for hours, and a quiet stretch spanning
+a midnight booked the whole of yesterday's churn to today. Observed on this machine: an
+evening's ~480MB of writes landed in a morning that had done ~25MB of work, while the
+day that earned them read 54MB — one unsampled night, wrong in both directions. Two
+halves fix it, and both are needed:
+
+- **`splitIo` (pure, tested) spreads an increment over the days its window covers**,
+  weighted by each day's wall-clock share. Nothing knows *when* inside a window a byte
+  was written, so this is a guess — but a bounded, unbiased one, and the parts sum to
+  exactly the increment so the rollup can't drift from the counter. A window inside one
+  day is a single bucket and the arithmetic is untouched. A window no polling gap
+  explains (a clock jump, a month asleep) is clamped rather than smeared across days the
+  app wasn't running.
+- **A 60s heartbeat in `main.ts` keeps the window short** when the 4s poll can't run. It
+  calls `pollIo` — the I/O half of `refreshSessionStats`, split out precisely so the
+  heartbeat does **not** drag `git_diffstat` and its `git` subprocess along with it. The
+  cadence is `IO_SAVE_FLOOR_MS` exactly, so it cannot raise the write rate above what an
+  on-stage session already produces: `addIo` returns before touching anything when the
+  disk was idle, and flushes at most once per floor when it wasn't. **A meter must not
+  add to what it measures** — keep any new sampler on that footing.
+
+**And be honest about what the number covers: the `claude` processes themselves, nothing
+they spawn.** Verified on macOS rather than assumed — a child writing 64MB moves the
+parent's `proc_pid_rusage` counter by 0.0MB, while the same write in-process moves it by
+exactly 64.0MB. So `cargo`, `pnpm`, `git` and test runs are invisible here and the real
+churn an agent causes is *higher* than the row shows. Also expect physical writes to run
+several times the logical bytes (measured ~5×: 92KB written for 17.4KB of transcript
+growth) — APFS is copy-on-write, and a transcript grows by constant small appends.
 
 - **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane — the `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see Runnables above).
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
@@ -731,23 +974,23 @@ it does not take a reading.
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 50 modules
 
-**No framework, and no longer one file.** ~13460 lines across 50 modules; `main.ts` is 723 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~15098 lines across 50 modules; `main.ts` is 841 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 685 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 744 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
-| `types.ts` | the shared data model: `Sess`, `Phase`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`) |
+| `types.ts` | the shared data model: `Sess`, `Phase`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`, `runElapsed`, `taskStateText`) |
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts — data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup |
 | `phase.ts` | `applyHook` / `applyStatusline` — telemetry → session state. The heart of the display |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
-| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose` |
-| `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps`, `applyRunner`, `${input:…}` glue |
+| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
+| `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
@@ -763,7 +1006,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module at 1,151 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module at 1,205 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
@@ -911,6 +1154,20 @@ the change stamp: compare, and only then do the expensive thing. Two traps live 
 git's bookkeeping name under `worktrees/` need not match the checkout's folder name (so
 the path comes from `gitdir`), and every path goes through `physical_cwd` for the same
 reason `repo_root_of` does, or one checkout renders as two.
+
+**`git_head` rides the same poll and is spawn-free for the same reason.** It answers a
+session's live branch every 4s, once per open pane, and used to cost *two* git processes
+each (`rev-parse --short HEAD`, then `symbolic-ref`) — so three sessions spent 1.5 git
+processes a second re-reading a file, and on Windows, where process creation dominates
+(~140 ms a call), that was a measurable share of the app's whole load. It now reads
+`.git/HEAD` directly. Two things it must keep getting right: a **linked worktree has its
+own `HEAD` but shares the repo's refs**, which is why `git_dirs` returns the per-worktree
+dir *and* the common one and `resolve_ref` falls back to `packed-refs`; and an **unborn
+HEAD is `None`, not detached** — `.git/HEAD` names a branch whether or not a commit
+exists, so only the missing ref tells them apart, and `projmenu.ts` uses that `None` to
+drop its *Commit graph…* row for a folder someone has just `git init`ed. Like
+`repo_root_of`, it is tested by *substitution*: every case asserted against what git
+itself answers, not against a restatement of the implementation.
 
 **The dirty poll is stale-driven, not blanket.** `refreshDirtyStates` used to re-read
 every open folder every 5s; it now reads only folders `markWorkdirStale` flagged, plus a
@@ -1247,6 +1504,42 @@ Four things about that split are easy to get wrong:
   region handles itself. The same listener is what tells macOS it entered
   fullscreen.
 
+## The tray menu (`update_tray`, `tray.ts`, `icons.rs`'s `glyph_rgba`)
+
+The other native surface, and the one the app draws least of: the OS owns the font,
+the row height, the highlight and the corner radius, so **the only two things Episko
+controls are each row's string and each row's 16px image**. Sessions are grouped under
+their project and carry their status as a coloured icon; the label is the branch alone,
+since the header now says which repo.
+
+- **A menu item's text is always drawn in the menu's own colour.** So the glyph a label
+  spells — `◆` waiting on you, `✕` the turn died — arrived the same grey as "Quit", and
+  the two states you open this menu *for* were the two it could not show. An item's
+  icon is an image and is **not** tinted, which is the whole reason the icons exist.
+- **Therefore the icon must not be a template image** — the exact opposite of the tray
+  icon in `run()`, which *is* one so it adapts to the menu bar. Get these backwards and
+  every dot comes out menu-grey, i.e. the bug you set out to fix.
+- **The frontend picks the shape and the colour, Rust only rasterises.** `GCLASS` maps
+  a status to a class and `styles.css` gives that class its hue; `tray.ts` reads the
+  colour back out of the stylesheet (`classRgb`) rather than restating it. A palette
+  copied into Rust would part company with the sidebar the first time a hue is
+  re-stepped for the light theme — and `g-ended` already differs between them.
+- **32px source, because neither platform draws it at its own size**: muda scales the
+  image to an 18pt row on macOS and blits it into a hard-coded 16×16 bitmap on Windows,
+  so 32 halves exactly for one and still out-resolves the other on a retina display.
+- **A project header is a *disabled* item, and disabled is load-bearing.** The tray's
+  menu handler treats every id it doesn't recognise as a session to select
+  (the `sid` catch-all), so a clickable header would emit a `tray-select` for nothing.
+  Disabled items fire no `MenuEvent` at all. Anything new added to that menu needs
+  either an id the handler matches ahead of the catch-all, or `enabled(false)`.
+- The signature guard still stands, and now covers the icons too — a phase change that
+  doesn't change the wording (a shell going from live to ended) must still repaint, so
+  shape and colour are in the signature rather than just the label.
+
+Windows renders the same items its own way and has no `set_title`, so the bar shows the
+icon alone; whether a 16×16 blit of these shapes reads well there is a `RELEASE.md`
+click-through, not something either CI leg can assert.
+
 ## External (non-Episko) sessions
 
 Episko surfaces Claude sessions started *outside* it, discovered from `~/.claude/sessions/<pid>.json` (one per running interactive session — same path and format on Windows under `%USERPROFILE%`, VS Code-hosted sessions included, verified on CC 2.1.216; format details in the `claude-code-local-session-registry` memory). The **listing is OS-agnostic**: `list_external_sessions` liveness-checks survivors against `ProcTable`, one in-process `sysinfo` snapshot of the process table (no `ps`/`tasklist` spawns — the frontend polls every 3s), so discovery works on macOS, Windows and (untested) Linux alike.
@@ -1273,7 +1566,7 @@ Episko's launch uuid **is** Claude's `--session-id`, so every session it launche
 
   **The baseline is persisted (`cc-cost-base`), and it has to be**: held only in memory it covered a *Move session* and an in-session History reopen but not the commonest route of all — quit, reopen, restore. `cc-usage` is localStorage and survives that; a run-scoped map does not, so the restored pane's first statusLine met an empty baseline and booked the carried-over total into a day that already had it. The obvious worry about persisting — a baseline outliving the counter it describes would *swallow* real spend, the failure nobody can see — is what the **drop branch** answers: a restarted counter reads below its old baseline, so the whole new reading is booked as fresh. Retention is therefore deliberately generous and capped by count, not by age; the drop branch, not an expiry, is what makes a stale entry harmless.
 - **The roster is a convenience layer, not a system of record** — `/resume` inside Claude always lists every session for a folder, so nothing dropped or removed is ever lost. Keep UI copy honest about that, and don't build recovery machinery for a problem `/resume` already solves.
-- **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case.
+- **The stage has one owner:** `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive — the read-only kinds share one discriminated pointer rather than a flag each. Timer-driven inspector repaints must bail on `mirror`, not just the external case. **`stageGroup` does not break this and must not become another owner:** it names a tiled run group, but `activeId` still names the one *focused* pane, which is what the header, inspector, footer and keystrokes read. It is a modifier on the single-pane stage ("also show that pane's group siblings"), which is exactly why adding it changed no existing `activeId` consumer.
 - **And one function decides what is *on* it.** `takeStage(show)` in `dom.ts` — `"session" | "ext" | "dash" | "none"` — is the only thing that may touch `#extPane`, `#dashPane`, `#empty` or `insp-mini`. It lives in the leaf module so every opener can call it without an import edge (it is why `mirror.ts` still needs no `./dashboard` dependency). Each opener used to hide its rivals by hand and **only two of four did it completely**, which is not a class of bug the type checker or a unit test can see: `#extPane` and `#dashPane` are both `position:absolute; inset:0` with **no `z-index`**, so DOM order alone decides and `#dashPane` is second — an opener that shows the mirror without hiding the dashboard puts it *behind* a fully opaque pane. Nothing errors, nothing logs, and the header, inspector and `--accent` all update correctly, so the click reads as "it only changed the colours". `insp-mini` rides along because the 44px rail is a **dashboard-only** mode; anything else taking the stage must clear it or the next session inherits a rail holding the wrong buttons. Add a fourth pane by extending `Stage`, never by poking `hidden` at the call site.
 
 ## History (`◷ History`, ⌘⇧H, `list_session_history`)

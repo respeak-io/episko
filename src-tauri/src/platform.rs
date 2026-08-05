@@ -222,7 +222,7 @@ pub(crate) fn path_holders(dir: &str, stuck: Option<&str>) -> Vec<PathHolder> {
     }
     // Ours first: the caller clears those without asking, so they should read as the
     // part already handled rather than as part of the problem.
-    out.sort_by(|a, b| (!a.ours, a.pid).cmp(&(!b.ours, b.pid)));
+    out.sort_by_key(|h| (!h.ours, h.pid));
     out
 }
 
@@ -408,13 +408,101 @@ pub(crate) fn resolve_claude() -> String {
     "claude".to_string()
 }
 
+/// Marker fencing the PATH in a shell probe's output, so rc-file chatter can't be
+/// mistaken for part of the value.
+#[cfg(not(windows))]
+const PATH_MARK: &str = "__EPISKO_PATH__";
+
+/// The PATH the user's own terminal has, harvested once per app run. `None` when the
+/// probe failed or returned something that isn't a PATH — callers fall back.
+#[cfg(not(windows))]
+static SHELL_PATH: std::sync::LazyLock<Option<String>> =
+    std::sync::LazyLock::new(probe_shell_path);
+
+/// Pull the PATH out of a shell probe's stdout.
+///
+/// The rc files this deliberately lets run *print things* — a powerlevel10k gitstatus
+/// warning, a motd, a version-manager notice — so the value is fenced by markers
+/// rather than assumed to be the whole output.
+///
+/// Rejects anything that doesn't look like a PATH. fish interpolates `$PATH` as a
+/// space-separated list, and half a PATH silently shadowing the fallback is worse
+/// than not probing at all.
+#[cfg(not(windows))]
+fn path_from_probe(out: &str) -> Option<String> {
+    let val = out.split(PATH_MARK).nth(1)?.trim();
+    let dirs: Vec<&str> = val.split(':').filter(|d| !d.is_empty()).collect();
+    if dirs.len() < 2 || !dirs.iter().any(|d| std::path::Path::new(d).is_dir()) {
+        return None;
+    }
+    Some(val.to_string())
+}
+
+/// Ask the user's login shell what PATH it would give a command, **interactively**.
+///
+/// `-i` is the entire point, and it is not a detail. zsh reads `~/.zshrc` only for
+/// *interactive* shells, and `.zshrc` is where nvm, pnpm's `PNPM_HOME`, mise and
+/// Homebrew's `shellenv` actually get exported. A plain `-l -c` sources `.zprofile`
+/// and `.zlogin` and misses every one of them — which is how a task running
+/// `pnpm tauri dev` died with `command not found: pnpm` while the identical line
+/// worked in the user's terminal, and how a `just` install went undiscovered.
+///
+/// Run once, off the caller's back, and never for the task itself: an interactive
+/// shell prints its rc noise, which is fine to parse out of a probe and unacceptable
+/// in a task's pane.
+#[cfg(not(windows))]
+fn probe_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let script = format!("printf '%s%s%s' '{PATH_MARK}' \"$PATH\" '{PATH_MARK}'");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell)
+            .args(["-i", "-l", "-c"])
+            .arg(&script)
+            // An rc file that reads stdin would otherwise wait forever.
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(out.ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()));
+    });
+    // A pathological rc file must cost a fallback, not a hung UI: `augmented_path` is
+    // on the git-poll path, so the first caller is whoever polls first.
+    let out = rx.recv_timeout(std::time::Duration::from_secs(5)).ok()??;
+    path_from_probe(&out)
+}
+
+/// Warm `SHELL_PATH` off the UI's back. `LazyLock` blocks its *first* caller, and that
+/// caller would otherwise be a git poll or a task launch.
+#[cfg(not(windows))]
+pub(crate) fn warm_shell_path() {
+    std::thread::spawn(|| {
+        let _ = SHELL_PATH.as_deref();
+    });
+}
+
+#[cfg(windows)]
+pub(crate) fn warm_shell_path() {}
+
 /// A PATH that includes the usual per-user bin dirs, so the spawned `claude`
 /// (and anything it shells out to) is found even under a stripped PATH.
+///
+/// `~/.cargo/bin` is here for the task introspectors, not for `claude`: `just` and
+/// `mise` are Rust binaries that `cargo install` puts nowhere else, and a listing
+/// tool this can't find makes a whole provider's tasks vanish.
 #[cfg(not(windows))]
 pub(crate) fn augmented_path() -> String {
     let home = home_dir();
-    let base = std::env::var("PATH").unwrap_or_default();
-    format!("{home}/.local/bin:{home}/.claude/local:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{base}")
+    let fallbacks = format!(
+        "{home}/.local/bin:{home}/.claude/local:{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    );
+    match SHELL_PATH.as_deref() {
+        // The user's own ordering goes first, deliberately. If nvm puts a node ahead
+        // of `/usr/local/bin`, a task has to get nvm's one — otherwise "works in
+        // iTerm, fails in Episko" is back, just further down the stack.
+        Some(p) => format!("{p}:{fallbacks}"),
+        // No probe: today's behaviour, which under Finder means the fallbacks are
+        // doing all the work (the process PATH is `/usr/bin:/bin:/usr/sbin:/sbin`).
+        None => format!("{fallbacks}:{}", std::env::var("PATH").unwrap_or_default()),
+    }
 }
 
 /// Windows uses `;` as the PATH separator; include the native-installer bin dir and
@@ -424,7 +512,7 @@ pub(crate) fn augmented_path() -> String {
     let home = home_dir();
     let base = std::env::var("PATH").unwrap_or_default();
     let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    format!(r"{home}\.local\bin;{home}\.claude\local;{sysroot}\System32;{base}")
+    format!(r"{home}\.local\bin;{home}\.claude\local;{home}\.cargo\bin;{sysroot}\System32;{base}")
 }
 
 /// Single-quote a string for safe inclusion in a POSIX shell script.
@@ -971,6 +1059,50 @@ mod tests {
         assert_eq!(norm_path(r"E:\already\native"), r"E:\already\native");
         assert_eq!(norm_path(r"\\server\share\x"), r"\\server\share\x");
         assert_eq!(norm_path(""), "");
+    }
+
+    /// The shell probe runs rc files on purpose, and rc files talk. powerlevel10k
+    /// prints a gitstatus warning, nvm prints notices, hosts print a motd — so the
+    /// PATH has to be fenced and extracted, never assumed to be the whole stdout.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_probe_survives_rc_file_chatter() {
+        let noisy = format!(
+            "  Restart Zsh to retry gitstatus initialization:\n\n    exec zsh\n\
+             {PATH_MARK}/opt/homebrew/bin:/usr/bin:/bin{PATH_MARK}\n"
+        );
+        assert_eq!(path_from_probe(&noisy).as_deref(), Some("/opt/homebrew/bin:/usr/bin:/bin"));
+    }
+
+    /// Anything that isn't a PATH must be refused, because the probe's value goes
+    /// *ahead* of the fallbacks — a mangled one shadows them instead of helping.
+    /// fish is the live case: it interpolates `$PATH` space-separated.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_probe_refuses_what_is_not_a_path() {
+        // fish: no separators at all.
+        assert_eq!(path_from_probe(&format!("{PATH_MARK}/usr/bin /bin{PATH_MARK}")), None);
+        // The shell died before printing, or printed only noise.
+        assert_eq!(path_from_probe("command not found: printf"), None);
+        assert_eq!(path_from_probe(&format!("{PATH_MARK}{PATH_MARK}")), None);
+        // Colon-separated but nothing on it exists — a stale or fabricated value.
+        assert_eq!(
+            path_from_probe(&format!("{PATH_MARK}/nope/one:/nope/two{PATH_MARK}")),
+            None
+        );
+    }
+
+    /// The probe is the mechanism the pnpm/just failures needed, so assert it works
+    /// against this machine's real shell rather than only against fixtures. Skipped
+    /// rather than failed where there's no usable `SHELL` (a bare CI container).
+    #[cfg(not(windows))]
+    #[test]
+    fn augmented_path_carries_the_fallback_dirs_whether_or_not_the_probe_lands() {
+        let p = augmented_path();
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+            assert!(p.contains(dir), "augmented PATH lost {dir}: {p}");
+        }
+        assert!(p.contains(".cargo/bin"), "cargo-installed tools need this: {p}");
     }
 
     #[cfg(not(windows))]

@@ -19,7 +19,7 @@ import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, tilde } from "./format";
 import type { Sess } from "./types";
-import { activeId, sessions, setTermFontSize, termFontSize } from "./state";
+import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
 // Leads with the bundled Nerd Font (see @font-face in styles.css) so the terminal
 // draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
@@ -194,7 +194,19 @@ export function fitSession(s: Sess) {
     s.term.refresh(0, s.term.rows - 1);
   } catch { /* pane not measurable yet */ }
 }
-export function refit() { if (!activeId) return; const s = sessions.get(activeId); if (s) fitSession(s); }
+/// Re-measure whatever the stage is currently showing. With a run group tiled that is
+/// several panes, not one — a window resize reflows the grid, so every visible pane's
+/// cell changed size, and refitting only the focused one leaves the rest at the wrong
+/// geometry (a wrapped, misaligned build log next to a correct one).
+export function refit() {
+  if (stageGroup) {
+    for (const s of sessions.values()) if (s.run?.groupId === stageGroup) fitSession(s);
+    return;
+  }
+  if (!activeId) return;
+  const s = sessions.get(activeId);
+  if (s) fitSession(s);
+}
 export function applyFontSize() { for (const s of sessions.values()) if (s.term) s.term.options.fontSize = termFontSize; refit(); localStorage.setItem("cc-term-font", String(termFontSize)); }
 export function bumpFont(d: number) { setTermFontSize(Math.max(8, Math.min(28, termFontSize + d))); applyFontSize(); toast(`Terminal font ${termFontSize}px`); }
 

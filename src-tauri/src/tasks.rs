@@ -7,10 +7,14 @@
 //
 // Two rules shape this module:
 //
-// - **Discovery never executes the project.** Every provider here parses a file.
-//   The introspecting providers (`just --dump`, `task --list`, `make -qp`) evaluate
+// - **Discovery never executes the project.** Most providers here only parse. The
+//   introspecting ones (`just --dump`, `task --list-all`, `mise tasks ls`) evaluate
 //   the file they read — backtick variables and imports run shell at parse time —
-//   so they are deliberately absent until there's a trust gate to put them behind.
+//   so they sit behind a trust gate (`discover(root, trusted)`). Make and Cargo are
+//   parsed statically for the same reason: `make -qp` would expand `$(shell …)`.
+// - **What can't run says so.** An introspector that fails yields a *blocked row*,
+//   never an empty list — see `IntrospectFail`. Silence there is unfalsifiable: it
+//   reads exactly like a project that declares no tasks.
 // - **Ids are stable and namespaced** (`npm:test`, `episko:dev`). The frontend
 //   persists pins and frecency against them, so they must survive a rescan.
 
@@ -19,6 +23,8 @@ use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
+
+use crate::platform::{augmented_path, sys_command};
 
 /// How to actually run a Runnable. `Argv` is exec'd directly; `Shell` is handed to
 /// a login shell, so it may contain pipes, `&&`, globs and other shell syntax.
@@ -76,6 +82,15 @@ pub struct Runnable {
     /// honest about what we can't run beats silently omitting it, which reads as
     /// "Episko didn't find your task".
     pub blocked: Option<String>,
+    /// A task with no command of its own, whose `depends_on` list *is* the work —
+    /// VS Code's compound task, and what ⌘⇧B usually points at ("Dev: Frontend +
+    /// Backend"). It launches no pane; `launchWithDeps` runs the dependencies and
+    /// stops. Not the same as blocked: there is nothing missing here.
+    pub compound: bool,
+    /// `Some("build")` / `Some("test")` when the source file marks this the *default*
+    /// task of that group (`"group": {"kind": "build", "isDefault": true}`). This is
+    /// what makes ⌘⇧B unambiguous — `group` alone can hold many tasks.
+    pub default_for: Option<String>,
 }
 
 /// One value the user must supply before a task can run. Mirrors VS Code's
@@ -91,6 +106,11 @@ pub struct InputSpec {
     /// Choices, for `pickString`.
     pub options: Vec<String>,
     pub password: bool,
+    /// The task runs perfectly well with this left empty — a just `*name` parameter
+    /// takes zero or more arguments. The frontend uses it to decide whether a plain
+    /// Run can proceed without a dialog; the field is still offered by *Run with
+    /// parameters…*, because optional is not the same as unwanted.
+    pub optional: bool,
 }
 
 /// Discover everything runnable in `root`, in a stable order: Episko's own tasks
@@ -195,6 +215,7 @@ fn redetect_inputs(run: &str, original: &[InputSpec]) -> Vec<InputSpec> {
                 default: None,
                 options: Vec::new(),
                 password: false,
+                optional: false,
             })
         })
         .collect()
@@ -406,6 +427,8 @@ fn episko_tasks(root: &Path) -> Vec<Runnable> {
                 depends_on: Vec::new(),
                 depends_order: "parallel".into(),
                 blocked: None,
+                compound: false,
+                default_for: None,
             }
         })
         .collect()
@@ -465,6 +488,8 @@ fn npm_scripts(root: &Path) -> Vec<Runnable> {
                 depends_on: Vec::new(),
                 depends_order: "parallel".into(),
                 blocked: None,
+                compound: false,
+                default_for: None,
             })
         })
         .collect()
@@ -602,6 +627,9 @@ fn parse_input_specs(root: &Path, cwd: &str, raw: Option<&serde_json::Value>) ->
                     })
                     .unwrap_or_default(),
                 password: i.get("password").and_then(|v| v.as_bool()).unwrap_or(false),
+                // VS Code has no notion of an optional input — every declared one is
+                // asked for, so nothing here may claim it can be skipped.
+                optional: false,
                 id,
                 kind: kind.to_string(),
             })
@@ -690,23 +718,49 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 }
             }
 
-            let exec = match ttype {
-                // A shell task's command+args are one command line, pipes and all.
-                "shell" => Exec::Shell { line: subbed.join(" ") },
-                "process" => Exec::Argv {
-                    program: subbed[0].clone(),
-                    args: subbed[1..].to_vec(),
-                },
-                "npm" => {
-                    let script = t.get("script").and_then(|v| v.as_str()).unwrap_or("install");
-                    Exec::Argv {
-                        program: runner.to_string(),
-                        args: vec!["run".into(), script.to_string()],
-                    }
+            // dependsOn names other tasks by *label*; the frontend resolves them
+            // against the same discovery result and runs them before this one.
+            // Parsed *before* the command, because whether a missing command is a
+            // fault or the whole point depends on whether there are dependencies.
+            let depends_on: Vec<String> = match t.get("dependsOn") {
+                Some(serde_json::Value::String(one)) => vec![one.clone()],
+                Some(serde_json::Value::Array(many)) => {
+                    many.iter().filter_map(|d| Some(d.as_str()?.to_string())).collect()
                 }
-                other => return mk_blocked(&format!("task type “{other}” isn't supported yet")),
+                _ => Vec::new(),
             };
-            if subbed[0].trim().is_empty() && ttype != "npm" {
+
+            // A VS Code **compound task**: no command of its own, and a `dependsOn`
+            // list that *is* the work. `"Dev: Frontend + Backend"` is the canonical
+            // shape, and it is usually what ⌘⇧B points at — so blocking it as "no
+            // command" withheld exactly the task a whole stack is started from.
+            // Deliberately lenient about `type`: a compound declares none, and a
+            // stray one alongside real dependencies is not worth refusing over.
+            let compound = subbed[0].trim().is_empty() && !depends_on.is_empty();
+
+            let exec = if compound {
+                // Nothing to spawn. `spawn_task`'s empty-line guard is the backstop
+                // if this ever reaches it, which `launchWithDeps` makes sure it can't.
+                Exec::Shell { line: String::new() }
+            } else {
+                match ttype {
+                    // A shell task's command+args are one command line, pipes and all.
+                    "shell" => Exec::Shell { line: subbed.join(" ") },
+                    "process" => Exec::Argv {
+                        program: subbed[0].clone(),
+                        args: subbed[1..].to_vec(),
+                    },
+                    "npm" => {
+                        let script = t.get("script").and_then(|v| v.as_str()).unwrap_or("install");
+                        Exec::Argv {
+                            program: runner.to_string(),
+                            args: vec!["run".into(), script.to_string()],
+                        }
+                    }
+                    other => return mk_blocked(&format!("task type “{other}” isn't supported yet")),
+                }
+            };
+            if !compound && subbed[0].trim().is_empty() && ttype != "npm" {
                 return mk_blocked("no command");
             }
 
@@ -717,16 +771,6 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
             if let Some(missing) = ids.iter().find(|id| !inputs.iter().any(|i| &&i.id == id)) {
                 return mk_blocked(&format!("no input declared for ${{input:{missing}}}"));
             }
-
-            // dependsOn names other tasks by *label*; the frontend resolves them
-            // against the same discovery result and runs them before this one.
-            let depends_on: Vec<String> = match t.get("dependsOn") {
-                Some(serde_json::Value::String(one)) => vec![one.clone()],
-                Some(serde_json::Value::Array(many)) => {
-                    many.iter().filter_map(|d| Some(d.as_str()?.to_string())).collect()
-                }
-                _ => Vec::new(),
-            };
             let depends_order = t
                 .get("dependsOrder")
                 .and_then(|v| v.as_str())
@@ -734,9 +778,16 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 .unwrap_or("parallel")
                 .to_string();
 
-            let group = t.get("group").and_then(|g| {
+            // `"group"` is either a bare string or `{kind, isDefault}`. The kind is a
+            // display bucket (many tasks share it); `isDefault` is what makes exactly
+            // one of them the answer to ⌘⇧B, so it is kept separately.
+            let group_val = t.get("group");
+            let group = group_val.and_then(|g| {
                 g.as_str().map(str::to_string).or_else(|| Some(g.get("kind")?.as_str()?.to_string()))
             });
+            let default_for = group_val
+                .filter(|g| g.get("isDefault").and_then(|d| d.as_bool()).unwrap_or(false))
+                .and_then(|g| Some(g.get("kind")?.as_str()?.to_string()));
 
             Some(Runnable {
                 id: format!("vscode:{}", slugify(&label)),
@@ -744,7 +795,14 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                     .get("detail")
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
-                    .or_else(|| Some(exec_line(&exec))),
+                    // A compound has no command line to show, so name what it runs.
+                    // "no command" as a subtitle read like a defect; this reads like
+                    // the answer to "what will this start?".
+                    .or_else(|| if compound {
+                        Some(format!("runs {}", depends_on.join(", ")))
+                    } else {
+                        Some(exec_line(&exec))
+                    }),
                 group: group.or_else(|| infer_group(&label, command)),
                 label,
                 source: "vscode".into(),
@@ -757,6 +815,8 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 depends_on,
                 depends_order,
                 blocked: None,
+                compound,
+                default_for,
             })
         })
         .collect()
@@ -897,6 +957,8 @@ fn launch_configs(root: &Path) -> Vec<Runnable> {
                 depends_on: Vec::new(),
                 depends_order: "parallel".into(),
                 blocked: None,
+                compound: false,
+                default_for: None,
             })
         })
         .collect()
@@ -939,6 +1001,8 @@ fn cargo_tasks(root: &Path) -> Vec<Runnable> {
             depends_on: Vec::new(),
             depends_order: "parallel".into(),
             blocked: None,
+            compound: false,
+            default_for: None,
         })
         .collect()
 }
@@ -947,6 +1011,50 @@ fn cargo_tasks(root: &Path) -> Vec<Runnable> {
 
 /// (name, doc) pairs pulled out of a tool's JSON listing.
 type TaskListing = Vec<(String, Option<String>)>;
+
+/// Why an introspector produced no listing. Both arms become a blocked row: an
+/// introspector that silently yields nothing is indistinguishable from a project
+/// with no tasks, which is the one thing this module refuses to be.
+enum IntrospectFail {
+    /// The tool isn't on the PATH we can see. Its own message, not the OS's:
+    /// `NotFound` from a GUI app usually means installed-but-elsewhere, not absent.
+    NoProgram,
+    /// It ran and refused — a parse error in the file, a bad flag, a missing import.
+    Failed(String),
+}
+
+/// Run a listing tool and hand back its stdout.
+///
+/// Two things here are not incidental. **`augmented_path`**: a Finder-launched app
+/// inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so a bare `Command::new("just")`
+/// cannot find a Homebrew or Cargo install and fails with `NotFound` — which is why
+/// a perfectly good justfile went undiscovered with no error anywhere. The PATH here
+/// must stay a superset of what a `Shell` task gets in `spawn_task`, or discovery
+/// and execution disagree about whether the tool exists. **`sys_command`**: this
+/// runs on every cache miss, and on Windows a bare spawn flashes a console window.
+fn introspect_output(program: &str, args: &[&str], root: &Path) -> Result<Vec<u8>, IntrospectFail> {
+    let out = sys_command(program)
+        .args(args)
+        .current_dir(root)
+        .env("PATH", augmented_path())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => Ok(o.stdout),
+        Ok(o) => Err(IntrospectFail::Failed(first_line(&String::from_utf8_lossy(&o.stderr)))),
+        Err(_) => Err(IntrospectFail::NoProgram),
+    }
+}
+
+/// The blocked-row message for a failed introspection. `NoProgram` names the PATH
+/// explicitly, because "not installed" is the wrong guess more often than the right
+/// one — the tool is usually there and the *app's* PATH is what's short.
+fn fail_reason(e: &IntrospectFail, program: &str) -> String {
+    match e {
+        IntrospectFail::NoProgram => format!("`{program}` is not on Episko's PATH"),
+        IntrospectFail::Failed(why) if why.is_empty() => format!("`{program}` exited non-zero"),
+        IntrospectFail::Failed(why) => why.clone(),
+    }
+}
 
 /// Shared shape for the providers that must *run* the project's own tool to list
 /// its tasks. Each one evaluates the file it reads, so all of them sit behind the
@@ -976,20 +1084,18 @@ fn run_introspector(root: &Path, trusted: bool, i: &Introspector) -> Vec<Runnabl
             &format!("trust this project to read its {found}"),
         )];
     }
-    let out = match std::process::Command::new(i.program).args(i.args).current_dir(root).output() {
-        Ok(o) if o.status.success() => o.stdout,
-        Ok(o) => {
+    let out = match introspect_output(i.program, i.args, root) {
+        Ok(stdout) => stdout,
+        Err(e) => {
             return vec![blocked_row(
                 &format!("{}:__error", i.source),
                 &format!("{} tasks", i.source),
                 found,
                 i.source,
                 root,
-                &first_line(&String::from_utf8_lossy(&o.stderr)),
+                &fail_reason(&e, i.program),
             )]
         }
-        // Tool not installed — the marker file simply isn't actionable here.
-        Err(_) => return Vec::new(),
     };
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out) else { return Vec::new() };
 
@@ -1012,6 +1118,8 @@ fn run_introspector(root: &Path, trusted: bool, i: &Introspector) -> Vec<Runnabl
                 depends_on: Vec::new(),
                 depends_order: "parallel".into(),
                 blocked: None,
+                compound: false,
+                default_for: None,
             }
         })
         .collect()
@@ -1093,24 +1201,18 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
         )];
     }
 
-    let out = std::process::Command::new("just")
-        .args(["--dump", "--dump-format", "json", "--unstable"])
-        .current_dir(root)
-        .output();
-    let out = match out {
-        Ok(o) if o.status.success() => o.stdout,
-        Ok(o) => {
+    let out = match introspect_output("just", &["--dump", "--dump-format", "json", "--unstable"], root) {
+        Ok(stdout) => stdout,
+        Err(e) => {
             return vec![blocked_row(
                 "just:__error",
                 "justfile recipes",
                 found,
                 "just",
                 root,
-                &first_line(&String::from_utf8_lossy(&o.stderr)),
+                &fail_reason(&e, "just"),
             )]
         }
-        // `just` not installed — nothing to report, the file just isn't actionable.
-        Err(_) => return Vec::new(),
     };
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out) else { return Vec::new() };
     let Some(recipes) = json.get("recipes").and_then(|r| r.as_object()) else { return Vec::new() };
@@ -1122,7 +1224,11 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
             if name.starts_with('_') || r.get("private").and_then(|p| p.as_bool()).unwrap_or(false) {
                 return None;
             }
-            // A recipe parameter with no default has to come from somewhere.
+            // A recipe parameter with no default has to come from somewhere — except
+            // a variadic `*name`, which takes zero or more arguments and so is
+            // perfectly runnable empty. `just` reports that as `kind: "star"`; a
+            // `+name` (one or more) and a bare parameter both genuinely require a
+            // value, and `just` refuses the recipe without one.
             let inputs: Vec<InputSpec> = r
                 .get("parameters")
                 .and_then(|p| p.as_array())
@@ -1131,13 +1237,18 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
                         .filter(|p| p.get("default").map(|d| d.is_null()).unwrap_or(true))
                         .filter_map(|p| {
                             let id = p.get("name")?.as_str()?.to_string();
+                            let optional = p.get("kind").and_then(|k| k.as_str()) == Some("star");
                             Some(InputSpec {
-                                description: format!("{id} (just parameter)"),
+                                description: format!(
+                                    "{id} (just parameter{})",
+                                    if optional { ", optional" } else { "" }
+                                ),
                                 id,
                                 kind: "promptString".into(),
                                 default: None,
                                 options: Vec::new(),
                                 password: false,
+                                optional,
                             })
                         })
                         .collect()
@@ -1167,6 +1278,8 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
                 depends_on: Vec::new(),
                 depends_order: "parallel".into(),
                 blocked: None,
+                compound: false,
+                default_for: None,
             })
         })
         .collect();
@@ -1237,6 +1350,8 @@ fn make_targets(root: &Path) -> Vec<Runnable> {
             depends_on: Vec::new(),
             depends_order: "parallel".into(),
             blocked: None,
+            compound: false,
+            default_for: None,
         });
         pending_doc = None;
     }
@@ -1261,6 +1376,8 @@ fn blocked_row(id: &str, label: &str, file: &str, source: &str, root: &Path, why
         depends_on: Vec::new(),
         depends_order: "parallel".into(),
         blocked: Some(why.to_string()),
+        compound: false,
+        default_for: None,
     }
 }
 
@@ -1832,6 +1949,71 @@ env = { RUST_LOG = "debug" }
         assert_eq!(one.depends_order, "parallel");
     }
 
+    /// A **compound task** — no command, only `dependsOn` — is the shape ⌘⇧B usually
+    /// points at ("Dev: Frontend + Backend"), and blocking it as "no command"
+    /// withheld the one task a whole stack gets started from. Taken verbatim from a
+    /// real project's tasks.json, including the `isDefault` marker.
+    #[test]
+    fn a_vscode_compound_task_runs_its_dependencies_instead_of_a_command() {
+        let t = Tmp::new("vsccompound");
+        t.write(
+            ".vscode/tasks.json",
+            r#"{"tasks":[
+              {"label":"Frontend (vite dev)","type":"shell","command":"pnpm","args":["run","dev"],"isBackground":true},
+              {"label":"Backend (uvicorn)","type":"shell","command":"uv","args":["run","uvicorn"],"isBackground":true},
+              {"label":"Dev: Frontend + Backend","dependsOn":["Frontend (vite dev)","Backend (uvicorn)"],
+               "dependsOrder":"parallel","group":{"kind":"build","isDefault":true}},
+              {"label":"Nothing At All","type":"shell","command":""}
+            ]}"#,
+        );
+        let found = discover(&t.0, true);
+
+        let dev = found.iter().find(|r| r.label == "Dev: Frontend + Backend").unwrap();
+        assert!(dev.blocked.is_none(), "a dependsOn list IS the command");
+        assert!(dev.compound, "no command of its own — nothing to spawn");
+        assert_eq!(dev.depends_on, vec!["Frontend (vite dev)", "Backend (uvicorn)"]);
+        assert_eq!(dev.depends_order, "parallel");
+        // `isDefault` is what makes ⌘⇧B unambiguous; `group` alone holds many tasks.
+        assert_eq!(dev.default_for.as_deref(), Some("build"));
+        assert_eq!(dev.group.as_deref(), Some("build"));
+        // The subtitle has to say something useful — "no command" read as a defect.
+        assert_eq!(dev.detail.as_deref(), Some("runs Frontend (vite dev), Backend (uvicorn)"));
+
+        // A commandless task with NO dependencies is still genuinely broken.
+        let nothing = found.iter().find(|r| r.label == "Nothing At All").unwrap();
+        assert_eq!(nothing.blocked.as_deref(), Some("no command"));
+        assert!(!nothing.compound);
+
+        // An ordinary task is untouched by any of this.
+        let fe = found.iter().find(|r| r.label == "Frontend (vite dev)").unwrap();
+        assert!(!fe.compound && fe.default_for.is_none() && fe.background);
+    }
+
+    /// `group` without `isDefault` must NOT claim the ⌘⇧B slot — otherwise the first
+    /// build-ish task in the file silently becomes "the" build task.
+    #[test]
+    fn a_group_without_isdefault_does_not_claim_the_build_shortcut() {
+        let t = Tmp::new("vscgroup");
+        t.write(
+            ".vscode/tasks.json",
+            r#"{"tasks":[
+              {"label":"Compile","type":"shell","command":"make","group":"build"},
+              {"label":"Bundle","type":"shell","command":"vite build","group":{"kind":"build"}},
+              {"label":"Check","type":"shell","command":"tsc","group":{"kind":"test","isDefault":true}}
+            ]}"#,
+        );
+        let found = discover(&t.0, true);
+        for label in ["Compile", "Bundle"] {
+            let r = found.iter().find(|r| r.label == label).unwrap();
+            assert_eq!(r.group.as_deref(), Some("build"), "{label} is still in the build bucket");
+            assert!(r.default_for.is_none(), "{label} never marked itself the default");
+        }
+        assert_eq!(
+            found.iter().find(|r| r.label == "Check").unwrap().default_for.as_deref(),
+            Some("test")
+        );
+    }
+
     // ── launch.json ──────────────────────────────────────────────────────
 
     #[test]
@@ -1997,6 +2179,62 @@ env = { RUST_LOG = "debug" }
         assert!(substitute("${totallyMadeUp}", root, "").is_err());
     }
 
+    // ── introspecting providers ──────────────────────────────────────────
+
+    /// The regression that made a real justfile invisible: a Finder-launched app
+    /// inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so `just` in `/opt/homebrew/bin`
+    /// (or `~/.cargo/bin`) could not be found and discovery returned an empty list.
+    /// Asserting the *child's* PATH is the only way to catch this from a dev machine,
+    /// whose own PATH already has those directories.
+    #[test]
+    #[cfg(not(windows))]
+    fn an_introspector_child_gets_the_augmented_path() {
+        let t = Tmp::new("ipath");
+        let Ok(out) = introspect_output("sh", &["-c", "printf %s \"$PATH\""], &t.0) else {
+            panic!("sh must be spawnable");
+        };
+        let path = String::from_utf8_lossy(&out);
+        for dir in [".cargo/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+            assert!(path.contains(dir), "child PATH is missing {dir}: {path}");
+        }
+    }
+
+    /// An introspector whose tool can't be spawned must produce a *blocked row*, not
+    /// silence. Silence is unfalsifiable — it reads exactly like "this project has no
+    /// tasks", which is how the justfile bug hid.
+    #[test]
+    fn an_unspawnable_introspector_yields_a_blocked_row() {
+        let t = Tmp::new("inoprog");
+        t.write("Taskfile.yml", "version: '3'\ntasks:\n  build:\n    cmds: [echo hi]\n");
+        let bogus = Introspector {
+            source: "taskfile",
+            markers: &["Taskfile.yml"],
+            program: "episko-no-such-listing-tool",
+            args: &["--json"],
+            parse: |_| Vec::new(),
+            line: |n| format!("task {n}"),
+        };
+        let found = run_introspector(&t.0, true, &bogus);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "taskfile:__error");
+        assert_eq!(
+            found[0].blocked.as_deref(),
+            Some("`episko-no-such-listing-tool` is not on Episko's PATH"),
+            "the message must name the PATH — the tool is usually installed, just not visible"
+        );
+    }
+
+    #[test]
+    fn fail_reason_distinguishes_missing_from_refusing() {
+        assert_eq!(fail_reason(&IntrospectFail::NoProgram, "just"), "`just` is not on Episko's PATH");
+        assert_eq!(
+            fail_reason(&IntrospectFail::Failed("error: Unknown attribute".into()), "just"),
+            "error: Unknown attribute"
+        );
+        // A tool that fails with nothing on stderr still has to say something.
+        assert_eq!(fail_reason(&IntrospectFail::Failed(String::new()), "task"), "`task` exited non-zero");
+    }
+
     // ── justfile ─────────────────────────────────────────────────────────
 
     #[test]
@@ -2018,7 +2256,7 @@ env = { RUST_LOG = "debug" }
         let t = Tmp::new("just");
         t.write(
             "justfile",
-            "# Run the test suite\ntest:\n    echo testing\n\ndeploy env:\n    echo {{env}}\n\n_private:\n    echo hidden\n",
+            "# Run the test suite\ntest:\n    echo testing\n\ndeploy env:\n    echo {{env}}\n\nstart *services:\n    echo {{services}}\n\nneed +args:\n    echo {{args}}\n\n_private:\n    echo hidden\n",
         );
         let found = discover(&t.0, true);
         assert!(found.iter().all(|r| r.blocked.is_none()));
@@ -2032,6 +2270,18 @@ env = { RUST_LOG = "debug" }
         assert_eq!(deploy.exec, Exec::Shell { line: "just deploy ${input:env}".into() });
         assert_eq!(deploy.inputs.len(), 1);
         assert_eq!(deploy.inputs[0].id, "env");
+        assert!(!deploy.inputs[0].optional, "`just deploy` fails with no argument");
+
+        // `*name` takes zero or more, so it is offered but never demanded — this is
+        // what stops the input dialog opening on every run of such a recipe.
+        let start = found.iter().find(|r| r.label == "start").unwrap();
+        assert_eq!(start.exec, Exec::Shell { line: "just start ${input:services}".into() });
+        assert!(start.inputs[0].optional);
+        assert!(start.inputs[0].description.contains("optional"));
+
+        // `+name` wants at least one, so it is as required as a bare parameter.
+        let need = found.iter().find(|r| r.label == "need").unwrap();
+        assert!(!need.inputs[0].optional);
 
         assert!(!found.iter().any(|r| r.label == "_private"), "`_` recipes are internal");
     }
