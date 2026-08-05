@@ -13,6 +13,35 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A task chain is one row, and it opens into a tiled stage.** A `dependsOn` launch
+  still runs one pane per step — an exit code per step is what the phase glyphs are —
+  but the sidebar now folds the steps into a single row carrying the worst step's
+  status, so a failed build reads as a failed chain even when a later step never ran.
+  Clicking the row tiles every step on the stage at once, and closing one tile focuses
+  the next in the chain rather than abandoning the rest.
++ **Projects can be grouped, and a group folds away.** Name a set of projects — *Work*,
+  *Side* — and collapse it to a single line when you are not in it. Right-click a project
+  for *Add to group…*, or drag it onto a group the way you already drag one to reorder;
+  right-click the group's own heading to rename, fold, or delete it. A group has no
+  order of its own: it sits where its first project sits, so the sort you picked still
+  decides the rail and dragging a project takes its group with it.
++ **A folded group still says when something in it needs you.** The heading carries the
+  status glyph of the most urgent session it is hiding and a dot for uncommitted changes,
+  because a tidy-up that could bury a session waiting on a permission would be a trap.
+  ⌘1–9 still reaches into a folded group, and taking a session in one onto the stage
+  unfolds it rather than leaving the rail with nothing selected.
+! **Tasks now get the PATH your own terminal has.** A login shell reads `~/.zshrc` only
+  when it is *interactive*, and that is where nvm, pnpm, mise and Homebrew's `shellenv`
+  actually live — so a `justfile` could report no tasks at all, and a task that worked in
+  your terminal could die in Episko on *command not found*. The PATH is now harvested
+  from an interactive login shell instead.
+! **Windows: npm scripts launch.** Windows starts real executables and nothing else, so
+  every `package.json` script — a `.cmd` shim, not a program — failed to start. Scripts
+  are now resolved the way the shell would and routed through `cmd.exe`.
+! **A VS Code compound task can run.** A `tasks.json` entry with no `command` but a
+  `dependsOn` list — usually exactly the one `isDefault` marks as the build — was blocked
+  as "no command" instead of running the steps it names.
+
 ~ **Windows: a session no longer launches a PowerShell for every hook.** Each lifecycle
   event — every tool call, every turn, every notification — used to start a whole
   PowerShell just to reach `curl`, about 220ms and a second process each time, per
@@ -136,17 +165,6 @@ A day's work becomes something the team can read, and the app gets quieter under
   so a repository could flash *not a repo* — losing the worktree and commit-graph verbs
   with it — and a GitHub project's issues could appear briefly under a folder that has
   none.
-+ **Projects can be grouped, and a group folds away.** Name a set of projects — *Work*,
-  *Side* — and collapse it to a single line when you are not in it. Right-click a project
-  for *Add to group…*, or drag it onto a group the way you already drag one to reorder;
-  right-click the group's own heading to rename, fold, or delete it. A group has no
-  order of its own: it sits where its first project sits, so the sort you picked still
-  decides the rail and dragging a project takes its group with it.
-+ **A folded group still says when something in it needs you.** The heading carries the
-  status glyph of the most urgent session it is hiding and a dot for uncommitted changes,
-  because a tidy-up that could bury a session waiting on a permission would be a trap.
-  ⌘1–9 still reaches into a folded group, and taking a session in one onto the stage
-  unfolds it rather than leaving the rail with nothing selected.
 + **A day now gets two sentences: yours, and the project's.** The one on the timeline is
   still your day — your sessions, your spend. Above it, on days more than one person
   committed, sits a second line describing what the *project* did, written from the
