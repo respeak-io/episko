@@ -645,12 +645,11 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
     <div class="body">
       <p class="sheet-ti">${esc(t.title)}</p>
       ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago — probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is a hint, not a lock.</p>` : ""}
-      <p>A new worktree, a session in it, and <b>the prompt is sent</b> — the agent starts working without waiting for you.</p>
+      <p>A session in this project, and <b>the prompt is sent</b> — the agent starts working without waiting for you.</p>
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
         ${sw("comment", p.comment, allow.comment, "comment that my agent is on it")}
         ${sw("label", !!p.label, allow.label, `label <code>${esc(p.label || "agent: running")}</code>`)}
-        ${sw("pushBranch", p.pushBranch, allow.pushBranch, "push the branch now")}
       </div>
       <p class="dim-line">Permission mode: <b>${esc(mode)}</b>. Anything that doesn't ask before acting will act unattended.</p>
     </div>

@@ -1,15 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
+import { isExited, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
-  accentFor, colorOverrides, sessions, setDormants, setExternals, setFavorites,
-  setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
+  accentFor, colorOverrides, dirtyByFolder, sessions, setBackendLive, setDormants,
+  setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
+  worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, clusterIsLive, needsYou, needsYouSessions,
-  nextAfterClose, orderedSessions, projectList, reactorLabel, reactorState,
-  splitByWorktree, urgencyRank, type ProjGroup,
+  allProjects, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
+  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
+  reactorLabel, reactorState, splitByWorktree, urgencyRank,
+  type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
+import { NO_GROUPS } from "../src/projgroups";
 import { taskPrefs } from "../src/tasks";
 
 const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
@@ -45,8 +49,10 @@ beforeEach(() => {
   vi.setSystemTime(NOW_MS);
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
-  setSortMode("manual"); setWtGroup("off");
+  setBackendLive(new Set());
+  setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
   worktreesByRepo.clear();
+  dirtyByFolder.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
   taskPrefs.attention = true; // needsYou reads it; restore the shipped default
   store.clear();
@@ -64,6 +70,29 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     expect(cl.map((c) => c.key)).toEqual(["/w/wt-b", "/w/epi"]); // order follows the sorted session list
     expect(ids(cl[0].sessions)).toEqual(["a", "c"]);
     expect(ids(cl[1].sessions)).toEqual(["b"]);
+  });
+  /// The bug this exists for: a task's `workdir` is where the *task* runs, and VS Code
+  /// tasks routinely declare a subfolder (`options.cwd: 01_frontend`). Keying clusters
+  /// on that gave one chain three "worktree" headers, all with the same branch on them,
+  /// and — because the run-group fold happens inside a cluster — stopped the members of
+  /// one launch from ever folding into a single row.
+  it("clusters a task pane by its checkout, not by the subfolder it runs in", () => {
+    const wt = "/w/wt-feat";
+    const p = grp({ sessions: [
+      sess({ id: "agent", workdir: wt, branch: "feat" }),
+      taskSess("fe", { workdir: wt + "/01_frontend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+      taskSess("be", { workdir: wt + "/02_backend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+    ] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(ids(cl[0].sessions)).toEqual(["agent", "fe", "be"]);
+    // And therefore the two run panes can actually fold into one row.
+    const items = foldRunGroups(cl[0].sessions);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["agent", "GROUP"]);
+  });
+  it("falls back to a task pane's workdir when it has no discovery root", () => {
+    const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
   });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
@@ -471,6 +500,97 @@ describe("projectList — worktree grouping", () => {
   });
 });
 
+describe("groupedProjects — the user's named groups folded over that list", () => {
+  // What each slot is, flattened to something an assertion can read: a project by its
+  // path, a group as "Name[member, member]".
+  const shape = (l: SidebarSlot[]) =>
+    l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${s.projects.map((p) => p.path).join(", ")}]`));
+  const threeFavs = () => setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]);
+
+  it("passes everything through untouched when there are no groups", () => {
+    threeFavs();
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c"]);
+  });
+
+  it("collects a group's members and leaves the rest at the top level", () => {
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a, /w/c]", "/w/b"]);
+  });
+
+  it("puts the group where its FIRST member sits, not where the group was made", () => {
+    // The whole reason there is no group order to persist: the position is derived, so
+    // a drag that moves a member moves the group with it and the two cannot disagree.
+    threeFavs();
+    setProjOrder(["/w/b", "/w/c", "/w/a"]);
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["/w/b", "Work[/w/c, /w/a]"]);
+  });
+
+  it("floats a group up in the attention sort when one of its projects needs you", () => {
+    setSortMode("attention");
+    open(
+      sess({ id: "quiet", project: "b", colorKey: "/w/b", phase: "idle" }),
+      sess({ id: "blocked", project: "a", colorKey: "/w/a", attention: "Bash" }),
+    );
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a]", "/w/b"]);
+  });
+
+  it("keeps an emptied group, at the end — it has no member to be ranked by", () => {
+    // Dropping it would read as Episko having deleted a heading the user named, and it
+    // is also the only drop target that could ever refill it.
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: {} });
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
+  });
+
+  it("ignores a membership pointing at a group that is gone", () => {
+    // clampGroups repairs this on load; this is the render side refusing to lose a
+    // project to a fold nothing draws even if one ever got through.
+    threeFavs();
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "ghost" } });
+    expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
+  });
+
+  it("keeps a grouped repo's worktrees together in toplevel mode", () => {
+    // There the repo has exploded into one group per checkout, each keyed by its own
+    // dir — but the user filed the *repo*, so every checkout has to answer with it or a
+    // grouped repo scatters across the rail the moment a second worktree opens.
+    setWtGroup("toplevel");
+    open(sess({ id: "a", workdir: "/w/epi", branch: "main" }), sess({ id: "b", workdir: "/w/wt", branch: "feature" }));
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/epi": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/epi, /w/wt]"]);
+  });
+});
+
+describe("groupSummary — what a collapsed group still has to say", () => {
+  it("counts sessions and externals across every project in it", () => {
+    const l = [grp({ path: "/w/a", sessions: [sess({ id: "x" }), sess({ id: "y" })] }),
+               grp({ path: "/w/b", externals: [ext()] })];
+    expect(groupSummary(l).count).toBe(3);
+  });
+  it("reports the most urgent session, so folding never hides one waiting on you", () => {
+    const blocked = sess({ id: "blocked", attention: "Bash" });
+    const l = [grp({ path: "/w/a", sessions: [sess({ id: "done", phase: "done" })] }),
+               grp({ path: "/w/b", sessions: [blocked] })];
+    expect(groupSummary(l).urgent).toBe(blocked);
+  });
+  it("breaks a tie on who has been waiting longest", () => {
+    const older = sess({ id: "older", phase: "done", phaseSince: 10 });
+    const l = [grp({ sessions: [sess({ id: "newer", phase: "done", phaseSince: 99 }), older] })];
+    expect(groupSummary(l).urgent).toBe(older);
+  });
+  it("has no urgent session when nothing in it wants anything", () => {
+    expect(groupSummary([grp({ sessions: [sess({ phase: "working" })] })]).urgent).toBeNull();
+  });
+  it("lights dirty when ANY member folder has uncommitted changes", () => {
+    expect(groupSummary([grp({ sessions: [sess({ workdir: "/w/a" })] })]).dirty).toBe(false);
+    dirtyByFolder.set("/w/a", { added: 3, removed: 1, files: 2, untracked: 0, dirty: 2, upstream: null, ahead: 0, behind: 0 });
+    expect(groupSummary([grp({ sessions: [sess({ workdir: "/w/a" })] })]).dirty).toBe(true);
+  });
+});
+
 describe("urgencyRank — who needs you first", () => {
   it("ranks a blocking permission above everything else", () => {
     expect(urgencyRank(sess({ attention: "Bash", phase: "working" }))).toBe(0);
@@ -517,6 +637,23 @@ describe("orderedSessions — the sidebar read as one flat list", () => {
     setExternals([ext()]);
     setDormants([dorm()]);
     expect(ids(orderedSessions())).toEqual(["a1"]);
+  });
+  it("follows the order GROUPS put the sidebar in, not the ungrouped one", () => {
+    // A group physically moves its members, so reading the ungrouped list would make
+    // ⌘4 land on the fourth session in an order nothing on screen is in.
+    open(
+      sess({ id: "a", project: "a", colorKey: "/w/a" }),
+      sess({ id: "b", project: "b", colorKey: "/w/b" }),
+      sess({ id: "c", project: "c", colorKey: "/w/c" }),
+    );
+    expect(ids(orderedSessions())).toEqual(["a", "b", "c"]);
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(ids(orderedSessions())).toEqual(["a", "c", "b"]);
+  });
+  it("keeps a collapsed group's sessions reachable — they are still running", () => {
+    open(sess({ id: "a", project: "a", colorKey: "/w/a" }), sess({ id: "b", project: "b", colorKey: "/w/b" }));
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: true }], of: { "/w/a": "g1" } });
+    expect(ids(orderedSessions())).toEqual(["a", "b"]);
   });
 });
 
@@ -711,5 +848,194 @@ describe("reactorState / reactorLabel — the badge's one rollup", () => {
     expect(reactorLabel("error", 2)).toBe("2 errors");
     expect(reactorLabel("done", 1)).toBe("1 your turn");
     expect(reactorLabel("done", 4)).toBe("4 your turn");
+  });
+});
+
+// A task pane, optionally in a run group. `run` carries everything the fold reads.
+function taskSess(id: string, o: Partial<Sess> = {}, run: Partial<NonNullable<Sess["run"]>> = {}): Sess {
+  return sess({
+    id, kind: "task", ...o,
+    run: {
+      id: "npm:" + id, label: id, source: "npm", sourceFile: "package.json",
+      cmd: "npm run " + id, background: false, startedAt: NOW_MS, exitCode: null,
+      tail: [], root: "/w/epi", ...run,
+    },
+  });
+}
+
+describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
+  it("collapses the members of one launch and leaves everything else alone", () => {
+    const items = foldRunGroups([
+      sess({ id: "agent" }),
+      taskSess("typecheck", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("lint", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("test", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("solo"),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? `group:${i.label}` : i.s.id)))
+      .toEqual(["agent", "group:fe-check", "solo"]);
+    const g = items[1];
+    expect(g.kind).toBe("group");
+    if (g.kind === "group") expect(ids(g.members)).toEqual(["typecheck", "lint", "test"]);
+  });
+
+  it("puts the group where its FIRST member sat, so the caller's sort still decides", () => {
+    // If the fold re-sorted, `solo` could not stay ahead of a group whose first
+    // member follows it — which is exactly what projectList already ordered.
+    const items = foldRunGroups([
+      taskSess("solo"),
+      taskSess("build", {}, { groupId: "g1", groupLabel: "ship" }),
+      taskSess("sign", {}, { groupId: "g1", groupLabel: "ship" }),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["solo", "GROUP"]);
+  });
+
+  it("keeps two launches of the same chain apart", () => {
+    // The whole reason groupId is minted per launch: running `fe-check` twice must
+    // give two rows to compare, not one row with six steps.
+    const items = foldRunGroups([
+      taskSess("a1", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("a2", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("b1", {}, { groupId: "g2", groupLabel: "fe-check" }),
+      taskSess("b2", {}, { groupId: "g2", groupLabel: "fe-check" }),
+    ]);
+    expect(items.length).toBe(2);
+    expect(items.every((i) => i.kind === "group")).toBe(true);
+  });
+
+  it("renders a group of one as a plain row — a header over one step is noise", () => {
+    const items = foldRunGroups([taskSess("only", {}, { groupId: "g1", groupLabel: "fe-check" })]);
+    expect(items).toEqual([{ kind: "one", s: expect.objectContaining({ id: "only" }) }]);
+  });
+
+  it("never groups a claude or shell pane, whatever it carries", () => {
+    const items = foldRunGroups([
+      sess({ id: "c", kind: "claude", run: { groupId: "g1" } as never }),
+      sess({ id: "sh", kind: "shell", run: { groupId: "g1" } as never }),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+});
+
+describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () => {
+  const p = (...phases: Sess["phase"][]) => groupPhase(phases.map((ph, i) => taskSess("s" + i, { phase: ph })));
+
+  it("lets a failure outrank anything that came after it", () => {
+    // The case worst-of exists for: a failed build stops the chain, so the steps
+    // behind it never run. Last-of would report `done` on a broken chain.
+    expect(p("error", "done")).toBe("error");
+    expect(p("done", "error", "idle")).toBe("error");
+  });
+  it("is not done while any step is still going", () => {
+    expect(p("done", "working")).toBe("working");
+    expect(p("done", "thinking")).toBe("working");
+  });
+  it("reads a step queued behind a sequential dependency as still working", () => {
+    expect(p("done", "idle")).toBe("working");
+  });
+  it("is done only when every step is", () => {
+    expect(p("done", "done", "done")).toBe("done");
+  });
+  it("is ended only when every step is", () => {
+    expect(p("ended", "ended")).toBe("ended");
+    expect(p("ended", "done")).toBe("done");
+  });
+});
+
+describe("nextInGroup — closing one tile stays in the mosaic", () => {
+  const m = (...ids: string[]) => ids.map((id) => taskSess(id, {}, { groupId: "g1" }));
+  it("promotes the tile that FOLLOWS the one closing", () => {
+    // The grid reflows into the gap, so closing the top-left tile makes the next one
+    // top-left — that is the one to look at.
+    expect(nextInGroup(m("a", "b", "c"), "a")?.id).toBe("b");
+    expect(nextInGroup(m("a", "b", "c"), "b")?.id).toBe("c");
+  });
+  it("falls back to the previous tile when the last one closes", () => {
+    expect(nextInGroup(m("a", "b", "c"), "c")?.id).toBe("b");
+  });
+  it("has nothing to offer when the group had one member", () => {
+    expect(nextInGroup(m("only"), "only")).toBeNull();
+  });
+  it("returns null for a session that isn't in the group at all", () => {
+    // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
+    expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
+  });
+});
+
+describe("isExited — the process behind the pane is gone", () => {
+  it("reads the phase for claude and shell panes", () => {
+    expect(isExited(sess({ phase: "ended" }))).toBe(true);
+    expect(isExited(sess({ kind: "shell", phase: "ended" }))).toBe(true);
+    expect(isExited(sess({ phase: "working" }))).toBe(false);
+    // "done" is a live claude pane whose turn finished — NOT an exited one.
+    expect(isExited(sess({ phase: "done" }))).toBe(false);
+  });
+  it("reads the exit code for a task — its done/error phases are live states elsewhere", () => {
+    expect(isExited(taskSess("t"))).toBe(false);                                   // running
+    expect(isExited(taskSess("t", { phase: "done" }, { exitCode: 0 }))).toBe(true);
+    expect(isExited(taskSess("t", { phase: "error" }, { exitCode: 1 }))).toBe(true);
+    // A task pane with no run record yet cannot claim to have exited.
+    expect(isExited(sess({ kind: "task", phase: "error" }))).toBe(false);
+  });
+});
+
+describe("dormantBusy — a live session must not be offered for restore", () => {
+  it("is busy while an Episko pane holds it, by launch id or rotated resume id", () => {
+    open(sess({ id: "a", resumeId: "rot" }));
+    expect(dormantBusy(dorm({ id: "a", resumeId: "rot" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "other", resumeId: "rot" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "other", resumeId: "other" }))).toBe(false);
+  });
+
+  it("is busy while it runs in someone else's terminal", () => {
+    setExternals([ext({ session_id: "d1" })]);
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+  });
+
+  it("is busy while only the BACKEND holds its PTY — a webview reload orphan (#47)", () => {
+    // The reload state: frontend map empty, roster row back on screen, process
+    // alive. `list_external_sessions` excludes owned pids, so without this set the
+    // row would read resumable and a second --resume would interleave the
+    // transcript the live process still owns.
+    setBackendLive(new Set(["d1"]));
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+    // Rotation before the reload changes nothing: the backend map is keyed by the
+    // launch id, which is exactly what the roster's `id` still holds.
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "rotated-later" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "gone", resumeId: "gone" }))).toBe(false);
+  });
+
+  it("frees the row once the orphan's process exits and the poll catches up", () => {
+    setBackendLive(new Set());
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
+  });
+});
+
+describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", () => {
+  const live = (o: Partial<{ id: string; kind: string; workdir: string }> = {}) =>
+    ({ id: "o1", kind: "claude", workdir: "/w/epi", ...o });
+
+  it("adopts a claude orphan under its roster identity", () => {
+    const out = orphanAdoptions([live()], [dorm({ id: "o1", resumeId: "rot", project: "Epi!" })]);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe("o1");
+    expect(out[0].meta?.resumeId).toBe("rot");
+    expect(out[0].meta?.project).toBe("Epi!");
+  });
+
+  it("still adopts an orphan the roster forgot, with meta null", () => {
+    // A running conversation is worth more than a tidy label — the caller derives
+    // one from the workdir.
+    const out = orphanAdoptions([live()], []);
+    expect(out).toEqual([{ id: "o1", workdir: "/w/epi", meta: null }]);
+  });
+
+  it("leaves shells and tasks alone — their metadata did not survive the reload", () => {
+    expect(orphanAdoptions([live({ kind: "shell" }), live({ id: "o2", kind: "task" })], [])).toEqual([]);
+  });
+
+  it("never adopts a pane the frontend already has", () => {
+    open(sess({ id: "o1" }));
+    expect(orphanAdoptions([live()], [])).toEqual([]);
   });
 });

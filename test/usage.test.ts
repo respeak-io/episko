@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDelta, ioTotal,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDayCount, ioDelta,
+  ioSameNote, ioTotal,
   modelFamily,
-  resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange,
+  resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange, splitIo,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
@@ -380,12 +381,23 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 25, w: 9 });
   });
 
-  it("splits the increment across a midnight, leaving yesterday's alone", () => {
+  it("spreads an increment measured across a midnight over both days", () => {
+    // noon → noon is 24h, half either side of midnight, so the 20/6 increment splits
+    // evenly. Booking all of it to the 15th (what this did before) is the bug: the
+    // bytes were churned across both days and only the *poll* happened on the second.
     addIo({ r: 10, w: 4 });
     vi.setSystemTime(noon(2027, 3, 15));
     addIo({ r: 30, w: 10 });
-    expect(dayIo["2027-03-14"]).toEqual({ r: 10, w: 4 });
-    expect(dayIo["2027-03-15"]).toEqual({ r: 20, w: 6 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 20, w: 7 });
+    expect(dayIo["2027-03-15"]).toEqual({ r: 10, w: 3 });
+  });
+
+  it("leaves the ordinary within-a-day increment as one bucket", () => {
+    addIo({ r: 10, w: 4 });
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 30, w: 10 });
+    expect(dayIo["2027-03-14"]).toEqual({ r: 30, w: 10 });
+    expect(dayIo["2027-03-15"]).toBeUndefined();
   });
 
   it("writes nothing when the disk was idle between polls", () => {
@@ -424,8 +436,8 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     vi.setSystemTime(noon(2027, 3, 15));
     addIo({ r: 12, w: 5 });
     const saved = JSON.parse(store.get("cc-io")!);
-    expect(saved["2027-03-14"]).toEqual({ r: 10, w: 4 });
-    expect(saved["2027-03-15"]).toEqual({ r: 2, w: 1 });
+    expect(saved["2027-03-14"]).toEqual({ r: 11, w: 4.5 }); // its own 10/4 + half the split
+    expect(saved["2027-03-15"]).toEqual({ r: 1, w: 0.5 });
   });
 
   it("flushIo writes what the floor is still holding, and is a no-op when clean", () => {
@@ -439,12 +451,139 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     expect(store.get("cc-io")).toBeUndefined();
   });
 
-  it("sums every recorded day, and says zero when nothing is recorded", () => {
-    expect(ioTotal()).toEqual({ r: 0, w: 0 });
+  // The constraint the heartbeat has to meet: a disk meter must not become a heavy
+  // writer. Sampling more often must not persist more often — the floor decides that,
+  // not the caller — so adding a 60s sampler cannot cost more than the 4s poll already
+  // does, and on an idle fleet costs nothing at all.
+  it("does not write more often at the heartbeat's cadence than at the on-stage poll's", () => {
+    const HOUR = 3600_000;
+    const writesOver = (stepMs: number) => {
+      resetIoRollup();
+      const spy = vi.spyOn(localStorage, "setItem");
+      for (let t = 0, mb = 0; t < HOUR; t += stepMs) {
+        addIo({ r: ++mb, w: mb });   // never idle: something to persist on every sample
+        vi.advanceTimersByTime(stepMs);
+      }
+      const n = spy.mock.calls.length;
+      spy.mockRestore();
+      return n;
+    };
+    const onStage = writesOver(4_000);     // the 4s poll, with a session on stage
+    const heartbeat = writesOver(60_000);  // the heartbeat, with nothing on stage
+    expect(heartbeat).toBeLessThanOrEqual(onStage);
+    expect(heartbeat).toBeLessThanOrEqual(61);   // ~one a minute, not one a sample
+  });
+
+  it("writes nothing at all on a heartbeat over an idle fleet", () => {
+    addIo({ r: 10, w: 4 });
+    store.clear();
+    for (let t = 0; t < 3600_000; t += 60_000) {
+      vi.advanceTimersByTime(60_000);
+      addIo({ r: 10, w: 4 });   // the counters have not moved
+    }
+    expect(store.get("cc-io")).toBeUndefined();
+  });
+
+  it("sums every recorded day, and answers NULL when nothing is recorded", () => {
+    // Not `{r:0,w:0}`: an empty rollup means we did not keep this, and a confident zero
+    // would claim the disk sat idle. The row renders the two differently.
+    expect(ioTotal()).toBeNull();
     addIo({ r: 10, w: 4 });
     vi.setSystemTime(noon(2027, 3, 15));
     addIo({ r: 30, w: 10 });
     expect(ioTotal()).toEqual({ r: 30, w: 10 });
+    expect(ioDayCount()).toBe(2);
+  });
+});
+
+describe("splitIo — which day an increment belongs to", () => {
+  const at = (y: number, m: number, d: number, h = 0) => new Date(y, m - 1, d, h).getTime();
+
+  it("books the whole increment to the poll's day when there is no window", () => {
+    // The first poll of a run: nothing to spread over, and the processes are ours.
+    expect(splitIo({ r: 8, w: 3 }, 0, at(2027, 3, 14, 12)))
+      .toEqual([["2027-03-14", { r: 8, w: 3 }]]);
+  });
+
+  it("is one bucket while the window stays inside a day", () => {
+    expect(splitIo({ r: 8, w: 3 }, at(2027, 3, 14, 9), at(2027, 3, 14, 17)))
+      .toEqual([["2027-03-14", { r: 8, w: 3 }]]);
+  });
+
+  it("weights each day by its share of the window, not by which one the poll landed in", () => {
+    // 18:00 → 06:00: six hours before midnight, six after. This is the shape of the real
+    // failure — an evening of churn read for the first time the next morning.
+    expect(splitIo({ r: 100, w: 40 }, at(2027, 3, 14, 18), at(2027, 3, 15, 6)))
+      .toEqual([["2027-03-14", { r: 50, w: 20 }], ["2027-03-15", { r: 50, w: 20 }]]);
+  });
+
+  it("gives a whole intervening day its whole share", () => {
+    const parts = splitIo({ r: 96, w: 48 }, at(2027, 3, 14, 12), at(2027, 3, 16, 12));
+    expect(parts.map(([k]) => k)).toEqual(["2027-03-14", "2027-03-15", "2027-03-16"]);
+    expect(parts[1][1]).toEqual({ r: 48, w: 24 }); // the full day in the middle: half of 48h
+  });
+
+  it("sums to exactly the increment, so the rollup cannot drift from the counter", () => {
+    // A share that does not divide cleanly: the remainder rides on the last bucket
+    // rather than being shed a float at a time, once per poll, forever.
+    const d = { r: 1 / 3, w: 7 };
+    const parts = splitIo(d, at(2027, 3, 14, 5), at(2027, 3, 16, 19));
+    const r = parts.reduce((a, [, p]) => a + p.r, 0);
+    const w = parts.reduce((a, [, p]) => a + p.w, 0);
+    expect(r).toBe(d.r);
+    expect(w).toBe(d.w);
+  });
+
+  it("refuses to smear across a window no polling gap explains", () => {
+    // A clock jump or a machine that slept for a month. Spreading over it would invent
+    // activity on days the app was not running; the end day is where the doubt goes.
+    const parts = splitIo({ r: 10, w: 5 }, at(2027, 1, 1), at(2027, 3, 14, 12));
+    expect(parts.length).toBeLessThanOrEqual(8);
+    expect(parts[parts.length - 1][0]).toBe("2027-03-14");
+  });
+
+  it("does not book backwards when the clock goes back", () => {
+    expect(splitIo({ r: 4, w: 2 }, at(2027, 3, 16), at(2027, 3, 14, 12)))
+      .toEqual([["2027-03-14", { r: 4, w: 2 }]]);
+  });
+});
+
+// Why the I/O row can be clicked and not appear to change. The three windows really do
+// coincide early on, and the note is the only thing standing between "correct" and
+// "this button is broken".
+describe("ioSameNote — the three I/O windows reading alike", () => {
+  const A = "1.0 MB read · 2.0 MB written";
+  const B = "9.0 MB read · 3.0 MB written";
+
+  it("explains a first day, where all three are the same by construction", () => {
+    // `all` == `today` because one day is recorded; `run` == `today` because ioDelta
+    // banks the whole counter on the first poll. Both are right, and together they make
+    // every position of the control read identically.
+    const n = ioSameNote(A, A, A, 1);
+    expect(n).toMatch(/only day recorded/);
+    expect(n).toMatch(/this run/);
+  });
+
+  it("does not blame the day count once several days are recorded", () => {
+    expect(ioSameNote(A, A, A, 5)).toBe("All three windows happen to read the same right now.");
+  });
+
+  it("names the run when only the run coincides", () => {
+    expect(ioSameNote(A, A, B, 3)).toMatch(/all this run/);
+  });
+
+  it("names the record when only the total coincides", () => {
+    expect(ioSameNote(A, B, A, 1)).toMatch(/everything recorded/);
+  });
+
+  it("says NOTHING once the windows genuinely differ — absent, not empty", () => {
+    expect(ioSameNote(A, B, "3.0 MB read · 1.0 MB written", 4)).toBeNull();
+  });
+
+  it("compares what is rendered, so a sub-unit difference is still 'the same'", () => {
+    // The reader sees `fmtMb` output, not floats. Two figures that round together are
+    // one figure as far as "why didn't it change?" is concerned.
+    expect(ioSameNote(A, A, A, 2)).not.toBeNull();
   });
 });
 

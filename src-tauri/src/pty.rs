@@ -14,8 +14,10 @@
 //   exclude breaks the moment Claude rotates its session_id on /resume.
 // - `spawn_shell` is a plain login shell: no Claude, no instrumentation.
 // - `spawn_task` is deliberately un-instrumented too, and its pid never enters
-//   `owned_pids`. `Exec::Shell` runs through a *login* shell so a task inherits the
-//   PATH and version-manager shims the user's own terminal has.
+//   `owned_pids`. `Exec::Shell` runs through a *login* shell, but that is not what
+//   gives a task the user's PATH — see `task_shell`. `Exec::Argv` goes through
+//   `argv_command`, which on Windows is the difference between a package.json script
+//   running and not running at all.
 //
 // `--resume` and `--session-id` are mutually exclusive, so all three spawners branch
 // either/or on `resume: Option<String>` while `--settings` stays keyed to our launch
@@ -26,8 +28,9 @@
 // `portable_pty::CommandBuilder`, which the leaf layer must not import),
 // `interactive_shell`, `task_shell`, `find_ghostty`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -182,25 +185,76 @@ pub(crate) fn spawn_claude(
         state.owned_pids.lock().unwrap().insert(p);
     }
 
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone() },
     );
 
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
+}
+
+/// The recent raw output of one PTY, kept so a pane rebuilt after a webview reload
+/// does not start blank (#47 stage 2). Bounded — this is scrollback, not a
+/// transcript — and grown only as used, so an idle fleet pays nothing up front.
+///
+/// `seq` counts chunks, and it is what makes adoption replay exact: the reader
+/// appends and takes the seq under this lock, then emits the chunk tagged with it,
+/// and `read_scrollback` snapshots bytes-plus-seq under the same lock. So a chunk
+/// with `seq <= snapshot.seq` is *inside* the snapshot and one above it is not —
+/// without that, a chunk emitted around the snapshot either duplicates or goes
+/// missing in the rebuilt pane, and both corrupt the REPL's screen state.
+pub(crate) struct ScrollBuf {
+    buf: VecDeque<u8>,
+    seq: u64,
+    evicted: bool,
+}
+
+pub(crate) const SCROLLBACK_MAX: usize = 256 * 1024;
+
+impl ScrollBuf {
+    pub(crate) fn new() -> Self {
+        ScrollBuf { buf: VecDeque::new(), seq: 0, evicted: false }
+    }
+    /// Append one reader chunk and return the seq that names it.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> u64 {
+        self.buf.extend(chunk.iter().copied());
+        if self.buf.len() > SCROLLBACK_MAX {
+            self.buf.drain(..self.buf.len() - SCROLLBACK_MAX);
+            self.evicted = true;
+        }
+        self.seq += 1;
+        self.seq
+    }
+    /// Everything retained, plus the seq of the last chunk it contains. Once the
+    /// front has been evicted the buffer starts mid-line — likely mid escape
+    /// sequence, which would eat characters up to the next terminator on replay —
+    /// so it is trimmed to the first newline. A stream with no newline at all
+    /// (one alternate-screen repaint) is kept whole rather than dropped.
+    pub(crate) fn snapshot(&self) -> (Vec<u8>, u64) {
+        let mut v: Vec<u8> = self.buf.iter().copied().collect();
+        if self.evicted {
+            if let Some(p) = v.iter().position(|&b| b == b'\n') {
+                v.drain(..=p);
+            }
+        }
+        (v, self.seq)
+    }
 }
 
 /// Spawn the reader (PTY output → `pty-output`) and reaper (`pty-exit` + session
 /// cleanup) threads shared by every embedded PTY pane — a `claude` session or a
 /// plain shell. `child_pid` is removed from `owned_pids` on exit (a no-op for a
-/// shell, which was never inserted there).
+/// shell, which was never inserted there). `scroll` is the same buffer the session
+/// in `AppState` holds; the reader appends before it emits (see `ScrollBuf`).
 fn stream_pty_session(
     app: AppHandle,
     session_id: String,
     mut reader: Box<dyn Read + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     child_pid: Option<u32>,
+    scroll: Arc<Mutex<ScrollBuf>>,
 ) {
     let app_out = app.clone();
     let sid_out = session_id.clone();
@@ -210,9 +264,10 @@ fn stream_pty_session(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    let seq = scroll.lock().unwrap().push(&buf[..n]);
                     let encoded = STANDARD.encode(&buf[..n]);
                     if app_out
-                        .emit("pty-output", serde_json::json!({ "sessionId": sid_out, "data": encoded }))
+                        .emit("pty-output", serde_json::json!({ "sessionId": sid_out, "data": encoded, "seq": seq }))
                         .is_err()
                     {
                         break;
@@ -299,19 +354,29 @@ pub(crate) fn spawn_shell(
     let child_pid = child.process_id();
     // Deliberately NOT added to owned_pids: a plain shell isn't a claude process
     // and never registers in ~/.claude/sessions, so it can't leak as "external".
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
 }
 
 /// The login shell used to run a `Shell` task, as `(program, args)` — the args end
 /// with the flag that takes the command string, so the caller just pushes the line.
-/// A *login* shell (not `-c` alone) so tasks inherit the same PATH, nvm/mise shims
-/// and aliases the user gets in their own terminal; a task that works in iTerm and
-/// fails in Episko is the whole class of bug this avoids.
+///
+/// A *login* shell, but **do not** rely on that for the user's PATH: it does not
+/// deliver one. zsh — macOS's default — sources `~/.zshrc` only when *interactive*,
+/// and `.zshrc` is where nvm, `PNPM_HOME` and Homebrew's `shellenv` are exported, so
+/// `-l -c` sees none of them. That is exactly how a task running `pnpm tauri dev`
+/// died with `command not found: pnpm` while the same line worked in iTerm.
+///
+/// What actually closes that gap is `platform::augmented_path`, which harvests the
+/// PATH from an *interactive* login shell once per run and is applied to every task's
+/// env in `spawn_task`. It stays out of here on purpose: an interactive shell prints
+/// its rc noise, which is fine to parse out of a one-off probe and unacceptable
+/// prepended to every task's pane.
 #[cfg(not(windows))]
 fn task_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -327,6 +392,88 @@ fn task_shell() -> (String, Vec<String>) {
         args.push("-Command".to_string());
     }
     (prog, args)
+}
+
+/// Build the command for an `Exec::Argv` task. On Unix this is the obvious thing;
+/// Windows needs a detour, which is why it exists at all.
+#[cfg(not(windows))]
+fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
+    let mut c = CommandBuilder::new(program);
+    for a in args {
+        c.arg(a);
+    }
+    c
+}
+
+/// Whether `CreateProcessW` can start this file on its own.
+///
+/// It can't start a *script*, and most of PATHEXT is scripts. portable-pty passes
+/// the resolved program as `lpApplicationName`, so a `.cmd`/`.bat` — or the
+/// extensionless `npm`/`yarn`/`pnpm` shell script Node's Windows installer ships
+/// beside them — comes back as ERROR_BAD_EXE_FORMAT, not as a run. That is why
+/// *every* `package.json` script failed to launch on Windows while the identical
+/// task ran fine on macOS: the npm provider emits `Argv`, and on Windows `npm` is
+/// never an executable.
+///
+/// Compiled on every platform, not `cfg(windows)`, for two reasons: the decision is
+/// then checkable from a Mac (the other half, resolution, needs a real Windows PATH),
+/// and CLAUDE.md's cfg-flip lint trick can reach it. Only the dead-code lint needs
+/// silencing off Windows — the code itself is portable and wants type-checking there.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn win_runs_directly(resolved: &str) -> bool {
+    let l = resolved.to_ascii_lowercase();
+    l.ends_with(".exe") || l.ends_with(".com")
+}
+
+/// Resolve a bare Windows program name the way `cmd.exe` would — PATHEXT across the
+/// augmented PATH — and hand back the first hit.
+///
+/// Deliberately *unlike* portable-pty's own `search_path`, which takes an exact
+/// extensionless match in preference to anything else: for `npm` that match is the
+/// bash script, i.e. the one file that cannot be launched.
+#[cfg(windows)]
+fn win_resolve(program: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(program);
+    // Already qualified — a path, or a name carrying its own extension. Trust it.
+    if p.components().count() > 1 || p.extension().is_some() {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    for dir in std::env::split_paths(&augmented_path()) {
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            let cand = dir.join(format!("{program}{ext}"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
+    let direct = win_resolve(program).filter(|p| win_runs_directly(&p.to_string_lossy()));
+    let mut c = match direct {
+        // Spawn the resolved absolute path, not the bare name: it stops portable-pty
+        // re-resolving it and preferring an extensionless sibling.
+        Some(exe) => CommandBuilder::new(exe),
+        // A `.cmd`/`.bat` shim, or nothing found. cmd.exe resolves PATHEXT itself and
+        // can actually run a script. Not-found lands here on purpose too, so the
+        // "'foo' is not recognized" line prints in the pane the user is watching
+        // instead of surfacing as a spawn error with no context.
+        None => {
+            let mut c = CommandBuilder::new(
+                std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()),
+            );
+            c.arg("/C");
+            c.arg(program);
+            c
+        }
+    };
+    for a in args {
+        c.arg(a);
+    }
+    c
 }
 
 /// Run a Runnable in an embedded PTY — the third kind of pane, after a `claude`
@@ -359,11 +506,7 @@ pub(crate) fn spawn_task(
             if program.trim().is_empty() {
                 return Err("task has no command".into());
             }
-            let mut c = CommandBuilder::new(&program);
-            for a in args {
-                c.arg(a);
-            }
-            c
+            argv_command(&program, args)
         }
         tasks::Exec::Shell { line } => {
             if line.trim().is_empty() {
@@ -397,11 +540,12 @@ pub(crate) fn spawn_task(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
 }
 
@@ -700,6 +844,53 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
 }
 
 #[derive(serde::Serialize)]
+pub(crate) struct LiveSession {
+    id: String,
+    kind: &'static str,
+    workdir: String,
+}
+
+/// Every embedded PTY the backend currently holds — claude, shell and task panes
+/// alike. The frontend's own map answers this in normal operation; this command
+/// exists for the one state where the two disagree: a webview reload empties the
+/// frontend map while every PTY here runs on (#47). Two consumers: the busy
+/// guards (`dormantBusy`/`histBusy` read the ids off the externals poll, so an
+/// orphan reads "running right now" and a second `--resume` can't interleave the
+/// transcript its live process still owns), and startup adoption, which uses
+/// `kind` and `workdir` to rebuild a pane per claude orphan.
+#[tauri::command]
+pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, workdir: s.workdir.clone() })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct ScrollbackSnapshot {
+    /// base64 of the retained bytes — the same encoding `pty-output` uses.
+    data: String,
+    /// Seq of the last chunk the snapshot contains. A queued `pty-output` event
+    /// with `seq` at or below this is already in `data` and must be dropped by
+    /// the adopter; one above it is not and must be written after it.
+    seq: u64,
+}
+
+/// The retained output of one live PTY, for a pane being rebuilt after a webview
+/// reload (#47 stage 2). Read under the same lock the reader appends under, so
+/// the returned seq is exact — see `ScrollBuf` for why that matters.
+#[tauri::command]
+pub(crate) fn read_scrollback(state: State<AppState>, session_id: String) -> Result<ScrollbackSnapshot, String> {
+    let map = state.sessions.lock().unwrap();
+    let s = map.get(&session_id).ok_or_else(|| format!("no such session: {session_id}"))?;
+    let (bytes, seq) = s.scrollback.lock().unwrap().snapshot();
+    Ok(ScrollbackSnapshot { data: STANDARD.encode(&bytes), seq })
+}
+
+#[derive(serde::Serialize)]
 pub(crate) struct Resources {
     /// Bytes/second read from disk, averaged over the gap since the previous sample.
     read_bps: f64,
@@ -783,14 +974,16 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
         })
         .collect();
 
+    // Keyed by the session roster, NOT `owned_pids`: shells and tasks are sessions
+    // that never join `owned_pids` (that set exists to filter *claude* pids out of
+    // the external listing), so keying on it read every live shell/task pane as
+    // "exited" and re-banked its whole cumulative counter into `retired` on every
+    // poll — one vitest run booked gigabytes of reads that never happened.
+    let live: HashSet<u32> = pids.iter().copied().collect();
     let now = std::time::Instant::now();
     let mut samples = state.io_samples.lock().unwrap();
     let mut retired = state.io_retired.lock().unwrap();
-    retire_missing(
-        &mut samples,
-        &state.owned_pids.lock().unwrap(),
-        &mut retired,
-    );
+    retire_missing(&mut samples, &live, &mut retired);
     let folded = fold_io(&readings, &mut samples, now);
 
     const MIB: f64 = 1024.0 * 1024.0;
@@ -803,18 +996,21 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
     }
 }
 
-/// Move the bytes of pids we no longer own out of `samples` and into `retired`.
+/// Move the bytes of pids that left the session roster out of `samples` and into
+/// `retired`.
 ///
 /// Both halves matter: dropping the entries stops a long-lived app accumulating one per
 /// session it has ever run, and banking their bytes first is what stops the app-wide
-/// total falling when a pane closes.
+/// total falling when a pane closes. `live` must be the pids of the sessions being
+/// polled — a pid still in it keeps its sample untouched, which is what makes the bank
+/// a once-per-lifetime event rather than a per-poll one.
 fn retire_missing(
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
-    owned: &HashSet<u32>,
+    live: &HashSet<u32>,
     retired: &mut (u64, u64),
 ) {
     samples.retain(|p, (r, w, _)| {
-        let keep = owned.contains(p);
+        let keep = live.contains(p);
         if !keep {
             retired.0 = retired.0.saturating_add(*r);
             retired.1 = retired.1.saturating_add(*w);
@@ -864,6 +1060,77 @@ fn fold_io(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- scrollback ring buffer (#47 stage 2) ----------
+
+    /// The invariant adoption stands on: snapshot at ANY point mid-stream, keep the
+    /// chunks whose seq is above the snapshot's, and snapshot + kept chunks must
+    /// equal the stream's tail exactly — no byte doubled, none lost. This is the
+    /// protocol the frontend runs (queue while the snapshot is in flight, drop
+    /// `seq <= snapshot.seq`, write the rest), driven over every split point.
+    #[test]
+    fn snapshot_plus_later_chunks_reconstructs_the_stream_exactly() {
+        let chunks: Vec<&[u8]> = vec![b"alpha\n", b"beta", b"\x1b[31mred\x1b[0m\n", b"tail"];
+        for split in 0..=chunks.len() {
+            let mut sb = ScrollBuf::new();
+            let mut emitted: Vec<(u64, &[u8])> = Vec::new();
+            let mut snap = None;
+            for (i, c) in chunks.iter().enumerate() {
+                if i == split {
+                    snap = Some(sb.snapshot());
+                }
+                emitted.push((sb.push(c), c));
+            }
+            let (mut replay, seq) = snap.unwrap_or_else(|| sb.snapshot());
+            for (s, c) in &emitted {
+                if *s > seq {
+                    replay.extend_from_slice(c);
+                }
+            }
+            let whole: Vec<u8> = chunks.concat();
+            assert_eq!(replay, whole, "split at chunk {split} lost or doubled bytes");
+        }
+    }
+
+    /// The cap keeps the newest bytes, not the oldest — scrollback answers "what
+    /// just happened", so the front is what an overflow must sacrifice.
+    #[test]
+    fn overflow_evicts_the_front_and_keeps_the_tail() {
+        let mut sb = ScrollBuf::new();
+        sb.push(b"old line\n");
+        sb.push(&vec![b'x'; SCROLLBACK_MAX]);
+        let (bytes, _) = sb.snapshot();
+        assert!(bytes.len() <= SCROLLBACK_MAX);
+        assert!(bytes.iter().all(|&b| b == b'x'), "the old line must be gone, not the fill");
+    }
+
+    /// An evicted buffer starts mid-line — likely mid escape sequence, which on
+    /// replay eats characters up to the next terminator — so the snapshot trims to
+    /// the first newline. Before any eviction it must NOT trim: the first bytes a
+    /// young session produced are real output, not a torn line.
+    #[test]
+    fn snapshot_trims_to_a_newline_only_after_eviction() {
+        let mut sb = ScrollBuf::new();
+        sb.push(b"first\nsecond\n");
+        assert_eq!(sb.snapshot().0, b"first\nsecond\n", "no eviction, nothing to trim");
+
+        let mut sb = ScrollBuf::new();
+        // Fill so that eviction leaves a torn fragment ahead of a clean line.
+        sb.push(&vec![b'a'; SCROLLBACK_MAX]);
+        sb.push(b"\ncomplete line\n");
+        let (bytes, _) = sb.snapshot();
+        assert!(bytes.starts_with(b"complete line\n"), "the torn front must go");
+    }
+
+    /// One alternate-screen repaint can be 100% newline-free; trimming would then
+    /// throw away the entire screen, so a no-newline buffer is kept whole.
+    #[test]
+    fn snapshot_keeps_a_newline_free_buffer_whole_even_after_eviction() {
+        let mut sb = ScrollBuf::new();
+        sb.push(&vec![b'y'; SCROLLBACK_MAX + 10]);
+        let (bytes, _) = sb.snapshot();
+        assert_eq!(bytes.len(), SCROLLBACK_MAX);
+    }
 
     /// The whole reason `fold_io` differences per pid instead of over one summed total.
     ///
@@ -916,17 +1183,45 @@ mod tests {
             (7u32, (900u64, 100u64, now)),
             (8u32, (5u64, 6u64, now)),
         ]);
-        let owned = HashSet::from([8u32]);
+        let live = HashSet::from([8u32]);
         let mut retired = (0u64, 0u64);
-        retire_missing(&mut samples, &owned, &mut retired);
+        retire_missing(&mut samples, &live, &mut retired);
 
         assert_eq!(retired, (900, 100), "the departed pid's bytes are kept");
         assert!(!samples.contains_key(&7), "but its sample entry is dropped");
-        assert!(samples.contains_key(&8), "a still-owned pid is untouched");
+        assert!(samples.contains_key(&8), "a still-live pid is untouched");
 
         // And a second sweep must not double-count what it already banked.
-        retire_missing(&mut samples, &owned, &mut retired);
+        retire_missing(&mut samples, &live, &mut retired);
         assert_eq!(retired, (900, 100), "already-retired bytes are not banked twice");
+    }
+
+    /// The retirement key is the session roster, not `owned_pids` — shells and tasks
+    /// never join `owned_pids`, and keying on it read every live shell/task pane as
+    /// exited: each poll banked the pane's whole cumulative counter into `retired`
+    /// again, then `fold_io` re-created the sample for the next poll to bank again.
+    /// One test run's pane inflated a day's read figure by two orders of magnitude
+    /// before this was a rule. This drives the actual per-poll sequence and asserts a
+    /// pane that stays in the roster retires nothing for as long as it lives.
+    #[test]
+    fn a_live_pane_is_never_retired_however_many_polls_it_survives() {
+        let t0 = std::time::Instant::now();
+        let mut samples = HashMap::new();
+        let mut retired = (0u64, 0u64);
+        let live = HashSet::from([42u32]);
+
+        for poll in 0..5u64 {
+            // The counter grows a little each poll, the way a real pane's does.
+            let reading = [(42u32, 1_000_000 + poll * 1_000, 500 + poll)];
+            retire_missing(&mut samples, &live, &mut retired);
+            let f = fold_io(&reading, &mut samples, t0 + std::time::Duration::from_secs(poll));
+            assert_eq!(f.read, 1_000_000 + poll * 1_000, "the live total is the reading");
+        }
+        assert_eq!(retired, (0, 0), "a pane still in the roster banks nothing");
+
+        // Only when it leaves the roster do its bytes retire — once, at the last reading.
+        retire_missing(&mut samples, &HashSet::new(), &mut retired);
+        assert_eq!(retired, (1_004_000, 504), "and then exactly its final sample");
     }
 
     /// The inspector's I/O readout is only worth showing if the platform actually
@@ -996,6 +1291,26 @@ mod tests {
         // Shell syntax has to actually reach a shell, not be treated as one argv.
         let piped = run("printf 'a\\nb\\n' | wc -l | tr -d ' '");
         assert_eq!(String::from_utf8_lossy(&piped.stdout).trim(), "2");
+    }
+
+    /// The Windows `Argv` shim decision, checkable from a Mac. Everything the npm
+    /// provider emits — `npm`, `pnpm`, `yarn` — resolves on Windows to a script, and
+    /// a script must be routed through cmd.exe rather than handed to CreateProcessW.
+    /// A `.exe` must NOT be, because the cmd.exe detour would then have to survive
+    /// cmd's quoting rules for no reason.
+    #[test]
+    fn windows_only_spawns_real_executables_directly() {
+        for exe in ["node.exe", r"C:\Program Files\nodejs\node.exe", "PYTHON.EXE", "foo.com"] {
+            assert!(win_runs_directly(exe), "{exe} is directly executable");
+        }
+        for script in [
+            r"C:\Program Files\nodejs\npm.cmd",
+            r"C:\Program Files\nodejs\npm",   // the extensionless bash script beside it
+            r"C:\tools\build.bat",
+            r"C:\tools\deploy.ps1",
+        ] {
+            assert!(!win_runs_directly(script), "{script} needs a shell");
+        }
     }
 
     /// Every mode Settings offers, and nothing else. The whitelist is the security

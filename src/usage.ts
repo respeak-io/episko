@@ -49,7 +49,10 @@ export interface DayDetail {
 }
 export const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
 export const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
-export function todayKey() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+export function todayKey() { return dayKeyOf(Date.now()); }
+/// `todayKey` for an arbitrary instant. Local wall-clock, like every key in both stores:
+/// a calendar day in the user's own timezone, never a UTC one.
+export function dayKeyOf(ms: number) { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
 
 /**
  * The two rollups are written on different terms, and the split is the point.
@@ -61,7 +64,7 @@ export function todayKey() { const d = new Date(); return `${d.getFullYear()}-${
  * `cc-usage-detail` is *attribution*, it is **25× bigger** (24,586 chars over the same
  * 33 days, and growing with every session now that it carries a per-session map), and
  * it was written on the same trigger — every cost delta, so up to once per session per
- * `refreshInterval` (3s). That is a 25KB `stringify` + synchronous `setItem` roughly
+ * `refreshInterval` (10s). That is a 25KB `stringify` + synchronous `setItem` roughly
  * once a second on a working fleet, to record a breakdown read once a day.
  *
  * So the detail write is floored. Divergence after a crash is not a silent loss:
@@ -206,6 +209,67 @@ export function ioDelta(cur: DayIo, prev: DayIo | null): DayIo {
   return { r: Math.max(0, cur.r - p.r), w: Math.max(0, cur.w - p.w) };
 }
 
+/// Local midnight *after* `ms`. Built by rolling the hour past 24 rather than by adding
+/// 86_400_000, so the two days a year that aren't 24 hours long land on the right side.
+const nextMidnight = (ms: number): number => {
+  const d = new Date(ms);
+  d.setHours(24, 0, 0, 0);
+  return d.getTime();
+};
+
+/// Beyond this, a window is a clock jump or a laptop that slept through a holiday, not a
+/// polling gap — smearing across it would invent activity on days the app wasn't running.
+/// The excess is dropped onto the end day, which is where the un-splittable case belongs.
+const IO_SPLIT_MAX_MS = 7 * 86_400_000;
+
+/**
+ * Spread an increment over the days its sampling window covers.
+ *
+ * **A day bucket is credited when the poll lands, not when the bytes were written**, and
+ * those are the same thing only while polling is continuous — which it is not. The poll
+ * behind `addIo` is gated on a session being on stage, and a backgrounded WebView
+ * throttles its timers besides, so the sampler can go quiet for hours. The counters are
+ * cumulative, so nothing is *lost* by that; but the next reading carries the whole gap,
+ * and if the gap crossed a midnight the whole of yesterday's churn was booked to today.
+ *
+ * That is not hypothetical. Measured here: an evening's ~480MB of writes landed in a
+ * morning that had done ~25MB of work, while the day that actually earned them showed
+ * 54MB — the same error twice, once in each direction, from one unsampled night.
+ *
+ * Nothing knows *when* inside the window a byte was written, so the split is by each
+ * day's wall-clock share of it. That is a guess, but a bounded and unbiased one, and the
+ * heartbeat poll keeps the window it applies to short. Within a single day — the
+ * overwhelmingly common case — there is one bucket and the arithmetic is untouched.
+ *
+ * The remainder rides on the last bucket so the parts sum to exactly the increment: a
+ * rollup that quietly shed a float's worth per poll would drift away from the counter it
+ * exists to mirror.
+ */
+export function splitIo(d: DayIo, fromMs: number, toMs: number): Array<[string, DayIo]> {
+  // No previous reading (the first poll of a run) or a clock that went backwards: there
+  // is no window to spread over, so the whole increment belongs to the day we are in.
+  // Tested BEFORE the clamp below, which would otherwise turn an absent window into a
+  // full-width one and spread the first reading of every run over the past week.
+  if (!(fromMs > 0) || fromMs >= toMs) return [[dayKeyOf(toMs), { r: d.r, w: d.w }]];
+  const from = Math.max(fromMs, toMs - IO_SPLIT_MAX_MS);
+  if (dayKeyOf(from) === dayKeyOf(toMs)) return [[dayKeyOf(toMs), { r: d.r, w: d.w }]];
+
+  const span = toMs - from;
+  const out: Array<[string, DayIo]> = [];
+  let r = 0, w = 0;
+  for (let cur = from; cur < toMs;) {
+    const end = Math.min(nextMidnight(cur), toMs);
+    const share = (end - cur) / span;
+    const part = { r: d.r * share, w: d.w * share };
+    out.push([dayKeyOf(cur), part]);
+    r += part.r; w += part.w;
+    cur = end;
+  }
+  const last = out[out.length - 1][1];
+  last.r += d.r - r; last.w += d.w - w;
+  return out;
+}
+
 /// **A disk-I/O meter must not be a heavy writer**, and the naive version was one: the
 /// poll behind it runs every 4s for as long as a session is on stage, so persisting on
 /// every reading meant a synchronous `JSON.stringify` + `setItem` ~900 times an hour,
@@ -216,6 +280,9 @@ export function ioDelta(cur: DayIo, prev: DayIo | null): DayIo {
 /// money, and `cc-usage`'s own baselines are the thing that gets flushed eagerly.
 const IO_SAVE_FLOOR_MS = 60_000;
 let ioPrev: DayIo | null = null;
+/// When `ioPrev` was taken. The increment belongs to `[ioPrevAt, now]`, not to the
+/// instant the poll happened to land on — see `splitIo`.
+let ioPrevAt = 0;
 let ioSavedAt = 0;
 let ioDirty = false;
 let ioDay = "";
@@ -229,26 +296,42 @@ let ioDay = "";
 /// first reading after a quiet hour carries the whole hour, and `setActive` takes one
 /// the moment a pane is back on stage.
 ///
+/// A gap does, however, decide *which day* the bytes are booked to, and that is what
+/// `splitIo` is for: the increment is spread over the window it was measured across
+/// rather than dropped on whichever day the poll landed in. The heartbeat in `main.ts`
+/// is the other half — it keeps that window short even with nothing on stage.
+///
 /// The one genuine loss is the stretch after the *last* reading of a run — quitting
-/// straight from the dashboard leaves however long it was open unsampled. `flushIo`
-/// does not rescue that: it persists what has been read, it does not take a reading.
-/// Living with it is deliberate — the alternative is an IPC on the quit path to improve
-/// a disk meter, and the figure is a rough one by nature.
-export function addIo(cur: DayIo): void {
+/// leaves up to one heartbeat unsampled. `flushIo` does not rescue that: it persists
+/// what has been read, it does not take a reading. Living with it is deliberate — the
+/// alternative is an IPC on the quit path to improve a disk meter, and the figure is a
+/// rough one by nature.
+///
+/// `now` is a parameter so the split is testable without a fake clock reaching into it;
+/// the app always calls it with the default.
+export function addIo(cur: DayIo, now: number = Date.now()): void {
   const d = ioDelta(cur, ioPrev);
+  const from = ioPrevAt;
+  // Advanced even when the increment is zero, so an idle stretch shortens the next
+  // window instead of being spread across as though it had been busy.
   ioPrev = cur;
+  ioPrevAt = now;
   if (d.r <= 0 && d.w <= 0) return;
-  const k = todayKey();
+  const parts = splitIo(d, from, now);
+  const k = parts[parts.length - 1][0];
   // A day that has been left behind must be written before the floor would allow it:
   // nothing adds to yesterday again, so a throttled write would drop its last minutes
-  // permanently rather than merely late.
-  const rolled = ioDay !== "" && ioDay !== k;
+  // permanently rather than merely late. A split that touched more than one day has
+  // left one behind by construction, whatever `ioDay` said.
+  const rolled = parts.length > 1 || (ioDay !== "" && ioDay !== k);
   ioDay = k;
-  const day = dayIo[k] || (dayIo[k] = { r: 0, w: 0 });
-  day.r += d.r;
-  day.w += d.w;
+  for (const [key, part] of parts) {
+    const day = dayIo[key] || (dayIo[key] = { r: 0, w: 0 });
+    day.r += part.r;
+    day.w += part.w;
+  }
   ioDirty = true;
-  if (rolled || Date.now() - ioSavedAt >= IO_SAVE_FLOOR_MS) flushIo();
+  if (rolled || now - ioSavedAt >= IO_SAVE_FLOOR_MS) flushIo();
 }
 
 /// Write the rollup out now. Called on the floor above, across a midnight, and from the
@@ -266,6 +349,7 @@ export function flushIo(): void {
 export function resetIoRollup() {
   for (const k of Object.keys(dayIo)) delete dayIo[k];
   ioPrev = null;
+  ioPrevAt = 0;
   ioSavedAt = 0;
   ioDirty = false;
   ioDay = "";
@@ -275,10 +359,51 @@ export function resetIoRollup() {
 /// Everything the rollup has ever recorded. Not a lifetime figure and does not pretend
 /// to be one — it starts the day this ships, which is why the label says "recorded"
 /// rather than "all time".
-export function ioTotal(): DayIo {
+///
+/// **Null when nothing has been recorded**, never `{r:0,w:0}`: an empty rollup means we
+/// did not keep this, and a confident zero would say the disk was idle. Same distinction
+/// the per-project cost strip makes with its dash.
+export function ioTotal(): DayIo | null {
+  const days = Object.values(dayIo);
+  if (!days.length) return null;
   let r = 0, w = 0;
-  for (const v of Object.values(dayIo)) { r += v.r; w += v.w; }
+  for (const v of days) { r += v.r; w += v.w; }
   return { r, w };
+}
+
+/** How many days the rollup holds — what tells `all` apart from `today`. */
+export function ioDayCount(): number {
+  return Object.keys(dayIo).length;
+}
+
+/**
+ * Why the I/O row does not change when you click it.
+ *
+ * The three windows *genuinely* coincide in the ordinary early case, and the arithmetic
+ * makes it more common than it sounds. `all` equals `today` whenever one day is
+ * recorded — which is every install for the first day after the rollup ships. And `run`
+ * equals `today` whenever the run's first poll is also the day's first: `ioDelta` banks
+ * the entire cumulative counter when there is no previous reading, so a single run
+ * started today telescopes to exactly today's total.
+ *
+ * That is correct, and it is indistinguishable from a broken control. A cycling row
+ * whose three positions carry identical numbers reads as a click that does nothing, so
+ * it has to say why. Returns null once they diverge, so the note is absent rather than
+ * empty — the same stance as `missingCard`.
+ *
+ * Compared on the RENDERED strings, not the floats: two figures that differ by a byte
+ * are the same figure to the person reading the row, and that reader is who the note is
+ * for.
+ */
+export function ioSameNote(today: string, run: string, all: string, days: number): string | null {
+  if (today === run && run === all) {
+    return days <= 1
+      ? "All three windows are the same so far: today is the only day recorded, and all of it is this run."
+      : "All three windows happen to read the same right now.";
+  }
+  if (today === run) return "Today is all this run — nothing was recorded earlier today.";
+  if (today === all) return "Today is everything recorded so far.";
+  return null;
 }
 
 // What the statusLine reports is a running total, so the day only wants the increment
@@ -339,7 +464,7 @@ function saveBaselines() {
 export function costDelta(conv: string, total: number): number {
   const prev = costBaseline.get(conv)?.t;
   costBaseline.set(conv, { t: total, at: Date.now() });
-  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (3s) per
+  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (10s) per
   // session whether or not anything was spent, and this used to serialise and write the
   // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
   // forever. An unchanged total leaves nothing to persist but `at`, and `at` exists

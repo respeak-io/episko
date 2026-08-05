@@ -13,6 +13,182 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A big fleet no longer silently drops old terminals onto the slow renderer.** Every
+  pane held a WebGL context for the life of the pane, and webviews cap a page at 16
+  live contexts — one pane past that and the browser starts evicting the *oldest*,
+  exactly the long-lived sessions you keep returning to, permanently downgrading them
+  to DOM rendering with no error anywhere. Contexts now come from a small pool over
+  the recently-viewed panes, so the cliff is unreachable however many panes exist,
+  switching between the panes you actually work in stops paying a renderer rebuild
+  each time — and a context lost anyway logs itself to the 🐞 console and heals the
+  next time the pane is activated.
+~ **A burst of telemetry costs one repaint, not one per event.** Every hook and
+  statusLine used to trigger a full render of every surface, and N busy agents
+  multiplied that into a constant main-thread load that grew with the fleet. Renders
+  now coalesce to at most one paint per animation frame; the 🐞 console counts paints
+  beside received events, so the batching is visible while the app runs.
+! **Ended sessions stop taxing the app forever.** An ended session's pane now releases
+  its 8000-line scrollback once it leaves the stage — the final screen stays, and
+  History reopens the full transcript from disk — and panes whose process has exited
+  drop out of the 4-second branch poll. The quit dialog also stops counting a finished
+  task as "still running".
+! **A reload no longer loses your panes — they come back, scrollback included.** A
+  webview reload left every `claude` process running with nothing on screen attached
+  to it, and then offered the orphans back as dormant rows with *Resume* enabled — a
+  second `--resume` against a transcript its live process still owns, which silently
+  interleaves both conversations into one file. Two halves fix it: the sidebar and
+  History now ask the backend which PTYs it actually holds, so a live orphan can
+  never read as resumable; and startup rebuilds a pane for each one, replaying the
+  recent output the backend now retains per session, so the conversation is simply
+  on screen again where it was.
+! **Opening the working set no longer costs a git process per untracked file.** Each
+  untracked file entered the peek's patch through its own `git diff --no-index` — up to
+  300 processes back to back on one click, each allocating a console on Windows, which
+  is exactly the creation storm behind the occasional `git.exe` `0xc0000142` dialog.
+  The cap is now 25, and the viewer's existing truncation note covers the rest — nobody
+  reads 300 untracked files in a peek.
+~ **The statusLine ticks every 10 seconds instead of every 3.** The tick is the idle
+  cadence only — an active session's statusLine already re-runs on its own events — and
+  on Windows each tick costs a Git Bash, a curl and a console, per session, on or off
+  screen, forever. Nothing it carries (model, context %, cost, duration, rate limits)
+  moves faster than minutes while a session sits idle, so this is the same figures at a
+  third of the process churn.
+
++ **A task chain is one row, and it opens into a tiled stage.** A `dependsOn` launch
+  still runs one pane per step — an exit code per step is what the phase glyphs are —
+  but the sidebar now folds the steps into a single row carrying the worst step's
+  status, so a failed build reads as a failed chain even when a later step never ran.
+  Clicking the row tiles every step on the stage at once, and closing one tile focuses
+  the next in the chain rather than abandoning the rest.
++ **Projects can be grouped, and a group folds away.** Name a set of projects — *Work*,
+  *Side* — and collapse it to a single line when you are not in it. Right-click a project
+  for *Add to group…*, or drag it onto a group the way you already drag one to reorder;
+  right-click the group's own heading to rename, fold, or delete it. A group has no
+  order of its own: it sits where its first project sits, so the sort you picked still
+  decides the rail and dragging a project takes its group with it.
++ **A folded group still says when something in it needs you.** The heading carries the
+  status glyph of the most urgent session it is hiding and a dot for uncommitted changes,
+  because a tidy-up that could bury a session waiting on a permission would be a trap.
+  ⌘1–9 still reaches into a folded group, and taking a session in one onto the stage
+  unfolds it rather than leaving the rail with nothing selected.
+! **Tasks now get the PATH your own terminal has.** A login shell reads `~/.zshrc` only
+  when it is *interactive*, and that is where nvm, pnpm, mise and Homebrew's `shellenv`
+  actually live — so a `justfile` could report no tasks at all, and a task that worked in
+  your terminal could die in Episko on *command not found*. The PATH is now harvested
+  from an interactive login shell instead.
+! **Windows: npm scripts launch.** Windows starts real executables and nothing else, so
+  every `package.json` script — a `.cmd` shim, not a program — failed to start. Scripts
+  are now resolved the way the shell would and routed through `cmd.exe`.
+! **A VS Code compound task can run.** A `tasks.json` entry with no `command` but a
+  `dependsOn` list — usually exactly the one `isDefault` marks as the build — was blocked
+  as "no command" instead of running the steps it names.
+
+~ **Windows: a session no longer launches a PowerShell for every hook.** Each lifecycle
+  event — every tool call, every turn, every notification — used to start a whole
+  PowerShell just to reach `curl`, about 220ms and a second process each time, per
+  session. Claude Code can now be handed the command and its arguments directly, with no
+  shell in between, so a hook is one short-lived `curl` and nothing else. The statusLine
+  still needs a shell and is unchanged.
+! **The branch shown beside a session cost two `git` processes a session, every four
+  seconds.** With a few sessions open that was a git launched roughly twice a second to
+  re-read a file that hadn't changed — enough, on Windows, where starting a process is
+  the expensive part, to be a real share of what the machine was doing. It reads `.git`
+  directly now, like the worktree roster beside it already did. Nothing on screen
+  changes.
++ **Running a task that takes parameters no longer costs a dialog.** *Run* now starts it
+  with what it already knows — the values you gave last time, or the definition's own
+  defaults — and a `⋯` button beside the row (⌥⏎, or *⋯ Parameters* on a finished run)
+  is there for the times you want to change them. The row's tooltip shows the command as
+  it will actually run, so nothing is filled in behind your back, and the prompt still
+  opens by itself when a value genuinely has nowhere to come from.
+! **A `just` recipe taking `*args` stops asking for them.** A `*name` parameter takes
+  zero or more arguments, so `just saas-start` is a complete command — but it was read as
+  a required value and put a prompt in front of every run. `+name`, which does want at
+  least one, is unchanged. Such a recipe can also now be a run-on-stop rule.
+! **The parameter prompt looks like the rest of the app.** Its Cancel button was drawing
+  as a raw platform button, and the pair sat flush against the field above them.
+
+~ **The menu-bar menu shows status in colour, and groups sessions by project.** Every
+  row used to be one long string — glyph, project, branch and status — and a menu item's
+  text is always drawn in the menu's own colour, so `◆` (waiting on you) and `✕` (the
+  turn died) arrived the same grey as *Quit*: the two states you open that menu for were
+  the two it could not show. The double spaces meant to line the columns up did nothing
+  either, the menu font being proportional. Each session now carries its status as a
+  real coloured icon in the sidebar's own vocabulary — amber ●, green ✓, pink ◆, red ✕,
+  hollow ○ idle — under a heading naming its project, so the row itself is just the
+  branch. The colours are read from the app's stylesheet rather than restated, so they
+  cannot drift from the sidebar's.
+
+! **Today's disk figure is today's, rather than last night's arriving late.** The daily
+  I/O rollup credited a reading to the day the *poll* happened, and the poll only runs
+  while a session is on stage — so a stretch with the dashboard up, or the window in the
+  background, went unsampled and the next reading dropped the whole gap on whichever day
+  it landed in. Across a midnight that meant a full evening of churn appearing as a
+  morning's work: 530MB reported on a day that had done about 25MB, while the evening
+  that earned it showed 54MB. An increment measured across a boundary is now spread over
+  the days it actually covers, and a minute-by-minute heartbeat keeps the window short
+  even with nothing on stage. The heartbeat reads only the counters — no `git` call
+  beside it, and no more writing than before, because a disk meter that churns the disk
+  is measuring itself.
+~ **The last recurring `git` process is gone.** The pane on stage re-ran a private
+  `git status` every 4 seconds to refresh the inspector's working-set numbers — the
+  only subprocess the app still spawned on a timer — re-learning what the stale-driven
+  dirty poll already reads for every folder at once. The inspector now picks its
+  numbers up from that shared read: an agent's edits still land on the next tick, and
+  changes made behind Episko's back (your editor, a build) surface within the sweep's
+  15 seconds instead of 4 — the same trade the sidebar's dirty dot has always made.
+! **A running task no longer books its disk reads again on every poll.** The app-wide
+  I/O total kept a session's bytes past its exit by "retiring" any sampled pid it no
+  longer recognised — but it recognised pids by the list that exists to tell *claude*
+  processes apart from external ones, which shells and tasks never join. So a live test
+  run or terminal pane read as freshly exited on every 4-second poll, and its whole
+  cumulative counter was banked again each time: one vitest run could inflate a day's
+  read figure by two orders of magnitude. Retirement now keys on the actual pane
+  roster, so a pane's bytes are banked exactly once, when it closes. Days recorded
+  before this fix overstate reads badly — there is no way to repair them after the
+  fact, so trust the figure from the first fixed day on.
+
+! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
+  written anything to GitHub. The call was one argument short, and a call that is one
+  argument short is not a partial call — it is no call at all, so no assignee, no label
+  and no comment have landed since the feature shipped, behind a toast that cheerfully
+  said *Started on #232*. Handing the issue back when the agent stops was broken the same
+  way and even quieter. Both write what they say they will now, and a claim that only
+  half lands says so on screen instead of in a log nobody opens.
+! **A dispatched prompt is sent, rather than left sitting in the box.** The Enter that
+  submits it travelled in the same keystroke burst as the prompt itself — and Claude
+  reads a burst as a *paste*, where a carriage return is a new line, not a send. So the
+  agent you started was still waiting for you to press Enter, which is the one thing the
+  button exists to spare you.
+~ **The dispatch sheet no longer promises a worktree it does not make**, and *push the
+  branch now* is gone with it. Nothing ever implemented that switch — there was no branch
+  to push and the command never took the argument — and a control that cannot act is
+  worse than one that is missing, because flipping it reads as a decision taken.
+~ **The disk-I/O total looks like something you can click, and says why clicking it
+  sometimes changes nothing.** The row cycles three windows — today, this run, everything
+  recorded — but it was pixel-identical to the two static rows above it until you happened
+  to hover, so there was nothing to suggest it did anything. It now carries a `⟳`. And on
+  a machine's first day all three windows genuinely read the same, because the only day
+  recorded *is* today and all of it *was* this run: correct, and indistinguishable from a
+  dead button, so the row now says so in a line that disappears the moment they diverge.
+! **"Everything recorded" no longer claims zero on a machine that has recorded nothing.**
+  An empty rollup rendered as `0 B read · 0 B written`, which says the disk sat idle
+  rather than that nothing was kept — the distinction the per-project spend strip already
+  makes with a dash. It reads *not recorded* now.
+! **Removing a worktree on Windows no longer half-works.** `git worktree remove` deletes
+  the checkout folder *before* it unregisters the worktree, and carries on past a failed
+  delete — so on Windows, where a folder any process holds open cannot be deleted, a
+  removal would leave the worktree gone from git with its directory still on disk.
+  Episko read that as "nothing happened" and offered `git worktree remove --force`, the
+  one command that could no longer work: *fatal: is not a working tree*. It now asks
+  whether the worktree is still registered rather than guessing from the folder, and the
+  common cause is gone too — removing a checkout from a session waits for that session's
+  process to actually die, instead of deleting the folder it is still sitting in.
++ **When a folder won't delete, Episko says who is holding it.** Processes it started are
+  cleared without asking; anything else — an editor, a dev server, a terminal you left
+  open — is listed by name, with the choice to terminate them and retry or leave the
+  folder alone. Read-only files, which nothing is holding at all, are simply cleared.
+
 ## 0.14.0 — 2026-08-03
 A day's work becomes something the team can read, and the app gets quieter underneath.
 

@@ -164,6 +164,25 @@ export function closeComment(t: GhThread, now: number): string {
     + `Reopen if that's wrong.`;
 }
 
+/// The sticky claim comment — ONE per thread, edited in place, so it says what is true
+/// now rather than accumulating a log of every dispatch.
+///
+/// It says "hint, not a lock" out loud because that is the rule the whole module is
+/// built on, and a machine comment that reads like a reservation is the one that makes
+/// a team switch claiming off.
+export function claimComment(who: string, now: number): string {
+  return `🤖 An agent${who ? ` from @${who}` : ""} started work on this on ${isoDay(now)}.\n\n`
+    + `This is a hint, not a lock — pick it up anyway if you want to, and say so here.`;
+}
+
+/// The same comment once the agent has stopped. The comment is *edited*, never deleted:
+/// a claim that vanishes leaves a reader wondering whether they imagined it, and the
+/// fact that something was attempted is worth more than a clean thread.
+export function releaseComment(who: string, now: number): string {
+  return `🤖 The agent${who ? ` from @${who}` : ""} working on this stopped on ${isoDay(now)}, `
+    + `without pushing. Free to pick up.`;
+}
+
 /// Today, as `YYYY-MM-DD` local — what the keep list and shared notes record. Day
 /// resolution on purpose: an hour adds nothing and churns the committed diff.
 export function isoDay(now: number): string {

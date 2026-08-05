@@ -13,10 +13,11 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import type { ExtSession, Restorable, Sess } from "./types";
+import type { ExtSession, LiveSess, Phase, Restorable, Sess } from "./types";
+import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, dormants, externals, FAVORITES, projOrder, sessions, sortMode, wtGroup,
-  worktreesByRepo,
+  accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
+  projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -33,6 +34,20 @@ export interface ProjGroup { name: string; path: string; accent: string; session
 // attention sort still decides which worktree floats up. The repo-root checkout
 // (worktree === null) is the "main" cluster; its label is the live branch.
 export interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
+/// Which *checkout* a pane belongs to — the key worktree clustering groups by.
+///
+/// An agent's `workdir` IS its checkout, but a task's `workdir` is wherever the task
+/// declared it runs: VS Code's `options.cwd` is routinely a subfolder (`01_frontend`,
+/// `02_backend`), which is emphatically not a different worktree. Keying on it split
+/// one chain's panes into a cluster each, every one of them labelled with the same
+/// branch — and, because the run-group fold happens *within* a cluster, stopped the
+/// members of a single launch from ever folding into one row.
+///
+/// `run.root` is the directory discovery ran in, which is exactly the checkout.
+export function checkoutOf(s: Sess, fallback: string): string {
+  return (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+}
+
 // `withEmpty` folds in the roster's session-less checkouts, so a worktree an agent just
 // created is visible before anything runs in it. Off by default because only the
 // sidebar body wants them: `splitByWorktree` must not promote an empty checkout to a
@@ -48,7 +63,7 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
     else if (!c.branch && branch) c.branch = branch;
     return c;
   };
-  for (const s of p.sessions) bucket(s.workdir || p.path, s.branch || s.worktree || "").sessions.push(s);
+  for (const s of p.sessions) bucket(checkoutOf(s, p.path), s.branch || s.worktree || "").sessions.push(s);
   for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
   if (withEmpty) {
     const roster = worktreesByRepo.get(p.path) ?? [];
@@ -130,6 +145,32 @@ export function allProjects(): ProjGroup[] {
   }
   return list;
 }
+// A session that's live right now must not be offered for restore: Claude doesn't
+// lock the transcript, so a second --resume of the same id silently interleaves
+// both conversations into one file. Three sources, because each sees sessions the
+// others can't: the frontend map (our own panes), `backendLive` (a PTY the backend
+// still holds while the map has no pane for it — every pane after a webview reload,
+// #47; invisible as an external too, since `list_external_sessions` excludes owned
+// pids), and the externals list (another terminal entirely).
+export function dormantBusy(d: Restorable): boolean {
+  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
+  if (backendLive.has(d.id)) return true;
+  return externals.some((e) => e.session_id === d.resumeId);
+}
+// Which backend PTYs need a pane rebuilt after a webview reload, and under what
+// identity (#47 stage 2). Claude panes only: a shell is cheap to reopen and carries
+// no conversation, and a task pane's `run` metadata — label, chain, how its exit is
+// read — did not survive the reload, so a bare terminal claiming to be that task
+// would lie about everything but the bytes. The roster supplies the identity the
+// pane was launched under; an orphan the roster has no entry for still adopts with
+// `meta: null` — a running conversation is worth more than a tidy label, and the
+// caller derives one from `workdir`. Takes the roster as a parameter because it
+// runs at startup, BEFORE `loadDormants` has filtered it into `dormants`.
+export function orphanAdoptions(back: LiveSess[], roster: Restorable[]): { id: string; workdir: string; meta: Restorable | null }[] {
+  return back
+    .filter((b) => b.kind === "claude" && !sessions.has(b.id))
+    .map((b) => ({ id: b.id, workdir: b.workdir, meta: roster.find((r) => r?.id === b.id) ?? null }));
+}
 export function projectList(): ProjGroup[] {
   const list = allProjects();
   // Sort sessions within each project first, then (in toplevel mode) split by
@@ -151,6 +192,148 @@ export function projectList(): ProjGroup[] {
   }
   return groups;
 }
+
+// ---------- the user's named groups, folded into that list ----------
+// `projectList()` above answers "which projects, in what order"; this layers the user's
+// own headings over the result without touching either question. ./projgroups owns the
+// store and its rules; this is the one place that turns it into what the rail draws.
+
+/// What the sidebar iterates: either a project on its own, or a named group with the
+/// projects that belong to it. Never nested further — a group holds projects, and a
+/// project is not a group.
+export type SidebarSlot =
+  | { kind: "project"; project: ProjGroup }
+  | { kind: "group"; group: GroupDef; projects: ProjGroup[] };
+
+/// Which group a project belongs to. The `repoRoot` fallback is what keeps toplevel mode
+/// coherent: there the repo has exploded into one group per checkout, and the user
+/// filed the *repo*, so every checkout of it has to answer with the repo's group or a
+/// grouped repo would scatter across the rail the moment you opened a second worktree.
+function foldIdOf(p: ProjGroup): string | null {
+  return groupOf(projGroups, p.path) ?? (p.repoRoot ? groupOf(projGroups, p.repoRoot) : null);
+}
+
+/**
+ * The sidebar's rows, with groups folded in.
+ *
+ * **A group sits where its first member does**, under whichever sort is active — so it
+ * floats up in `active` when one of its projects is busiest, and in `attention` when
+ * one of them needs you, exactly as that project would have on its own. This is why
+ * there is no group order to persist, and why dragging a project drags its group's
+ * position with it: derived, so the two cannot disagree.
+ *
+ * An **empty** group has no member to be ranked by, so it lands after everything else
+ * rather than vanishing. Keeping it is deliberate: it is a heading the user named and
+ * the drop target that refills it, and a group that disappeared the moment you took the
+ * last project out would read as Episko having deleted it.
+ */
+export function groupedProjects(list: ProjGroup[] = projectList()): SidebarSlot[] {
+  const store = projGroups;
+  if (!store.groups.length) return list.map((project) => ({ kind: "project" as const, project }));
+  const slots: SidebarSlot[] = [];
+  const open = new Map<string, ProjGroup[]>();
+  for (const project of list) {
+    const gid = foldIdOf(project);
+    const group = gid ? store.groups.find((g) => g.id === gid) : undefined;
+    if (!group) { slots.push({ kind: "project", project }); continue; }
+    let projects = open.get(group.id);
+    if (!projects) { projects = []; open.set(group.id, projects); slots.push({ kind: "group", group, projects }); }
+    projects.push(project);
+  }
+  for (const group of store.groups) if (!open.has(group.id)) slots.push({ kind: "group", group, projects: [] });
+  return slots;
+}
+
+/// What a group's header has to say for the projects it hides. Only `count` is shown
+/// while the group is open; `dirty` and `urgent` exist for the collapsed state, where
+/// the rule is that folding a group away must never fold away the fact that something
+/// in it is waiting on you.
+export interface GroupSummary { count: number; dirty: boolean; urgent: Sess | null }
+export function groupSummary(projects: ProjGroup[]): GroupSummary {
+  let count = 0, dirty = false, urgent: Sess | null = null;
+  for (const p of projects) {
+    count += p.sessions.length + p.externals.length;
+    if (!dirty) dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
+    for (const s of p.sessions) {
+      if (!needsYou(s)) continue;
+      if (!urgent || urgencyRank(s) < urgencyRank(urgent) || (urgencyRank(s) === urgencyRank(urgent) && s.phaseSince < urgent.phaseSince)) urgent = s;
+    }
+  }
+  return { count, dirty, urgent };
+}
+// ---------- run groups ----------
+// A `dependsOn` chain launches one pane per step, which is correct (a run's exit
+// code is its phase, and you cannot get four exit codes out of one PTY) and reads
+// badly: "build → lint → test" arrives as three loose rows interleaved with your
+// agents. Folding is presentational only — the panes, the PTYs and the phase
+// machine are untouched.
+
+/// One sidebar slot: a lone session, or a whole launch's worth of them.
+export type RunItem =
+  | { kind: "one"; s: Sess }
+  | { kind: "group"; id: string; label: string; members: Sess[]; phase: Phase };
+
+/// Collapse the members of each `run.groupId` into a single item, in place.
+///
+/// "In place" is the point: a group takes the position of its *first* member, so
+/// whatever `projectList` already sorted by — activity, urgency, manual order —
+/// still decides where the group sits. Re-sorting here would silently overrule it.
+///
+/// A group of one renders as a plain row. A chain whose dependencies all resolved to
+/// nothing is not a chain, and a header wrapping a single step is pure overhead.
+export function foldRunGroups(list: Sess[]): RunItem[] {
+  const out: RunItem[] = [];
+  const at = new Map<string, number>();   // groupId → index in `out`
+  for (const s of list) {
+    const gid = s.kind === "task" ? s.run?.groupId : undefined;
+    if (!gid) { out.push({ kind: "one", s }); continue; }
+    const i = at.get(gid);
+    if (i === undefined) {
+      at.set(gid, out.length);
+      out.push({ kind: "group", id: gid, label: s.run?.groupLabel || s.run?.label || "run", members: [s], phase: "idle" });
+    } else {
+      (out[i] as { members: Sess[] }).members.push(s);
+    }
+  }
+  return out.map((it) => {
+    if (it.kind !== "group") return it;
+    if (it.members.length === 1) return { kind: "one" as const, s: it.members[0] };
+    return { ...it, phase: groupPhase(it.members) };
+  });
+}
+
+/// Which member a tiled run group should focus when `closingId` goes away: the next
+/// one in the given order, else the previous, else `null` when it was the last.
+///
+/// Separate from `nextAfterClose`, which answers the *sidebar's* question ("which
+/// session takes the stage") over the whole project — and therefore happily hands the
+/// stage to a Claude session sitting next to the group. Closing one tile of a mosaic
+/// means "show me the rest of this run", not "leave it".
+///
+/// Next-then-previous because the grid reflows into the gap: closing the top-left tile
+/// promotes the one that follows it, so that is the one to look at.
+export function nextInGroup(members: Sess[], closingId: string): Sess | null {
+  const i = members.findIndex((m) => m.id === closingId);
+  if (i < 0) return null;
+  return members[i + 1] ?? members[i - 1] ?? null;
+}
+
+/// The phase a group shows: the worst of its members.
+///
+/// Worst-of, not last-of, because the whole value of one row is that it answers "did
+/// my chain pass?" without expanding it — and a failed build followed by a skipped
+/// test must not read as `done` just because nothing ran after it. `working` beats
+/// `done` for the same reason in the other direction: a chain with a step still
+/// running has not passed yet.
+export function groupPhase(members: Sess[]): Phase {
+  const has = (p: Phase) => members.some((m) => m.phase === p);
+  if (has("error")) return "error";
+  if (has("working") || has("thinking")) return "working";
+  if (has("idle")) return "working";      // queued behind a sequential dependency
+  if (members.every((m) => m.phase === "ended")) return "ended";
+  return "done";
+}
+
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
 export function urgencyRank(s: Sess): number {
@@ -166,7 +349,14 @@ export function urgencyRank(s: Sess): number {
 function projActivity(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.max(m, s.lastActivity), 0); }
 function projUrgency(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.min(m, urgencyRank(s)), 99); }
 function projWaitSince(p: ProjGroup): number { return p.sessions.reduce((m, s) => Math.min(m, s.phaseSince), Number.MAX_SAFE_INTEGER); }
-export function orderedSessions(): Sess[] { return projectList().flatMap((p) => p.sessions); }
+// The sidebar read as one flat list — ⌘1–9 and `nextAfterClose`'s fallback. It goes
+// through `groupedProjects`, not `projectList`, because a group physically moves its
+// members: read from the ungrouped list, ⌘4 would land on the fourth session in an
+// order nothing on screen is in. A collapsed group's sessions stay in it (they are
+// still running, and `setActive` unfolds the group it lands in).
+export function orderedSessions(): Sess[] {
+  return groupedProjects().flatMap((s) => (s.kind === "project" ? s.project.sessions : s.projects.flatMap((p) => p.sessions)));
+}
 // When the active session is closed, decide which one takes over. Prefer staying in
 // the same project — the sibling directly above (as shown in the sidebar), else the
 // one below — and only leave the project (nearest session in sidebar order) once it

@@ -22,6 +22,7 @@
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
+import { clampGroups, type GroupStore } from "./projgroups";
 import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
@@ -38,6 +39,18 @@ export function saveFavorites() { localStorage.setItem("cc-favorites", JSON.stri
 export let projOrder: string[] = JSON.parse(localStorage.getItem("cc-proj-order") || "null") || [];
 export function setProjOrder(o: string[]) { projOrder = o; }
 export function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.stringify(projOrder)); }
+// The user's named, collapsible groups of projects, and which project is in which.
+// One JSON blob under cc-proj-groups rather than a key each, for the same reason
+// cc-peek is one: the two halves are only ever read together, and a membership that
+// outlived its group is the one corruption a user could not diagnose. The rules and
+// the validator are ./projgroups, which is pure — this only holds the value.
+//
+// Deliberately NOT an ordering: where a group sits is derived from its members under
+// the active sort (./grouping's `groupedProjects`), so `projOrder` above stays the one
+// answer to "what order is the sidebar in".
+export let projGroups: GroupStore = clampGroups(safeParse(localStorage.getItem("cc-proj-groups")));
+export function setProjGroups(g: GroupStore) { projGroups = clampGroups(g); }
+export function saveProjGroups() { localStorage.setItem("cc-proj-groups", JSON.stringify(projGroups)); }
 // Sidebar sort: "manual" honours the drag order above; "active" floats the most
 // recently-active sessions/projects to the top; "attention" floats the ones that
 // need you first (permission > error > your-turn), longest-waiting within a tier.
@@ -79,9 +92,11 @@ export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "
 // than three keys, because the three are only ever read together.
 export let peekPrefs: PeekPrefs = clampPeekPrefs(safeParse(localStorage.getItem("cc-peek")));
 export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
-function safeParse(raw: string | null): Partial<PeekPrefs> | null {
-  // A corrupt or hand-edited value must not take the app down during module import,
-  // the same stance ./tasks and ./notes take with their own stores.
+// Shared by every preference stored as a JSON blob (peek above, the project groups
+// higher up). A corrupt or hand-edited value must not take the app down during module
+// import, the same stance ./tasks and ./notes take with their own stores — and the
+// clamp each caller runs on the result is what turns "parsed" into "usable".
+function safeParse<T>(raw: string | null): Partial<T> | null {
   try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 
@@ -128,6 +143,17 @@ export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
+// A run group tiled across the stage (its `run.groupId`), from clicking the group's
+// sidebar header. NOT a fourth owner of the stage: `activeId` still names the one
+// *focused* pane — it is what the header, inspector, footer and keystrokes read — and
+// this only says "also show that pane's group siblings beside it". So the invariant
+// above is unchanged, and every existing activeId consumer keeps working untouched.
+// Mutually exclusive with `mirror` for the obvious reason: a mirror has no group.
+export let stageGroup: string | null = null;
+export function setStageGroup(g: string | null) { stageGroup = g; }
+// Run groups the user has collapsed. Deliberately NOT persisted: the ids are
+// per-launch uuids, so a saved entry could never match anything on a later run.
+export const collapsedRuns = new Set<string>();
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
@@ -136,6 +162,14 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
+// Launch ids of every PTY the BACKEND holds (`live_sessions`, refreshed on the
+// externals poll, lowercased at the call site). In normal operation this repeats
+// the `sessions` map; the one state where they disagree is a webview reload, which
+// empties the map while every PTY runs on (#47). Those orphans are invisible as
+// externals too — `list_external_sessions` excludes owned pids — so this set is
+// the only thing that lets `dormantBusy`/`histBusy` refuse to resume one.
+export let backendLive: ReadonlySet<string> = new Set();
+export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
 export interface EngineDef { id: Engine; label: string; sub: string }

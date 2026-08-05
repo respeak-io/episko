@@ -5,6 +5,9 @@
 
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
+import type { WebglAddon } from "@xterm/addon-webgl";
+
+import { fmtShort } from "./format";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -49,9 +52,30 @@ export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
 export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
+// One process keeping a folder alive, as the backend's `path_holders` reports it.
+// `why` is how it was found and how it reads to a human: "cwd" is a process sitting
+// in the folder (a terminal, a dev server, a PTY pane on its way out), "file" is an
+// open handle (an editor, a watcher). `ours` means Episko launched it — those are
+// cleared without asking, since a removal already decided they should die.
+export interface PathHolder { pid: number; name: string; why: "cwd" | "file"; ours: boolean }
+// A worktree that was removed but whose folder would not delete. Windows-only in
+// practice: it refuses to delete a directory any process has open, where POSIX
+// unlinks it and lets the last handle close in its own time.
+export interface Stranded { path: string; stuck: string; reason: string; holders: PathHolder[] }
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
-export interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
+//
+// `stranded` is `remove_worktree`'s alone, and it rides alongside `ok: true` rather
+// than instead of it — the worktree really is gone from git and the roster really did
+// change, so every caller must refresh exactly as it would on a clean run. What is
+// left over is a directory, which is a separate problem with a separate repair
+// (`purge_worktree_folder`), not a different outcome for this one.
+export interface GitActionResult {
+  ok: boolean; summary: string; output: string; suggest: string | null;
+  stranded?: Stranded | null;
+}
+// What `purge_worktree_folder` answers: did the folder go, and if not, who is left.
+export interface PurgeResult { gone: boolean; stranded: Stranded | null }
 // What a pane actually contains. All three run in an identical PTY; the kind is
 // what decides whether telemetry, cost and git actions apply to it.
 //   claude — an instrumented `claude` session (the only kind with telemetry)
@@ -74,6 +98,12 @@ export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" |
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";
+// Whether the process behind a pane has exited. The pane still renders — an ended
+// row is information — but nothing behind it can change any more, so the pollers
+// skip it and the quit guard doesn't count it. Phase alone can't answer this for a
+// task: its exit sets done/error, the same phases a live claude turn cycles through,
+// so the run's exit code is the discriminant there.
+export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != null : s.phase === "ended");
 // Which glyph/CSS bucket a pane falls into: a blocking permission outranks the
 // phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
 // inspector pill, so it lives here rather than in any one of them.
@@ -98,6 +128,37 @@ export const apiErrText = (e: ApiErr) => API_ERR_TEXT[e.kind] ?? (e.kind.replace
 // turn broke, "API overloaded" also tells you it wasn't your fault and to retry.
 export const phaseText = (s: Sess) => (s.phase === "error" && s.apiErr ? apiErrText(s.apiErr) : PILL_TEXT[s.phase]);
 
+/// How long a run has taken: wall-clock while it is going, and **frozen at its exit**
+/// once it is over.
+///
+/// The single source for every duration a run shows, and it is one function because it
+/// was three: the sidebar column, the tiled pane's caption and the inspector's "Took"
+/// row each did their own `Date.now() - startedAt`. All three therefore kept counting
+/// after the process had exited — a step that finished in 400ms read "1m 23s" a minute
+/// later, and a whole tiled chain showed the same climbing number. Fixing two of the
+/// three copies is exactly the mistake this consolidation prevents: anything that wants
+/// a run's duration calls here.
+export function runElapsed(r: NonNullable<Sess["run"]>, now = Date.now()): string {
+  // `?? now` only covers a run whose exit predates this field — a pane restored from
+  // an older build.
+  return fmtShort((r.exitCode == null ? now : r.endedAt ?? now) - r.startedAt);
+}
+
+/// A run's trailing readout — the sidebar column, the palette subtitle and a tiled
+/// pane's caption all show this one string. A background run never claims to be
+/// finished, so it reads "bg" for as long as it lives.
+///
+/// It lives here, beside the other discriminants that read the model, because it is
+/// pure — and `now` is a parameter so the elapsed case is testable without faking the
+/// clock.
+export function taskStateText(s: Sess, now = Date.now()): string {
+  const r = s.run;
+  if (!r) return "";
+  if (r.background && r.exitCode == null) return "bg";
+  if (r.exitCode == null) return s.phase === "working" ? runElapsed(r, now) : "";
+  return r.exitCode === 0 ? runElapsed(r, now) : `exit ${r.exitCode}`;
+}
+
 // The resolved half of a Runnable — what the backend needs to actually start it.
 export interface Exec { mode: "argv"; program: string; args: string[] }
 export interface ExecShell { mode: "shell"; line: string }
@@ -106,6 +167,9 @@ export interface ExecShell { mode: "shell"; line: string }
 export interface InputSpec {
   id: string; kind: "promptString" | "pickString"; description: string;
   default: string | null; options: string[]; password: boolean;
+  // The task runs fine with this left empty (a just `*name` parameter). Plain Run
+  // skips the dialog for it; "Run with parameters…" still offers the field.
+  optional: boolean;
 }
 export interface Runnable {
   id: string; label: string; detail: string | null;
@@ -115,6 +179,12 @@ export interface Runnable {
   // Labels, not ids — VS Code names dependencies by label.
   dependsOn: string[]; dependsOrder: "parallel" | "sequence";
   blocked: string | null;
+  /// No command of its own — `dependsOn` IS the work (VS Code's compound task).
+  /// Launches no pane; `launchWithDeps` runs the dependencies and stops.
+  compound: boolean;
+  /// "build" | "test" when the source file marks this that group's *default* task,
+  /// which is what ⌘⇧B / ⌘⇧T resolve to.
+  defaultFor: string | null;
 }
 
 export interface Sess {
@@ -142,17 +212,41 @@ export interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
-  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
+  // attached on activation, released when the pool evicts it or the pane exits (see
+  // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it
+  // lives and dies with the pane.
+  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; gl?: WebglAddon; pane: HTMLElement;
+  // Set only while a reload orphan's pane is being rebuilt (#47 stage 2): incoming
+  // pty-output chunks queue here instead of reaching the terminal until the
+  // scrollback snapshot has been written. A queued chunk at or below the
+  // snapshot's seq is already inside it and is dropped on flush; see adoptSession
+  // in ./panes for the whole protocol.
+  adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
   // task panes only
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
+    /// When the process exited. Without it the elapsed readout is `Date.now() -
+    /// startedAt` forever, so a run that took 400ms reads "1m 23s" a minute later —
+    /// the duration has to be frozen at the exit, not recomputed on every repaint.
+    endedAt?: number;
     /// The directory discovery ran in — where `sourceFile` is rooted, so *reveal
     /// source* can find the file even for a task whose run cwd is a subfolder.
     root: string;
     /// Set when a run-on-stop rule started this — the session whose turn it was
     /// verifying, and therefore the one a failure should be offered back to.
     forSession?: string;
+    /// Every pane of one `dependsOn` chain shares this id, so the sidebar can show
+    /// "build → lint → test" as one collapsible row instead of three loose panes,
+    /// and the stage can tile them together. Minted per *launch*, never per task:
+    /// running `fe-check` twice is two groups, which is what you want to compare.
+    /// Absent on a task launched on its own — a group of one is just a row.
+    groupId?: string;
+    /// The chain's own name (the label of the task that pulled the others in), for
+    /// the group row. Carried rather than derived: the root is not distinguishable
+    /// from its dependencies once they are all just panes.
+    groupLabel?: string;
   };
 }
 
@@ -172,6 +266,11 @@ export interface ExtSession {
 // has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
 // therefore not about capturing conversation state — Claude already has it — but
 // about remembering which sessions were on screen at quit, and with what identity.
+/// One embedded PTY as the BACKEND holds it (`live_sessions`). Meaningful to the
+/// frontend only where its own map falls short — after a webview reload, when the
+/// map is empty and every one of these is an orphan (#47).
+export interface LiveSess { id: string; kind: string; workdir: string }
+
 export interface Restorable {
   id: string;          // the original launch uuid (roster key, stable across restarts)
   resumeId: string;    // what to hand `claude --resume`

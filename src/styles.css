@@ -205,6 +205,55 @@ html.win .wctl { display: flex; }
 .rail-add::before { width: 10px; height: 1.6px; }
 .rail-add::after { width: 1.6px; height: 10px; }
 
+/* ---------- project folds: the user's named groups of projects -------------------
+   `.pf*`, never `.pg*`: `.pgroup` (a project) and `.pgpeek` (its idle checkouts) live
+   INSIDE one of these, and the reorder, the peek hover and applyPeek all reach for
+   `.pgroup` by class. See the note in sidebarview.ts.
+
+   Same `0fr → 1fr` collapse as .pgpeek and the dashboard's day rows — it animates an
+   unknown height with nothing measured; `.pfbody-in` carries the overflow/min-height
+   that makes the 0fr row clip rather than spill. */
+.pfold { margin-bottom: 7px; }
+/* Quieter than a project header by design: this is a label over the list, not a row in
+   it. Uppercase + tracking is what says "heading" at a size where weight alone can't. */
+.pfhead { display: flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: var(--radius-sm); cursor: grab; user-select: none; }
+.pfhead:hover { background: var(--surface); }
+.pfhead:hover .pfchev, .pfhead:hover .pfname { color: var(--text); }
+/* Drawn, not typed — same call as .rail-add's plus above. A `▾` at the size this
+   heading wants is a smudge, and the rotated form is indistinguishable from it, which
+   makes the one affordance that says "this folds" unreadable. Two borders on a rotated
+   box are crisp at 4px and the rotation reads unmistakably. */
+.pfchev { flex: none; position: relative; width: 9px; height: 9px; color: var(--muted-2); transition: color .12s; }
+.pfchev::before {
+  content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+  border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor;
+  transform: translate(-50%, -70%) rotate(45deg);
+  transition: transform .2s cubic-bezier(.32,.72,0,1);
+}
+.pfold.collapsed .pfchev::before { transform: translate(-65%, -50%) rotate(-45deg); }
+.pfname { min-width: 0; font: 700 9.5px var(--font-ui); letter-spacing: .075em; text-transform: uppercase; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .12s; }
+/* Bare number = projects; the pill = sessions, which is the shape `.pcount` already
+   means one row down. So the badge never has to be read twice to know which it is. */
+.pfcount { flex: none; margin-left: auto; font: 600 9px var(--font-mono); color: var(--muted-2); }
+.pfcount.live { padding: 1px 6px; border-radius: 6px; background: var(--surface-2); }
+/* Both are collapsed-only (see foldHead): folding a group away must not fold away the
+   fact that something inside it is dirty or waiting on you. */
+.pfdirty { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--st-working); box-shadow: 0 0 5px color-mix(in srgb, var(--st-working) 70%, transparent); }
+.pfattn { flex: none; font-size: 9px; line-height: 1; }
+.pfbody { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .24s cubic-bezier(.32,.72,0,1); }
+.pfold.collapsed .pfbody { grid-template-rows: 0fr; }
+/* The inset is the only nesting cue — a third border rail (after .psessions and
+   .wtsessions) would stripe the rail for a heading that already reads as one. */
+.pfbody-in { overflow: hidden; min-height: 0; padding-left: 5px; }
+.pfempty { padding: 5px 8px 6px 3px; font-size: 10.5px; color: var(--muted-2); opacity: .7; font-style: italic; }
+/* A collapsed fold has no visible body for the .dropmark to sit in, so the header
+   itself says "this one" while a project is held over it. */
+.pfold.droptarget > .pfhead { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.pfold.droptarget > .pfhead .pfname { color: var(--accent-ink); }
+.pfold.dragging { opacity: .38; }
+.pfold.dragging .pfhead { cursor: grabbing; }
+@media (prefers-reduced-motion: reduce) { .pfbody, .pfchev { transition: none; } }
+
 .pgroup { margin-bottom: 3px; }
 /* While reordering (pointer-driven), suppress text selection across the whole list —
    and hold the grabbing cursor over every row the pointer crosses, since the buttons
@@ -297,6 +346,47 @@ html.win .wctl { display: flex; }
 .wthead:hover .wtadd { opacity: 1; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
+/* A run group: one `dependsOn` launch, as a block rather than N+1 sibling rows.
+   The header is NOT a .srow — a summary of several runs is a different kind of thing
+   from a run, and giving it the same treatment is what made the parent disappear into
+   its own children. The block carries a surface; the steps sit inset within it. */
+/* `--surface`, not `--lift`: lift is a white veil (`rgba(255,255,255,.8)` in the light
+   theme), which reads as "raised" on the dark ground and as *nothing at all* on a white
+   panel. --surface is one deliberate step off --panel in both themes, so the block stays
+   visible either way. Anything that must be seen in both cannot be a white overlay. */
+.rgroup { margin: 2px 0; border-radius: 8px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair); overflow: hidden; }
+.rgroup.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+/* Same column rhythm as .srow (glyph / label / trailing) plus the twisty, so a group
+   header lines up with the rows around it even though it is styled apart from them. */
+/* `position: relative` is load-bearing, exactly as it is on .srow: it keeps the ✕
+   absolutely positioned, and an absolutely-positioned child is NOT a grid item — which
+   is how four children fit three columns here without wrapping. Make it static and it
+   claims a cell, spilling onto a second implicit row and doubling the header's height. */
+.rgrow { position: relative; display: grid; grid-template-columns: 14px 14px minmax(0,1fr) auto; gap: 6px; align-items: center; padding: 6px 8px; cursor: pointer; }
+.rgroup.open .rgrow { border-bottom: 1px solid var(--hair); }
+.rgrow:hover { background: var(--surface-2); }
+.rgname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+.rgroup.on .rgname { color: var(--accent-ink); }
+.rgrow:hover .sclose { opacity: 1; }
+/* Sized to be seen and hit, not merely present: 8px in a 10px column read as a speck.
+   The negative margin buys click area without widening the column. */
+.rgtwist { font-size: 11px; color: var(--muted-2); text-align: center; line-height: 1; transition: transform .12s, color .12s; cursor: pointer; margin: -5px; padding: 5px; border-radius: 4px; }
+.rgtwist:hover { color: var(--text); background: var(--surface-2); }
+.rgtwist.open { transform: rotate(90deg); }
+.rgrow:hover .rgtwist { color: var(--text); }
+/* The tally is a pill, not another muted mono column: it is the answer to "did my
+   chain pass?", which is the whole reason the header exists collapsed. */
+.rgtally { flex: none; font: 600 9px var(--font-mono); color: var(--muted-2); border: 1px solid var(--hair); border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+.rgtally.bad { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
+/* Nested steps: subordinate to the header — smaller, muted, and behind the same left
+   rule the worktree clusters use, so nesting reads as nesting wherever it appears. */
+.rgsteps { padding: 3px 5px 4px 7px; margin-left: 15px; border-left: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; }
+.rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
+.rgsteps .sbranch { font-size: 11px; color: var(--muted); }
+.rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
+.rgsteps .sglyph { font-size: 9.5px; }
+.rgsteps .srow:hover { background: var(--surface-2); }
+
 /* The arming hairline: fills under the project name while the open timer runs, so a
    panel that appears a second later reads as deliberate rather than as a glitch. The
    duration is the real preference (--peek-open, set by applyPeek), not a constant —
@@ -380,7 +470,11 @@ html.win .wctl { display: flex; }
 .rm-add { margin-top: auto; }
 
 /* center: terminal */
-.stage { grid-area: stage; display: flex; flex-direction: column; min-width: 0; }
+/* `min-height: 0` matters as much as min-width: a grid item's default `min-height:auto`
+   floors it at its content's min-content height, so anything in #terminals with an
+   intrinsic height (a tiled grid of terminals) could push the stage taller than its
+   row and shove the header out of view. The stage is a viewport, never a document. */
+.stage { grid-area: stage; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .stage-head { grid-area: head; display: flex; flex-wrap: nowrap; align-items: center; gap: 11px; padding: 8px 14px; min-width: 0; background: linear-gradient(180deg, var(--accent-wash), transparent 90%), var(--panel); border-bottom: 1px solid var(--hair); }
 .st-title { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .st-title .proj { flex: 0 1 auto; min-width: 0; max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; font-weight: 800; color: var(--accent-ink); letter-spacing: -.02em; }
@@ -398,8 +492,47 @@ html.win .wctl { display: flex; }
 
 #terminals { position: relative; flex: 1; min-height: 0; background: var(--terminal-bg); }
 .term-pane { position: absolute; inset: 0; display: none; padding: 8px 10px 6px; }
-.term-pane.active { display: block; }
-.term-pane .xterm { height: 100%; }
+.term-pane.active { display: flex; flex-direction: column; }
+/* flex + min-height:0 rather than height:100%: the pane gained a caption for the
+   tiled view, and a 100%-tall xterm beside it would overflow by the caption's height. */
+.term-pane .xterm { flex: 1; min-height: 0; }
+
+/* ---------- the tiled stage: one run group, side by side ---------- */
+/* Clicking a run group's sidebar header lands here. Several panes are `.active` at
+   once, so they stop being absolutely-positioned overlays and become grid cells.
+   auto-fit/minmax means 2 steps sit side by side and 4 go 2×2 without a breakpoint;
+   below the min they stack, which is right on a narrow window. */
+/* `grid-auto-rows: minmax(0, 1fr)`, never a bare `1fr`. A bare `1fr` means
+   `minmax(auto, 1fr)`, and that `auto` floor is the xterm's own intrinsic height — so
+   the row could not shrink to its share of the stage, the grid grew past it, and the
+   whole stage overflowed into a scrollbar that took the header with it. `minmax(0, …)`
+   is what lets a cell be smaller than the terminal it contains; each pane scrolls its
+   own scrollback internally, so the grid itself never needs to. */
+/* 360px, not 300: a terminal needs columns. At 300px a three-step chain got three
+   ~38-column cells, which wraps everything a build prints. 360 keeps two per row on a
+   1440 window (≈57 columns each) and still spreads wider on a bigger screen. */
+#terminals.tiled { display: grid; gap: 1px; background: var(--hair); grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
+/* `overflow: hidden` per cell as well as on the grid: a pane that has not been fitted
+   yet still holds a full 24×80 terminal, which is taller than its cell and would push
+   the grid out again from the inside. FitAddon corrects the size a frame later; this
+   makes the intervening frame harmless rather than load-bearing. */
+#terminals.tiled .term-pane { position: static; inset: auto; min-width: 0; min-height: 0; overflow: hidden; background: var(--terminal-bg); padding: 0 8px 6px; }
+/* The caption only earns its space when there is more than one pane to tell apart. */
+.pane-cap { display: none; }
+#terminals.tiled .pane-cap { display: flex; align-items: center; gap: 6px; padding: 5px 2px 4px; font: 10px var(--font-mono); color: var(--muted-2); border-bottom: 1px solid var(--hair); }
+#terminals.tiled .pane-cap .pc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#terminals.tiled .pane-cap .pc-state { margin-left: auto; flex: none; }
+/* Each tile closes itself. A finished run keeps its ✕ visible (`.done`) — it is over, so
+   dismissing it is the obvious next move and hunting for a hover target across six
+   cells is not; a still-running one reveals it on hover, because closing that means
+   killing it. `data-close` on the span is what the delegated dispatcher already reads. */
+#terminals.tiled .pane-cap .pc-x { flex: none; opacity: 0; cursor: pointer; color: var(--muted-2); padding: 1px 5px; border-radius: 5px; background: var(--surface-2); transition: opacity .12s, color .12s; }
+#terminals.tiled .pane-cap.done .pc-x, #terminals.tiled .term-pane:hover .pane-cap .pc-x, #terminals.tiled .pane-cap:hover .pc-x { opacity: 1; }
+#terminals.tiled .pane-cap .pc-x:hover { color: var(--st-attention); background: var(--surface); }
+/* The focused pane — the one activeId names, so the one the inspector and keystrokes
+   are talking about. Without this, a tiled group gives no clue which that is. */
+#terminals.tiled .term-pane.focused { box-shadow: inset 0 0 0 1px var(--accent-line); }
+#terminals.tiled .term-pane.focused .pane-cap { color: var(--accent-ink); }
 .xterm .xterm-viewport { background: transparent !important; }
 /* Highlight the console while files are dragged over it (see initFileDrop). */
 #terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius-md); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }
@@ -762,12 +895,21 @@ html.win .wctl { display: flex; }
 .res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 /* Totals: context for the rates above, so it reads as a footnote not a third gauge.
    A button, because the window it covers cycles on click (today → this run → recorded)
-   — reset to look exactly like the row it replaced, with only a hover to say it acts. */
+   — reset to look exactly like the row it replaced. */
 .res .rtot { margin-top: 1px; width: 100%; padding: 2px 3px; margin-left: -3px; border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; text-align: left; }
 .res .rtot:hover { background: var(--surface-2); border-color: var(--hair); }
 /* The scope name is the key here and it is a word, not a fixed label — so this is the
    second row allowed out of the 30px column, for the same reason `.rall` is. */
 .res .rtot .rk { width: auto; flex: none; }
+/* The affordance, and it must be visible AT REST. This row is pixel-identical to the
+   two static ones above it until you hover, so a hover-only highlight was the whole
+   signal — and a label is the last thing anyone hovers. Dim enough to stay a footnote,
+   present enough to read as a control; it brightens and turns with the row. */
+.res .rcyc { font-size: 9px; line-height: 1; color: var(--muted-2); opacity: .55; margin-left: 5px; transition: opacity .15s ease, transform .3s ease; }
+.res .rtot:hover .rcyc { opacity: 1; color: var(--fg); transform: rotate(180deg); }
+/* Why the numbers did not move. Present only when two windows genuinely coincide, so
+   it is a sentence you see once on a fresh machine and then never again. */
+.res .rnote { margin: 3px 3px 0; font: 9.5px/1.35 var(--font-ui); color: var(--muted-2); opacity: .8; }
 .res .rvtot { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; margin-left: auto; }
 /* These figures are app-wide, not the session on screen — this row is what says so,
    and the only one allowed out of the 30px key column, because "all sessions" has to
@@ -848,8 +990,14 @@ html.win .wctl { display: flex; }
    file a task came from. */
 .runpop { position: fixed; top: 15vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(480px, 92vw); z-index: 41; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .runpop.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+/* The title is its own element so it can be `flex: none`. As a bare text node it
+   was an *anonymous* flex item — unstyleable, `flex: 0 1 auto`, so a worktree's long
+   `project · ⑃ branch · ~/path` subtitle shrank it to min-content and broke "▶ Run"
+   onto two lines. The sub takes the squeeze instead: `min-width: 0` is what lets a
+   flex item shrink below its content so `text-overflow` has something to do. */
 .run-h { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px 0; font-size: 13px; font-weight: 700; }
-.run-h .run-sub { font: 10px var(--font-mono); color: var(--muted-2); font-weight: 400; }
+.run-h .run-t { flex: none; white-space: nowrap; }
+.run-h .run-sub { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--font-mono); color: var(--muted-2); font-weight: 400; }
 #runInput { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: 13px var(--font-ui); padding: 9px 14px 11px; border-bottom: 1px solid var(--hair); }
 #runInput::placeholder { color: var(--muted-2); }
 /* Jump bar — one chip per detected source, so a repo with five task files is two
@@ -873,13 +1021,18 @@ html.win .wctl { display: flex; }
 .run-row .txt b { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .txt small { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-row .end { font: 9px var(--font-mono); color: var(--muted-2); flex: none; }
+/* The row runs the task; this asks what to run it with. It stays visible rather
+   than appearing on hover — a task you can pass parameters to is a fact about the
+   task, not about where the pointer is. */
+.run-params { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; cursor: pointer; border: 1px solid var(--hair); background: var(--surface); color: var(--muted-2); font: 11px var(--font-ui); line-height: 1; padding: 0; }
+.run-params:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 /* Blocked runnables stay listed — a missing row reads as "Episko didn't find it". */
 .run-row.blocked { opacity: .5; cursor: not-allowed; }
 .run-row.blocked .end { color: var(--st-working); }
 .run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
 .run-empty .dim { color: var(--muted-2); font-size: 10.5px; }
 .run-empty code { font: 10px var(--font-mono); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
-.run-foot { display: flex; gap: 14px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
+.run-foot { display: flex; flex-wrap: wrap; gap: 5px 14px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
 .run-foot kbd { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; margin-right: 2px; }
 
 /* task inspector actions */
@@ -906,6 +1059,14 @@ html.win .wctl { display: flex; }
 .in-ctl { width: 100%; height: 32px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); padding: 0 10px; font: 12.5px var(--font-mono); outline: none; }
 .in-ctl:focus { border-color: var(--accent-line); }
 select.in-ctl { cursor: pointer; }
+/* The dialog's own footer. It had no rules at all once, which is what left Cancel
+   rendering as a raw platform button flush against the field above it. */
+.in-foot { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.in-hint { flex: 1; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 5px; }
+.in-hint kbd { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }
+.in-hint .in-dot { opacity: .5; }
+.in-cancel { font: 600 11.5px var(--font-ui); padding: 7px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: transparent; color: var(--muted); }
+.in-cancel:hover { color: var(--text); border-color: var(--accent-line); }
 
 /* Settings rows for the Tasks page. The window itself (rail, tabs, pane) is
    upstream's — these are just the row primitives its task settings need. */
@@ -1427,6 +1588,15 @@ select.in-ctl { cursor: pointer; }
    "Episko forgot how to do this". Same shape the branch popover uses for its own. */
 .ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }
 .ctxmenu .mp-item.dis:hover { background: transparent; }
+/* A group has no folder and no colour, so its head wears the fold glyph instead of the
+   swatch every other #ctxMenu head shows. */
+.ctxmenu .mp-hfold { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-2); border-radius: 3px; }
+/* Naming or renaming a group, inline. A dialog for one short string would weigh more
+   than the thing it makes — the colour panel's .sw-hex field is the same call. */
+.ctxmenu .mp-new { padding: 4px 7px 2px; }
+.ctxmenu .mp-in { width: 100%; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); font: 500 12px var(--font-ui); outline: none; }
+.ctxmenu .mp-in:focus { border-color: var(--accent-line); }
+.ctxmenu .mp-in::placeholder { color: var(--muted-2); }
 
 /* "x needs you" dropdown (multiple sessions awaiting attention) */
 .attn-badge.multi::after { content: "▾"; font-size: 8px; margin-left: 1px; opacity: .7; }

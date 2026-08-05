@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { isAgent } from "./types";
+import { isAgent, isExited } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
@@ -18,19 +18,20 @@ import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
 import { renderInspector, tickDwell } from "./inspector";
-import { applyFontSize, bumpFont, refit } from "./terminal";
+import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
-  setTheme, setWtGroup, toggleInsp,
+  setTheme, setWtGroup, toggleInsp, toggleProjGroup,
   toggleRail, toggleTheme,
 } from "./actions";
 import {
-  activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal,
-  refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
-  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
+  activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
+  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
+  noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
+  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -72,7 +73,7 @@ import {
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
-  renderMgr, setMgrEdit, setTaskUiHost,
+  renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
@@ -85,8 +86,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
-  setTermEngine,
-  setTermFontSize, sortMode, termEngine,
+  setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
@@ -261,7 +261,7 @@ setWtRefreshGit(refreshGitViews);
 // ---------- model ----------
 // The shapes live in ./types and the state itself in ./state (see the imports at
 // the top of this file); this is the behaviour that hangs off them. The xterm side of
-// a pane — the font stack, loadWebgl, fitSession/refit, the font-atlas reload and the
+// a pane — the font stack, attachWebgl/detachWebgl, fitSession/refit, the font-atlas reload and the
 // OSC-title clean-up — is ./terminal, shared by all three spawners below.
 
 
@@ -352,8 +352,44 @@ function listPhrase(parts: string[]): string {
 // menu-bar mirror to ./tray — a native surface, so its repaint is an IPC call rather
 // than an innerHTML assignment, but it hangs off renderAll() like the rest.
 
-function renderAll() {
+// Coalesced: a mutation calls renderAll(), renderAll() only marks the pass due, and
+// one flush per animation frame paints whatever state every event in that frame left
+// behind. Telemetry arrives in bursts — N busy agents each fire a hook per lifecycle
+// event plus a statusLine — and each full pass below is itself O(sessions), so paying
+// one pass *per event* scaled roughly quadratically with the fleet and burned the main
+// thread repainting states nobody could have seen. Every call site keeps its contract
+// ("every mutation ends by calling renderAll()"); only the paint is batched.
+//
+// The timeout is not a belt-and-braces double: rAF does not fire while the window is
+// hidden, and the tray menu — repainted by this same pass — is exactly the surface
+// being read while the window is hidden. A backgrounded WebView throttles timers to
+// ~1s, which is still fresh enough for a menu. Whichever fires first wins and cancels
+// nothing it doesn't have to: a late rAF/timeout meeting `renderPending === false`
+// simply returns.
+//
+// Exported for measurement only — the debug console and a devtools session can reach
+// it, but no module may import main.ts (it is the top of the graph).
+let renderPending = false;
+let renderFallback = 0;
+export function renderAll() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(flushRender);
+  renderFallback = window.setTimeout(flushRender, 250);
+}
+function flushRender() {
+  if (!renderPending) return;
+  renderPending = false;
+  clearTimeout(renderFallback);
+  renderAllNow();
+}
+function renderAllNow() {
+  telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
+  // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
+  // keeps), and panes are outside the render-everything sweep — so it has to be asked
+  // for. No-ops unless a group is actually tiled.
+  refreshPaneCaps();
   // When mirroring an external session, activeId is null but the stage/inspector
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
@@ -401,9 +437,13 @@ function renderAll() {
 // (theme, sort, engine, font, token scan) through setSettingsHost below.
 
 // ---------- events ----------
-listen<{ sessionId: string; data: string }>("pty-output", (e) => {
+listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   const s = sessions.get(e.payload.sessionId); if (!s?.term) return;
   const bytes = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
+  // A pane mid-adoption queues instead of writing: its scrollback snapshot must
+  // land first, and whether this chunk is already inside that snapshot is decided
+  // by seq when adoptSession flushes the queue (#47).
+  if (s.adopt) { s.adopt.pending.push({ seq: e.payload.seq, bytes }); return; }
   s.term.write(bytes);
   // A task keeps a small tail of its own output so a failure can be handed to a
   // Claude session without re-reading the pane. Bounded hard — this is a hint for
@@ -433,6 +473,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     // The exit code *is* the phase — that's what buys tasks the sidebar glyphs,
     // the attention badge and the tray without a line of new plumbing.
     s.run!.exitCode = code;
+    // Freeze the duration here. Every repaint used to recompute it against
+    // `Date.now()`, so a step that finished in 400ms kept climbing and a whole tiled
+    // chain read the same ever-growing elapsed time.
+    s.run!.endedAt = Date.now();
     setPhase(s, code === 0 ? "done" : "error");
     s.term?.writeln(code === 0
       ? `\r\n\x1b[32m✓ ${s.run!.label} — exit 0\x1b[0m`
@@ -445,6 +489,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   } else {
     s.phase = "ended";
     s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+    // Reclaim an ended claude pane's scrollback the moment nobody is looking at it;
+    // the pane you watched end keeps its buffer until it leaves the stage (setActive
+    // trims on the way off). See trimScrollback for why claude panes only.
+    if (isAgent(s) && activeId !== s.id) trimScrollback(s);
   }
   renderAll();
 });
@@ -502,7 +550,11 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
+  // `closest` returns the NEAREST matching ancestor, so a nested target beats its row
+  // for free — but only if its attribute is in this list. A data- attribute the
+  // selector doesn't name resolves to the enclosing row instead, silently doing the
+  // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -516,9 +568,18 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
+  // The twisty must be tested BEFORE the row it sits inside, or expanding a run
+  // group's step list would also tile it on the stage — two different intents, and
+  // the inner target has to win.
+  else if (el.dataset.rgtoggle) toggleRunGroup(el.dataset.rgtoggle);
+  else if (el.dataset.closerun) void closeRunGroup(el.dataset.closerun);
+  else if (el.dataset.rungroup) { openRunGroup(el.dataset.rungroup); closeAttnPop(); }
   // Two popovers emit data-sel rows — the reactor's picker and the spend split — and
   // both are answered by putting that session on the stage, so both close behind it.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
+  // The header of a user-defined project group: the whole bar folds it, the way its
+  // chevron says it does. Right-click is the group's own menu (./projmenu).
+  else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);
   // A project header. This used to select whichever session sorted first, so one
   // click meant two different things depending on state; it now opens the project
   // dashboard, and the sessions are the rows directly beneath it.
@@ -615,6 +676,11 @@ $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDif
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
+  // ⌘⇧B / ⌘⇧T must be tested BEFORE plain ⌘B / ⌘T, which deliberately don't check
+  // `!e.shiftKey` — so whichever branch comes first wins the shifted chord too. Put a
+  // new shifted binding above its unshifted twin, or it silently never fires.
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); void runDefaultTask("build"); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); void runDefaultTask("test"); }
   else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
   else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
   else if (meta && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
@@ -667,6 +733,19 @@ new ResizeObserver(() => {
   refitTimer = window.setTimeout(refit, 120);
 }).observe($("terminals"));
 
+// Clicking a tile in a tiled run group moves the focus to it. One delegated listener
+// rather than a per-pane one, so no bookkeeping when panes come and go; the capture
+// phase, so xterm's own mousedown (which takes DOM focus for typing) doesn't matter to
+// us either way. No-ops when nothing is tiled.
+$("terminals").addEventListener("mousedown", (e) => {
+  if (!stageGroup) return;
+  const t = e.target as HTMLElement;
+  if (t.closest(".pc-x")) return; // the caption's ✕ is a close, not a focus
+  for (const s of sessions.values()) {
+    if (s.pane.contains(t)) { focusInGroup(s.id); return; }
+  }
+}, true);
+
 // The footer version label and app self-update moved to ./update — it needs nothing
 // from here, so it is imported for its side effects and never called.
 
@@ -682,7 +761,9 @@ listen("quit-requested", async () => {
   // day's *money* (`cc-usage`) is written eagerly and needs no flush — see ./usage.
   flushIo();
   flushUsageDetail();
-  const live = [...sessions.values()].filter((s) => s.phase !== "ended");
+  // isExited, not `phase !== "ended"`: a finished task's phase is done/error, so the
+  // old test counted every failed run as "1 task still running" in the quit dialog.
+  const live = [...sessions.values()].filter((s) => !isExited(s));
   const agents = live.filter((s) => isAgent(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
   const runs = live.filter((s) => s.kind === "task").length;
@@ -704,7 +785,7 @@ listen("quit-requested", async () => {
 // ---------- debug console wiring ----------
 $("dbgBtn").addEventListener("click", () => toggleDbg());
 $("dbgClose").addEventListener("click", () => toggleDbg(false));
-$("dbgClear").addEventListener("click", () => { dbgLog.length = 0; telem.rx = telem.routed = telem.dropped = 0; renderDbgBadge(); renderDbgPanel(); });
+$("dbgClear").addEventListener("click", () => { dbgLog.length = 0; telem.rx = telem.routed = telem.dropped = telem.renders = 0; renderDbgBadge(); renderDbgPanel(); });
 $("dbgCopy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(JSON.stringify(dbgSnapshot(), null, 2)); toast("Debug snapshot copied"); } catch { toast("copy failed"); }
 });
@@ -748,20 +829,38 @@ setInterval(() => {
   tickDwell(s);
 }, 1000);
 
-// Refresh the active session's working-set diff + CPU/RAM on a slow cadence.
+// Refresh the active session's inspector stats on a slow cadence: the live I/O
+// figures, plus picking up whatever working-set diff the dirty poll has read since.
+// This tick spawns nothing — the diffstat it used to run itself now rides
+// `refreshDirtyStates`' stale-driven map, same as the sidebar dot.
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
   if (s) void refreshSessionStats(s);
 }, 4000);
 
+// Keep the disk-I/O rollup sampled when the poll above cannot run — a mirror or the
+// dashboard owns the stage, nothing is selected, or the window is in the background and
+// the WebView is throttling its timers. The counters are cumulative, so a gap loses no
+// bytes; what it loses is the ability to say WHICH DAY they belong to, and a gap over a
+// night booked a whole evening's churn to the next morning. `splitIo` makes a long
+// window honest; this keeps the window short.
+//
+// One minute, matching `IO_SAVE_FLOOR_MS` exactly, so this cannot raise the write rate
+// above what an on-stage session already produces: `addIo` returns before touching
+// anything when the disk was idle, and flushes at most once per floor when it wasn't.
+// It carries no `git_diffstat` — see `pollIo`.
+setInterval(() => { void pollIo(); }, 60_000);
+
 // discover Claude Code sessions running outside Episko and keep them fresh.
 refreshExternals();
 setInterval(refreshExternals, 3000);
 
-// surface the sessions that were open when Episko last closed, so they can be
-// resumed instead of lost. Read-only until the user actually clicks Resume.
-void loadDormants();
+// Re-adopt any pane a webview reload orphaned — the backend still holds its PTY —
+// and only THEN reconcile the roster: an adopted id is live again, so it must not
+// also come back as a dormant row (#47). A normal start finds no orphans and the
+// await is one empty IPC round-trip.
+void adoptOrphans().finally(() => void loadDormants());
 // Nothing else persists the roster on the way out: closeSession and the telemetry
 // tick both save, but a quit with live, quiet sessions would otherwise write nothing.
 window.addEventListener("beforeunload", flushRoster);

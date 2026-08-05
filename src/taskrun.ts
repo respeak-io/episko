@@ -11,7 +11,8 @@
 //     in-flight marker covers the window a `dependsOn` chain leaves open, before its
 //     own pane exists for the scan to find
 //   • never unattended-hostile — stopRuleBlocked (./tasks) refuses a background task,
-//     one with ${input:…}, and a blocked one
+//     one whose ${input:…} still needs a person, and a blocked one; prefillInputs then
+//     answers the rest, so no placeholder can reach a command line with nobody there
 //
 // The rest is the task inspector's actions: re-run, reveal the source file, and hand a
 // failure back to the session whose turn it was checking.
@@ -23,8 +24,8 @@ import { isAgent, type Runnable, type Sess } from "./types";
 import { sessions } from "./state";
 import { openInputPrompt } from "./taskui";
 import {
-  discoverTasks, lastRunnableById, launchWithDeps, stopRuleBlocked, stopRules,
-  type TaskLaunchOpts,
+  discoverTasks, lastRunnableById, launchWithDeps, prefillInputs, stopRuleBlocked,
+  stopRules, type TaskLaunchOpts,
 } from "./tasks";
 
 // Three callees in the pane layer: putting a pane on the stage, closing one, and
@@ -83,8 +84,13 @@ export async function maybeRunOnStop(s: Sess) {
     }
     const why = stopRuleBlocked(spec);
     if (why) { dlog("warn", `run-on-stop ${rule.id} skipped: ${why}`); return; }
+    // Belt and braces: the rule above already refuses anything that would need a
+    // person, so this only fills in the answerable inputs — but it is what
+    // guarantees no unsubstituted ${input:…} ever reaches a command line unattended.
+    const ready = prefillInputs(spec, s.project);
+    if (!ready) { dlog("warn", `run-on-stop ${rule.id} skipped: an input has no value`); return; }
     dlog("info", `run-on-stop ${rule.id} · ${s.project} · ${s.id.slice(0, 8)} finished a turn`);
-    await launchWithDeps(spec, s.project, {
+    await launchWithDeps(ready, s.project, {
       colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
       discoveredIn: spec.cwd, forSession: s.id, focus: false,
     });
@@ -96,14 +102,17 @@ export async function maybeRunOnStop(s: Sess) {
 // Re-running reuses nothing — it opens a fresh pane and closes the old one, so the
 // sidebar doesn't accumulate a row per attempt while the scrollback stays honest
 // about which attempt you're reading.
-export async function rerunTask(s: Sess) {
+export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
   const spec = lastRunnableById.get(r.id);
   if (!spec) { toast("Task definition is gone — rescan"); return; }
-  if (spec.inputs.length) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd }); return; }
+  // Re-running means "the same thing again", so the values it already ran with are
+  // reused silently; ⋯ Parameters is the button for changing them.
+  const ready = withParams && spec.inputs.length ? null : prefillInputs(spec, s.project);
+  if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd }); return; }
   const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
   closeSession(s.id);
-  await launchTask(spec, project, { colorKey, worktree, branch });
+  await launchTask(ready, project, { colorKey, worktree, branch });
 }
 
 // Type the failure into a Claude session's stdin — deliberately *without* a
