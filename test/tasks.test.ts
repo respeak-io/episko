@@ -3,7 +3,7 @@ import { runElapsed, taskStateText, type InputSpec, type Runnable, type Sess } f
 import { store } from "./localstorage"; // must precede the subject import
 import {
   applyInputs, applyRunner, execCmd, exitWaiters, findDepCycle, lastRunnableById,
-  launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps,
+  launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps, resolveRunInputs,
   setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
 } from "../src/tasks";
@@ -118,6 +118,22 @@ describe("prefillInputs — what a plain Run can start without asking", () => {
   });
   it("clears the inputs, so what it returns never prompts again", () => {
     expect(prefillInputs(withInput({ optional: true }), "epi")?.inputs).toEqual([]);
+  });
+});
+
+// The withParams rule lives in one place so Run, ⌘⇧B and re-run cannot drift:
+// the explicit *Run with parameters…* verb always asks, a plain run only when it must.
+describe("resolveRunInputs — the attended surfaces' shared first step", () => {
+  it("forces the dialog for withParams when there is anything to ask about", () => {
+    expect(resolveRunInputs(run({ inputs: [inputSpec({ default: "api" })] }), "epi", true)).toBeNull();
+  });
+  it("withParams on a task with no inputs has nothing to ask, so it launches", () => {
+    const r = run();
+    expect(resolveRunInputs(r, "epi", true)).toBe(r);
+  });
+  it("a plain run prefills — answerable inputs launch, unanswerable ones prompt", () => {
+    expect(resolveRunInputs(run({ inputs: [inputSpec({ default: "api" })] }), "epi")).not.toBeNull();
+    expect(resolveRunInputs(run({ inputs: [inputSpec()] }), "epi")).toBeNull();
   });
 });
 

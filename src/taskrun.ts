@@ -24,7 +24,7 @@ import { isAgent, type Runnable, type Sess } from "./types";
 import { sessions } from "./state";
 import { openInputPrompt } from "./taskui";
 import {
-  discoverTasks, lastRunnableById, launchWithDeps, prefillInputs, stopRuleBlocked,
+  discoverTasks, lastRunnableById, launchWithDeps, prefillInputs, resolveRunInputs, stopRuleBlocked,
   stopRules, type TaskLaunchOpts,
 } from "./tasks";
 
@@ -108,7 +108,7 @@ export async function rerunTask(s: Sess, withParams = false) {
   if (!spec) { toast("Task definition is gone — rescan"); return; }
   // Re-running means "the same thing again", so the values it already ran with are
   // reused silently; ⋯ Parameters is the button for changing them.
-  const ready = withParams && spec.inputs.length ? null : prefillInputs(spec, s.project);
+  const ready = resolveRunInputs(spec, s.project, withParams);
   if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd }); return; }
   const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
   closeSession(s.id);

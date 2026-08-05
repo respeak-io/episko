@@ -75,7 +75,7 @@ Dependencies are named by *label*, run in parallel unless `dependsOrder: "sequen
 
 ## Inputs
 
-**An input is a second verb, not a toll on the first**: *Run* goes through `prefillInputs` (last value from `cc-task-inputs` → definition default → empty if `optional`), prompting only when an input has no answer anywhere; changing values is its own button (`⋯` / ⌥⏎ / *⋯ Parameters*). **Known drift**: `runDefaultTask` (⌘⇧B/⌘⇧T) always prompts instead of prefilling, and `rerunTask`/`maybeRunOnStop` re-implement the prefill — consolidating them back through `runRunnable` is the fix, not documentation. The row's tooltip shows the command *as prefilled* — a value reused silently is fine only while visible.
+**An input is a second verb, not a toll on the first**: *Run* goes through `prefillInputs` (last value from `cc-task-inputs` → definition default → empty if `optional`), prompting only when an input has no answer anywhere; changing values is its own button (`⋯` / ⌥⏎ / *⋯ Parameters*). Every attended surface routes through `runRunnable` (picker, ⌘K, ⌘⇧B — which toasts only when something actually launched) or shares `resolveRunInputs` (re-run, whose launch semantics differ: it closes the old pane first); run-on-stop is unattended and uses bare `prefillInputs`, never prompting. The row's tooltip shows the command *as prefilled* — a value reused silently is fine only while visible.
 
 **`optional` exists because `just` has two variadics and they are opposites**: `*name` is complete without a value, `+name` is not — reading both as required put a prompt in front of every `*args` run. VS Code inputs are never optional. It is also the one thing `stopRuleBlocked` softens on: an input that answers itself is not a prompt.
 
