@@ -1070,18 +1070,23 @@ And the things that hold however the files are arranged:
   re-testing the string. It is orthogonal to `Sess.external`, which means "the
   terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
   applies to a claude session.
-- **A pane's WebGL context follows the stage, never the pane.** `setActive`'s pane loop
-  attaches the renderer addon to what just became visible and detaches it from
-  everything leaving (`attachWebgl`/`detachWebgl` in `terminal.ts`, handle in
-  `Sess.gl`) — spawners load no WebGL of their own. This is load-bearing, not tidy:
-  Chromium-family webviews cap a page at 16 live WebGL contexts and evict LRU past it,
-  so a context per pane for life silently downgraded the *oldest* panes to the slow DOM
-  renderer once a fleet ever crossed 16. A context lost anyway (GPU reset) dlogs and
-  heals on the pane's next activation. Two ended-pane rules ride the same lifecycle: an
-  ended **claude** pane gives up its 8000-line scrollback once it leaves the stage
-  (`trimScrollback` — the transcript is on disk; shells have none and a failed task's
-  scrollback IS its log, so both keep theirs), and `isExited` panes drop out of the 4s
-  branch poll and the quit guard's count.
+- **A pane's WebGL context comes from a small LRU pool over the recently-staged panes**
+  (`attachWebgl`/`detachWebgl` in `terminal.ts`, handle in `Sess.gl`, `GL_POOL_MAX` = 8)
+  — spawners load no WebGL of their own, and `setActive` attaches on the way onto the
+  stage. Both simpler designs were tried and are wrong: a context per pane for life
+  hits the webview's 16-context cap and silently downgrades the *oldest* panes to the
+  slow DOM renderer, and dispose-per-deactivation churns a context per switch — which
+  WKWebView punishes with "too many active WebGL contexts" once its GC falls behind,
+  because **JS cannot destroy a WebGL context, only unreference it** (and
+  `WEBGL_lose_context.loseContext()` is worse: a lost-but-referenced context stays in
+  WebKit's budget and eviction then trips over it with INVALID_OPERATION — both
+  observed in the dev build). A warm pane re-attaches for free; `isExited` and closed
+  panes free their slot immediately; a context lost anyway (GPU reset, a >16-tile
+  mosaic) dlogs and heals on the pane's next activation. Two ended-pane rules ride the
+  same lifecycle: an ended **claude** pane gives up its 8000-line scrollback once it
+  leaves the stage (`trimScrollback` — the transcript is on disk; shells have none and
+  a failed task's scrollback IS its log, so both keep theirs), and `isExited` panes
+  drop out of the 4s branch poll and the quit guard's count.
 - **A claude pane's keystrokes are not raw pass-through.** Shell and task panes
   wire `term.onData` straight to `write_pty` (in `panes.ts`); a claude pane goes
   through `claudeInput` in **`terminal.ts`**, which forwards the first `^C`

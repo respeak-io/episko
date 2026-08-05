@@ -490,12 +490,15 @@ export function setActive(id: string, keepGroup = false) {
     const on = gid ? x.run?.groupId === gid : x.id === id;
     x.pane.classList.toggle("active", on);
     x.pane.classList.toggle("focused", !!gid && x.id === id);
-    // The WebGL context follows the visible set: attach after the class flip (the
-    // addon activates against a measurable pane), drop it from everything leaving the
-    // stage. An ended claude pane leaving also gives up its scrollback — this is the
-    // deferred half of the pty-exit trim, for the pane you watched end.
+    // WebGL: attach after the class flip (the addon activates against a measurable
+    // pane). A live pane leaving the stage KEEPS its addon — the LRU pool in
+    // terminal.ts bounds the total, and evicting on every deactivation churns a
+    // context per switch, which WebKit punishes once its GC falls behind. An exited
+    // pane won't be revisited soon, so it frees its slot at once — and an ended
+    // claude pane gives up its scrollback too, the deferred half of the pty-exit trim
+    // for the pane you watched end.
     if (on) { paintPaneCap(x); attachWebgl(x); }
-    else {
+    else if (isExited(x)) {
       detachWebgl(x);
       if (isAgent(x) && x.phase === "ended") trimScrollback(x);
     }

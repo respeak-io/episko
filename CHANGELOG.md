@@ -14,13 +14,14 @@ Markers: `+` new · `~` changed · `!` fixed
 ## Unreleased
 
 ! **A big fleet no longer silently drops old terminals onto the slow renderer.** Every
-  pane held a WebGL context for the life of the pane, and Chromium-family webviews cap
-  a page at 16 live contexts — one pane past that and the browser starts evicting the
-  *oldest*, exactly the long-lived sessions you keep returning to, permanently
-  downgrading them to DOM rendering with no error anywhere. Now only the pane on stage
-  holds a context (one per tile when a run group is tiled), so the cliff is unreachable
-  however many panes exist — and a context lost anyway logs itself to the 🐞 console
-  and heals the next time the pane is activated.
+  pane held a WebGL context for the life of the pane, and webviews cap a page at 16
+  live contexts — one pane past that and the browser starts evicting the *oldest*,
+  exactly the long-lived sessions you keep returning to, permanently downgrading them
+  to DOM rendering with no error anywhere. Contexts now come from a small pool over
+  the recently-viewed panes, so the cliff is unreachable however many panes exist,
+  switching between the panes you actually work in stops paying a renderer rebuild
+  each time — and a context lost anyway logs itself to the 🐞 console and heals the
+  next time the pane is activated.
 ~ **A burst of telemetry costs one repaint, not one per event.** Every hook and
   statusLine used to trigger a full render of every surface, and N busy agents
   multiplied that into a constant main-thread load that grew with the fleet. Renders
