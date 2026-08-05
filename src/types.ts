@@ -212,10 +212,17 @@ export interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
-  // `gl` is the pane's WebGL renderer addon while it is on stage — attached on
-  // activation, dropped when the pane leaves (see attachWebgl in ./terminal). Held
-  // here rather than inside terminal.ts because it lives and dies with the pane.
+  // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
+  // attached on activation, released when the pool evicts it or the pane exits (see
+  // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it
+  // lives and dies with the pane.
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; gl?: WebglAddon; pane: HTMLElement;
+  // Set only while a reload orphan's pane is being rebuilt (#47 stage 2): incoming
+  // pty-output chunks queue here instead of reaching the terminal until the
+  // scrollback snapshot has been written. A queued chunk at or below the
+  // snapshot's seq is already inside it and is dropped on flush; see adoptSession
+  // in ./panes for the whole protocol.
+  adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
   // task panes only
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
@@ -259,6 +266,11 @@ export interface ExtSession {
 // has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
 // therefore not about capturing conversation state — Claude already has it — but
 // about remembering which sessions were on screen at quit, and with what identity.
+/// One embedded PTY as the BACKEND holds it (`live_sessions`). Meaningful to the
+/// frontend only where its own map falls short — after a webview reload, when the
+/// map is empty and every one of these is an orphan (#47).
+export interface LiveSess { id: string; kind: string; workdir: string }
+
 export interface Restorable {
   id: string;          // the original launch uuid (roster key, stable across restarts)
   resumeId: string;    // what to hand `claude --resume`

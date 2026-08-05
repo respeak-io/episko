@@ -19,13 +19,13 @@ import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
 import { renderMini, renderSidebar } from "./sidebar";
-import { dormantBusy, extWorking } from "./sidebarview";
-import { orderedSessions } from "./grouping";
-import { isAgent, type DiffStat, type ExtSession, type Restorable, type Sess } from "./types";
+import { extWorking } from "./sidebarview";
+import { dormantBusy, orderedSessions } from "./grouping";
+import { isAgent, type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess } from "./types";
 import {
   accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
-  isDirty, mirror, pastMirrorId, sessions, setActiveId, setDormants, setExternals,
-  setMirror,
+  isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
+  setExternals, setMirror,
 } from "./state";
 
 // Three callees this module does not own: putting an Episko pane on the stage when a
@@ -76,8 +76,15 @@ let extTranscriptTimer: number | undefined;
 // ---------- external sessions: discovery, jump, read-only transcript ----------
 export async function refreshExternals() {
   try {
-    const list = await invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] });
+    // The backend's own PTY roster rides the same poll: it is what lets a busy
+    // check see a reload orphan — a PTY the backend holds while the frontend map
+    // has no pane for it and `list_external_sessions` excludes its pid (#47).
+    const [list, live] = await Promise.all([
+      invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] }),
+      invoke<LiveSess[]>("live_sessions"),
+    ]);
     setExternals(list);
+    setBackendLive(new Set(live.map((l) => l.id.toLowerCase())));
     // Scour each external repo for its logo, keyed by the same repo_root the sidebar
     // groups by — otherwise ext-only projects would forever show the accent dot.
     // probeIcon dedupes by key, so this hits the backend at most once per repo.

@@ -26,7 +26,7 @@ import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
   isAgent, isExited, statusKey, taskStateText, type DiffStat, type GitActionResult,
-  type Res, type Runnable, type Sess, type WtHead,
+  type LiveSess, type Res, type Restorable, type Runnable, type Sess, type WtHead,
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fmtMb, fmtRate } from "./format";
@@ -41,7 +41,7 @@ import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderFoot } from "./footer";
 import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
-import { nextAfterClose, nextInGroup } from "./grouping";
+import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
@@ -56,6 +56,23 @@ import {
 // from scratch, and it is the file that orchestrates them that owns it.
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
+
+// The embedded terminal of a claude pane — shared by a fresh launch and by the
+// adoption of a reload orphan, so the two cannot drift on options or key wiring.
+function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  // No WebGL here: setActive attaches a pooled context the moment the pane is on
+  // stage — a context per pane for life is the 16-context cliff (see attachWebgl).
+  term.open(pane);
+  term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
+  winClaudePaste(id, term, pane);
+  return { term, fit };
+}
 
 // ---------- launch ----------
 // Returns the new session id, or null if the spawn failed. Most callers ignore it —
@@ -80,17 +97,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   if (external) {
     pane.innerHTML = `<div class="ext-pane"><div class="ext-logo"></div><h2>Running in ${esc(eng.label)}</h2><p>${esc(project)}${opts.worktree ? " · " + esc(opts.worktree) : ""} — the terminal is in your ${esc(eng.label)} window.<br>Episko still tracks its status, cost &amp; context here.</p></div>`;
   } else {
-    term = new Terminal({
-      fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
-      theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
-    });
-    fit = new FitAddon();
-    term.loadAddon(fit);
-    // No WebGL here: setActive attaches it the moment the pane is on stage, and only
-    // then — a context per pane for life is the 16-context cliff (see attachWebgl).
-    term.open(pane);
-    term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
-    winClaudePaste(id, term, pane);
+    ({ term, fit } = newClaudeTerm(id, pane));
   }
 
   const s: Sess = {
@@ -176,6 +183,94 @@ export function requestLaunch(project: string, path: string, known?: { branch: s
 // project group of its own).
 export function launchWorktree(project: string, root: string, dir: string, branch: string) {
   launch(project, dir, { colorKey: root, worktree: dir === root ? null : branch, branch });
+}
+
+// ---------- adoption: panes for the PTYs a webview reload orphaned (#47) ----------
+// A reload empties this module's world while every backend PTY runs on. Stage 1 of
+// the fix makes such an orphan read busy; this puts it back on screen: one Sess per
+// claude orphan, the backend's scrollback ring replayed into a fresh term, and the
+// existing pty-output listener picks the stream back up with no new plumbing.
+// Identity comes from the roster, which knew this pane before the reload; a
+// roster-less orphan adopts under its workdir's name — a running conversation is
+// worth more than a tidy label. Telemetry re-routes by itself: hooks tag the launch
+// uuid via X-CC-Session, and that uuid is exactly what the map is keyed by again.
+//
+// Called once at startup, BEFORE loadDormants — an adopted id is live again, so the
+// roster reconcile then skips it instead of also offering it as a dormant row.
+export async function adoptOrphans(): Promise<number> {
+  let back: LiveSess[] = [];
+  try { back = await invoke<LiveSess[]>("live_sessions"); } catch { return 0; }
+  let roster: Restorable[] = [];
+  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
+  if (!Array.isArray(roster)) roster = [];
+  const orphans = orphanAdoptions(back, roster);
+  for (const o of orphans) await adoptSession(o);
+  if (orphans.length) {
+    dlog("warn", `adopted ${orphans.length} orphaned pane${orphans.length === 1 ? "" : "s"} after a webview reload`);
+    toast(`Reattached ${orphans.length} running session${orphans.length === 1 ? "" : "s"} after a reload`);
+    // The reload took the stage's pane away; give it back to the freshest orphan —
+    // unless the user beat this to it, which their click already answered.
+    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror()) {
+      const front = [...sessions.values()].sort((a, b) => b.lastActivity - a.lastActivity)[0];
+      if (front) setActive(front.id);
+    }
+    renderAll();
+  }
+  return orphans.length;
+}
+
+async function adoptSession(o: { id: string; workdir: string; meta: Restorable | null }) {
+  const m = o.meta;
+  const project = m?.project || basename(o.workdir) || "session";
+  const colorKey = m?.colorKey ?? o.workdir;
+  probeIcon(colorKey);
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  $("terminals").appendChild(pane);
+  const { term, fit } = newClaudeTerm(o.id, pane);
+  const s: Sess = {
+    id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
+    resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
+    title: m?.title ?? "",
+    phase: "idle", phaseSince: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
+    attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    apiErr: null, drift: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    lastEvent: "", activity: [], kind: "claude", external: false, term, fit, pane,
+    adopt: { pending: [] },
+  };
+  // From this line the pty-output listener queues this session's chunks into
+  // `s.adopt` — the snapshot below decides which of them it already contains.
+  sessions.set(o.id, s);
+  term.onTitleChange((t) => {
+    const c = cleanTitle(t, s);
+    if (c !== s.title) { s.title = c; renderSidebar(); if (activeId === o.id) renderHeader(s); }
+  });
+  try {
+    const snap = await invoke<{ data: string; seq: number }>("read_scrollback", { sessionId: o.id });
+    term.write(Uint8Array.from(atob(snap.data), (c) => c.charCodeAt(0)));
+    for (const c of s.adopt!.pending) if (c.seq > snap.seq) term.write(c.bytes);
+  } catch (e) {
+    // Snapshot refused — most likely the process exited in the window between the
+    // listing and this call, in which case the reaper has already dropped it from
+    // the backend map and no pty-exit can reach a pane that did not exist yet.
+    const gone = String(e).includes("no such session");
+    if (gone) {
+      s.phase = "ended";
+      term.writeln("\x1b[90m[this session ended while the pane was being reattached]\x1b[0m");
+    } else {
+      // Degraded: no history, but the live stream still flows from here on.
+      for (const c of s.adopt!.pending) term.write(c.bytes);
+      dlog("warn", `scrollback replay failed for ${o.id.slice(0, 8)}: ${e}`);
+    }
+  }
+  s.adopt = null;
+  dlog("info", `adopted ${project} · ${o.id.slice(0, 8)}${m ? "" : " · no roster entry"}`);
+  invoke<string | null>("git_branch", { workdir: o.workdir }).then((b) => {
+    if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === o.id) renderHeader(s); }
+  });
+  queueRosterSave();
 }
 
 // A plain login shell in an embedded xterm pane — no Claude, no telemetry.
