@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.15.0 — 2026-08-05
+Task chains fold into one row, projects into your own headings, a reload hands every
+pane back — and a big fleet stops paying for what nobody is looking at.
+
 ! **A big fleet no longer silently drops old terminals onto the slow renderer.** Every
   pane held a WebGL context for the life of the pane, and webviews cap a page at 16
   live contexts — one pane past that and the browser starts evicting the *oldest*,
