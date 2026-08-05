@@ -130,6 +130,16 @@ Markers: `+` new · `~` changed · `!` fixed
   even with nothing on stage. The heartbeat reads only the counters — no `git` call
   beside it, and no more writing than before, because a disk meter that churns the disk
   is measuring itself.
+! **A running task no longer books its disk reads again on every poll.** The app-wide
+  I/O total kept a session's bytes past its exit by "retiring" any sampled pid it no
+  longer recognised — but it recognised pids by the list that exists to tell *claude*
+  processes apart from external ones, which shells and tasks never join. So a live test
+  run or terminal pane read as freshly exited on every 4-second poll, and its whole
+  cumulative counter was banked again each time: one vitest run could inflate a day's
+  read figure by two orders of magnitude. Retirement now keys on the actual pane
+  roster, so a pane's bytes are banked exactly once, when it closes. Days recorded
+  before this fix overstate reads badly — there is no way to repair them after the
+  fact, so trust the figure from the first fixed day on.
 
 ! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
   written anything to GitHub. The call was one argument short, and a call that is one

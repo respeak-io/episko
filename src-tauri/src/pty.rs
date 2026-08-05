@@ -974,14 +974,16 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
         })
         .collect();
 
+    // Keyed by the session roster, NOT `owned_pids`: shells and tasks are sessions
+    // that never join `owned_pids` (that set exists to filter *claude* pids out of
+    // the external listing), so keying on it read every live shell/task pane as
+    // "exited" and re-banked its whole cumulative counter into `retired` on every
+    // poll — one vitest run booked gigabytes of reads that never happened.
+    let live: HashSet<u32> = pids.iter().copied().collect();
     let now = std::time::Instant::now();
     let mut samples = state.io_samples.lock().unwrap();
     let mut retired = state.io_retired.lock().unwrap();
-    retire_missing(
-        &mut samples,
-        &state.owned_pids.lock().unwrap(),
-        &mut retired,
-    );
+    retire_missing(&mut samples, &live, &mut retired);
     let folded = fold_io(&readings, &mut samples, now);
 
     const MIB: f64 = 1024.0 * 1024.0;
@@ -994,18 +996,21 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
     }
 }
 
-/// Move the bytes of pids we no longer own out of `samples` and into `retired`.
+/// Move the bytes of pids that left the session roster out of `samples` and into
+/// `retired`.
 ///
 /// Both halves matter: dropping the entries stops a long-lived app accumulating one per
 /// session it has ever run, and banking their bytes first is what stops the app-wide
-/// total falling when a pane closes.
+/// total falling when a pane closes. `live` must be the pids of the sessions being
+/// polled — a pid still in it keeps its sample untouched, which is what makes the bank
+/// a once-per-lifetime event rather than a per-poll one.
 fn retire_missing(
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
-    owned: &HashSet<u32>,
+    live: &HashSet<u32>,
     retired: &mut (u64, u64),
 ) {
     samples.retain(|p, (r, w, _)| {
-        let keep = owned.contains(p);
+        let keep = live.contains(p);
         if !keep {
             retired.0 = retired.0.saturating_add(*r);
             retired.1 = retired.1.saturating_add(*w);
@@ -1178,17 +1183,45 @@ mod tests {
             (7u32, (900u64, 100u64, now)),
             (8u32, (5u64, 6u64, now)),
         ]);
-        let owned = HashSet::from([8u32]);
+        let live = HashSet::from([8u32]);
         let mut retired = (0u64, 0u64);
-        retire_missing(&mut samples, &owned, &mut retired);
+        retire_missing(&mut samples, &live, &mut retired);
 
         assert_eq!(retired, (900, 100), "the departed pid's bytes are kept");
         assert!(!samples.contains_key(&7), "but its sample entry is dropped");
-        assert!(samples.contains_key(&8), "a still-owned pid is untouched");
+        assert!(samples.contains_key(&8), "a still-live pid is untouched");
 
         // And a second sweep must not double-count what it already banked.
-        retire_missing(&mut samples, &owned, &mut retired);
+        retire_missing(&mut samples, &live, &mut retired);
         assert_eq!(retired, (900, 100), "already-retired bytes are not banked twice");
+    }
+
+    /// The retirement key is the session roster, not `owned_pids` — shells and tasks
+    /// never join `owned_pids`, and keying on it read every live shell/task pane as
+    /// exited: each poll banked the pane's whole cumulative counter into `retired`
+    /// again, then `fold_io` re-created the sample for the next poll to bank again.
+    /// One test run's pane inflated a day's read figure by two orders of magnitude
+    /// before this was a rule. This drives the actual per-poll sequence and asserts a
+    /// pane that stays in the roster retires nothing for as long as it lives.
+    #[test]
+    fn a_live_pane_is_never_retired_however_many_polls_it_survives() {
+        let t0 = std::time::Instant::now();
+        let mut samples = HashMap::new();
+        let mut retired = (0u64, 0u64);
+        let live = HashSet::from([42u32]);
+
+        for poll in 0..5u64 {
+            // The counter grows a little each poll, the way a real pane's does.
+            let reading = [(42u32, 1_000_000 + poll * 1_000, 500 + poll)];
+            retire_missing(&mut samples, &live, &mut retired);
+            let f = fold_io(&reading, &mut samples, t0 + std::time::Duration::from_secs(poll));
+            assert_eq!(f.read, 1_000_000 + poll * 1_000, "the live total is the reading");
+        }
+        assert_eq!(retired, (0, 0), "a pane still in the roster banks nothing");
+
+        // Only when it leaves the roster do its bytes retire — once, at the last reading.
+        retire_missing(&mut samples, &HashSet::new(), &mut retired);
+        assert_eq!(retired, (1_004_000, 504), "and then exactly its final sample");
     }
 
     /// The inspector's I/O readout is only worth showing if the platform actually
