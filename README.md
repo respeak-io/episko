@@ -45,7 +45,7 @@ On each Claude launch Episko writes a throwaway `--settings` file whose `statusL
 
 Every POST is tagged with the launch id Episko chose, so telemetry routes to the right pane before any output appears — and keeps routing after `/clear`, `/compact` or `/resume`, each of which makes Claude mint a **new** runtime `session_id`. The permission hook is the one blocking call: the server holds the request open until you answer.
 
-[`CLAUDE.md`](./CLAUDE.md) is the architecture document — the module map for both sides and the invariants that keep it working. [`SPIKE.md`](./SPIKE.md) is the original Phase-0 write-up, kept as a historical record of a single-session prototype; it predates most of the app and is not a reference.
+[`CLAUDE.md`](./CLAUDE.md) is the architecture document — the module map for both sides and the invariants that keep it working; the per-area deep-dive notes live in [`docs/`](./docs/). [`SPIKE.md`](./SPIKE.md) is the original Phase-0 write-up, kept as a historical record of a single-session prototype; it predates most of the app and is not a reference.
 
 ## Stack
 
