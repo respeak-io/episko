@@ -13,6 +13,25 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A big fleet no longer silently drops old terminals onto the slow renderer.** Every
+  pane held a WebGL context for the life of the pane, and Chromium-family webviews cap
+  a page at 16 live contexts — one pane past that and the browser starts evicting the
+  *oldest*, exactly the long-lived sessions you keep returning to, permanently
+  downgrading them to DOM rendering with no error anywhere. Now only the pane on stage
+  holds a context (one per tile when a run group is tiled), so the cliff is unreachable
+  however many panes exist — and a context lost anyway logs itself to the 🐞 console
+  and heals the next time the pane is activated.
+~ **A burst of telemetry costs one repaint, not one per event.** Every hook and
+  statusLine used to trigger a full render of every surface, and N busy agents
+  multiplied that into a constant main-thread load that grew with the fleet. Renders
+  now coalesce to at most one paint per animation frame; the 🐞 console counts paints
+  beside received events, so the batching is visible while the app runs.
+! **Ended sessions stop taxing the app forever.** An ended session's pane now releases
+  its 8000-line scrollback once it leaves the stage — the final screen stays, and
+  History reopens the full transcript from disk — and panes whose process has exited
+  drop out of the 4-second branch poll. The quit dialog also stops counting a finished
+  task as "still running".
+
 ! **Opening the working set no longer costs a git process per untracked file.** Each
   untracked file entered the peek's patch through its own `git diff --no-index` — up to
   300 processes back to back on one click, each allocating a console on Windows, which

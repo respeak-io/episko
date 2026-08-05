@@ -32,7 +32,9 @@ let appVersion = "";
 export function setAppVersion(v: string) { appVersion = v; }
 export const dbgLog: { t: number; lvl: DbgLvl; msg: string }[] = [];
 let dbgOpen = false;
-export const telem = { rx: 0, routed: 0, dropped: 0 };
+// `renders` counts actual renderAll *paints*, which since the per-frame coalescing is
+// deliberately smaller than `rx` under load — renders ≈ rx means the batching broke.
+export const telem = { rx: 0, routed: 0, dropped: 0, renders: 0 };
 export function dlog(lvl: DbgLvl, msg: string) {
   dbgLog.push({ t: Date.now(), lvl, msg });
   if (dbgLog.length > 400) dbgLog.splice(0, dbgLog.length - 400);
@@ -80,7 +82,7 @@ export function renderDbgPanel() {
     .map((e) => `<div class="dl ${e.lvl}"><span class="dl-t">${dbgTime(e.t)}</span><span class="dl-l">${e.lvl}</span><span class="dl-m">${esc(e.msg)}</span></div>`).join("")
     || `<div class="dbg-dim" style="padding:8px">no events yet</div>`;
   $("dbgBody").innerHTML =
-    `<div class="dbg-stats">telemetry: rx ${telem.rx} · routed ${telem.routed} · <span class="${telem.dropped ? "warn" : ""}">dropped ${telem.dropped}</span> · 5h ${rl.h5 != null ? Math.round(rl.h5) + "%" : "–"}</div>
+    `<div class="dbg-stats">telemetry: rx ${telem.rx} · routed ${telem.routed} · <span class="${telem.dropped ? "warn" : ""}">dropped ${telem.dropped}</span> · paints ${telem.renders} · 5h ${rl.h5 != null ? Math.round(rl.h5) + "%" : "–"}</div>
      <table class="dbg-tbl"><thead><tr><th>project</th><th>id</th><th>phase</th><th>ctx</th><th>cost</th><th>last event</th></tr></thead><tbody>${srows}</tbody></table>
      <div class="dbg-log">${logRows}</div>`;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
+import { isExited, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setDormants, setExternals,
@@ -956,5 +956,22 @@ describe("nextInGroup — closing one tile stays in the mosaic", () => {
   it("returns null for a session that isn't in the group at all", () => {
     // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
     expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
+  });
+});
+
+describe("isExited — the process behind the pane is gone", () => {
+  it("reads the phase for claude and shell panes", () => {
+    expect(isExited(sess({ phase: "ended" }))).toBe(true);
+    expect(isExited(sess({ kind: "shell", phase: "ended" }))).toBe(true);
+    expect(isExited(sess({ phase: "working" }))).toBe(false);
+    // "done" is a live claude pane whose turn finished — NOT an exited one.
+    expect(isExited(sess({ phase: "done" }))).toBe(false);
+  });
+  it("reads the exit code for a task — its done/error phases are live states elsewhere", () => {
+    expect(isExited(taskSess("t"))).toBe(false);                                   // running
+    expect(isExited(taskSess("t", { phase: "done" }, { exitCode: 0 }))).toBe(true);
+    expect(isExited(taskSess("t", { phase: "error" }, { exitCode: 1 }))).toBe(true);
+    // A task pane with no run record yet cannot claim to have exited.
+    expect(isExited(sess({ kind: "task", phase: "error" }))).toBe(false);
   });
 });

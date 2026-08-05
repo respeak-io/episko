@@ -25,12 +25,53 @@ import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from ".
 // draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
 export const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
-export function loadWebgl(term: Terminal) {
+// One WebGL context per *visible* pane — attached on activation, dropped on the way
+// off the stage — never one per pane for life. Chromium-family webviews cap a page at
+// 16 live WebGL contexts and evict least-recently-used beyond that, so a fleet that
+// ever crossed 16 panes silently downgraded its *oldest* terminals — exactly the
+// long-lived sessions you keep returning to — onto xterm's slow DOM renderer, for
+// good. Bounding contexts to what is on screen makes that cliff unreachable (a hidden
+// pane renders nothing anyway), and a context lost regardless — a GPU reset, a
+// degenerate 16-tile mosaic — now costs one dlog and heals on the pane's next
+// activation instead of downgrading it permanently.
+export function attachWebgl(s: Sess) {
+  if (!s.term || s.gl) return;
+  let w: WebglAddon | undefined;
   try {
-    const w = new WebglAddon();
-    w.onContextLoss(() => w.dispose()); // fall back to the DOM renderer
-    term.loadAddon(w);
-  } catch { /* WebGL unavailable — DOM renderer is fine */ }
+    w = new WebglAddon();
+    w.onContextLoss(() => {
+      // dispose() is the documented recovery for a lost context; detach also clears
+      // `s.gl`, which is what lets the next setActive re-attach a fresh one.
+      dlog("warn", `webgl context lost · ${s.id.slice(0, 8)} — DOM renderer until reactivated`);
+      detachWebgl(s);
+    });
+    s.term.loadAddon(w);
+    s.gl = w;
+  } catch (e) {
+    // WebGL unavailable (GPU blocklist, RDP, acceleration off): the DOM renderer is
+    // the honest fallback. Warn once per run, not once per pane switch — the retry
+    // itself stays, since a crashed GPU process can come back.
+    try { w?.dispose(); } catch { /* half-activated addon */ }
+    if (!webglWarned) { webglWarned = true; dlog("warn", `webgl unavailable — terminals use the DOM renderer (${e})`); }
+  }
+}
+let webglWarned = false;
+export function detachWebgl(s: Sess) {
+  const w = s.gl;
+  if (!w) return;
+  s.gl = undefined; // clear first — dispose() must not re-enter through onContextLoss
+  try { w.dispose(); } catch { /* already disposed with its terminal */ }
+}
+
+// An ended claude pane keeps up to 8000 lines of scrollback it can never grow again,
+// tens of MB across a day of panes — and the transcript is on disk, where History and
+// `--resume` reopen it. So the buffer is reclaimed once the pane is done: immediately
+// when it ends off stage, and on the way *off* the stage when you watched it end (the
+// visible screen keeps its final output either way). Claude panes only: a shell has
+// no transcript, and a failed task's scrollback IS the log you open it to read.
+export function trimScrollback(s: Sess) {
+  if (!s.term || s.term.options.scrollback === 0) return;
+  try { s.term.options.scrollback = 0; } catch { /* pane already disposed */ }
 }
 
 // The whole custom key rule for a shell pane, in one handler — xterm keeps only the
