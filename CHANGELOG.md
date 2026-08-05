@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
+! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
+
 ## 0.15.0 — 2026-08-05
 Task chains fold into one row, projects into your own headings, a reload hands every
 pane back — and a big fleet stops paying for what nobody is looking at.
