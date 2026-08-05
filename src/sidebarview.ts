@@ -20,9 +20,47 @@ import {
   peekPrefs, sessions, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, foldRunGroups, type ProjGroup,
-  type RunItem, type WtCluster,
+  checkoutOf, clusterByWorktree, clusterIsLive, foldRunGroups, type GroupSummary,
+  type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
+import type { GroupDef } from "./projgroups";
+
+// ---------- the header of a user-defined project group ----------
+// `.pf*`, not `.pg*`. The prefix is load-bearing: `.pgroup` is a *project* and
+// `.pgpeek` is its idle checkouts, both of which live INSIDE one of these, and
+// `applyPeek`, the peek hover and the reorder all reach for `.pgroup` by class. A fold
+// called `.pgroup-something` would be found by half of them. (Same trap the commit
+// graph hit with `gc-*` vs `gco-*`, and the same fix: a different prefix, not a longer
+// name.)
+//
+// `data-gtoggle` is the click (collapse), `data-gid` is the right-click (the group
+// menu), and both sit on the HEADER rather than on the wrapper — a project head inside
+// the fold would otherwise find the wrapper's `data-gid` with `closest()` and open the
+// group's menu instead of its own.
+export function foldHead(g: GroupDef, sum: GroupSummary, n: number): string {
+  const plural = (c: number, word: string) => `${c} ${word}${c === 1 ? "" : "s"}`;
+  // Only while collapsed. Open, the rows beneath say all of this themselves, and a
+  // header repeating them is noise; collapsed, this is the whole point — a group that
+  // could hide a session waiting on a permission would be a trap, not a tidy-up.
+  const hidden = g.collapsed
+    ? (sum.dirty ? `<span class="pfdirty" title="Uncommitted changes in this group"></span>` : "")
+      + (sum.urgent ? `<span class="pfattn ${GCLASS[statusKey(sum.urgent)]}" title="${esc(`${sum.urgent.title || sum.urgent.project} needs you`)}">${GLYPH[statusKey(sum.urgent)]}</span>` : "")
+    : "";
+  // Panes when it has any, projects otherwise — and the pill is what says which, so
+  // the number never has to be read twice. A count that silently meant one thing on one
+  // group and the other on its neighbour is the wart this shape avoids.
+  const count = sum.count
+    ? `<span class="pfcount live" title="${esc(plural(sum.count, "session"))}">${sum.count}</span>`
+    : `<span class="pfcount">${n}</span>`;
+  const tip = `${g.name} — ${plural(n, "project")}${sum.count ? `, ${plural(sum.count, "session")}` : ""}`
+    + ` · click to ${g.collapsed ? "expand" : "collapse"}`;
+  return `<div class="pfhead" data-gtoggle="${esc(g.id)}" data-gid="${esc(g.id)}" title="${esc(tip)}">`
+    + `<span class="pfchev"></span><span class="pfname">${esc(g.name)}</span>${hidden}${count}</div>`;
+}
+// A group you took the last project out of. It keeps its place (at the end — it has no
+// member to be ranked by) and says what it is for, because the alternative reads as
+// Episko having quietly deleted a heading you named.
+export const foldEmpty = () => `<div class="pfempty">Drag a project here</div>`;
 
 // The status glyph vocabulary. Shared with the mini-rail, the tray and the
 // inspector pill, which is why it sits beside the rows rather than inside them.

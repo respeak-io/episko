@@ -23,7 +23,7 @@ import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
-  setTheme, setWtGroup, toggleInsp,
+  setTheme, setWtGroup, toggleInsp, toggleProjGroup,
   toggleRail, toggleTheme,
 } from "./actions";
 import {
@@ -514,7 +514,7 @@ document.addEventListener("click", (e) => {
   // for free — but only if its attribute is in this list. A data- attribute the
   // selector doesn't name resolves to the enclosing row instead, silently doing the
   // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -537,6 +537,9 @@ document.addEventListener("click", (e) => {
   // Two popovers emit data-sel rows — the reactor's picker and the spend split — and
   // both are answered by putting that session on the stage, so both close behind it.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
+  // The header of a user-defined project group: the whole bar folds it, the way its
+  // chevron says it does. Right-click is the group's own menu (./projmenu).
+  else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);
   // A project header. This used to select whichever session sorted first, so one
   // click meant two different things depending on state; it now opens the project
   // dashboard, and the sessions are the rows directly beneath it.

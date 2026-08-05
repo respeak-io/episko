@@ -16,11 +16,15 @@ import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
 import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
 import { openWt, removeWorktreeAt } from "./worktree";
-import { copyPath, openTerminalIn } from "./actions";
+import {
+  collapseAllProjGroups, copyPath, deleteProjectGroup, newProjectGroup, openTerminalIn,
+  renameProjectGroup, setProjectGroup, toggleProjGroup,
+} from "./actions";
+import { groupById, groupOf, groupPaths } from "./projgroups";
 import { isAgent } from "./types";
 import {
-  accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, sessions,
-  termEngine,
+  accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, projGroups,
+  sessions, termEngine,
 } from "./state";
 
 // The seven things a menu row does that this module does not own — panes, the project
@@ -134,10 +138,16 @@ const ctxRowHtml = (r: CtxRow) =>
 const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
   rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
 
+// Where the menu was opened, so a drill-down (Move to group…) and its ‹ Back land on
+// the same pixels rather than jumping to wherever the pointer has since wandered.
+let menuX = 0, menuY = 0;
+
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = null; // one #ctxMenu, one target — see the module header
+  wtTarget = gTarget = pickPath = null; // one #ctxMenu, one target — see the module header
   ctxKey = key;
+  menuX = x; menuY = y;
+  const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
   const fav = FAVORITES.some((f) => f.path === key);
   const live = [...sessions.values()].filter((s) => s.colorKey === key && isAgent(s)).length;
   const ic = iconFor(key);
@@ -152,6 +162,12 @@ function openCtxMenu(key: string, x: number, y: number) {
     { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
+    // Named after where the project already is, when it is somewhere: "Group: Work"
+    // answers the question the row would otherwise raise, and the picker behind it is
+    // the same one either way.
+    grouped
+      ? { act: "movegroup", ic: "▤", label: `Group · ${grouped.name}`, sub: "move to another, or take it out", chev: true }
+      : { act: "movegroup", ic: "▤", label: "Add to group…", sub: "collect projects under one collapsible heading", chev: true },
     { act: "appearance", ic: "◐", label: "Appearance", sub: "color, logo", chev: true },
     null,
     // Not every group in the sidebar is pinned: a folder also shows up while it has
@@ -183,7 +199,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = gTarget = pickPath = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -259,6 +275,140 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
 });
 
+// ---------- project groups: the picker, and a group's own menu ----------
+// Two more modes of the one #ctxMenu, and they are drill-downs rather than submenus:
+// Appearance hangs a *panel* off the menu's edge because a colour grid is not a list of
+// rows, but "which group?" is exactly a list of rows, so it replaces the menu in place
+// and offers ‹ Back. One element, one skin, no second popover to position.
+//
+// Naming a group is an inline `<input>` in the menu (the `.sw-hex` field in the colour
+// panel is the precedent) rather than a dialog: it is one short string, and a modal for
+// it would be heavier than the thing it creates.
+let pickPath: string | null = null;   // the project being filed
+let gTarget: string | null = null;    // the group whose menu is open
+
+const groupCount = (gid: string) => groupPaths(projGroups, gid).length;
+const nameField = (placeholder: string, value = "") =>
+  `<div class="mp-new"><input class="mp-in" type="text" spellcheck="false" autocomplete="off" maxlength="40"`
+  + ` placeholder="${esc(placeholder)}" value="${esc(value)}" /></div>`;
+const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputElement>(".mp-in")?.focus(), 30);
+
+function openGroupPicker(key: string, x: number, y: number) {
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = null;
+  pickPath = key;
+  const cur = groupOf(projGroups, key);
+  const rows: (CtxRow | null)[] = [
+    { act: "gback", ic: "‹", label: "Back", sub: projName(key) },
+    null,
+    ...projGroups.groups.map((g) => ({
+      act: `gpick:${g.id}`, ic: g.id === cur ? "✓" : "▪", label: g.name,
+      sub: `${groupCount(g.id)} project${groupCount(g.id) === 1 ? "" : "s"}`,
+    })),
+    cur ? { act: "gclear", ic: "⊘", label: "Remove from group", sub: "back to the top level" } : null,
+  ];
+  const menu = $("ctxMenu");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">Group</span><span class="mp-hpath">${esc(projName(key))}</span></span></div>`
+    + ctxRowsHtml(rows) + nameField("New group…");
+  placePop(menu, x, y);
+  focusField();
+}
+
+function openGroupMenu(gid: string, x: number, y: number) {
+  closeColorPop();
+  ctxKey = wtTarget = pickPath = null;
+  gTarget = gid;
+  menuX = x; menuY = y;
+  const g = groupById(projGroups, gid);
+  if (!g) return;
+  const n = groupCount(gid);
+  const many = projGroups.groups.length > 1;
+  const rows: (CtxRow | null)[] = [
+    g.collapsed
+      ? { act: "gopen", ic: "▾", label: "Expand group", sub: `show its ${n} project${n === 1 ? "" : "s"}` }
+      : { act: "gopen", ic: "▸", label: "Collapse group", sub: n ? `fold ${n} project${n === 1 ? "" : "s"} away` : "it is empty" },
+    { act: "grename", ic: "✎", label: "Rename group…" },
+    // Only worth offering once there is more than one group to act on — otherwise
+    // "collapse all" is a longer way of saying the row directly above it.
+    ...(many ? [null, { act: "gcollapseall", ic: "⇱", label: "Collapse all groups" }, { act: "gexpandall", ic: "⇲", label: "Expand all groups" }] as (CtxRow | null)[] : []),
+    null,
+    // Not destructive to anything but the heading, and the sub says so — "Delete" over
+    // a list of someone's repos has to be unmistakable about what it takes with it.
+    { act: "gdelete", ic: "✕", label: "Delete group", sub: "the projects stay, at the top level", cls: "mp-danger" },
+  ];
+  const menu = $("ctxMenu");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">${esc(g.name)}</span>`
+    + `<span class="mp-hpath">${n} project${n === 1 ? "" : "s"}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
+}
+
+function openRenameGroup(gid: string) {
+  const g = groupById(projGroups, gid);
+  if (!g) return;
+  gTarget = gid;
+  const menu = $("ctxMenu");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">Rename</span><span class="mp-hpath">${esc(g.name)}</span></span></div>`
+    + nameField("Group name", g.name);
+  placePop(menu, menuX, menuY);
+  focusField();
+  setTimeout(() => menu.querySelector<HTMLInputElement>(".mp-in")?.select(), 40);
+}
+
+/// A row that REPLACES this menu's markup instead of committing has to stop the click
+/// there, and the reason is not obvious enough to leave unwritten: main.ts's outside-
+/// click closer asks `t.closest("#ctxMenu")` of the original target, and by the time it
+/// runs the innerHTML has been swapped — so the node it is asking about is detached,
+/// answers null, and the menu we just opened is closed as an outside click. Appearance
+/// never hit this because it only adds a class; every drill-down here re-renders.
+const keepMenuOpen = (e: Event) => e.stopPropagation();
+
+// One listener for both, guarded on their own targets exactly as the project and
+// worktree menus guard on theirs — three modes, one element, no shared branch.
+$("ctxMenu").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
+  if (!b || b.classList.contains("dis")) return;
+  const act = b.dataset.ctx || "";
+  if (pickPath) {
+    const path = pickPath;
+    // Back is the one row that reopens rather than commits — same coordinates, so the
+    // menu appears not to have moved at all.
+    if (act === "gback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(path, menuX, menuY); return; }
+    closeCtxMenu();
+    if (act === "gclear") setProjectGroup(path, null);
+    else if (act.startsWith("gpick:")) setProjectGroup(path, act.slice(6));
+    return;
+  }
+  if (!gTarget) return;
+  const gid = gTarget;
+  if (act === "grename") { keepMenuOpen(e); openRenameGroup(gid); return; }
+  closeCtxMenu();
+  if (act === "gopen") toggleProjGroup(gid);
+  else if (act === "gcollapseall") collapseAllProjGroups(true);
+  else if (act === "gexpandall") collapseAllProjGroups(false);
+  else if (act === "gdelete") deleteProjectGroup(gid);
+});
+// The inline name field: Enter commits, Esc backs out. It carries no `data-ctx`, so
+// every click listener above already ignores it and the menu stays open while typing.
+$("ctxMenu").addEventListener("keydown", (e: KeyboardEvent) => {
+  const t = e.target as HTMLElement;
+  if (!t.classList.contains("mp-in")) return;
+  if (e.key === "Escape") { e.preventDefault(); closeCtxMenu(); return; }
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const value = (t as HTMLInputElement).value;
+  const path = pickPath, gid = gTarget;
+  closeCtxMenu();
+  if (path) newProjectGroup(value, path);
+  else if (gid) renameProjectGroup(gid, value);
+});
+
 // Appearance is the one row that opens rather than commits: the menu stays put and
 // the swatch panel hangs off its edge. Re-entrant — `mouseover` fires again for
 // every child span the pointer crosses, and re-rendering the panel under the
@@ -284,6 +434,10 @@ $("ctxMenu").addEventListener("click", (e) => {
   const key = ctxKey, name = projName(key);
   // Clicking it is the keyboard/touch path to the same thing hover already did.
   if (b.dataset.ctx === "appearance") { openAppearanceSub(b); return; }
+  // The other row that opens rather than commits — it replaces this menu in place
+  // (see openGroupPicker), so it must not fall through to the close below, and the
+  // click must not reach main.ts's outside-click closer (see keepMenuOpen).
+  if (b.dataset.ctx === "movegroup") { keepMenuOpen(e); openGroupPicker(key, menuX, menuY); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
     case "launch": host.requestLaunch(name, key); break;
@@ -299,7 +453,17 @@ $("ctxMenu").addEventListener("click", (e) => {
 // `data-wt` is matched first and on its own element: a ⑃ cluster header sits inside a
 // project group, so a single `[data-key],[data-wt]` closest() would be decided by
 // which happens to be nearer in the tree rather than by what was actually clicked.
+//
+// `data-gid` is the same rule one level up, and is why it sits on the fold's HEADER
+// and not on the fold: a project inside the group would find a wrapper's `data-gid` as
+// an ancestor and open the group's menu instead of its own.
 document.addEventListener("contextmenu", (e) => {
+  const fold = (e.target as HTMLElement).closest<HTMLElement>("[data-gid]");
+  if (fold?.dataset.gid) {
+    e.preventDefault();
+    openGroupMenu(fold.dataset.gid, e.clientX, e.clientY);
+    return;
+  }
   const wt = (e.target as HTMLElement).closest<HTMLElement>("[data-wt]");
   if (wt?.dataset.wt) {
     e.preventDefault();

@@ -52,9 +52,9 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **755 vitest + cargo (166 on macOS, 162 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **797 vitest + cargo (166 on macOS, 162 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
-**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
+**vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which twenty those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
 What is **untested by design**: the render, view and DOM-owning modules on both sides of the app — snapshotting template literals mostly re-asserts itself. Anything touching the DOM, PTYs, or live telemetry is still verified by **running the app and exercising it** — the statusLine half of telemetry only fires in interactive mode, so it cannot be checked end to end with `claude -p`. Split that one carefully, because the split is not where it looks: whether the generated statusLine command *works* is checked headlessly and in CI (the shell runs it for real — see the constraint above). What needs a live REPL is only whether **Claude still picks the shell and payload we expect**. That costs a TTY, not tokens: a session you launch and never prompt makes no API call, and the statusLine fires on start and every `refreshInterval` seconds regardless. It's a `RELEASE.md` click-through, and a cheap one. `tsc` (strict) is the real linter. Requires `claude` on PATH, the Node in `.nvmrc` (`nvm use`; `engines` floors it at 24), and Rust stable + Tauri system deps.
 
@@ -972,13 +972,13 @@ growth) — APFS is copy-on-write, and a transcript grows by constant small appe
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 50 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 51 modules
 
-**No framework, and no longer one file.** ~15098 lines across 50 modules; `main.ts` is 841 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~15675 lines across 51 modules; `main.ts` is 844 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (nineteen — no DOM, no Tauri, no render imports; these are what the 744 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty — no DOM, no Tauri, no render imports; these are what the 797 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -995,6 +995,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `gitwatch.ts` | `gitMutates` — whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate` — which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
+| `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
@@ -1010,7 +1011,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 50 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 51 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -1121,9 +1122,51 @@ And the things that hold however the files are arranged:
   range), because a daily key with no cap grows forever *and* is re-serialised on every
   write. `cc-icons` is the largest key by far but is written once per project ever, so
   it needs neither.
-- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-io` daily disk-I/O rollup and its `cc-io-scope` pick, the `cc-restore` roster, the sidebar's `cc-peek`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
+- **Persistence is all `localStorage`**, ~20 keys prefixed `cc-` (favorites, drag order, colours, icons, engine, permission mode, font size, sort/grouping, frecency, caffeinate, the `cc-usage` daily cost rollup and its `cc-cost-base` per-conversation baselines, the `cc-io` daily disk-I/O rollup and its `cc-io-scope` pick, the `cc-restore` roster, the sidebar's `cc-peek` and `cc-proj-groups`, *What's new*'s `cc-seen-versions`, the dashboard's `cc-dash-*` and `cc-digest-ok`, and the task keys `cc-task-{prefs,pins,hidden,onstop,runner,inputs}` + `cc-trusted`). `grep '"cc-'` for the current set.
 - **Debug console** (🐞 button, bottom-right): an in-app event log + live state via `dlog()`/`dbgSnapshot()`. It flags **unrouted telemetry** (the routing-drift class of bug above) and JS errors, and mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` (written by the `write_debug_file` command) so an external tool or an LLM agent can read live app state while it runs.
 - **Two-tier logging — live snapshot vs. durable timeline.** The `episko-debug.json` snapshot is a *state-of-now* blob that is overwritten each flush and does **not** survive a crash (the frontend never flushes if the process dies). The durable tier is the backend rolling `episko.log` (+ `panic.log`) in the OS app-log dir (macOS `~/Library/Logs/io.respeak.episko/`), via `tauri-plugin-log` and a panic hook — the only on-disk trace of a panic that unwinds cleanly out of `main` (no crash dump / WER otherwise). Every `dlog()` line tees into it through the `log_frontend` command (tagged `[ui]`), so the UI and backend event streams land in **one time-ordered file**. A `episko.log` that stops without an `exit · clean shutdown` line is itself evidence of an abnormal termination. Use the snapshot for "what is it doing *now*", the rolling log for "why did it *die*".
+
+## Project groups — the user's own headings over the rail
+
+A named, collapsible fold holding several projects (`projgroups.ts` owns the store and
+is pure and tested; `grouping.ts`'s `groupedProjects` turns it into what the rail draws;
+`sidebarview.foldHead` is the markup; `sidebar.ts` owns the element and the drag). Made
+from a project's right-click → *Add to group…*, or by dragging a project onto one.
+
+- **A group is not an ordering, and that is the whole design.** It holds a name, a
+  collapsed flag and a set of paths. Where it *sits* is derived — the position of its
+  first member under whichever sort is active — so there is no second order to keep in
+  step with `cc-proj-order`, dragging a project takes its group with it, and a group
+  floats up in the attention sort exactly when one of its projects does. Persisting a
+  group order as well is the thing to not do here: the two would disagree within a day.
+- **`.pf*`, never `.pg*`.** `.pgroup` (a project) and `.pgpeek` (its idle checkouts) live
+  *inside* a fold, and `applyPeek`, the peek hover and the reorder all reach for
+  `.pgroup` by class. Same trap as the commit graph's `gc-*`/`gco-*`, same fix.
+- **Collapsed IS in the markup, unlike peek's hover.** Peek stays out of the string
+  because a mouse move would shred `renderSidebar`'s byte-identical cache; a collapse is
+  one deliberate click, so it costs one 7ms repaint and in exchange the state cannot be
+  lost by a re-render. The members are rendered either way — `grid-template-rows: 0fr →
+  1fr` needs content to have a height to animate to, and the 0fr row is also what makes a
+  collapsed group's rows un-clickable and invisible to `elementFromPoint`.
+- **Folding must never fold away urgency.** A collapsed header carries `groupSummary`'s
+  most-urgent glyph and a dirty dot; ⌘1–9 still reaches inside (`orderedSessions` walks
+  the *grouped* order, or ⌘4 would mean the fourth session in an order nothing is in);
+  and `setActive` calls `revealProjGroup` so landing on a session in a folded group
+  unfolds it rather than leaving the rail with nothing selected.
+- **The drag reads membership back off the DOM**, in the same pass as the order, because
+  they are one arrangement (`saveSidebarArrangement`). Two things it must keep doing: the
+  marker goes into the *drop target's parent* (inserting into `#projects` throws once the
+  reference node is a fold's child), and memberships for projects **not on screen** are
+  carried over untouched — in toplevel mode a repo can render only as its worktrees, so
+  rebuilding `of` from scratch would silently unfile it on the next drag.
+- **An empty group is kept, and lands at the end** — it has no member to be ranked by. It
+  is a heading someone named and the drop target that refills it; vanishing on the last
+  removal would read as Episko having deleted it.
+- **A menu row that re-renders `#ctxMenu` must stop the click there** (`keepMenuOpen`).
+  main.ts's outside-click closer asks `t.closest("#ctxMenu")` of the original target, and
+  after an `innerHTML` swap that node is detached, answers null, and closes the menu that
+  was just opened. Appearance never hit this because it only adds a class; every
+  drill-down here re-renders, and this cost the picker its first run.
 
 ## Noticing that a checkout moved
 

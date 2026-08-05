@@ -21,13 +21,17 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
   dashMirror, FAVORITES, IO_SCOPES, ioScope, markWorkdirStale, peekPrefs, permMode,
-  permModeDef,
-  saveFavorites, sessions, termEngine,
+  permModeDef, projGroups,
+  saveFavorites, saveProjGroups, sessions, termEngine,
   setFavorites, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
-  setSortMode, SORT_META, SORT_MODES,
+  setProjGroups, setSortMode, SORT_META, SORT_MODES,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import {
+  assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
+  renameGroup, setCollapsed, type GroupStore,
+} from "./projgroups";
 import type { PeekPrefs } from "./peek";
 import type { PermMode } from "./types";
 
@@ -113,6 +117,48 @@ export function setPeekPrefs(p: PeekPrefs) {
   renderSidebar();
   renderSettings(); // the live preview in the Worktrees tab reads these values
 }
+
+// ---------- the user's named groups of projects ----------
+// The same shape as everything else here (./projgroups computes, this persists and
+// repaints), with one addition worth keeping: every mutator in ./projgroups returns the
+// store it was handed when there is nothing to do, so a no-op costs neither a write nor
+// a 7ms sidebar repaint. `renderSidebar` rather than `renderAll` — nothing else in the
+// app shows a group, deliberately (see `renderMini`).
+function commitProjGroups(next: GroupStore) {
+  if (next === projGroups) return;
+  setProjGroups(next);
+  saveProjGroups();
+  renderSidebar();
+}
+export function setProjectGroup(path: string, gid: string | null) {
+  const to = gid ? groupById(projGroups, gid) : null;
+  commitProjGroups(assignGroup(projGroups, path, gid));
+  toast(to ? `Moved to ${to.name}` : "Removed from group");
+}
+export function newProjectGroup(name: string, path: string) {
+  const clean = cleanGroupName(name);
+  if (!clean) { toast("Give the group a name first"); return; }
+  commitProjGroups(createGroup(projGroups, clean, [path]));
+  toast(`Grouped under ${clean}`);
+}
+export function renameProjectGroup(gid: string, name: string) {
+  const clean = cleanGroupName(name);
+  if (!clean) { toast("A group needs a name"); return; }
+  commitProjGroups(renameGroup(projGroups, gid, clean));
+}
+/// The projects come back to the top level — only the heading goes. Said out loud,
+/// because "delete" next to a list of your repos deserves to be unambiguous.
+export function deleteProjectGroup(gid: string) {
+  const g = groupById(projGroups, gid);
+  if (!g) return;
+  commitProjGroups(deleteGroup(projGroups, gid));
+  toast(`Ungrouped ${g.name} — the projects stay`);
+}
+export function toggleProjGroup(gid: string) {
+  const g = groupById(projGroups, gid);
+  if (g) commitProjGroups(setCollapsed(projGroups, gid, !g.collapsed));
+}
+export function collapseAllProjGroups(collapsed: boolean) { commitProjGroups(collapseAll(projGroups, collapsed)); }
 
 // Which permission mode the NEXT session launches in — the same shape as the sort and
 // the grouping above (state assigns, this persists and announces). Announced rather

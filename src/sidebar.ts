@@ -14,15 +14,16 @@ import { $, chord, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, tilde } from "./format";
 import { iconFor, projGlyph } from "./icons";
-import { projectList } from "./grouping";
+import { groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
 } from "./peek";
-import { dormantRows, groupBody, peekBody } from "./sidebarview";
+import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
+import { dormantRows, foldEmpty, foldHead, groupBody, peekBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, peekPrefs, saveProjOrder, sessions,
-  setProjOrder, sortMode, type SortMode,
+  activeId, extMirrorId, FAVORITES, folderDirty, peekPrefs, projGroups, saveProjGroups,
+  saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode, type SortMode,
 } from "./state";
 
 // Two things a finished reorder needs that this module does not own: the sort mode
@@ -77,51 +78,87 @@ function invalidateSidebarCache() { lastHtml = null; }
 export function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
-  const html = projectList().map((p) => {
-    const rows = groupBody(p) + dormantRows(p);
-    const total = p.sessions.length + p.externals.length;
-    const isFav = FAVORITES.some((f) => f.path === p.path);
-    // Any member folder (a session's workdir or an external's cwd) with uncommitted
-    // changes lights the project's dot — so a dirty worktree marks its parent too.
-    const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
-    const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
-    const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
-    // **Every project header opens the dashboard, whatever put it in the list.** It used
-    // to depend on which of the three shapes below a project happened to land in, so a
-    // folder Episko only knew about from an external session, from a past one, or from a
-    // worktree whose session had ended was simply not clickable — with no disabled state
-    // to say so, because the attribute was absent rather than refused. "Has an Episko
-    // session or is a favourite" is not a fact about a project worth having a view gated
-    // on; the empty-but-real dashboard those folders get is the answer.
-    //
-    // Keyed to `repoRoot ?? path`: a checkout is not a project. `dashDays` filters
-    // history by `histProject().colorKey`, which regrafts every row onto the repo root —
-    // so a dashboard keyed by a worktree dir matches no sessions at all and renders a
-    // timeline of commits with nobody having worked on them. The checkouts are a card
-    // *inside* the project's dashboard, which is where a worktree belongs.
-    const dashRoot = p.repoRoot ?? p.path;
-    const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
-    let head: string;
-    if (p.sessions.length) {
-      head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
-    } else if (isFav) {
-      const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-      head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
-    } else {
-      // discovered via an external session or a restorable one only — not a saved project
-      const tail = p.externals.length
-        ? `<span class="pcount ext">${p.externals.length} ext</span>`
-        : `<span class="pcount ext">${p.dormants.length} past</span>`;
-      head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
-    }
-    return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
-  }).join("");
+  const html = groupedProjects().map((slot) =>
+    slot.kind === "project" ? projectHtml(slot.project) : foldHtml(slot.group, slot.projects)).join("");
   if (html === lastHtml) return; // nothing the sidebar shows has changed
   lastHtml = html;
   $("projects").innerHTML = html;
   // The DOM the expansion lives on was just replaced, so re-apply it. This is the
   // whole reason ./peek tracks a project *path* rather than an element.
   applyPeek();
+}
+
+// One user-defined group: its header, and its projects nested inside a body that
+// animates open and shut.
+//
+// **The members are rendered whether or not the group is collapsed**, and that is what
+// buys the height animation — `grid-template-rows: 0fr → 1fr` needs the content to be
+// there to have a height to animate to. Unlike peek, the collapsed flag IS part of the
+// markup string: hover changes many times a second and would shred `lastHtml`, but a
+// collapse is a deliberate click, so it costs exactly one repaint and keeps the state
+// in the one place a re-render can't lose it.
+function foldHtml(g: GroupDef, projects: ProjGroup[]): string {
+  const body = projects.length ? projects.map(projectHtml).join("") : foldEmpty();
+  return `<div class="pfold${g.collapsed ? " collapsed" : ""}" data-fold="${esc(g.id)}">`
+    + foldHead(g, groupSummary(projects), projects.length)
+    + `<div class="pfbody"><div class="pfbody-in">${body}</div></div></div>`;
+}
+
+function projectHtml(p: ProjGroup): string {
+  const rows = groupBody(p) + dormantRows(p);
+  const total = p.sessions.length + p.externals.length;
+  const isFav = FAVORITES.some((f) => f.path === p.path);
+  // Any member folder (a session's workdir or an external's cwd) with uncommitted
+  // changes lights the project's dot — so a dirty worktree marks its parent too.
+  const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
+  const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
+  const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
+  // **Every project header opens the dashboard, whatever put it in the list.** It used
+  // to depend on which of the three shapes below a project happened to land in, so a
+  // folder Episko only knew about from an external session, from a past one, or from a
+  // worktree whose session had ended was simply not clickable — with no disabled state
+  // to say so, because the attribute was absent rather than refused. "Has an Episko
+  // session or is a favourite" is not a fact about a project worth having a view gated
+  // on; the empty-but-real dashboard those folders get is the answer.
+  //
+  // Keyed to `repoRoot ?? path`: a checkout is not a project. `dashDays` filters
+  // history by `histProject().colorKey`, which regrafts every row onto the repo root —
+  // so a dashboard keyed by a worktree dir matches no sessions at all and renders a
+  // timeline of commits with nobody having worked on them. The checkouts are a card
+  // *inside* the project's dashboard, which is where a worktree belongs.
+  const dashRoot = p.repoRoot ?? p.path;
+  const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
+  let head: string;
+  if (p.sessions.length) {
+    head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
+  } else if (isFav) {
+    const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
+    head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
+  } else {
+    // discovered via an external session or a restorable one only — not a saved project
+    const tail = p.externals.length
+      ? `<span class="pcount ext">${p.externals.length} ext</span>`
+      : `<span class="pcount ext">${p.dormants.length} past</span>`;
+    head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
+  }
+  return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
+}
+
+/// Expand the group a project is filed in, if it is collapsed. Called when a session
+/// takes the stage (./panes' `setActive`), because ⌘1–9, `nextAfterClose` and the tray
+/// can all land on a session inside a folded group — and a rail showing nothing
+/// selected while a pane is plainly on screen reads as the selection having been lost.
+///
+/// Persists here rather than in ./actions for the reason the reorder below does: this
+/// module is already the one that writes a sidebar preference straight after a gesture,
+/// and ./panes cannot import ./actions (which imports ./panes).
+export function revealProjGroup(path: string) {
+  const gid = groupOf(projGroups, path);
+  if (!gid) return;
+  const next = setCollapsed(projGroups, gid, false);
+  if (next === projGroups) return; // already open — no write, no repaint
+  setProjGroups(next);
+  saveProjGroups();
 }
 
 // ---------- peek: resting on a project reveals its idle checkouts ----------
@@ -239,6 +276,13 @@ export function closePeek() {
 // separator line (.dropmark) shows where the group will land; the dragged group is only
 // physically moved on release, then the DOM order is read back and saved. A drag only
 // begins once the pointer crosses DRAG_SLOP, so a plain click still selects the project.
+//
+// GROUPS MADE THIS NESTED, AND THE READ-BACK IS WHY IT STILL WORKS. A `.pgroup` may now
+// live inside a `.pfold`, so the marker can no longer be inserted into `#projects` (that
+// throws outright once the reference node is a fold's child) — it goes into whatever
+// parent the drop target has, which is also what makes dragging a project INTO a group
+// the same gesture as reordering it. Membership is then read back off the DOM exactly
+// as the order always has been, so the two can never come out of a drag disagreeing.
 export function initProjectDnD() {
   const container = $("projects");
   const DRAG_SLOP = 5; // px before a press becomes a drag rather than a click
@@ -248,8 +292,13 @@ export function initProjectDnD() {
   let candidate: HTMLElement | null = null;   // pressed group, promoted to dragEl past the slop
   let startX = 0, startY = 0;
 
+  // A collapsed fold has no visible body to drop into, so the header lights up instead
+  // — the marker is in there, it just has nowhere to be seen.
+  const clearFoldTarget = () => container.querySelector(".pfold.droptarget")?.classList.remove("droptarget");
+
   const cleanup = () => {
     marker.remove();
+    clearFoldTarget();
     container.classList.remove("reordering");
     dragEl?.classList.remove("dragging");
     dragEl = candidate = null;
@@ -265,7 +314,9 @@ export function initProjectDnD() {
     // Leave the interactive bits (launch +, per-worktree +, remove ✕, colour dot) to
     // their own clicks.
     if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
-    const g = t.closest<HTMLElement>(".pgroup");
+    // A fold header drags the whole group; anything else drags the project it is in.
+    // `closest` returns the nearer of the two, which is exactly that rule.
+    const g = t.closest<HTMLElement>(".pgroup, .pfold");
     if (!g) return;
     candidate = g;
     startX = e.clientX; startY = e.clientY;
@@ -285,20 +336,34 @@ export function initProjectDnD() {
     e.preventDefault();
     // Place the marker relative to whichever group the pointer is over.
     const over = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-    const grp = over?.closest<HTMLElement>(".pgroup");
-    if (!grp || grp === dragEl) return;
+    let grp = over?.closest<HTMLElement>(".pgroup, .pfold") ?? null;
+    const draggingFold = dragEl.classList.contains("pfold");
+    // Groups don't nest. Dragging one aims at whatever fold the pointer is inside,
+    // never at a project within it.
+    if (grp && draggingFold) grp = grp.closest<HTMLElement>(".pfold") ?? grp;
+    // `dragEl.contains(grp)` — a fold being dragged over its own members.
+    if (!grp || grp === dragEl || dragEl.contains(grp)) return;
+    clearFoldTarget();
+    // The pointer resolved to a fold rather than to a project in it, which means it is
+    // over the header or an empty body: both mean "this group". Dropping a project
+    // there files it, which is the whole gesture — and the only way in for a group with
+    // nothing in it yet. (Out again is the fold's own body → a top-level project, or
+    // the context menu's "Remove from group".)
+    if (!draggingFold && grp.classList.contains("pfold")) {
+      const body = grp.querySelector<HTMLElement>(".pfbody-in");
+      if (body) { body.appendChild(marker); if (grp.classList.contains("collapsed")) grp.classList.add("droptarget"); return; }
+    }
     const r = grp.getBoundingClientRect();
     const after = e.clientY > r.top + r.height / 2;
-    container.insertBefore(marker, after ? grp.nextSibling : grp);
+    grp.parentElement?.insertBefore(marker, after ? grp.nextSibling : grp);
   });
 
   const finish = (e: PointerEvent) => {
     try { container.releasePointerCapture(e.pointerId); } catch { /* */ }
     if (!dragEl) { candidate = null; return; } // never crossed the slop: it was a click
-    if (marker.parentNode) container.insertBefore(dragEl, marker);
+    if (marker.parentNode) marker.parentNode.insertBefore(dragEl, marker);
     cleanup();
-    setProjOrder([...container.querySelectorAll<HTMLElement>(".pgroup")].map((el) => el.dataset.path!).filter(Boolean));
-    saveProjOrder();
+    saveSidebarArrangement(container);
     // A manual drag captures the current visual order and reasserts manual mode
     // (in a sorted mode the drag would otherwise be immediately overridden).
     if (sortMode !== "manual") setSort("manual", false);
@@ -311,6 +376,30 @@ export function initProjectDnD() {
   };
   container.addEventListener("pointerup", finish);
   container.addEventListener("pointercancel", (e) => { try { container.releasePointerCapture(e.pointerId); } catch { /* */ } cleanup(); });
+}
+
+/// What the drag actually left on screen: the flat project order, and which fold each
+/// project ended up inside. One pass, because they are one arrangement — persisting the
+/// order from the DOM and the membership from anywhere else is how the two would drift.
+///
+/// **Memberships for projects that are not on screen are carried over untouched.** In
+/// toplevel mode a repo can be rendered only as its worktrees (`splitByWorktree` drops
+/// an empty root group), so rebuilding `of` from scratch here would quietly unfile every
+/// such repo on the next drag.
+function saveSidebarArrangement(container: HTMLElement) {
+  const order: string[] = [];
+  const of = { ...projGroups.of };
+  for (const el of container.querySelectorAll<HTMLElement>(".pgroup")) {
+    const path = el.dataset.path;
+    if (!path) continue;
+    order.push(path);
+    const gid = el.closest<HTMLElement>(".pfold")?.dataset.fold;
+    if (gid) of[path] = gid; else delete of[path];
+  }
+  setProjOrder(order);
+  saveProjOrder();
+  setProjGroups({ groups: projGroups.groups, of });
+  saveProjGroups();
 }
 
 // External file drops. With dragDropEnabled:true the webview no longer navigates to a
@@ -341,6 +430,10 @@ export function initFileDrop() {
 function shellEscapePath(p: string): string {
   return p.replace(/[^A-Za-z0-9_@%+=:,./-]/g, "\\$&");
 }
+// The 44px rail. Flat — `projectList()`, not `groupedProjects()`: it is already the
+// most compressed view of the fleet there is, and a heading you cannot read plus a
+// fold you cannot see the contents of would cost rows to say nothing. Grouping is an
+// answer to a long sidebar, and this is the short one.
 // Guarded like `renderSidebar` above, and for the sharper of its two reasons: the rail
 // is nothing BUT buttons, and it rides `renderAll` — so on a busy fleet every one of
 // them was destroyed and rebuilt several times a second. That loses `:hover` under a

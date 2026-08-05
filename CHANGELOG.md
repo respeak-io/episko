@@ -136,6 +136,17 @@ A day's work becomes something the team can read, and the app gets quieter under
   so a repository could flash *not a repo* — losing the worktree and commit-graph verbs
   with it — and a GitHub project's issues could appear briefly under a folder that has
   none.
++ **Projects can be grouped, and a group folds away.** Name a set of projects — *Work*,
+  *Side* — and collapse it to a single line when you are not in it. Right-click a project
+  for *Add to group…*, or drag it onto a group the way you already drag one to reorder;
+  right-click the group's own heading to rename, fold, or delete it. A group has no
+  order of its own: it sits where its first project sits, so the sort you picked still
+  decides the rail and dragging a project takes its group with it.
++ **A folded group still says when something in it needs you.** The heading carries the
+  status glyph of the most urgent session it is hiding and a dot for uncommitted changes,
+  because a tidy-up that could bury a session waiting on a permission would be a trap.
+  ⌘1–9 still reaches into a folded group, and taking a session in one onto the stage
+  unfolds it rather than leaving the rail with nothing selected.
 + **A day now gets two sentences: yours, and the project's.** The one on the timeline is
   still your day — your sessions, your spend. Above it, on days more than one person
   committed, sits a second line describing what the *project* did, written from the
