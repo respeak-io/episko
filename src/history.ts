@@ -11,7 +11,7 @@
 // plain terminal or an IDE included.
 
 import { basename } from "./format";
-import { dormants, externals, FAVORITES, sessions } from "./state";
+import { backendLive, dormants, externals, FAVORITES, sessions } from "./state";
 
 /// One row as `list_session_history` returns it.
 export interface HistEntry {
@@ -49,13 +49,23 @@ export function histProject(h: HistEntry): { project: string; colorKey: string; 
  *  the recording platform used. */
 const under = (p: string, root: string) => p === root || p.startsWith(root + "/") || p.startsWith(root + "\\");
 
-// Same rule as sidebarview's `dormantBusy`, matched against the transcript id rather
+// Same rule as grouping's `dormantBusy`, matched against the transcript id rather
 // than a roster entry: an id live in Episko or in another terminal must not be
 // resumed — Claude takes no lock on a transcript, so a second `--resume` would
 // interleave both conversations into one file.
+//
+// `backendLive` is the reload-orphan case (#47): a PTY the backend still holds
+// while the frontend map has no pane for it. Its launch id matches directly; a
+// runtime id it rotated to (/clear, /compact) is only known to the roster, which
+// saves each rotation as it happens — so bridge through any roster entry whose
+// launch id is live in the backend, exactly the shape the `sessions` loop has.
 export function histBusy(h: HistEntry): boolean {
   const id = h.session_id.toLowerCase();
   for (const s of sessions.values()) if (s.resumeId.toLowerCase() === id || s.id.toLowerCase() === id) return true;
+  if (backendLive.has(id)) return true;
+  for (const d of dormants) {
+    if (backendLive.has(d.id.toLowerCase()) && d.resumeId.toLowerCase() === id) return true;
+  }
   return externals.some((e) => e.session_id.toLowerCase() === id);
 }
 

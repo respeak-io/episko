@@ -498,6 +498,7 @@ pub fn run() {
             pty::write_pty,
             pty::resize_pty,
             pty::kill_session,
+            pty::live_session_ids,
             git::git_branch,
             git::git_head,
             git::git_diffstat,

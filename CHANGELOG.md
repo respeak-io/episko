@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A reload can no longer make Episko resume a conversation twice.** A webview reload
+  leaves every `claude` process running with no pane attached, and those orphans then
+  came back from the restore roster as dormant rows with *Resume* enabled — a second
+  `--resume` against a transcript its live process still owns, which silently
+  interleaves both conversations into one file. The sidebar and History now ask the
+  backend which PTYs it actually holds, so an orphan reads *busy* instead of
+  resumable, exactly like a session Episko can see.
 ! **Opening the working set no longer costs a git process per untracked file.** Each
   untracked file entered the peek's patch through its own `git diff --no-index` — up to
   300 processes back to back on one click, each allocating a console on Windows, which

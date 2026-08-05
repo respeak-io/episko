@@ -2,14 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { ExtSession, Restorable, Sess, WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
-  accentFor, colorOverrides, dirtyByFolder, sessions, setDormants, setExternals,
-  setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
+  accentFor, colorOverrides, dirtyByFolder, sessions, setBackendLive, setDormants,
+  setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
+  worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, clusterIsLive, foldRunGroups, groupedProjects,
-  groupPhase, groupSummary, needsYou, needsYouSessions, nextAfterClose, nextInGroup,
-  orderedSessions, projectList, reactorLabel, reactorState, splitByWorktree,
-  urgencyRank, type ProjGroup, type SidebarSlot,
+  allProjects, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
+  nextAfterClose, nextInGroup, orderedSessions, projectList, reactorLabel,
+  reactorState, splitByWorktree, urgencyRank, type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
 import { taskPrefs } from "../src/tasks";
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW_MS);
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
+  setBackendLive(new Set());
   setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
   worktreesByRepo.clear();
   dirtyByFolder.clear();
@@ -956,5 +958,37 @@ describe("nextInGroup — closing one tile stays in the mosaic", () => {
   it("returns null for a session that isn't in the group at all", () => {
     // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
     expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
+  });
+});
+
+describe("dormantBusy — a live session must not be offered for restore", () => {
+  it("is busy while an Episko pane holds it, by launch id or rotated resume id", () => {
+    open(sess({ id: "a", resumeId: "rot" }));
+    expect(dormantBusy(dorm({ id: "a", resumeId: "rot" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "other", resumeId: "rot" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "other", resumeId: "other" }))).toBe(false);
+  });
+
+  it("is busy while it runs in someone else's terminal", () => {
+    setExternals([ext({ session_id: "d1" })]);
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+  });
+
+  it("is busy while only the BACKEND holds its PTY — a webview reload orphan (#47)", () => {
+    // The reload state: frontend map empty, roster row back on screen, process
+    // alive. `list_external_sessions` excludes owned pids, so without this set the
+    // row would read resumable and a second --resume would interleave the
+    // transcript the live process still owns.
+    setBackendLive(new Set(["d1"]));
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+    // Rotation before the reload changes nothing: the backend map is keyed by the
+    // launch id, which is exactly what the roster's `id` still holds.
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "rotated-later" }))).toBe(true);
+    expect(dormantBusy(dorm({ id: "gone", resumeId: "gone" }))).toBe(false);
+  });
+
+  it("frees the row once the orphan's process exits and the poll catches up", () => {
+    setBackendLive(new Set());
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
   });
 });

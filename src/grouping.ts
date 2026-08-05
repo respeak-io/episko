@@ -16,8 +16,8 @@ import { basename } from "./format";
 import type { ExtSession, Phase, Restorable, Sess } from "./types";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, dormants, externals, FAVORITES, folderDirty, projGroups, projOrder,
-  sessions, sortMode, wtGroup, worktreesByRepo,
+  accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
+  projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -144,6 +144,18 @@ export function allProjects(): ProjGroup[] {
     p.dormants.push(d);
   }
   return list;
+}
+// A session that's live right now must not be offered for restore: Claude doesn't
+// lock the transcript, so a second --resume of the same id silently interleaves
+// both conversations into one file. Three sources, because each sees sessions the
+// others can't: the frontend map (our own panes), `backendLive` (a PTY the backend
+// still holds while the map has no pane for it — every pane after a webview reload,
+// #47; invisible as an external too, since `list_external_sessions` excludes owned
+// pids), and the externals list (another terminal entirely).
+export function dormantBusy(d: Restorable): boolean {
+  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
+  if (backendLive.has(d.id)) return true;
+  return externals.some((e) => e.session_id === d.resumeId);
 }
 export function projectList(): ProjGroup[] {
   const list = allProjects();

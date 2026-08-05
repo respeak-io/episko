@@ -788,6 +788,18 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
     Ok(())
 }
 
+/// The session ids of every embedded PTY the backend currently holds — claude,
+/// shell and task panes alike. The frontend's own map answers this in normal
+/// operation; this command exists for the one state where the two disagree: a
+/// webview reload empties the frontend map while every PTY here runs on (#47).
+/// `dormantBusy`/`histBusy` consult it so such an orphan reads "running right
+/// now" and Resume is refused — a second `--resume` against a transcript a live
+/// process still owns silently interleaves both conversations into one file.
+#[tauri::command]
+pub(crate) fn live_session_ids(state: State<AppState>) -> Vec<String> {
+    state.sessions.lock().unwrap().keys().cloned().collect()
+}
+
 #[derive(serde::Serialize)]
 pub(crate) struct Resources {
     /// Bytes/second read from disk, averaged over the gap since the previous sample.

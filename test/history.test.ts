@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { ExtSession, Restorable, Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
-import { sessions, setDormants, setExternals, setFavorites } from "../src/state";
+import { sessions, setBackendLive, setDormants, setExternals, setFavorites } from "../src/state";
 import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW_MS);
   sessions.clear();
-  setExternals([]); setDormants([]); setFavorites([]);
+  setExternals([]); setDormants([]); setFavorites([]); setBackendLive(new Set());
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -107,6 +107,27 @@ describe("histBusy — a live session must not be resumed twice", () => {
   it("matches ids case-insensitively, like the telemetry router", () => {
     sessions.set("a", sess({ id: "AbC", resumeId: "AbC" }));
     expect(histBusy(row({ session_id: "abc" }))).toBe(true);
+  });
+
+  it("is busy when only the backend still holds the PTY — a reload orphan (#47)", () => {
+    // A webview reload empties the frontend map while the process runs on, and an
+    // owned pid is excluded from externals — so this set is the only witness.
+    setBackendLive(new Set(["orph"]));
+    expect(histBusy(row({ session_id: "orph" }))).toBe(true);
+    expect(histBusy(row({ session_id: "other" }))).toBe(false);
+  });
+
+  it("reaches an orphan's rotated id through the roster, which saved the rotation", () => {
+    // The orphan ran /clear before the reload: its transcript now lives under "rot",
+    // an id the backend never sees. Only cc-restore links the two.
+    setBackendLive(new Set(["orph"]));
+    setDormants([dorm({ id: "orph", resumeId: "rot" })]);
+    expect(histBusy(row({ session_id: "rot" }))).toBe(true);
+  });
+
+  it("a roster entry whose launch is not live in the backend proves nothing", () => {
+    setDormants([dorm({ id: "gone", resumeId: "rot" })]);
+    expect(histBusy(row({ session_id: "rot" }))).toBe(false);
   });
 });
 
