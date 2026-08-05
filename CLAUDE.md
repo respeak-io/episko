@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **755 vitest + cargo (162 on macOS, 158 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **755 vitest + cargo (166 on macOS, 162 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which nineteen those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -876,17 +876,17 @@ Lane colours are `--gl-0…7`, re-stepped for the light theme like every other p
 
 ## Backend (`src-tauri/src/`) — thirteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 577 lines out of ~12824 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is **bootstrap, not the backend**: 582 lines out of ~14151 (the counts below are whole files, in-file `#[cfg(test)] mod tests` included — that is most of `telemetry.rs`). Dependencies point downward, `platform.rs` at the bottom.
 
 | Module | Lines | What |
 | --- | --- | --- |
-| `lib.rs` | 577 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `git.rs` | 2,891 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
-| `tasks.rs` | 2,399 | runnable discovery — see Runnables above |
+| `lib.rs` | 582 | `run()`, `AppState`/`Session`, the window (see One title bar), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
+| `git.rs` | 3,298 | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `tasks.rs` | 2,649 | runnable discovery — see Runnables above |
 | `usage.rs` | 1,685 | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
-| `pty.rs` | 1,071 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
-| `telemetry.rs` | 927 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
-| `platform.rs` | 752 | OS leaves (top half, incl. `norm_path`/`physical_cwd`) + OS integrations (bottom half) |
+| `pty.rs` | 1,180 | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
+| `telemetry.rs` | 1,022 | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `platform.rs` | 1,213 | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
 | `external.rs` | 588 | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
 | `github.rs` | 828 | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
 | `notes.rs` | 175 | shared notes (`.episko/notes.toml`) |
@@ -972,9 +972,9 @@ growth) — APFS is copy-on-write, and a transcript grows by constant small appe
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 49 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 50 modules
 
-**No framework, and no longer one file.** ~14296 lines across 49 modules; `main.ts` is 805 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~15098 lines across 50 modules; `main.ts` is 841 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
@@ -1006,11 +1006,11 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module at 1,096 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`.
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module at 1,205 lines), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`.
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 49 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 50 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -1271,11 +1271,61 @@ that path, so removal remains reachable for a folder that is gone. Both flows no
 on `exists` (`worktree_heads`, already in memory from the sidebar's roster): present →
 the removal warning, gone → *"the folder is already gone; this only clears git's record
 of it, nothing is lost"*. `wtConfirmHtml` always did this; `removeWorktreeAt` did not, so
-it asked a destructive-sounding question about nothing and then reported "its folder was
-already gone" from the backend's prune fallback — the fallback working exactly as
-designed, arrived at by the worst possible route. **An unknown roster means "assume it is
-there"**: guessing that way costs one honest sentence, where the reverse would offer to
-prune a live checkout.
+it asked a destructive-sounding question about a folder with nothing in it to lose.
+**An unknown roster means "assume it is there"**: guessing that way costs one honest
+sentence, where the reverse would offer to prune a live checkout.
+
+**A failed `git worktree remove` does NOT mean nothing happened**, and reading it that
+way shipped a removal that half-worked on every Windows machine. Git deletes the
+checkout *directory* first and unregisters the worktree second, and — in its own source
+comment — carries on past a failed delete because "there's no going back from here". So
+a folder it could not delete leaves the worktree **already unregistered** with exit 255.
+Reporting that as a refusal produced the one handoff guaranteed to fail: `git worktree
+remove --force <path>` → `fatal: '<path>' is not a working tree`. `remove_worktree_impl`
+therefore asks `still_registered` — a fresh listing, deliberately not the one taken at
+the top, since the point is that git may have changed it — and an unregistered worktree
+goes down `finish_removal` whatever the exit code was. Unknown counts as *still
+registered*: if the listing itself failed nothing has been learned, and the old refusal
+path is the right fallback.
+
+**Windows will not delete a directory a live process is sitting in**, where POSIX
+unlinks it and lets the last handle close. That single difference is the whole reason
+the above is reachable, and it shapes three things:
+
+- **The wait before the delete is load-bearing**, and it is the same wait
+  `followSessionDrift` already documents: `kill_session` sends a signal and returns, so
+  only `pty-exit` proves the process was reaped. `closeSessionsIn` registers each waiter
+  **before** its kill (a fast exit would resolve into nothing) and calls `closeSession`
+  **last** (it settles pending waiters itself with `-1`). An already-`ended` pane is left
+  out of the race — no `pty-exit` is coming for it, and waiting would spend the whole
+  bound for nothing.
+- **A stranded folder is `ok: true` with a `stranded` field, not `ok: false`.** The
+  worktree really is gone and the ⑃ roster really did change, so every caller must
+  refresh exactly as on a clean run — which is why both removal paths now call
+  `refreshGitViews` unconditionally. Gating it on `ok` left a checkout on screen after it
+  had ceased to exist. What is left over is a *directory*: a separate problem, a separate
+  field, a separate repair (`purge_worktree_folder`).
+- **`remove_tree` replaces `fs::remove_dir_all`** because it answers two things the
+  standard library won't. It names **which** path refused — the Restart Manager can only
+  be asked about a file, and `remove_dir_all`'s error carries no path at all — and it
+  clears the read-only attribute, a Windows failure where *nothing* is holding the folder
+  and an empty holder list would otherwise read as a mystery. It never follows a link,
+  which is the one way a recursive delete does damage outside the directory it was aimed
+  at.
+
+**`path_holders` names the holder; killing one is a different decision from finding it.**
+Two probes, because there are two ways to pin a folder and only one is portable: a
+`sysinfo` cwd scan (any OS — a terminal, a dev server, the pane being closed) and, on
+Windows, the **Restart Manager** (`RmGetList`, the API the installer stack uses) for open
+file handles. Both degrade to "found nothing" rather than to an error — this is a
+diagnostic shown *after* something already failed, and an empty list is honest, since a
+handle can be released between the delete failing and the probe running. `PathHolder.ours`
+is what splits the repair: a process Episko launched is cleared silently (the click
+already decided it should die), and anything else goes in a dialog naming it, because
+terminating somebody's editor loses their unsaved work. `purge_worktree_folder`
+**re-probes before it kills anything** and only touches a pid *still* holding the folder —
+the list came from an earlier answer and pids are reused — and refuses a path without a
+grandparent, so a bug upstream of it cannot erase a drive.
 
 ## Drift — the agent left the checkout it was launched in
 

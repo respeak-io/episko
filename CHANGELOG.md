@@ -88,6 +88,19 @@ Markers: `+` new · `~` changed · `!` fixed
   An empty rollup rendered as `0 B read · 0 B written`, which says the disk sat idle
   rather than that nothing was kept — the distinction the per-project spend strip already
   makes with a dash. It reads *not recorded* now.
+! **Removing a worktree on Windows no longer half-works.** `git worktree remove` deletes
+  the checkout folder *before* it unregisters the worktree, and carries on past a failed
+  delete — so on Windows, where a folder any process holds open cannot be deleted, a
+  removal would leave the worktree gone from git with its directory still on disk.
+  Episko read that as "nothing happened" and offered `git worktree remove --force`, the
+  one command that could no longer work: *fatal: is not a working tree*. It now asks
+  whether the worktree is still registered rather than guessing from the folder, and the
+  common cause is gone too — removing a checkout from a session waits for that session's
+  process to actually die, instead of deleting the folder it is still sitting in.
++ **When a folder won't delete, Episko says who is holding it.** Processes it started are
+  cleared without asking; anything else — an editor, a dev server, a terminal you left
+  open — is listed by name, with the choice to terminate them and retry or leave the
+  folder alone. Read-only files, which nothing is holding at all, are simply cleared.
 
 ## 0.14.0 — 2026-08-03
 A day's work becomes something the team can read, and the app gets quieter underneath.

@@ -512,6 +512,7 @@ pub fn run() {
             git::list_worktrees,
             git::worktree_heads,
             git::remove_worktree,
+            git::purge_worktree_folder,
             git::git_branch_list,
             git::delete_branch,
             git::switch_branch,

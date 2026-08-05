@@ -51,9 +51,30 @@ export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
 export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
+// One process keeping a folder alive, as the backend's `path_holders` reports it.
+// `why` is how it was found and how it reads to a human: "cwd" is a process sitting
+// in the folder (a terminal, a dev server, a PTY pane on its way out), "file" is an
+// open handle (an editor, a watcher). `ours` means Episko launched it — those are
+// cleared without asking, since a removal already decided they should die.
+export interface PathHolder { pid: number; name: string; why: "cwd" | "file"; ours: boolean }
+// A worktree that was removed but whose folder would not delete. Windows-only in
+// practice: it refuses to delete a directory any process has open, where POSIX
+// unlinks it and lets the last handle close in its own time.
+export interface Stranded { path: string; stuck: string; reason: string; holders: PathHolder[] }
 // Result of a fetch/pull/push. `suggest` is set when the action was refused (or
 // git failed) and there's a command worth handing to a real terminal.
-export interface GitActionResult { ok: boolean; summary: string; output: string; suggest: string | null }
+//
+// `stranded` is `remove_worktree`'s alone, and it rides alongside `ok: true` rather
+// than instead of it — the worktree really is gone from git and the roster really did
+// change, so every caller must refresh exactly as it would on a clean run. What is
+// left over is a directory, which is a separate problem with a separate repair
+// (`purge_worktree_folder`), not a different outcome for this one.
+export interface GitActionResult {
+  ok: boolean; summary: string; output: string; suggest: string | null;
+  stranded?: Stranded | null;
+}
+// What `purge_worktree_folder` answers: did the folder go, and if not, who is left.
+export interface PurgeResult { gone: boolean; stranded: Stranded | null }
 // What a pane actually contains. All three run in an identical PTY; the kind is
 // what decides whether telemetry, cost and git actions apply to it.
 //   claude — an instrumented `claude` session (the only kind with telemetry)
