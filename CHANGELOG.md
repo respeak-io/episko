@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Opening the working set no longer costs a git process per untracked file.** Each
+  untracked file entered the peek's patch through its own `git diff --no-index` — up to
+  300 processes back to back on one click, each allocating a console on Windows, which
+  is exactly the creation storm behind the occasional `git.exe` `0xc0000142` dialog.
+  The cap is now 25, and the viewer's existing truncation note covers the rest — nobody
+  reads 300 untracked files in a peek.
+
 + **A task chain is one row, and it opens into a tiled stage.** A `dependsOn` launch
   still runs one pane per step — an exit code per step is what the phase glyphs are —
   but the sidebar now folds the steps into a single row carrying the worst step's

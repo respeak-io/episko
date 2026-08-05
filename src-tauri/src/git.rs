@@ -1392,7 +1392,13 @@ pub(crate) struct GitDiff {
 #[tauri::command]
 pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     const CAP: usize = 800_000; // ~0.8 MB of patch text — ample for a peek
-    const MAX_UNTRACKED: usize = 300;
+    // Each untracked file below costs a whole `git` process (and on Windows a console
+    // with it, at ~140ms worst case per spawn), because `--no-index` compares one pair
+    // at a time — so this cap bounds a process storm, not output size. 300 shipped one:
+    // ~600 back-to-back process creations on a click that should feel instant, and a
+    // plausible source of git.exe 0xc0000142 dialogs. Nobody reads 300 untracked files
+    // in a peek; the viewer's truncation note explains the rest.
+    const MAX_UNTRACKED: usize = 25;
 
     let tracked = git_cmd(&workdir, &["-c", "core.quotepath=false", "--no-optional-locks", "diff", "HEAD"])
         .output()
