@@ -130,6 +130,13 @@ Markers: `+` new · `~` changed · `!` fixed
   even with nothing on stage. The heartbeat reads only the counters — no `git` call
   beside it, and no more writing than before, because a disk meter that churns the disk
   is measuring itself.
+~ **The last recurring `git` process is gone.** The pane on stage re-ran a private
+  `git status` every 4 seconds to refresh the inspector's working-set numbers — the
+  only subprocess the app still spawned on a timer — re-learning what the stale-driven
+  dirty poll already reads for every folder at once. The inspector now picks its
+  numbers up from that shared read: an agent's edits still land on the next tick, and
+  changes made behind Episko's back (your editor, a build) surface within the sweep's
+  15 seconds instead of 4 — the same trade the sidebar's dirty dot has always made.
 ! **A running task no longer books its disk reads again on every poll.** The app-wide
   I/O total kept a session's bytes past its exit by "retiring" any sampled pid it no
   longer recognised — but it recognised pids by the list that exists to tell *claude*

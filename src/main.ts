@@ -829,7 +829,10 @@ setInterval(() => {
   tickDwell(s);
 }, 1000);
 
-// Refresh the active session's working-set diff + CPU/RAM on a slow cadence.
+// Refresh the active session's inspector stats on a slow cadence: the live I/O
+// figures, plus picking up whatever working-set diff the dirty poll has read since.
+// This tick spawns nothing — the diffstat it used to run itself now rides
+// `refreshDirtyStates`' stale-driven map, same as the sidebar dot.
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;

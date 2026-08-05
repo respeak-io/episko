@@ -39,14 +39,14 @@ import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderFoot } from "./footer";
-import { closeExternalView, flushRoster, queueRosterSave } from "./mirror";
+import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dormants, engineDef,
+  accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permMode, permModeDef,
   sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, worktreesByRepo, wtSig,
@@ -618,11 +618,12 @@ export function setActive(id: string, keepGroup = false) {
   void refreshSessionStats(s); // working-set diff + CPU/RAM for the inspector
 }
 
-// Poll the inspector's on-demand stats: the visible session's uncommitted working-set
-// diff (git_diffstat), and Episko's disk I/O across *every* owned claude session
-// (all_sessions_resources). The two have different scopes on purpose — a working set
-// belongs to one checkout, while the I/O bars answer "how hard is Episko working the
-// disk", which is not a per-pane question. See `ioAll` in state.ts.
+// Poll the inspector's on-demand stats: Episko's disk I/O across *every* owned claude
+// session (all_sessions_resources), plus a pick-up of the visible session's working-set
+// diff from `dirtyByFolder` — the map the stale-driven dirty poll keeps fresh for every
+// agent folder at once. The scopes differ on purpose: a working set belongs to one
+// checkout, while the I/O bars answer "how hard is Episko working the disk", which is
+// not a per-pane question. See `ioAll` in state.ts.
 /// Take ONE reading of the app-wide disk-I/O counters and bank it.
 ///
 /// Split out of `refreshSessionStats` so the rollup can be kept sampled without paying
@@ -654,15 +655,17 @@ export async function refreshSessionStats(s: Sess) {
   const sig = (g: DiffStat | null, r: Res) =>
     (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
     + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
-  // Sampled BEFORE the awaits: `pollIo` writes straight into `ioAll`, so reading the
+  // Sampled BEFORE the await: `pollIo` writes straight into `ioAll`, so reading the
   // "before" state afterwards would compare the new values against themselves and the
   // inspector would never repaint.
   const before = sig(s.git, ioAll);
-  const [git] = await Promise.all([
-    invoke<DiffStat | null>("git_diffstat", { workdir: s.workdir }).catch(() => null),
-    pollIo(),
-  ]);
-  s.git = git ?? null;
+  await pollIo();
+  // The working set is read from the dirty poll's map, not fetched here — this tick
+  // used to spawn a `git status` every 4s for whatever was on stage, the only
+  // recurring subprocess in the app, to re-learn what `refreshDirtyStates` already
+  // keeps fresh for every agent folder (hook-driven, 15s sweep for editor changes).
+  // The cost is one dirty-poll tick of extra latency before the numbers move.
+  s.git = dirtyByFolder.get(s.workdir) ?? null;
   if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
@@ -956,7 +959,10 @@ export async function runGit(sessionId: string, op: string) {
     toast(`git ${op}: ${e}`);
   } finally {
     setGitBusy(null);
-    void refreshSessionStats(s);   // ahead/behind moved — re-read it
+    // ahead/behind moved — force the dirty poll to re-read this folder now (the
+    // working set rides its map), then pick the fresh value up into the inspector.
+    dirtyStale.add(s.workdir);
+    void refreshDirtyStates().then(() => refreshSessionStats(s));
     void refreshBranch(s).then((changed) => { if (changed) renderAll(); });
     repaint();
   }

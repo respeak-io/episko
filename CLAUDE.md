@@ -953,8 +953,10 @@ halves fix it, and both are needed:
   explains (a clock jump, a month asleep) is clamped rather than smeared across days the
   app wasn't running.
 - **A 60s heartbeat in `main.ts` keeps the window short** when the 4s poll can't run. It
-  calls `pollIo` — the I/O half of `refreshSessionStats`, split out precisely so the
-  heartbeat does **not** drag `git_diffstat` and its `git` subprocess along with it. The
+  calls `pollIo` — split out of `refreshSessionStats` so the heartbeat is a pure counter
+  read. (`refreshSessionStats` itself no longer spawns anything either: the active
+  pane's working set is picked up from `dirtyByFolder`, the map the stale-driven dirty
+  poll keeps fresh, rather than re-run as a private `git status` per tick.) The
   cadence is `IO_SAVE_FLOOR_MS` exactly, so it cannot raise the write rate above what an
   on-stage session already produces: `addIo` returns before touching anything when the
   disk was idle, and flushes at most once per floor when it wasn't. **A meter must not
