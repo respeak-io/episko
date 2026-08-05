@@ -25,9 +25,9 @@ import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping"
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
 import {
-  askTrust, openInputPrompt, openRunPicker, openTaskManager, runTargetCtx,
+  askTrust, openRunPicker, openTaskManager, runRunnable, runTargetCtx,
 } from "./taskui";
-import { discoverTasks, execCmd, launchWithDeps } from "./tasks";
+import { discoverTasks, execCmd } from "./tasks";
 import {
   accentFor, availEngines, engineDef, sessions, termEngine,
 } from "./state";
@@ -146,8 +146,7 @@ function buildPalGroups(raw: string): PalGroup[] {
       const c = runTargetCtx(); if (!c) return;
       const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
       if (r.id === "just:__untrusted") { void askTrust(c.colorKey, c.project); return; }
-      if (r.inputs.length) { openInputPrompt(r, c.project, o); return; }
-      void launchWithDeps(r, c.project, o);
+      runRunnable(r, c.project, o);
     },
   }));
   // Same source as the sidebar (see allProjects) — a project detected from an external

@@ -3,9 +3,8 @@ import { runElapsed, taskStateText, type InputSpec, type Runnable, type Sess } f
 import { store } from "./localstorage"; // must precede the subject import
 import {
   applyInputs, applyRunner, execCmd, exitWaiters, findDepCycle, lastRunnableById,
-  launchWithDeps,
-  rememberedInput, rememberInput, resolveDeps, setTaskLauncher, setTaskLogger,
-  setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
+  launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps,
+  setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
 } from "../src/tasks";
 
@@ -17,7 +16,7 @@ const run = (o: Partial<Runnable> = {}): Runnable => ({
   compound: false, defaultFor: null, ...o,
 });
 const inputSpec = (o: Partial<InputSpec> = {}): InputSpec =>
-  ({ id: "name", kind: "promptString", description: "Name", default: null, options: [], password: false, ...o });
+  ({ id: "name", kind: "promptString", description: "Name", default: null, options: [], password: false, optional: false, ...o });
 
 // What the launcher hook recorded, and the toast/debug lines the chain emitted.
 let launched: { id: string; r: Runnable; project: string; opts: TaskLaunchOpts }[] = [];
@@ -69,6 +68,56 @@ describe("stopRuleBlocked — unattended means unattended", () => {
   });
   it("reports background before input when a task is both", () => {
     expect(stopRuleBlocked(run({ background: true, inputs: [inputSpec()] }))).toMatch(/never finishes a turn/);
+  });
+  // An input nobody has to answer is not a prompt, so naming one as the reason
+  // would refuse the rule over a dialog that never opens.
+  it("passes one whose only input is optional", () => {
+    expect(stopRuleBlocked(run({ inputs: [inputSpec({ optional: true })] }))).toBe("");
+  });
+  it("passes one whose only input has a default", () => {
+    expect(stopRuleBlocked(run({ inputs: [inputSpec({ default: "dev" })] }))).toBe("");
+  });
+  it("still refuses when one input of several needs answering", () => {
+    expect(stopRuleBlocked(run({ inputs: [inputSpec({ optional: true }), inputSpec({ id: "env" })] }))).toMatch(/needs someone there/);
+  });
+});
+
+// The rule behind the two Run buttons: running a task is the common case and must
+// not cost a dialog, so the dialog opens only for what nothing can answer.
+describe("prefillInputs — what a plain Run can start without asking", () => {
+  const withInput = (i: Partial<InputSpec>) =>
+    run({ exec: { mode: "shell", line: "just start ${input:services}" }, inputs: [inputSpec({ id: "services", ...i })] });
+
+  it("passes a task with no inputs straight through", () => {
+    const r = run();
+    expect(prefillInputs(r, "epi")).toBe(r);
+  });
+  it("fills an optional input with nothing — a just `*name` takes zero or more", () => {
+    expect(prefillInputs(withInput({ optional: true }), "epi")?.exec).toMatchObject({ line: "just start " });
+  });
+  it("fills from the definition's own default", () => {
+    expect(prefillInputs(withInput({ default: "api" }), "epi")?.exec).toMatchObject({ line: "just start api" });
+  });
+  it("prefers what you typed last over the default", () => {
+    rememberInput("epi", "npm:test", "services", "web");
+    expect(prefillInputs(withInput({ default: "api" }), "epi")?.exec).toMatchObject({ line: "just start web" });
+  });
+  it("gives up on a required input with no answer anywhere — that is the one case worth a dialog", () => {
+    expect(prefillInputs(withInput({}), "epi")).toBeNull();
+  });
+  it("never prefills a password, even one remembered by mistake", () => {
+    rememberInput("epi", "npm:test", "services", "hunter2");
+    expect(prefillInputs(withInput({ password: true }), "epi")).toBeNull();
+  });
+  it("gives up when any one of several inputs is unanswerable", () => {
+    const r = run({
+      exec: { mode: "shell", line: "x ${input:a} ${input:b}" },
+      inputs: [inputSpec({ id: "a", optional: true }), inputSpec({ id: "b" })],
+    });
+    expect(prefillInputs(r, "epi")).toBeNull();
+  });
+  it("clears the inputs, so what it returns never prompts again", () => {
+    expect(prefillInputs(withInput({ optional: true }), "epi")?.inputs).toEqual([]);
   });
 });
 

@@ -106,6 +106,11 @@ pub struct InputSpec {
     /// Choices, for `pickString`.
     pub options: Vec<String>,
     pub password: bool,
+    /// The task runs perfectly well with this left empty — a just `*name` parameter
+    /// takes zero or more arguments. The frontend uses it to decide whether a plain
+    /// Run can proceed without a dialog; the field is still offered by *Run with
+    /// parameters…*, because optional is not the same as unwanted.
+    pub optional: bool,
 }
 
 /// Discover everything runnable in `root`, in a stable order: Episko's own tasks
@@ -210,6 +215,7 @@ fn redetect_inputs(run: &str, original: &[InputSpec]) -> Vec<InputSpec> {
                 default: None,
                 options: Vec::new(),
                 password: false,
+                optional: false,
             })
         })
         .collect()
@@ -621,6 +627,9 @@ fn parse_input_specs(root: &Path, cwd: &str, raw: Option<&serde_json::Value>) ->
                     })
                     .unwrap_or_default(),
                 password: i.get("password").and_then(|v| v.as_bool()).unwrap_or(false),
+                // VS Code has no notion of an optional input — every declared one is
+                // asked for, so nothing here may claim it can be skipped.
+                optional: false,
                 id,
                 kind: kind.to_string(),
             })
@@ -1215,7 +1224,11 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
             if name.starts_with('_') || r.get("private").and_then(|p| p.as_bool()).unwrap_or(false) {
                 return None;
             }
-            // A recipe parameter with no default has to come from somewhere.
+            // A recipe parameter with no default has to come from somewhere — except
+            // a variadic `*name`, which takes zero or more arguments and so is
+            // perfectly runnable empty. `just` reports that as `kind: "star"`; a
+            // `+name` (one or more) and a bare parameter both genuinely require a
+            // value, and `just` refuses the recipe without one.
             let inputs: Vec<InputSpec> = r
                 .get("parameters")
                 .and_then(|p| p.as_array())
@@ -1224,13 +1237,18 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
                         .filter(|p| p.get("default").map(|d| d.is_null()).unwrap_or(true))
                         .filter_map(|p| {
                             let id = p.get("name")?.as_str()?.to_string();
+                            let optional = p.get("kind").and_then(|k| k.as_str()) == Some("star");
                             Some(InputSpec {
-                                description: format!("{id} (just parameter)"),
+                                description: format!(
+                                    "{id} (just parameter{})",
+                                    if optional { ", optional" } else { "" }
+                                ),
                                 id,
                                 kind: "promptString".into(),
                                 default: None,
                                 options: Vec::new(),
                                 password: false,
+                                optional,
                             })
                         })
                         .collect()
@@ -2238,7 +2256,7 @@ env = { RUST_LOG = "debug" }
         let t = Tmp::new("just");
         t.write(
             "justfile",
-            "# Run the test suite\ntest:\n    echo testing\n\ndeploy env:\n    echo {{env}}\n\n_private:\n    echo hidden\n",
+            "# Run the test suite\ntest:\n    echo testing\n\ndeploy env:\n    echo {{env}}\n\nstart *services:\n    echo {{services}}\n\nneed +args:\n    echo {{args}}\n\n_private:\n    echo hidden\n",
         );
         let found = discover(&t.0, true);
         assert!(found.iter().all(|r| r.blocked.is_none()));
@@ -2252,6 +2270,18 @@ env = { RUST_LOG = "debug" }
         assert_eq!(deploy.exec, Exec::Shell { line: "just deploy ${input:env}".into() });
         assert_eq!(deploy.inputs.len(), 1);
         assert_eq!(deploy.inputs[0].id, "env");
+        assert!(!deploy.inputs[0].optional, "`just deploy` fails with no argument");
+
+        // `*name` takes zero or more, so it is offered but never demanded — this is
+        // what stops the input dialog opening on every run of such a recipe.
+        let start = found.iter().find(|r| r.label == "start").unwrap();
+        assert_eq!(start.exec, Exec::Shell { line: "just start ${input:services}".into() });
+        assert!(start.inputs[0].optional);
+        assert!(start.inputs[0].description.contains("optional"));
+
+        // `+name` wants at least one, so it is as required as a bare parameter.
+        let need = found.iter().find(|r| r.label == "need").unwrap();
+        assert!(!need.inputs[0].optional);
 
         assert!(!found.iter().any(|r| r.label == "_private"), "`_` recipes are internal");
     }

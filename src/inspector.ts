@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, stageGen } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
-import { pinnedIds, togglePin } from "./tasks";
+import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
 import { sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
@@ -161,6 +161,7 @@ function renderTaskInspector(s: Sess) {
     <div class="tacts">
       ${handoff}
       <button class="tact" data-rerun="1">⟳ Re-run</button>
+      ${lastRunnableById.get(r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">⋯ Parameters</button>` : ""}
       <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
       <button class="tact" data-reveal="1">↗ Reveal source</button>
       ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
@@ -168,6 +169,7 @@ function renderTaskInspector(s: Sess) {
 
   const insp = $("inspector");
   insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
+  insp.querySelector("[data-reparams]")?.addEventListener("click", () => rerunTask(s, true));
   insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
   insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
   insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));
