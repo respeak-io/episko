@@ -331,6 +331,9 @@ export function closeSession(id: string) {
     ? nextInGroup(groupMembers(gid), id)
     : null;
   invoke("kill_session", { sessionId: id }).catch(() => {});
+  // Release the GL context explicitly — term.dispose() disposes the addon, but only
+  // detachWebgl gives the context slot back to the page's budget (see terminal.ts).
+  detachWebgl(s);
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
   sessions.delete(id);

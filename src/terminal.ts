@@ -60,7 +60,19 @@ export function detachWebgl(s: Sess) {
   const w = s.gl;
   if (!w) return;
   s.gl = undefined; // clear first — dispose() must not re-enter through onContextLoss
+  // Capture the addon's canvases before dispose() takes them out of the pane.
+  const canvases = [...s.pane.querySelectorAll("canvas")];
   try { w.dispose(); } catch { /* already disposed with its terminal */ }
+  // dispose() alone is not a release: WebKit counts the WebGL context against the
+  // page's 16-context budget until the canvas is *garbage collected*, so ~16 pane
+  // switches in, every attach logged "too many active WebGL contexts" and leaned on
+  // the browser force-losing our oldest zombie (observed in the WKWebView dev build;
+  // Chromium reclaims quietly but holds the memory just the same). Losing the context
+  // explicitly frees the slot now. getContext here returns the addon's *existing*
+  // context — on the 2D link-layer canvas it returns null — it never creates one.
+  for (const c of canvases) {
+    try { c.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* */ }
+  }
 }
 
 // An ended claude pane keeps up to 8000 lines of scrollback it can never grow again,
