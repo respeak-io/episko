@@ -13,8 +13,12 @@ The name comes from Greek ἐπίσκοπος (*episkopos*), "the one who watche
 - **Answers permission prompts.** When Claude Code asks to run a command, episko surfaces the request with a risk assessment and lets you allow it, deny it, or jump into the terminal — without hunting for which window is blocked.
 - **Tracks usage limits.** Reads your 5-hour and weekly Anthropic limits and forecasts your pace, warning from amber to red before you hit a wall. Includes a usage dashboard: daily spend heatmap, tokens by model, token composition, and cost attributed per project.
 - **Launches into git worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a new worktree for a session so parallel agents don't collide in one checkout.
-- **Finds sessions started elsewhere.** Claude Code sessions launched outside episko are discovered and listed read-only, with a jump-to-terminal action on macOS.
-- **Survives restarts.** Sessions are resumed through Claude Code's own transcripts, so conversation state is Claude's, not something episko has to capture.
+- **Gives every project a dashboard.** Clicking a project opens its week: commits and sessions summarised a day at a time, open GitHub issues and pull requests, the repo's checkouts, and shared notes. An agent can be dispatched straight at an issue — episko creates a worktree, sends the prompt, and writes a claim to the issue so a colleague's agent doesn't start the same work twice. A generated per-day work log about the project (never about your spend) can be committed as `.episko/digest.md` so the team reads one shared history.
+- **Shows each project's commit graph.** Lanes, merges, branch and tag labels, read one page at a time and fetched as you scroll, so a huge repo opens as fast as a small one.
+- **Organises the sidebar your way.** Projects can be grouped under named headings and folded away; a folded group still shows the most urgent status glyph it hides. Task chains (`dependsOn`) fold into a single row carrying the worst step's status, and open into a tiled stage.
+- **Keeps a whole-machine history.** Every Claude Code session on the machine — episko's or not — is read from Claude's own transcripts: searchable, scoped by project and day, reopenable.
+- **Finds sessions started elsewhere.** Claude Code sessions launched outside episko are discovered and listed read-only, with jump-to-terminal on macOS (the exact tab) and Windows (the hosting window).
+- **Survives restarts.** Sessions are resumed through Claude Code's own transcripts, so conversation state is Claude's, not something episko has to capture. Even a webview reload rebuilds every pane and re-adopts the running processes, scrollback included.
 - **Runs your project's own tasks.** The task definitions a project already ships — `.episko/tasks.toml`, `.vscode/tasks.json`, `.vscode/launch.json`, `package.json` scripts, a `justfile`, `Taskfile.yml`, `mise.toml`, a `Makefile`, `Cargo.toml` — run in the same panes as the agents, started from a **▶ Run** picker (⌘⇧R) or the command palette. A task run *is* a session: its exit code becomes its status (0 = done, non-zero = error), so it shows up in the sidebar, the attention badge and the tray like anything else. Runs are deliberately un-instrumented (no telemetry, no cost) and go through a login shell so they inherit your PATH and version-manager shims. Task discovery never executes the project: tools whose listing would evaluate the repo sit behind a trust gate, and tasks that can't run (needing an editor, or an attach-type debug config) are listed with the reason rather than hidden.
 - **⌘K command palette** to jump between sessions or launch a project, and a **settings window** (⌘,).
 
@@ -28,7 +32,7 @@ Built with Tauri v2 — a Rust backend with a vanilla-TypeScript frontend.
 
 - The `claude` CLI (Claude Code) installed and on your PATH, with your own Anthropic access.
 - macOS on Apple silicon, or Windows 10/11. Linux is not yet packaged.
-- On Windows the embedded terminal is supported; the external-terminal engines are macOS-only.
+- On Windows the embedded terminal is supported; the external-terminal engines (Ghostty, Terminal.app, iTerm2) are macOS-only.
 
 ## Links
 

@@ -386,6 +386,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 .ext-tag{font:600 8px var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted-2);background:var(--surface-2);border:1px solid var(--hair);border-radius:4px;padding:1px 5px;}
 .sjump{color:var(--muted-2);font-size:10px;}
 .srow.extrow .sbranch{font-style:italic;}
+/* project groups: your own headings; a folded one still shows the most urgent
+   glyph it hides, and a dot for uncommitted changes */
+.ghead{display:flex;align-items:center;gap:6px;margin:2px 0 1px;padding:6px 7px 3px;font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;}
+.ghead .gcaret{font-size:8px;opacity:.9;}
+.ghead .gsum{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font:600 9.5px var(--font-mono);letter-spacing:0;}
+.ghead .gsum .gc{color:var(--muted-2);}
+.ghead .gsum .gdot{width:5px;height:5px;border-radius:50%;background:var(--st-working);box-shadow:0 0 4px color-mix(in srgb,var(--st-working) 70%,transparent);}
 .wthead{display:flex;align-items:center;gap:7px;padding:4px 8px 2px 4px;}
 .wtglyph{font-size:11px;}
 .wtname{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -542,8 +549,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 /* ===== full-cover modal overlays (palette, new-session, usage) ===== */
 .ov{position:absolute;inset:0;z-index:12;display:grid;opacity:0;pointer-events:none;transition:opacity .5s ease;}
 .ov .ov-box{transition:transform .5s cubic-bezier(.2,.7,.2,1);transform:scale(.965);}
-.scene.show-pal .pal-overlay,.scene.show-wt .wt-overlay,.scene.show-usageview .usage-overlay,.scene.show-run .run-overlay{opacity:1;}
-.scene.show-pal .pal-overlay .ov-box,.scene.show-wt .wt-overlay .ov-box,.scene.show-usageview .usage-overlay .ov-box,.scene.show-run .run-overlay .ov-box{transform:scale(1);}
+.scene.show-pal .pal-overlay,.scene.show-wt .wt-overlay,.scene.show-usageview .usage-overlay,.scene.show-run .run-overlay,.scene.show-dash .dash-overlay{opacity:1;}
+.scene.show-pal .pal-overlay .ov-box,.scene.show-wt .wt-overlay .ov-box,.scene.show-usageview .usage-overlay .ov-box,.scene.show-run .run-overlay .ov-box,.scene.show-dash .dash-overlay .ov-box{transform:scale(1);}
 .ov-box{background:color-mix(in srgb,var(--panel) 98%,transparent);backdrop-filter:blur(16px);border:1px solid var(--hair-strong);border-radius:14px;box-shadow:0 40px 90px -28px #000;overflow:hidden;}
 
 /* command palette (⌘K) */
@@ -638,6 +645,47 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 .uv-delta.up{color:var(--st-done);}.uv-delta.down{color:var(--st-error);}
 .uv-tfoot svg{width:52px;height:16px;}
 .uv-cols{display:grid;grid-template-columns:1.55fr 1fr;gap:12px;}
+
+/* project dashboard — click a project in the rail and this is where you land */
+.dash-overlay{place-items:center;}
+.db-box{width:872px;max-width:95%;padding:16px 18px;}
+.db-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:13px;}
+.db-title{margin:2px 0 0;font-family:var(--font-display);font-weight:600;font-size:20px;letter-spacing:-.01em;display:flex;align-items:baseline;gap:10px;}
+.db-tier{font:600 10px var(--font-mono);color:var(--muted-2);border:1px solid var(--hair);border-radius:6px;padding:2px 7px;letter-spacing:0;}
+.db-verbs{display:flex;gap:6px;}
+.db-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px;}
+.db-tile{border:1px solid var(--hair);border-radius:10px;padding:9px 12px;background:var(--surface);}
+.db-fig{font:700 17px var(--font-mono);letter-spacing:-.02em;margin-top:3px;display:flex;align-items:baseline;gap:8px;}
+.db-fig svg{width:44px;height:14px;}
+.db-cols{display:grid;grid-template-columns:1.5fr 1fr;gap:12px;align-items:start;}
+.db-days{border:1px solid var(--hair);border-radius:10px;background:var(--surface);padding:4px 0;}
+.db-day{padding:9px 13px;border-bottom:1px solid var(--hair);}
+.db-day:last-of-type{border-bottom:0;}
+.db-dh{display:flex;align-items:baseline;gap:9px;}
+.db-dh b{font-size:12px;}
+.db-dmeta{font:10px var(--font-mono);color:var(--muted-2);}
+.db-writing{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font:10px var(--font-mono);color:var(--muted-2);}
+.db-writing .spin{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--hair-strong);border-top-color:var(--accent);}
+.db-sent{margin-top:4px;font-size:11.5px;color:var(--muted);line-height:1.5;}
+.db-team{position:relative;margin-top:7px;padding:7px 9px 8px;border-radius:8px;background:var(--accent-wash);border:1px solid var(--accent-line);font-size:11px;color:var(--muted);line-height:1.5;}
+.db-tlab{display:block;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);font-weight:700;margin-bottom:2px;}
+.db-mark{position:absolute;right:7px;bottom:4px;font:9px var(--font-mono);color:var(--muted-2);}
+.db-dfoot{padding:8px 13px;border-top:1px solid var(--hair);font:10.5px var(--font-mono);color:var(--muted-2);}
+.db-dfoot b{color:var(--accent-ink);font-weight:600;}
+.db-aside{display:flex;flex-direction:column;gap:10px;}
+.db-card{border:1px solid var(--hair);border-radius:10px;background:var(--surface);padding:9px 11px;}
+.db-ch{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;}
+.db-cn{font:10px var(--font-mono);color:var(--muted-2);}
+.db-irow{display:flex;align-items:center;gap:7px;padding:4px 0;}
+.db-inum{font:600 10px var(--font-mono);color:var(--muted-2);flex:none;}
+.db-inum.pr{color:var(--tool-task);}
+.db-wtic{font-size:10px;color:var(--muted-2);flex:none;}
+.db-ititle{min-width:0;flex:1;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.db-claim{font:600 9px var(--font-mono);color:var(--st-working);flex:none;}
+.db-tri{font:9px var(--font-mono);color:var(--muted-2);flex:none;}
+.db-ok{font:600 9px var(--font-mono);color:var(--st-done);flex:none;}
+.db-dispatch{margin-top:6px;padding:6px 9px;border-radius:7px;font:600 10.5px var(--font-ui);color:var(--accent-ink);background:var(--accent-wash);border:1px solid var(--accent-line);}
+.db-note{font-size:10.5px;color:var(--muted);font-style:italic;line-height:1.5;}
 .uv-card{border:1px solid var(--hair);border-radius:10px;padding:12px;background:var(--surface);}
 .uv-cardh{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:12px;}
 .uv-h{margin:2px 0 0;font-size:13px;font-weight:600;}
@@ -726,6 +774,31 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 @keyframes g-bobflip{0%,100%{transform:scaleX(-1) translateY(0);}55%{transform:scaleX(-1) translate(2px,-2px);}}
 
 /* ===== download finale ===== */
+/* ===== bento: the rest of the kit ===== */
+.bento{position:relative;padding:clamp(70px,10vh,120px) clamp(16px,5vw,40px) 20px;}
+.bento-head{max-width:1160px;margin:0 auto 34px;}
+.bento-head h2{font-family:var(--font-display);font-weight:600;letter-spacing:-.03em;font-size:clamp(30px,4.5vw,46px);line-height:1.02;margin:14px 0 0;}
+.bento-head h2 .b{background:linear-gradient(180deg,#fff,color-mix(in srgb,var(--accent) 55%,#fff));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+.bento-head p{color:var(--muted);max-width:560px;margin:14px 0 0;font-size:15px;}
+.bento-grid{max-width:1160px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:13px;}
+.bt{position:relative;display:flex;flex-direction:column;gap:8px;padding:18px 19px 16px;border-radius:14px;background:linear-gradient(180deg,var(--lift),transparent 46%),var(--panel);border:1px solid var(--hair);overflow:hidden;transition:border-color .3s,transform .3s;}
+.bt:hover{border-color:var(--accent-line);transform:translateY(-2px);}
+.bt.w2{grid-column:span 2;}
+.bt h3{margin:0;font-family:var(--font-display);font-weight:600;font-size:16.5px;letter-spacing:-.01em;}
+.bt p{margin:0;font-size:12.5px;line-height:1.6;color:var(--muted);}
+.bt .bt-tag{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;}
+.bt-mono{margin-top:auto;padding:8px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--hair);font:10.5px var(--font-mono);color:var(--muted-2);display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden;}
+.bt-mono .em{color:var(--accent-ink);}
+.bt-mono .ok{color:var(--st-done);}
+.bt-mono .warn{color:var(--st-working);}
+.bt-mono .bad{color:var(--st-error);}
+.bt-mono .att{color:var(--st-attention);}
+.bt-graph{margin-top:auto;width:100%;height:52px;}
+@media (max-width:900px){
+  .bento-grid{grid-template-columns:1fr;}
+  .bt.w2{grid-column:auto;}
+}
+
 .download{position:relative;padding:clamp(90px,14vh,150px) clamp(16px,5vw,40px) 60px;text-align:center;}
 .download .eyebrow{margin-bottom:20px;}
 .download h2{font-family:var(--font-display);font-weight:600;letter-spacing:-.03em;font-size:clamp(38px,6.5vw,72px);line-height:.98;margin:0;}
@@ -989,14 +1062,17 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 
             <!-- fleet / rail -->
             <div class="ck-rail region region--fleet" data-region="fleet">
-              <div class="rail-top"><div class="rtl"><span class="label">Projects</span><span class="rcount">7 running</span></div><div class="btns"><span title="Sort order">≡</span><span title="Add a project folder">＋</span><span title="Collapse sidebar">«</span></div></div>
+              <div class="rail-top"><div class="rtl"><span class="label">Projects</span><span class="rcount">9 running</span></div><div class="btns"><span title="Sort order">≡</span><span title="Add a project folder">＋</span><span title="Collapse sidebar">«</span></div></div>
+
+              <div class="ghead"><span class="gcaret">▾</span>work</div>
 
               <div class="pgroup">
-                <div class="phead"><span class="picon grad"></span><span class="pname">episko</span><span class="pdirty"></span><span class="pcount">3</span><span class="padd">＋</span></div>
+                <div class="phead"><span class="picon grad"></span><span class="pname">episko</span><span class="pdirty"></span><span class="pcount">4</span><span class="padd">＋</span></div>
                 <div class="psessions">
                   <div class="srow active"><span class="sglyph g-work pulse">●</span><span class="sbranch">add attention shortcut</span><span class="sctx">41%</span></div>
                   <div class="srow"><span class="sglyph g-done">✓</span><span class="sbranch">usage forecast colours</span><span class="sctx">78%</span></div>
                   <div class="srow"><span class="sglyph g-attn pulse">◆</span><span class="sbranch">windows path fix</span><span class="sctx">12%</span></div>
+                  <div class="srow"><span class="sglyph g-work pulse">▶</span><span class="sbranch">build → test</span><span class="sctx">2 steps</span></div>
                 </div>
               </div>
 
@@ -1014,6 +1090,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
                   <div class="srow"><span class="sglyph g-done">✓</span><span class="sbranch">rewrite the README</span><span class="sctx">45%</span></div>
                 </div>
               </div>
+
+              <div class="ghead"><span class="gcaret">▸</span>side<span class="gsum"><span class="g-work">●</span><span class="gc">2</span><span class="gdot"></span></span></div>
 
               <div class="pgroup">
                 <div class="phead"><span class="pdot" style="background:#c3b0ff;color:#c3b0ff"></span><span class="pname">respeak-web</span><span class="pcount ext">1 ext</span></div>
@@ -1110,7 +1188,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
             <div class="ck-foot region region--foot" data-region="foot">
               <span class="frepo">respeak-io/episko ↗</span>
               <span class="fver" data-ver>v0.15.0</span>
-              <span class="fseg"><b>7</b> sessions</span>
+              <span class="fseg"><b>9</b> sessions</span>
               <span class="fdiv"></span>
               <span class="fseg">today <b>$12.40</b></span>
               <span class="fdiv"></span>
@@ -1259,6 +1337,59 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
               </div>
             </div>
 
+            <!-- project dashboard (left-click a project in the rail) -->
+            <div class="ov dash-overlay" data-label="The project dashboard" aria-hidden="true">
+              <div class="ov-box db-box">
+                <div class="db-head">
+                  <div><div class="label">Project</div><div class="db-title">episko<span class="db-tier">GitHub · ⌂ main</span></div></div>
+                  <div class="db-verbs"><span class="act">◷ History</span><span class="act">❯ Terminal</span><span class="act">▶ Run</span><span class="act primary">＋ Session</span></div>
+                </div>
+                <div class="db-strip">
+                  <div class="db-tile"><div class="label">Commits · 7d</div><div class="db-fig">23<svg viewBox="0 0 44 14" preserveAspectRatio="none"><polyline fill="none" stroke="var(--accent)" stroke-width="1.4" points="0,11 7,9 14,10 21,5 28,7 35,3 44,4"/></svg></div></div>
+                  <div class="db-tile"><div class="label">Sessions</div><div class="db-fig">14</div></div>
+                  <div class="db-tile"><div class="label">Spend · 7d</div><div class="db-fig">$31.80</div></div>
+                  <div class="db-tile"><div class="label">Issues open</div><div class="db-fig">6</div></div>
+                  <div class="db-tile"><div class="label">Pull requests</div><div class="db-fig">2</div></div>
+                </div>
+                <div class="db-cols">
+                  <div class="db-days">
+                    <div class="db-day">
+                      <div class="db-dh"><b>Today</b><span class="db-dmeta">4 commits · 3 sessions · $8.40</span><span class="db-writing"><i class="spin"></i>writing…</span></div>
+                    </div>
+                    <div class="db-day">
+                      <div class="db-dh"><b>Yesterday</b><span class="db-dmeta">6 commits · 4 sessions · $11.20</span></div>
+                      <div class="db-sent">Folded task chains into one sidebar row, and taught a reload to hand every pane back — scrollback included.</div>
+                      <div class="db-team"><span class="db-tlab">the project · 3 people</span>Reviewed and merged the pane-lifecycle PRs; Windows worktree removal no longer half-works.<span class="db-mark">✦ generated</span></div>
+                    </div>
+                    <div class="db-day">
+                      <div class="db-dh"><b>Monday</b><span class="db-dmeta">3 commits · 2 sessions · $6.10</span></div>
+                      <div class="db-sent">Moved WebGL contexts to a small pool over the recently-viewed panes; the 16-context cliff is unreachable now.</div>
+                    </div>
+                    <div class="db-dfoot">Share the work log — commit <b>.episko/digest.md</b> →</div>
+                  </div>
+                  <div class="db-aside">
+                    <div class="db-card">
+                      <div class="db-ch"><span class="label">Issues &amp; PRs</span><span class="db-cn">6 open</span></div>
+                      <div class="db-irow"><span class="db-inum">#232</span><span class="db-ititle">statusLine drops rate limits on Git Bash</span><span class="db-claim">● claimed · mira</span></div>
+                      <div class="db-irow"><span class="db-inum">#218</span><span class="db-ititle">tray icons blurry on Windows HiDPI</span><span class="db-tri">quiet 12d</span></div>
+                      <div class="db-irow"><span class="db-inum pr">PR 74</span><span class="db-ititle">footer popovers drop a click mid-press</span><span class="db-ok">✓ checks</span></div>
+                      <div class="db-dispatch">▶ Start an agent on #218 — worktree, prompt &amp; claim</div>
+                    </div>
+                    <div class="db-card">
+                      <div class="db-ch"><span class="label">Checkouts</span><span class="db-cn">3</span></div>
+                      <div class="db-irow"><span class="db-wtic">⌂</span><span class="db-ititle">main</span><span class="wtb-tag good">clean</span></div>
+                      <div class="db-irow"><span class="db-wtic">⑃</span><span class="db-ititle">feat/attn-jump</span><span class="wtb-tag warn">3 dirty</span></div>
+                      <div class="db-irow"><span class="db-wtic">⑃</span><span class="db-ititle">feat/session-auth</span><span class="wtb-tag good">clean</span></div>
+                    </div>
+                    <div class="db-card">
+                      <div class="db-ch"><span class="label">Notes</span><span class="db-cn">shared · .episko</span></div>
+                      <div class="db-note">“claim expiry: a sleeping laptop must not hold a lock” — tim</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div><!-- /ck-grid -->
         </div><!-- /cockpit -->
       </div>
@@ -1303,6 +1434,11 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
           <h2 class="cap-title">Your own tasks, same pen.</h2>
           <p class="cap-body">The scripts your project already ships — package.json, a justfile, VS Code tasks, a Makefile — run in these panes too. A run is just another session: its exit code is its status.</p>
         </div>
+        <div class="brief-slide" data-focus="dashboard">
+          <div class="cap-eyebrow">the project itself</div>
+          <h2 class="cap-title">Every project has a homepage.</h2>
+          <p class="cap-body">Click a project for its week — commits and sessions summarised a day at a time, open issues, checkouts, shared notes. Dispatch an agent straight at an issue, claim included.</p>
+        </div>
         <div class="brief-slide" data-focus="forecast">
           <div class="cap-eyebrow">pace yourself</div>
           <h2 class="cap-title">See the limit coming.</h2>
@@ -1327,6 +1463,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
     <div class="step" data-focus="palette"></div>
     <div class="step" data-focus="newsession"></div>
     <div class="step" data-focus="run"></div>
+    <div class="step" data-focus="dashboard"></div>
     <div class="step" data-focus="forecast"></div>
     <div class="step" data-focus="usage"></div>
     <div class="tail" aria-hidden="true"></div>
@@ -1336,6 +1473,96 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 <!-- ===== mobile feature notes (desktop hides these; the scroll-tour covers it) ===== -->
 <!-- the per-chapter copy lives in the callout (.brief-slide) — the scroll
      tour now runs at every width, so there is no separate mobile notes list -->
+
+<!-- ===== bento: what the tour doesn't show ===== -->
+<section class="bento" id="features">
+  <div class="bento-head">
+    <div class="eyebrow"><span class="gk">πήρα</span> — the shepherd's pouch</div>
+    <h2><span class="b">The rest of the kit.</span></h2>
+    <p>The tour is the watching. This is the working gear — what's in the pouch once the flock is actually moving.</p>
+  </div>
+  <div class="bento-grid">
+
+    <div class="bt w2">
+      <span class="bt-tag">GitHub</span>
+      <h3>Send an agent at an issue.</h3>
+      <p>From the project dashboard, dispatch straight at an open issue: Episko makes the worktree, sends the prompt, and writes a claim to the issue — so a colleague's agent doesn't start the same work twice. When the session ends, the issue is handed back.</p>
+      <div class="bt-mono">#218 <span class="em">→ ⑃ fix/tray-hidpi</span> · prompt sent · <span class="warn">● claimed</span></div>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">Teamwork</span>
+      <h3>One work log, committed.</h3>
+      <p>A generated line per day about what the <em>project</em> did — commits and pull requests, never your spend — written to the repo, so the team reads one history instead of each paying to re-derive it.</p>
+      <div class="bt-mono"><span class="em">.episko/digest.md</span> · ✦ by Haiku</div>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">Sidebar</span>
+      <h3>Group projects, fold them away.</h3>
+      <p>Name a set — <em>work</em>, <em>side</em> — and collapse it to one line. A folded heading still carries the most urgent glyph it hides, so a tidy-up can't bury an agent waiting on you.</p>
+      <div class="bt-mono">▸ side · <span class="warn">●</span> 2 · <span class="warn">•</span> uncommitted</div>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">Runnables</span>
+      <h3>A chain is one row.</h3>
+      <p>A <span class="mono">dependsOn</span> chain runs one pane per step but folds into a single row carrying the worst step's status — a failed build reads as a failed chain. Click it and every step tiles the stage.</p>
+      <div class="bt-mono"><span class="bad">✕</span> build <span class="em">→</span> test · failed at step 1</div>
+    </div>
+
+    <div class="bt w2">
+      <span class="bt-tag">Git</span>
+      <h3>The whole history, one page at a time.</h3>
+      <p>A commit graph per project — lanes, merges, branch and tag labels — read page by page and fetched as you scroll, so it opens on a huge repo as fast as on a small one.</p>
+      <svg class="bt-graph" viewBox="0 0 460 52" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <path d="M12 14 H448" stroke="#a78bfa" stroke-width="1.6" fill="none" opacity=".85"/>
+        <path d="M76 14 C 96 14, 96 32, 116 32 H 300 C 320 32, 320 14, 340 14" stroke="#7cc7ff" stroke-width="1.6" fill="none" opacity=".85"/>
+        <path d="M160 32 C 176 32, 176 46, 192 46 H 236 C 252 46, 252 32, 268 32" stroke="#37c98b" stroke-width="1.6" fill="none" opacity=".85"/>
+        <g fill="#100e15" stroke-width="1.6">
+          <circle cx="44" cy="14" r="3.4" stroke="#a78bfa"/><circle cx="140" cy="14" r="3.4" stroke="#a78bfa"/><circle cx="240" cy="14" r="3.4" stroke="#a78bfa"/><circle cx="340" cy="14" r="3.4" stroke="#a78bfa"/><circle cx="412" cy="14" r="3.4" stroke="#a78bfa"/>
+          <circle cx="146" cy="32" r="3.4" stroke="#7cc7ff"/><circle cx="238" cy="32" r="3.4" stroke="#7cc7ff"/>
+          <circle cx="214" cy="46" r="3.4" stroke="#37c98b"/>
+        </g>
+        <g font-family="JetBrains Mono,monospace" font-size="8.5">
+          <text x="422" y="17" fill="#a49eb4">main</text>
+          <rect x="352" y="4" rx="4" width="44" height="13" fill="rgba(167,139,250,.12)" stroke="rgba(167,139,250,.4)" stroke-width=".8"/>
+          <text x="358" y="13.5" fill="#c4b1ff">v0.15.0</text>
+          <text x="252" y="35" fill="#7cc7ff" opacity=".8">dev</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">History</span>
+      <h3>Every session ever.</h3>
+      <p>Sessions from any terminal — Episko's or not — read from Claude's own transcripts on this machine. Search them, scope them to a project, reopen one where it left off.</p>
+      <div class="bt-mono">◷ 213 sessions · every project</div>
+    </div>
+
+    <div class="bt w2">
+      <span class="bt-tag">Resilience</span>
+      <h3>Restarts lose nothing.</h3>
+      <p>Episko's launch id <em>is</em> Claude's <span class="mono">--session-id</span>, so reopening a session replays Claude's own transcript — nothing captured, nothing to lose. Even a hard reload rebuilds every pane and hands the running processes back, scrollback included.</p>
+      <div class="bt-mono">claude --resume <span class="em">4f2a…</span> · <span class="ok">✓ 8 panes re-adopted</span></div>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">Worktrees</span>
+      <h3>Wandering agents, noticed.</h3>
+      <p>An agent that moves to another checkout mid-task is spotted — from what it writes and where it runs — and Episko offers the repair: follow it there, or move the conversation back.</p>
+      <div class="bt-mono"><span class="att">⑃ drift</span> → episko-fix · follow?</div>
+    </div>
+
+    <div class="bt">
+      <span class="bt-tag">Yours</span>
+      <h3>Local-first, MIT.</h3>
+      <p>Everything Episko records stays on your machine. In your repo it writes only <span class="mono">.episko/</span> — and asks before creating anything committable. Free and open source.</p>
+      <div class="bt-mono">no accounts · no telemetry · <span class="ok">MIT</span></div>
+    </div>
+
+  </div>
+</section>
 
 <!-- ===== download ===== -->
 <section class="download" id="download">
@@ -1387,7 +1614,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
   var dotsWrap = document.getElementById('dots');
   var steps = Array.prototype.slice.call(document.querySelectorAll('.step'));
   var slides = Array.prototype.slice.call(document.querySelectorAll('.brief-slide'));
-  var order = ['fleet','stage','insp','perm','palette','newsession','run','forecast','usage'];
+  var order = ['fleet','stage','insp','perm','palette','newsession','run','dashboard','forecast','usage'];
 
   // which cockpit region a chapter spotlights (if any), any overlay it reveals, and
   // where the keeper's bubble hops to (a screen edge beside the part it explains).
@@ -1403,10 +1630,11 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
     palette:    { show: 'pal',      m:'.pal-overlay',   anchor: {ax:.86, ay:.34, push:'L'} }, // beside the palette, not over it
     newsession: { show: 'wt',       m:'.wt-overlay',    anchor: {ax:.05, ay:.50, push:'R'} }, // beside the dialog, not over it
     run:        { show: 'run',       m:'.run-overlay',   anchor: {ax:.86, ay:.36, push:'L'} }, // beside the picker
+    dashboard:  { show: 'dash',      m:'.dash-overlay',  anchor: {ax:.04, ay:.46, push:'R'} }, // beside the dashboard
     forecast:   { region: 'foot',   show: 'usage', m:'.region--foot', anchor: {ax:.42, ay:.58, push:'L'} },
     usage:      { show: 'usageview', m:'.usage-overlay', anchor: {ax:.82, ay:.42, push:'L'} }
   };
-  var SHOWS = ['show-perm','show-usage','show-pal','show-wt','show-usageview','show-run'];
+  var SHOWS = ['show-perm','show-usage','show-pal','show-wt','show-usageview','show-run','show-dash'];
 
   // build progress dots
   order.forEach(function(k, i){

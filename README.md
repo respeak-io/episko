@@ -10,18 +10,32 @@
 
 ## What it does
 
-- **Every session in one view.** A sidebar of projects and their sessions, each with a status glyph and context %, sorted so whatever needs you floats up. Sessions that need a decision are called out in the header and the tray.
+- **Every session in one view.** A sidebar of projects and their sessions, each with a status glyph and context %, sorted so whatever needs you floats up. Sessions that need a decision are called out in the header and the tray. Projects can be grouped under your own headings — *Work*, *Side* — and a group folds to one line that still carries the most urgent glyph it hides.
 - **Real terminals, not wrappers.** Each session is a genuine PTY running the actual `claude` TUI — type into it, watch it think. Render it embedded ([xterm.js](https://xtermjs.org/)) or hand it to [Ghostty](https://ghostty.org/), Terminal.app or iTerm2. Plain shell panes too, for when you just need a prompt next to an agent.
-- **Answer permission prompts in-app.** When Claude asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal — instead of hunting for which window is blocked.
-- **Live telemetry per session.** Model, context window use, cost, time in state, the running tool, and a short history of recent tool calls with latencies — plus per-session CPU/RAM and a git summary of what's changed.
+- **Answer permission prompts in-app.** When Claude asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal — instead of hunting for which window is blocked. You also pick the permission mode a session *starts* in.
+- **Live telemetry per session.** Model, context window use, cost, time in state, the running tool, and a short history of recent tool calls with latencies — plus per-session CPU/RAM/disk I/O and a git summary of what's changed.
+- **A dashboard per project.** Click a project for its week: commits and sessions summarised a day at a time, open issues and pull requests, the repo's checkouts, shared notes, and what it all cost. [See below](#every-project-has-a-homepage).
+- **Send an agent at a GitHub issue.** Dispatch from the dashboard and Episko creates the worktree, sends the prompt, and writes a claim to the issue so a colleague's agent doesn't start the same work twice — then hands the issue back when the session ends.
 - **Usage limits, before you hit them.** Your 5-hour and weekly limits with reset times, and a forecast that warms from amber to red when your current pace won't make it.
 - **A usage dashboard.** Daily spend as a contribution heatmap, tokens by model, token composition (cache reads vs. input vs. output), and cost attributed per project.
-- **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout.
+- **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout. A session also notices when its agent drifts to *another* checkout mid-task, and offers the repair: follow it there, or move the conversation back.
 - **A commit graph per project.** Right-click a project → *Commit graph…* for its lanes, merges, branch and tag labels. It reads a page at a time and fetches the next as you scroll, so opening it on a huge repo costs the same as on a small one.
-- **Sessions started elsewhere show up too.** Claude Code sessions launched outside Episko are discovered and listed read-only, with jump-to-terminal on macOS.
-- **Survives a restart.** Episko's launch id *is* Claude's `--session-id`, so resuming replays Claude's own transcript — nothing to capture, nothing to lose.
+- **Sessions started elsewhere show up too.** Claude Code sessions launched outside Episko are discovered and listed read-only, with jump-to-terminal on macOS (the exact tab) and Windows (the hosting window).
+- **A whole-machine history.** Every Claude Code session on this machine — Episko's or not — read from Claude's own transcripts: searchable, scoped by project and day, reopenable where it left off.
+- **Survives a restart.** Episko's launch id *is* Claude's `--session-id`, so resuming replays Claude's own transcript — nothing to capture, nothing to lose. Even a webview reload rebuilds every pane and re-adopts the still-running processes, scrollback included.
 - **Run the project's own tasks** — VS Code tasks, a `justfile`, package scripts, a Makefile and more, in the same panes, with a run's exit code as its status. [See below](#run-your-projects-tasks-too).
-- **Command palette** (`⌘K`), a **settings window** (`⌘,`), per-project accent colours and icons, favourites and drag ordering, a daily cost rollup, and a `caffeinate` toggle so long runs don't sleep.
+- **Command palette** (`⌘K`), a **settings window** (`⌘,`), per-project accent colours and icons, favourites and drag ordering, a daily cost rollup you can open by project and session, a *What's new* screen after updates, and a `caffeinate` toggle so long runs don't sleep.
+
+## Every project has a homepage
+
+Click a project in the sidebar and you land on its dashboard — the answer to "what is going on in this repo":
+
+- **The week, a day at a time.** Commits and your sessions per day, each closed day summarised in a sentence (generated with Haiku through your own `claude` CLI — cached, and opt-in per project). On days more than one person committed, a second sentence describes what the *project* did, written from the commits and pull requests alone.
+- **A work log the team can share.** That project half can be committed as `.episko/digest.md`, so everyone who pulls reads one generated history instead of each paying to re-derive their own. Your half — session titles, spend — never reaches a file. Notes can be shared the same way (`.episko/notes.toml`).
+- **Issues and pull requests**, with triage suggestions for the ones that have gone quiet, and **claims**: dispatching an agent at an issue assigns it on GitHub so a colleague's agent doesn't start the same work twice. A claim is a hint, never a lock — it expires, and ends with the session.
+- **Checkouts** — the repo's worktrees with their dirty state, one click from a new session in any of them.
+
+The dashboard degrades by what the folder can offer: a GitHub repo gets all of it; a plain git repo everything but the GitHub column (the shared files need git, not GitHub — a GitLab or self-hosted remote is this tier); a bare folder still gets sessions, spend and notes.
 
 ## Run your project's tasks, too
 
@@ -29,7 +43,9 @@ Agents aren't the only thing worth watching. Episko runs the task definitions yo
 
 `.episko/tasks.toml` · `.vscode/tasks.json` · `.vscode/launch.json` · `package.json` scripts · `justfile` · `Taskfile.yml` · `mise.toml` · `Makefile` · `Cargo.toml`
 
-Hit **▶ Run** in the header (or `⌘⇧R`, or the **Tasks** group in `⌘K`) and pick one. A task run **is** a session: it inherits the phase state machine, sidebar glyphs, attention badge, tray and `⌘1`–`9`, because a run's exit code is simply its phase (0 → done, non-zero → error). Runs are deliberately un-instrumented — no settings file, no telemetry, no cost — and go through a *login* shell so they get the same PATH and version-manager shims your own terminal has. `dependsOn` chains are honoured, and a failed dependency stops the chain — "build then test" must not test a build that didn't happen.
+Hit **▶ Run** in the header (or `⌘⇧R`, or the **Tasks** group in `⌘K`) and pick one. A task run **is** a session: it inherits the phase state machine, sidebar glyphs, attention badge, tray and `⌘1`–`9`, because a run's exit code is simply its phase (0 → done, non-zero → error). Runs are deliberately un-instrumented — no settings file, no telemetry, no cost — and get their PATH from an *interactive login* shell, the same PATH and version-manager shims your own terminal has. `dependsOn` chains are honoured, and a failed dependency stops the chain — "build then test" must not test a build that didn't happen. A chain folds into **one sidebar row** carrying the worst step's status, and opens into a tiled stage; closing a tile focuses the next step rather than abandoning the rest.
+
+A parameterised task starts with what Episko already knows — the values you gave last time, or the definition's own defaults — and the `⋯` button (`⌥⏎`) reopens the prompt when you want to change them; the row's tooltip shows the command as it will actually run. There's also **run on stop**: a per-project rule that launches a task — the build, the tests — when an agent finishes a turn there, so verification happens without you asking for it.
 
 Three rules shaped it:
 
@@ -126,6 +142,10 @@ Release builds target Apple silicon (`aarch64`) and Windows x64. Intel Macs aren
 **Answer a permission request without leaving the app** — the command, how risky it looks, and allow / deny / open-in-terminal.
 
 ![Permission request surfaced in the inspector, with Allow, Deny and In terminal buttons](docs/shot-permission.png)
+
+**Every project has a homepage** — the week a day at a time, issues with claims, checkouts and shared notes.
+
+![Project dashboard with a summary strip, per-day summaries including a team sentence, issues with a claim, checkouts and notes](docs/shot-dashboard.png)
 
 **Run the project's own tasks** — grouped by where they came from. What can't run is listed with the reason rather than hidden.
 
