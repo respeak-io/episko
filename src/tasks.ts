@@ -28,6 +28,11 @@ export interface TaskLaunchOpts {
   focus?: boolean;
   /// The session whose turn this run is verifying (see run-on-stop).
   forSession?: string;
+  /// Shared by every pane of one `dependsOn` chain — see `Sess.run.groupId`. Set by
+  /// `launchWithDeps` and inherited by the dependencies, so all of them land in the
+  /// same sidebar group. Nothing else sets it.
+  groupId?: string;
+  groupLabel?: string;
 }
 
 // Starting a run means a PTY, an xterm and a pane, so the launcher itself stays in
@@ -87,10 +92,19 @@ export function rememberedInput(project: string, taskId: string, inputId: string
 /// `${input:…}` prompt would block on a dialog nobody opened, a background task
 /// never exits so it could only pile up one dev server per turn, and a blocked one
 /// can't run at all.
+///
+/// An input that can answer *itself* — a default, or a just `*name` that is happy
+/// empty — is not a prompt and so is not a reason. Saying it was would refuse the
+/// rule while naming a dialog that never opens.
 export function stopRuleBlocked(r: Runnable): string {
   if (r.blocked) return r.blocked;
   if (r.background) return "a long-running task never finishes a turn";
-  if (r.inputs.length) return "it asks for input, which needs someone there";
+  if (r.inputs.some((i) => !i.optional && i.default == null)) return "it asks for input, which needs someone there";
+  // A compound task has no pane of its own, and `forSession` is deliberately cleared
+  // for dependencies — so a failure would have nowhere to be handed back to, and a
+  // "Dev: …" compound is usually a stack of servers, which is the pile-up above by
+  // another route. Withheld with a reason rather than silently misbehaving.
+  if (r.compound) return "it only runs other tasks, so a failure has no pane to report to";
   return "";
 }
 
@@ -111,6 +125,27 @@ export function applyInputs(r: Runnable, vals: Record<string, string>): Runnable
   return { ...r, exec, cwd: fill(r.cwd), env, inputs: [] };
 }
 
+/// What a task can be started with *without* asking: what you typed last for this
+/// exact input, else the definition's own default, else empty for an input that is
+/// allowed to be empty. `null` means at least one input has no answer anywhere, so
+/// running blind could only fail — and that is the one case still worth a dialog.
+///
+/// This is what makes Run and *Run with parameters…* two verbs rather than one:
+/// running a task is the common case and should not cost a dialog, while changing
+/// what it runs with is a deliberate act that gets its own button.
+export function prefillInputs(r: Runnable, project: string): Runnable | null {
+  if (!r.inputs.length) return r;
+  const vals: Record<string, string> = {};
+  for (const i of r.inputs) {
+    // A password is never remembered, so it is never prefilled either.
+    const v = (i.password ? undefined : rememberedInput(project, r.id, i.id))
+      ?? i.default ?? (i.optional ? "" : undefined);
+    if (v === undefined) return null;
+    vals[i.id] = v;
+  }
+  return applyInputs(r, vals);
+}
+
 // The most recent discovery result, so a re-run doesn't need the picker open.
 export const lastRunnableById = new Map<string, Runnable>();
 
@@ -129,11 +164,17 @@ export function waitForExit(sessionId: string): Promise<number> {
 /// `null` means a dependency could not be resolved, and is deliberately distinct
 /// from `[]`, which means the task declares none. Returning `[]` for both is what
 /// let a task whose dependency had been renamed away run anyway — see the caller.
+/// One dependency label → the Runnable it names. VS Code resolves by label, and a
+/// label can collide across providers, so a match from the *same* provider wins.
+export function findDep(label: string, source: string): Runnable | undefined {
+  return [...lastRunnableById.values()].find((x) => x.label === label && x.source === source)
+    ?? [...lastRunnableById.values()].find((x) => x.label === label);
+}
+
 export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
   const out: Runnable[] = [];
   for (const label of r.dependsOn) {
-    const dep = [...lastRunnableById.values()].find((x) => x.label === label && x.source === r.source)
-      ?? [...lastRunnableById.values()].find((x) => x.label === label);
+    const dep = findDep(label, r.source);
     if (!dep) { taskToast(`${r.label}: no task named “${label}” — not running it`); return null; }
     // A cycle would otherwise recurse until the stack gives out.
     if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}” — not running it`); return null; }
@@ -142,29 +183,145 @@ export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
   return out;
 }
 
+/// The first dependency cycle reachable from `r`, as the labels around it, or `null`.
+///
+/// Walked **before anything launches**, which is a real improvement on its own — the
+/// per-path check inside `launchWithDeps` only fires once part of the chain is already
+/// running, so a cycle used to leave half a stack started behind it.
+///
+/// It also became load-bearing when shared dependencies started being memoised (see
+/// `launchWithDeps`). Memoising is what stops a diamond launching `pnpm install` four
+/// times, but it also means a branch can *await* a task instead of descending into it —
+/// and two branches awaiting each other is a deadlock where the per-path check would
+/// have raised an error. This runs the whole graph first so that can't arise.
+export function findDepCycle(r: Runnable): string[] | null {
+  const stack: Runnable[] = [];
+  const clean = new Set<string>();          // fully explored, provably cycle-free
+  const walk = (t: Runnable): string[] | null => {
+    const at = stack.findIndex((x) => x.id === t.id);
+    if (at >= 0) return [...stack.slice(at), t].map((x) => x.label);
+    if (clean.has(t.id)) return null;       // a diamond, not a cycle — don't re-walk it
+    stack.push(t);
+    for (const label of t.dependsOn) {
+      // An unresolvable label is `resolveDeps`'s error to report, not this one's.
+      const dep = findDep(label, t.source);
+      const cyc = dep && walk(dep);
+      if (cyc) return cyc;
+    }
+    stack.pop();
+    clean.add(t.id);
+    return null;
+  };
+  return walk(r);
+}
+
+/// What a launch attempt produced. `ok` and `id` are genuinely independent, which is
+/// why this isn't just `string | null`: a **compound** task succeeds while launching no
+/// pane at all (its dependencies were the work), and reading that absence as failure is
+/// what would stop a nested compound from ever satisfying its parent.
+export interface LaunchResult { ok: boolean; id: string | null }
+const FAILED: LaunchResult = { ok: false, id: null };
+
+/// Launch the task's *own* pane — or nothing at all, if it hasn't got one.
+///
+/// A VS Code compound task (`dependsOn` with no `command`) is complete once its
+/// dependencies have run. There is nothing to spawn, and asking `spawn_task` to run an
+/// empty command line would only produce "task has no command" for a task that is
+/// perfectly well formed.
+async function own(r: Runnable, project: string, opts: TaskLaunchOpts): Promise<LaunchResult> {
+  if (r.compound) {
+    taskLog("info", `task ${r.id} · compound, dependencies done`);
+    return { ok: true, id: null };
+  }
+  const id = await taskLaunch(r, project, opts);
+  return { ok: !!id, id };
+}
+
+/// Every dependency of one launch, by task id → "did it succeed". Threaded through the
+/// whole recursion so each distinct task starts **once per launch**, however many
+/// dependents name it.
+///
+/// `dependsOn` is a DAG, not a tree, and walking it as a tree is quadratic in the worst
+/// case and wrong in every case: one ⌘⇧B on a real `"Dev: Frontend + Backend"` launched
+/// **27 panes for 11 tasks** — `Backend (uv sync)` six times, `pnpm install` and
+/// `docker compose up` four times each — because every path to a shared dependency
+/// started it again. VS Code runs each task once per invocation; so does this now.
+///
+/// It memoises the *whole* outcome, not just the launch, which also closes a second
+/// bug: `exitWaiters` holds one resolver per session id, so two dependents awaiting the
+/// same dependency's exit would clobber each other's resolver and one would hang for
+/// ever. Now they await one shared promise.
+type DepRuns = Map<string, Promise<boolean>>;
+
 // Run a task's dependencies, then the task. A failed dependency stops the chain —
 // "build then test" must not test a build that didn't happen.
-export async function launchWithDeps(r: Runnable, project: string, opts: TaskLaunchOpts, seen = new Set<string>()): Promise<string | null> {
+export async function launchWithDeps(
+  r: Runnable, project: string, opts: TaskLaunchOpts,
+  seen = new Set<string>(), started: DepRuns = new Map(),
+): Promise<LaunchResult> {
+  // Outermost call only: check the whole graph before a single pane starts. Cheap, and
+  // the alternative is discovering a cycle with half the stack already running.
+  if (!seen.size) {
+    const cyc = findDepCycle(r);
+    if (cyc) {
+      taskToast(`${r.label}: dependency cycle — ${cyc.join(" → ")}`);
+      taskLog("warn", `task ${r.id} skipped: cycle ${cyc.join(" -> ")}`);
+      return FAILED;
+    }
+  }
   const deps = resolveDeps(r, seen);
   // A dependency that can't be resolved is a *failed* dependency, not an absent
   // one. resolveDeps has already said which label and why; all that's left is to
   // not run the task — same outcome as a dependency that ran and exited non-zero.
-  if (!deps) { taskLog("warn", `task ${r.id} skipped: dependency unresolved`); return null; }
-  if (!deps.length) return taskLaunch(r, project, opts);
+  if (!deps) { taskLog("warn", `task ${r.id} skipped: dependency unresolved`); return FAILED; }
+  if (!deps.length) return own(r, project, opts);
   seen.add(r.id);
 
   const sequence = r.dependsOrder === "sequence";
   taskLog("info", `task ${r.id} · ${deps.length} dep${deps.length === 1 ? "" : "s"} (${sequence ? "sequence" : "parallel"})`);
 
-  // A dependency inherits the stage behaviour (`focus`) but not the identity of the
-  // run that pulled it in: `forSession` belongs to the rule pane, not its build step,
-  // and `discoveredIn` is the parent's cwd, wrong for the dep's own *reveal source*.
-  // Let the dep resolve its own root (falls back to the project root).
-  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, discoveredIn: undefined };
-  const runDep = async (d: Runnable): Promise<boolean> => {
-    const id = await launchWithDeps(d, project, depOpts, new Set(seen));
-    if (!id) return false;
-    return (await waitForExit(id)) === 0;
+  // One group per *launch*, minted at the outermost chain and inherited from there
+  // down: a nested dependency belongs to the same group as the task that pulled it
+  // in, however deep. `opts.groupId` is only ever set by this line's recursion, so
+  // the `??` is what makes "outermost wins" true without threading a depth counter.
+  const groupId = opts.groupId ?? crypto.randomUUID();
+  const groupLabel = opts.groupLabel ?? r.label;
+
+  // A dependency inherits the stage behaviour (`focus`), the group and the discovery
+  // directory, but not the *identity* of the run that pulled it in: `forSession`
+  // belongs to the rule pane, not to its build step.
+  //
+  // `discoveredIn` is deliberately kept. It was cleared here on the theory that it
+  // was "the parent's cwd", but it is the directory *discovery ran in* — and a
+  // dependency is resolved out of that very same discovery result, so it is right for
+  // the dep too. Clearing it broke three things at once: `run.root` fell back to the
+  // repo root, which put reveal-source in the wrong folder, made a task pane cluster
+  // under the wrong checkout, and — because `declaredOwnCwd` compares against it —
+  // let the "run in repo root" preference override a dependency's *declared* cwd, so
+  // `Frontend (vite dev)` ran outside `01_frontend`.
+  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, groupId, groupLabel };
+  // The chain's own pane joins the group too, or the root of "build → test" would
+  // sit outside the group it created.
+  opts = { ...opts, groupId, groupLabel };
+  // Start each distinct dependency at most once per launch and let every dependent
+  // await the same promise. The memo is claimed *synchronously*, before the first
+  // await, so two branches racing for the same dependency can't both start it.
+  const runDep = (d: Runnable): Promise<boolean> => {
+    const already = started.get(d.id);
+    if (already) return already;
+    const p = (async () => {
+      const res = await launchWithDeps(d, project, depOpts, new Set(seen), started);
+      if (!res.ok) return false;
+      // A **background** dependency is satisfied the moment it starts. Waiting for its
+      // exit is waiting forever: "Dev: Frontend + Backend" depends on a vite dev server
+      // and a uvicorn --reload, neither of which ever exits, so awaiting them hung the
+      // whole chain and nothing downstream ever ran. VS Code does the same — it starts
+      // a background dependency and moves on.
+      if (d.background || !res.id) return true;
+      return (await waitForExit(res.id)) === 0;
+    })();
+    started.set(d.id, p);
+    return p;
   };
 
   const ok = sequence
@@ -175,9 +332,9 @@ export async function launchWithDeps(r: Runnable, project: string, opts: TaskLau
   if (!ok) {
     taskToast(`${r.label}: a dependency failed — not running it`);
     taskLog("warn", `task ${r.id} skipped: dependency failed`);
-    return null;
+    return FAILED;
   }
-  return taskLaunch(r, project, opts);
+  return own(r, project, opts);
 }
 
 // ---------- preferences: personal, per-project, all localStorage ----------

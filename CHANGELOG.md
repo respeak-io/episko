@@ -25,6 +25,18 @@ Markers: `+` new · `~` changed · `!` fixed
   the expensive part, to be a real share of what the machine was doing. It reads `.git`
   directly now, like the worktree roster beside it already did. Nothing on screen
   changes.
++ **Running a task that takes parameters no longer costs a dialog.** *Run* now starts it
+  with what it already knows — the values you gave last time, or the definition's own
+  defaults — and a `⋯` button beside the row (⌥⏎, or *⋯ Parameters* on a finished run)
+  is there for the times you want to change them. The row's tooltip shows the command as
+  it will actually run, so nothing is filled in behind your back, and the prompt still
+  opens by itself when a value genuinely has nowhere to come from.
+! **A `just` recipe taking `*args` stops asking for them.** A `*name` parameter takes
+  zero or more arguments, so `just saas-start` is a complete command — but it was read as
+  a required value and put a prompt in front of every run. `+name`, which does want at
+  least one, is unchanged. Such a recipe can also now be a run-on-stop rule.
+! **The parameter prompt looks like the rest of the app.** Its Cancel button was drawing
+  as a raw platform button, and the pair sat flush against the field above them.
 
 ~ **The menu-bar menu shows status in colour, and groups sessions by project.** Every
   row used to be one long string — glyph, project, branch and status — and a menu item's

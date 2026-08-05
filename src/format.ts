@@ -16,6 +16,30 @@ export const tilde = (p: string) => (HOME ? p.replace(HOME, "~") : p);
 // not the whole string — otherwise the sidebar shows the full path as the name.
 export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }
 
+/// Shorten a path from the *middle*, keeping the head and the last two segments.
+///
+/// CSS `text-overflow` can only elide the tail, which for a path drops the only part
+/// that identifies it: `~/prog/work/.cc-worktrees/pii-reduction/feat-platform-…`
+/// tells you nothing that `~/prog/work/…/pii-reduction/feat-platform-groundwork`
+/// doesn't, and loses which checkout you are about to run in. With worktrees that
+/// tail *is* the answer, so it is what survives.
+export function elidePath(p: string, max = 44): string {
+  if (p.length <= max) return p;
+  const sep = p.includes("\\") && !p.includes("/") ? "\\" : "/";
+  const parts = p.split(sep);
+  // Fewer than four segments has no middle to drop; a long single segment (a deep
+  // slugified branch dir) can't be helped by re-splitting it, so leave it whole and
+  // let the CSS ellipsis be the backstop.
+  if (parts.length < 4) return p;
+  const tail = parts.slice(-2).join(sep);
+  // An absolute path splits with an empty first segment, so the head is the root
+  // plus the segment after it — using `parts[0] || sep` instead yields `//…/x`.
+  const head = parts[0] === "" ? sep + (parts[1] ?? "") : parts[0];
+  const short = `${head}${sep}…${sep}${tail}`;
+  // Only worth it if it actually saved something.
+  return short.length < p.length ? short : p;
+}
+
 // ---------- colour ----------
 export function hslToHex(h: number, s: number, l: number): string {
   const a = s * Math.min(l, 1 - l);

@@ -27,10 +27,11 @@ import {
   toggleRail, toggleTheme,
 } from "./actions";
 import {
-  activeCwd, activeProjectCtx, closeSession, handToTerminal, launch, launchShell,
-  launchTask, launchWorktree, noteDrift, noteGitCommand, openPlainTerminal, pollIo,
-  refreshGitViews, refreshSessionStats, renderHeader, requestLaunch, runGit,
-  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons,
+  activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
+  launch, launchShell, launchTask, launchWorktree, noteDrift, noteGitCommand,
+  openPlainTerminal, openRunGroup, pollIo, refreshGitViews, refreshPaneCaps,
+  refreshSessionStats, renderHeader, requestLaunch, runGit, scheduleDismiss, setActive,
+  setPanesRenderAll, syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -72,7 +73,7 @@ import {
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
-  renderMgr, setMgrEdit, setTaskUiHost,
+  renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
   closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
@@ -85,8 +86,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
-  setTermEngine,
-  setTermFontSize, sortMode, termEngine,
+  setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { orderedSessions } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
@@ -354,6 +354,10 @@ function listPhrase(parts: string[]): string {
 
 function renderAll() {
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
+  // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
+  // keeps), and panes are outside the render-everything sweep — so it has to be asked
+  // for. No-ops unless a group is actually tiled.
+  refreshPaneCaps();
   // When mirroring an external session, activeId is null but the stage/inspector
   // belong to that external — render it, NOT the null "no session" state. Skipping
   // this is what let a background Episko session's telemetry tick blank the
@@ -433,6 +437,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     // The exit code *is* the phase — that's what buys tasks the sidebar glyphs,
     // the attention badge and the tray without a line of new plumbing.
     s.run!.exitCode = code;
+    // Freeze the duration here. Every repaint used to recompute it against
+    // `Date.now()`, so a step that finished in 400ms kept climbing and a whole tiled
+    // chain read the same ever-growing elapsed time.
+    s.run!.endedAt = Date.now();
     setPhase(s, code === 0 ? "done" : "error");
     s.term?.writeln(code === 0
       ? `\r\n\x1b[32m✓ ${s.run!.label} — exit 0\x1b[0m`
@@ -502,7 +510,11 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched
   // (and dispatched) ahead of it or the row's own click would swallow them.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
+  // `closest` returns the NEAREST matching ancestor, so a nested target beats its row
+  // for free — but only if its attribute is in this list. A data- attribute the
+  // selector doesn't name resolves to the enclosing row instead, silently doing the
+  // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -516,6 +528,12 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
+  // The twisty must be tested BEFORE the row it sits inside, or expanding a run
+  // group's step list would also tile it on the stage — two different intents, and
+  // the inner target has to win.
+  else if (el.dataset.rgtoggle) toggleRunGroup(el.dataset.rgtoggle);
+  else if (el.dataset.closerun) void closeRunGroup(el.dataset.closerun);
+  else if (el.dataset.rungroup) { openRunGroup(el.dataset.rungroup); closeAttnPop(); }
   // Two popovers emit data-sel rows — the reactor's picker and the spend split — and
   // both are answered by putting that session on the stage, so both close behind it.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
@@ -615,6 +633,11 @@ $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDif
 window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
+  // ⌘⇧B / ⌘⇧T must be tested BEFORE plain ⌘B / ⌘T, which deliberately don't check
+  // `!e.shiftKey` — so whichever branch comes first wins the shifted chord too. Put a
+  // new shifted binding above its unshifted twin, or it silently never fires.
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); void runDefaultTask("build"); }
+  else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); void runDefaultTask("test"); }
   else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
   else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
   else if (meta && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
@@ -666,6 +689,19 @@ new ResizeObserver(() => {
   clearTimeout(refitTimer);
   refitTimer = window.setTimeout(refit, 120);
 }).observe($("terminals"));
+
+// Clicking a tile in a tiled run group moves the focus to it. One delegated listener
+// rather than a per-pane one, so no bookkeeping when panes come and go; the capture
+// phase, so xterm's own mousedown (which takes DOM focus for typing) doesn't matter to
+// us either way. No-ops when nothing is tiled.
+$("terminals").addEventListener("mousedown", (e) => {
+  if (!stageGroup) return;
+  const t = e.target as HTMLElement;
+  if (t.closest(".pc-x")) return; // the caption's ✕ is a close, not a focus
+  for (const s of sessions.values()) {
+    if (s.pane.contains(t)) { focusInGroup(s.id); return; }
+  }
+}, true);
 
 // The footer version label and app self-update moved to ./update — it needs nothing
 // from here, so it is imported for its side effects and never called.

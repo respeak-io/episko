@@ -287,6 +287,10 @@ pub fn run() {
             // Before anything that can panic: from here on, panics leave a trace.
             install_panic_hook(app.path().app_log_dir()?);
             log::info!("episko v{} starting", app.package_info().version);
+            // Harvest the terminal's PATH now, on a thread of its own: it costs one
+            // interactive shell startup, and whoever calls `augmented_path` first
+            // (a git poll, a task launch) would otherwise pay for it inline.
+            platform::warm_shell_path();
 
             let server = tiny_http::Server::http("127.0.0.1:0")
                 .expect("bind telemetry server on 127.0.0.1");
