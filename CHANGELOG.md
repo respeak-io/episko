@@ -13,6 +13,25 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A big fleet no longer silently drops old terminals onto the slow renderer.** Every
+  pane held a WebGL context for the life of the pane, and webviews cap a page at 16
+  live contexts — one pane past that and the browser starts evicting the *oldest*,
+  exactly the long-lived sessions you keep returning to, permanently downgrading them
+  to DOM rendering with no error anywhere. Contexts now come from a small pool over
+  the recently-viewed panes, so the cliff is unreachable however many panes exist,
+  switching between the panes you actually work in stops paying a renderer rebuild
+  each time — and a context lost anyway logs itself to the 🐞 console and heals the
+  next time the pane is activated.
+~ **A burst of telemetry costs one repaint, not one per event.** Every hook and
+  statusLine used to trigger a full render of every surface, and N busy agents
+  multiplied that into a constant main-thread load that grew with the fleet. Renders
+  now coalesce to at most one paint per animation frame; the 🐞 console counts paints
+  beside received events, so the batching is visible while the app runs.
+! **Ended sessions stop taxing the app forever.** An ended session's pane now releases
+  its 8000-line scrollback once it leaves the stage — the final screen stays, and
+  History reopens the full transcript from disk — and panes whose process has exited
+  drop out of the 4-second branch poll. The quit dialog also stops counting a finished
+  task as "still running".
 ! **A reload no longer loses your panes — they come back, scrollback included.** A
   webview reload left every `claude` process running with nothing on screen attached
   to it, and then offered the orphans back as dormant rows with *Resume* enabled — a

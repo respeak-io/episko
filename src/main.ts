@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { isAgent } from "./types";
+import { isAgent, isExited } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
@@ -18,7 +18,7 @@ import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
 import { renderInspector, tickDwell } from "./inspector";
-import { applyFontSize, bumpFont, refit } from "./terminal";
+import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
@@ -261,7 +261,7 @@ setWtRefreshGit(refreshGitViews);
 // ---------- model ----------
 // The shapes live in ./types and the state itself in ./state (see the imports at
 // the top of this file); this is the behaviour that hangs off them. The xterm side of
-// a pane — the font stack, loadWebgl, fitSession/refit, the font-atlas reload and the
+// a pane — the font stack, attachWebgl/detachWebgl, fitSession/refit, the font-atlas reload and the
 // OSC-title clean-up — is ./terminal, shared by all three spawners below.
 
 
@@ -352,7 +352,39 @@ function listPhrase(parts: string[]): string {
 // menu-bar mirror to ./tray — a native surface, so its repaint is an IPC call rather
 // than an innerHTML assignment, but it hangs off renderAll() like the rest.
 
-function renderAll() {
+// Coalesced: a mutation calls renderAll(), renderAll() only marks the pass due, and
+// one flush per animation frame paints whatever state every event in that frame left
+// behind. Telemetry arrives in bursts — N busy agents each fire a hook per lifecycle
+// event plus a statusLine — and each full pass below is itself O(sessions), so paying
+// one pass *per event* scaled roughly quadratically with the fleet and burned the main
+// thread repainting states nobody could have seen. Every call site keeps its contract
+// ("every mutation ends by calling renderAll()"); only the paint is batched.
+//
+// The timeout is not a belt-and-braces double: rAF does not fire while the window is
+// hidden, and the tray menu — repainted by this same pass — is exactly the surface
+// being read while the window is hidden. A backgrounded WebView throttles timers to
+// ~1s, which is still fresh enough for a menu. Whichever fires first wins and cancels
+// nothing it doesn't have to: a late rAF/timeout meeting `renderPending === false`
+// simply returns.
+//
+// Exported for measurement only — the debug console and a devtools session can reach
+// it, but no module may import main.ts (it is the top of the graph).
+let renderPending = false;
+let renderFallback = 0;
+export function renderAll() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(flushRender);
+  renderFallback = window.setTimeout(flushRender, 250);
+}
+function flushRender() {
+  if (!renderPending) return;
+  renderPending = false;
+  clearTimeout(renderFallback);
+  renderAllNow();
+}
+function renderAllNow() {
+  telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
@@ -457,6 +489,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   } else {
     s.phase = "ended";
     s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+    // Reclaim an ended claude pane's scrollback the moment nobody is looking at it;
+    // the pane you watched end keeps its buffer until it leaves the stage (setActive
+    // trims on the way off). See trimScrollback for why claude panes only.
+    if (isAgent(s) && activeId !== s.id) trimScrollback(s);
   }
   renderAll();
 });
@@ -725,7 +761,9 @@ listen("quit-requested", async () => {
   // day's *money* (`cc-usage`) is written eagerly and needs no flush — see ./usage.
   flushIo();
   flushUsageDetail();
-  const live = [...sessions.values()].filter((s) => s.phase !== "ended");
+  // isExited, not `phase !== "ended"`: a finished task's phase is done/error, so the
+  // old test counted every failed run as "1 task still running" in the quit dialog.
+  const live = [...sessions.values()].filter((s) => !isExited(s));
   const agents = live.filter((s) => isAgent(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
   const runs = live.filter((s) => s.kind === "task").length;
@@ -747,7 +785,7 @@ listen("quit-requested", async () => {
 // ---------- debug console wiring ----------
 $("dbgBtn").addEventListener("click", () => toggleDbg());
 $("dbgClose").addEventListener("click", () => toggleDbg(false));
-$("dbgClear").addEventListener("click", () => { dbgLog.length = 0; telem.rx = telem.routed = telem.dropped = 0; renderDbgBadge(); renderDbgPanel(); });
+$("dbgClear").addEventListener("click", () => { dbgLog.length = 0; telem.rx = telem.routed = telem.dropped = telem.renders = 0; renderDbgBadge(); renderDbgPanel(); });
 $("dbgCopy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(JSON.stringify(dbgSnapshot(), null, 2)); toast("Debug snapshot copied"); } catch { toast("copy failed"); }
 });

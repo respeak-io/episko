@@ -5,6 +5,7 @@
 
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
+import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
 
@@ -97,6 +98,12 @@ export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" |
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
 export const isAgent = (s: Sess) => s.kind === "claude";
+// Whether the process behind a pane has exited. The pane still renders — an ended
+// row is information — but nothing behind it can change any more, so the pollers
+// skip it and the quit guard doesn't count it. Phase alone can't answer this for a
+// task: its exit sets done/error, the same phases a live claude turn cycles through,
+// so the run's exit code is the discriminant there.
+export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != null : s.phase === "ended");
 // Which glyph/CSS bucket a pane falls into: a blocking permission outranks the
 // phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
 // inspector pill, so it lives here rather than in any one of them.
@@ -205,7 +212,11 @@ export interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
-  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; pane: HTMLElement;
+  // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
+  // attached on activation, released when the pool evicts it or the pane exits (see
+  // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it
+  // lives and dies with the pane.
+  kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; gl?: WebglAddon; pane: HTMLElement;
   // Set only while a reload orphan's pane is being rebuilt (#47 stage 2): incoming
   // pty-output chunks queue here instead of reaching the terminal until the
   // scrollback snapshot has been written. A queued chunk at or below the

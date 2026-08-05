@@ -25,14 +25,14 @@ import { $, takeStage, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, statusKey, taskStateText, type DiffStat, type GitActionResult, type LiveSess,
-  type Res, type Restorable, type Runnable, type Sess, type WtHead,
+  isAgent, isExited, statusKey, taskStateText, type DiffStat, type GitActionResult,
+  type LiveSess, type Res, type Restorable, type Runnable, type Sess, type WtHead,
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fmtMb, fmtRate } from "./format";
 import {
-  claudeInput, cleanTitle, clipboardKeys, fitSession, loadWebgl, MONO, refit, shellKeys,
-  winClaudePaste,
+  attachWebgl, claudeInput, cleanTitle, clipboardKeys, detachWebgl, fitSession, MONO,
+  refit, shellKeys, trimScrollback, winClaudePaste,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -66,7 +66,8 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  loadWebgl(term);
+  // No WebGL here: setActive attaches a pooled context the moment the pane is on
+  // stage — a context per pane for life is the 16-context cliff (see attachWebgl).
   term.open(pane);
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
   winClaudePaste(id, term, pane);
@@ -288,7 +289,6 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  loadWebgl(term);
   term.open(pane);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
@@ -350,7 +350,6 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  loadWebgl(term);
   term.open(pane);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
@@ -427,6 +426,9 @@ export function closeSession(id: string) {
     ? nextInGroup(groupMembers(gid), id)
     : null;
   invoke("kill_session", { sessionId: id }).catch(() => {});
+  // Release the GL context explicitly — term.dispose() disposes the addon, but only
+  // detachWebgl gives the context slot back to the page's budget (see terminal.ts).
+  detachWebgl(s);
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
   sessions.delete(id);
@@ -583,7 +585,18 @@ export function setActive(id: string, keepGroup = false) {
     const on = gid ? x.run?.groupId === gid : x.id === id;
     x.pane.classList.toggle("active", on);
     x.pane.classList.toggle("focused", !!gid && x.id === id);
-    if (on) paintPaneCap(x);
+    // WebGL: attach after the class flip (the addon activates against a measurable
+    // pane). A live pane leaving the stage KEEPS its addon — the LRU pool in
+    // terminal.ts bounds the total, and evicting on every deactivation churns a
+    // context per switch, which WebKit punishes once its GC falls behind. An exited
+    // pane won't be revisited soon, so it frees its slot at once — and an ended
+    // claude pane gives up its scrollback too, the deferred half of the pty-exit trim
+    // for the pane you watched end.
+    if (on) { paintPaneCap(x); attachWebgl(x); }
+    else if (isExited(x)) {
+      detachWebgl(x);
+      if (isAgent(x) && x.phase === "ended") trimScrollback(x);
+    }
   }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
   if (gid) {
@@ -667,7 +680,11 @@ async function refreshBranch(s: Sess): Promise<boolean> {
   return true;
 }
 async function refreshBranches(): Promise<boolean> {
-  const changed = await Promise.all([...sessions.values()].map(refreshBranch));
+  // Exited panes leave the poll: nothing behind them can move HEAD any more, and a
+  // day's dead panes would otherwise out-poll the live fleet (one git_head IPC each,
+  // every 4s, forever). Activating one still re-reads once — setActive calls
+  // refreshBranch directly — which covers a branch switched under it externally.
+  const changed = await Promise.all([...sessions.values()].filter((s) => !isExited(s)).map(refreshBranch));
   return changed.some(Boolean);
 }
 

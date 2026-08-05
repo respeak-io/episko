@@ -25,12 +25,90 @@ import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from ".
 // draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
 export const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
-export function loadWebgl(term: Terminal) {
+// WebGL contexts come from a small LRU pool over the recently-staged panes — never
+// one per pane for life, and never a create per pane switch either. Both extremes
+// were tried and both are wrong, for reasons worth keeping:
+//
+// - Per pane for life: webviews cap a page at 16 live WebGL contexts and evict LRU
+//   past it, so a fleet that ever crossed 16 panes silently downgraded its *oldest*
+//   terminals — exactly the long-lived sessions you keep returning to — onto xterm's
+//   slow DOM renderer, permanently.
+// - Attach on activate / dispose on deactivate: every switch then creates a context,
+//   and **JS cannot destroy one — only unreference it**. The browser frees the slot
+//   at GC time; Chromium's GC keeps up, WKWebView's does not, so ~16 switches in
+//   every attach logged "too many active WebGL contexts" and leaned on WebKit
+//   force-losing a disposed zombie (observed in the dev build). Nor is
+//   `WEBGL_lose_context.loseContext()` a release — a lost-but-referenced context
+//   STAYS in WebKit's budget (it must remain restorable), and eviction then trips
+//   over it with INVALID_OPERATION. Also observed.
+//
+// So: a pane keeps its addon when it leaves the stage, while it stays among the
+// GL_POOL_MAX most recently staged. Flipping between warm panes costs nothing and
+// creates nothing; only a cold pane creates a context, and the pool bounds the live
+// count comfortably under the 16 budget. Exited and closed panes free their slot at
+// once (see setActive / closeSession). A context lost anyway — a GPU reset, a
+// degenerate >16-tile mosaic — costs one dlog and heals on the pane's next
+// activation instead of downgrading it for good.
+const glPool: Sess[] = []; // panes holding a live addon, most recently staged last
+const GL_POOL_MAX = 8;     // live-context bound; the 16-slot budget keeps headroom for
+                           // disposed contexts the browser has not collected yet
+export function attachWebgl(s: Sess) {
+  if (!s.term) return;
+  const i = glPool.indexOf(s);
+  if (i >= 0) glPool.splice(i, 1);
+  if (s.gl) { glPool.push(s); return; } // warm — just refresh its recency
+  let w: WebglAddon | undefined;
   try {
-    const w = new WebglAddon();
-    w.onContextLoss(() => w.dispose()); // fall back to the DOM renderer
-    term.loadAddon(w);
-  } catch { /* WebGL unavailable — DOM renderer is fine */ }
+    w = new WebglAddon();
+    w.onContextLoss(() => {
+      // dispose() is the documented recovery for a lost context; detach also clears
+      // `s.gl`, which is what lets the next setActive re-attach a fresh one.
+      dlog("warn", `webgl context lost · ${s.id.slice(0, 8)} — DOM renderer until reactivated`);
+      detachWebgl(s);
+    });
+    s.term.loadAddon(w);
+    s.gl = w;
+    glPool.push(s);
+    // Evict the coldest *hidden* pane past the cap. Everything visible is exempt —
+    // a tiled group larger than the pool keeps its tiles and accepts the browser's
+    // own eviction (which the loss handler above turns into a heal, not a downgrade).
+    while (glPool.length > GL_POOL_MAX) {
+      const victim = glPool.find((x) => !x.pane.classList.contains("active"));
+      if (!victim) break;
+      detachWebgl(victim);
+    }
+  } catch (e) {
+    // WebGL unavailable (GPU blocklist, RDP, acceleration off): the DOM renderer is
+    // the honest fallback. Warn once per run, not once per pane switch — the retry
+    // itself stays, since a crashed GPU process can come back.
+    try { w?.dispose(); } catch { /* half-activated addon */ }
+    if (!webglWarned) { webglWarned = true; dlog("warn", `webgl unavailable — terminals use the DOM renderer (${e})`); }
+  }
+}
+let webglWarned = false;
+export function detachWebgl(s: Sess) {
+  const w = s.gl;
+  if (!w) return;
+  s.gl = undefined; // clear first — dispose() must not re-enter through onContextLoss
+  const i = glPool.indexOf(s);
+  if (i >= 0) glPool.splice(i, 1);
+  // Capture the addon's canvases before dispose() takes them out of the pane, then
+  // zero them: the context slot itself is the browser's to reclaim (see above), but
+  // the multi-MB backing stores are freeable right now.
+  const canvases = [...s.pane.querySelectorAll("canvas")];
+  try { w.dispose(); } catch { /* already disposed with its terminal */ }
+  for (const c of canvases) { c.width = 0; c.height = 0; }
+}
+
+// An ended claude pane keeps up to 8000 lines of scrollback it can never grow again,
+// tens of MB across a day of panes — and the transcript is on disk, where History and
+// `--resume` reopen it. So the buffer is reclaimed once the pane is done: immediately
+// when it ends off stage, and on the way *off* the stage when you watched it end (the
+// visible screen keeps its final output either way). Claude panes only: a shell has
+// no transcript, and a failed task's scrollback IS the log you open it to read.
+export function trimScrollback(s: Sess) {
+  if (!s.term || s.term.options.scrollback === 0) return;
+  try { s.term.options.scrollback = 0; } catch { /* pane already disposed */ }
 }
 
 // The whole custom key rule for a shell pane, in one handler — xterm keeps only the

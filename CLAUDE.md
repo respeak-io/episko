@@ -52,7 +52,7 @@ Mac has the same symlink — but it is one both legs will find at once.
 
 **Package manager: `pnpm`** for this repo (there's a `pnpm-lock.yaml`; both CI workflows use `pnpm install --frozen-lockfile`, and `packageManager` in `package.json` pins the version for corepack/CI). Use pnpm here, not npm. Windows code-signing / release-signing setup lives in `src-tauri/SIGNING.md`.
 
-Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **797 vitest + cargo (166 on macOS, 162 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
+Test coverage is **unit-only — there is no end-to-end harness**, but it is no longer thin: **810 vitest + cargo (170 on macOS, 166 on Windows — the platform tests are `cfg`-gated)**, both run in CI on both OSes.
 
 **vitest runs in the `node` environment, so no module a test can reach may touch a browser global at module scope.** Not just `document`/`window`: `globalThis.navigator` only exists from **Node 21**, so a bare `navigator.userAgent` at module scope killed every suite that transitively imported that file back when CI pinned Node 20 — while passing on a dev machine with a newer Node. Node is now pinned once in **`.nvmrc`** (26) and read from there by both workflows and `nvm use`, so CI and local cannot drift again; the guard stays regardless, because the rule is about the `node` environment, not about which Node. Platform predicates therefore live in `dom.ts` (`IS_MAC`, `IS_WIN`), read once through a `typeof navigator === "undefined"` guard; import those rather than reading `navigator` again. `vitest` covers the pure frontend logic modules (`test/*.test.ts`, one file per module — see the frontend module map below for which twenty those are), **plus two contract tests that parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()`) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares). Both guard joins no compiler can see, and both exist because that join had already silently broken in production; the Rust tests are `#[cfg(test)] mod tests` **in-file**, next to their subject, several of them real integration tests that drive `git` against temp repos or the real `tiny_http` telemetry server against a mock app. There is deliberately no `src-tauri/tests/` directory: it would only see the crate's public API, which here is `run()`.
 
@@ -974,11 +974,11 @@ growth) — APFS is copy-on-write, and a transcript grows by constant small appe
 
 ## Frontend (`src/`, `index.html`, `src/styles.css`) — 51 modules
 
-**No framework, and no longer one file.** ~15675 lines across 51 modules; `main.ts` is 844 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly.
+**No framework, and no longer one file.** ~15675 lines across 51 modules; `main.ts` is 844 of them and is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind — a telemetry burst from N sessions costs one paint, not N. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (~70 lines — it is the seam map, and belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see One title bar), and the seven `setInterval`s.
 
-**Tested logic modules** (twenty — no DOM, no Tauri, no render imports; these are what the 797 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty — no DOM, no Tauri, no render imports; these are what the 810 vitest tests cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -1025,9 +1025,11 @@ the string differs from what they last wrote; `updateTray` diffs a signature bef
 rebuilding the native menu; `dashboard.ts`'s `paint(id, html)` does the same for each of
 the dashboard's seven surfaces. `renderFoot`, `renderAttn`, `syncStageButtons` and
 `reconcileCaf` need no guard — they assign `textContent`, class names and properties,
-which replace no nodes. All of them exist because `renderAll()` fires on
+which replace no nodes. All of them exist because `renderAll()` is called on
 *every* telemetry event and most events change nothing those surfaces show — 84.5% of
-sidebar repaints were byte-identical under a realistic event stream. This is **not**
+sidebar repaints were byte-identical under a realistic event stream. (The per-frame
+coalescing above thins the calls to at most one paint per frame; the guards still
+carry the rest, because most *frames* change nothing either.) This is **not**
 render diffing (no DOM is compared or patched) and it does not weaken the
 render-everything rule; it is "skip when nothing changed", applied where it was measured
 to matter. If you add a surface to `renderAll`, measure it before assuming it is free.
@@ -1068,6 +1070,23 @@ And the things that hold however the files are arranged:
   re-testing the string. It is orthogonal to `Sess.external`, which means "the
   terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
   applies to a claude session.
+- **A pane's WebGL context comes from a small LRU pool over the recently-staged panes**
+  (`attachWebgl`/`detachWebgl` in `terminal.ts`, handle in `Sess.gl`, `GL_POOL_MAX` = 8)
+  — spawners load no WebGL of their own, and `setActive` attaches on the way onto the
+  stage. Both simpler designs were tried and are wrong: a context per pane for life
+  hits the webview's 16-context cap and silently downgrades the *oldest* panes to the
+  slow DOM renderer, and dispose-per-deactivation churns a context per switch — which
+  WKWebView punishes with "too many active WebGL contexts" once its GC falls behind,
+  because **JS cannot destroy a WebGL context, only unreference it** (and
+  `WEBGL_lose_context.loseContext()` is worse: a lost-but-referenced context stays in
+  WebKit's budget and eviction then trips over it with INVALID_OPERATION — both
+  observed in the dev build). A warm pane re-attaches for free; `isExited` and closed
+  panes free their slot immediately; a context lost anyway (GPU reset, a >16-tile
+  mosaic) dlogs and heals on the pane's next activation. Two ended-pane rules ride the
+  same lifecycle: an ended **claude** pane gives up its 8000-line scrollback once it
+  leaves the stage (`trimScrollback` — the transcript is on disk; shells have none and
+  a failed task's scrollback IS its log, so both keep theirs), and `isExited` panes
+  drop out of the 4s branch poll and the quit guard's count.
 - **A claude pane's keystrokes are not raw pass-through.** Shell and task panes
   wire `term.onData` straight to `write_pty` (in `panes.ts`); a claude pane goes
   through `claudeInput` in **`terminal.ts`**, which forwards the first `^C`
