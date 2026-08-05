@@ -264,6 +264,10 @@ body::after{ /* faint observation grid */
   box-shadow:0 10px 34px -12px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.4);
 }
 .btn-primary:hover{transform:translateY(-2px);box-shadow:0 18px 44px -14px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.4);}
+/* one hero CTA per platform, picked by the html.win class the head script sets */
+.cta-win{display:none;}
+html.win .cta-mac{display:none;}
+html.win .cta-win{display:inline-flex;}
 .btn-ghost{color:var(--text);background:var(--surface);border-color:var(--hair-strong);}
 .btn-ghost:hover{transform:translateY(-2px);border-color:var(--accent-line);color:var(--accent-ink);}
 .scrollcue{
@@ -907,6 +911,20 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
   .scope{display:none;}
 }
 </style>
+
+<!-- Which download the hero offers. This is a class on <html> set before the
+     first paint rather than a DOM swap on load, because the button is above the
+     fold: rewriting it afterwards shows every Windows visitor an Apple logo
+     first. The markup's default is macOS, so JS off — or any platform we can't
+     name — falls back to what the page shipped, and the download section below
+     offers both regardless. -->
+<script>
+(function(){
+  var d = navigator.userAgentData;
+  var p = (d && d.platform) || navigator.platform || navigator.userAgent || '';
+  if (/win/i.test(p)) document.documentElement.classList.add('win');
+})();
+</script>
 </head>
 <body>
 
@@ -933,9 +951,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
   <p class="sub">Every Claude Code agent, in one calm place.</p>
   <p class="lede">episko gives every Claude Code session its own terminal, watches what each one is doing, and gathers them into a single view — so a <b>whole flock of agents</b> is as easy to mind as one chat.</p>
   <div class="cta-row">
-    <a class="btn btn-primary" href="#download">
+    <a class="btn btn-primary cta-mac" href="#download">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.36 12.9c-.02-2.02 1.65-2.99 1.72-3.04-0.94-1.37-2.4-1.56-2.92-1.58-1.24-.13-2.42.73-3.05.73-.63 0-1.6-.71-2.63-.69-1.35.02-2.6.79-3.29 2-1.4 2.43-.36 6.02 1.01 7.99.67.96 1.47 2.04 2.51 2 1.01-.04 1.39-.65 2.62-.65 1.22 0 1.57.65 2.63.63 1.09-.02 1.78-.98 2.44-1.95.77-1.12 1.09-2.2 1.11-2.26-.02-.01-2.13-.82-2.15-3.26M14.38 6.98c.56-.68.94-1.62.83-2.56-.81.03-1.79.54-2.37 1.21-.52.6-.97 1.56-.85 2.48.9.07 1.83-.46 2.39-1.13"/></svg>
       Download for macOS
+    </a>
+    <a class="btn btn-primary cta-win" href="#download">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.4 10.5 4.3v7.2H3V5.4M3 12.5h7.5v7.2L3 18.6v-6.1M11.5 4.15 21 3v8.5h-9.5V4.15M11.5 12.5H21V21l-9.5-1.35V12.5Z"/></svg>
+      Download for Windows
     </a>
     <a class="btn btn-ghost" href="https://github.com/respeak-io/episko" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
@@ -1000,7 +1022,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
                 </div>
               </div>
 
-              <div class="rail-ver"><span class="logo"></span>episko <span data-ver>v0.13.6</span><span class="up">● up to date</span></div>
+              <div class="rail-ver"><span class="logo"></span>episko <span data-ver>v0.14.0</span><span class="up">● up to date</span></div>
             </div>
 
             <!-- stage / live session -->
@@ -1087,7 +1109,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
             <!-- footer -->
             <div class="ck-foot region region--foot" data-region="foot">
               <span class="frepo">respeak-io/episko ↗</span>
-              <span class="fver" data-ver>v0.13.6</span>
+              <span class="fver" data-ver>v0.14.0</span>
               <span class="fseg"><b>7</b> sessions</span>
               <span class="fdiv"></span>
               <span class="fseg">today <b>$12.40</b></span>
@@ -1330,7 +1352,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
       <span><span class="t">Download for Windows</span><span class="s" id="dlWinSub">.msi · Windows 10 &amp; 11</span></span>
     </a>
   </div>
-  <div class="dl-meta"><span data-ver>v0.13.6</span> · free &amp; open source · requires <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> on your PATH</div>
+  <div class="dl-meta"><span data-ver>v0.14.0</span> · free &amp; open source · requires <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> on your PATH</div>
 </section>
 
 </main>

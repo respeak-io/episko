@@ -197,6 +197,20 @@ function release(version) {
     rest.map((s) => `${s.heading}\n${bodyText(s)}\n`).join("\n");
   writeFileSync(FILE, rebuilt.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n");
   process.stderr.write(`CHANGELOG.md: Unreleased → ${v} (${today})\n`);
+  // Two things this command cannot do for you, said where they are still cheap.
+  //
+  // It has just EMPTIED `## Unreleased`, which is precisely what the dev → main gate
+  // refuses — so run on the wrong branch it does not fail here, it fails on the pull
+  // request, after a push. And the heading it wrote carries no lede, while *What's new*
+  // renders that line as the release's headline. Both are one edit away at this moment
+  // and an awkward revert five minutes later. See RELEASE.md § Cutting it.
+  process.stderr.write(
+    `\n  next:  add the one-line lede under "## ${v}" — What's new shows it as the headline\n`
+    + `         bump "version" in package.json AND src-tauri/tauri.conf.json to ${v}\n`
+    + `         this belongs on main, AFTER the dev → main merge: it empties Unreleased,\n`
+    + `         which is what the PR gate refuses\n`
+    + `  check: node scripts/changelog.mjs section ${v} | head -3\n`,
+  );
 }
 
 // ---------- main ----------

@@ -6,10 +6,10 @@ import {
   setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup, worktreesByRepo,
 } from "../src/state";
 import {
-  allProjects, clusterByWorktree, clusterIsLive, groupedProjects, groupSummary,
-  needsYou, needsYouSessions, nextAfterClose, orderedSessions, projectList,
-  reactorLabel, reactorState, splitByWorktree, urgencyRank,
-  type ProjGroup, type SidebarSlot,
+  allProjects, clusterByWorktree, clusterIsLive, foldRunGroups, groupedProjects,
+  groupPhase, groupSummary, needsYou, needsYouSessions, nextAfterClose, nextInGroup,
+  orderedSessions, projectList, reactorLabel, reactorState, splitByWorktree,
+  urgencyRank, type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
 import { taskPrefs } from "../src/tasks";
@@ -67,6 +67,29 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     expect(cl.map((c) => c.key)).toEqual(["/w/wt-b", "/w/epi"]); // order follows the sorted session list
     expect(ids(cl[0].sessions)).toEqual(["a", "c"]);
     expect(ids(cl[1].sessions)).toEqual(["b"]);
+  });
+  /// The bug this exists for: a task's `workdir` is where the *task* runs, and VS Code
+  /// tasks routinely declare a subfolder (`options.cwd: 01_frontend`). Keying clusters
+  /// on that gave one chain three "worktree" headers, all with the same branch on them,
+  /// and — because the run-group fold happens inside a cluster — stopped the members of
+  /// one launch from ever folding into a single row.
+  it("clusters a task pane by its checkout, not by the subfolder it runs in", () => {
+    const wt = "/w/wt-feat";
+    const p = grp({ sessions: [
+      sess({ id: "agent", workdir: wt, branch: "feat" }),
+      taskSess("fe", { workdir: wt + "/01_frontend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+      taskSess("be", { workdir: wt + "/02_backend", branch: "feat" }, { root: wt, groupId: "g1", groupLabel: "Dev" }),
+    ] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(ids(cl[0].sessions)).toEqual(["agent", "fe", "be"]);
+    // And therefore the two run panes can actually fold into one row.
+    const items = foldRunGroups(cl[0].sessions);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["agent", "GROUP"]);
+  });
+  it("falls back to a task pane's workdir when it has no discovery root", () => {
+    const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
   });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
@@ -198,6 +221,20 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
     expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
+  it("gives a project with NOTHING running every checkout it has", () => {
+    // The reported "the hover bar sometimes doesn't come". This function was always
+    // willing; what was missing is the roster, which `refreshWorktrees` only built for
+    // repos with a live session — so an idle project reached `peekBody` with zero
+    // clusters and rendered no rows at all. Both checkouts are vacant here, which is
+    // exactly what the peek exists to reveal.
+    roster([main(), linked()]);
+    const cl = clusterByWorktree(grp({ sessions: [] }), true);
+    expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
+    expect(cl.every((c) => !clusterIsLive(c))).toBe(true);
+    // The main checkout is a launchable row too, and keeps its identity so the sidebar
+    // can give it the ⌂ glyph rather than a branch's.
+    expect(cl[0].isMain).toBe(true);
+  });
 });
 
 describe("splitByWorktree — toplevel mode explodes a multi-checkout project", () => {
@@ -218,6 +255,23 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     expect(ids(out[1].sessions)).toEqual(["b"]);
     expect(out[0].wtBranch).toBeUndefined();      // the root keeps the project's identity
     expect(out[1]).toMatchObject({ name: "epi", accent: "#fff", wtBranch: "feature" });
+  });
+  it("carries the repo root onto every worktree group, and onto no other", () => {
+    // A checkout is not a project, and splitting is the only thing that severs the two.
+    // The sidebar's project header opens `repoRoot ?? path`, so losing it here keys a
+    // worktree's dashboard by its checkout dir — where `histProject` regrafts every
+    // history row onto the repo root, so the timeline matches no sessions at all.
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi", branch: "main" }),
+      sess({ id: "b", workdir: "/w/wt", branch: "feature" }),
+    ] });
+    const out = splitByWorktree([p]);
+    expect(out[0].repoRoot).toBeUndefined();   // the root group IS the project
+    expect(out[1].repoRoot).toBe("/w/epi");
+  });
+  it("leaves an unsplit project without a repoRoot, so `repoRoot ?? path` is its own path", () => {
+    const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
+    expect(splitByWorktree([p])[0].repoRoot).toBeUndefined();
   });
   it("drops the phantom root of a worktree-only repo", () => {
     const p = grp({ sessions: [sess({ id: "b", workdir: "/w/wt", branch: "feature" })] });
@@ -791,5 +845,116 @@ describe("reactorState / reactorLabel — the badge's one rollup", () => {
     expect(reactorLabel("error", 2)).toBe("2 errors");
     expect(reactorLabel("done", 1)).toBe("1 your turn");
     expect(reactorLabel("done", 4)).toBe("4 your turn");
+  });
+});
+
+// A task pane, optionally in a run group. `run` carries everything the fold reads.
+function taskSess(id: string, o: Partial<Sess> = {}, run: Partial<NonNullable<Sess["run"]>> = {}): Sess {
+  return sess({
+    id, kind: "task", ...o,
+    run: {
+      id: "npm:" + id, label: id, source: "npm", sourceFile: "package.json",
+      cmd: "npm run " + id, background: false, startedAt: NOW_MS, exitCode: null,
+      tail: [], root: "/w/epi", ...run,
+    },
+  });
+}
+
+describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
+  it("collapses the members of one launch and leaves everything else alone", () => {
+    const items = foldRunGroups([
+      sess({ id: "agent" }),
+      taskSess("typecheck", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("lint", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("test", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("solo"),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? `group:${i.label}` : i.s.id)))
+      .toEqual(["agent", "group:fe-check", "solo"]);
+    const g = items[1];
+    expect(g.kind).toBe("group");
+    if (g.kind === "group") expect(ids(g.members)).toEqual(["typecheck", "lint", "test"]);
+  });
+
+  it("puts the group where its FIRST member sat, so the caller's sort still decides", () => {
+    // If the fold re-sorted, `solo` could not stay ahead of a group whose first
+    // member follows it — which is exactly what projectList already ordered.
+    const items = foldRunGroups([
+      taskSess("solo"),
+      taskSess("build", {}, { groupId: "g1", groupLabel: "ship" }),
+      taskSess("sign", {}, { groupId: "g1", groupLabel: "ship" }),
+    ]);
+    expect(items.map((i) => (i.kind === "group" ? "GROUP" : i.s.id))).toEqual(["solo", "GROUP"]);
+  });
+
+  it("keeps two launches of the same chain apart", () => {
+    // The whole reason groupId is minted per launch: running `fe-check` twice must
+    // give two rows to compare, not one row with six steps.
+    const items = foldRunGroups([
+      taskSess("a1", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("a2", {}, { groupId: "g1", groupLabel: "fe-check" }),
+      taskSess("b1", {}, { groupId: "g2", groupLabel: "fe-check" }),
+      taskSess("b2", {}, { groupId: "g2", groupLabel: "fe-check" }),
+    ]);
+    expect(items.length).toBe(2);
+    expect(items.every((i) => i.kind === "group")).toBe(true);
+  });
+
+  it("renders a group of one as a plain row — a header over one step is noise", () => {
+    const items = foldRunGroups([taskSess("only", {}, { groupId: "g1", groupLabel: "fe-check" })]);
+    expect(items).toEqual([{ kind: "one", s: expect.objectContaining({ id: "only" }) }]);
+  });
+
+  it("never groups a claude or shell pane, whatever it carries", () => {
+    const items = foldRunGroups([
+      sess({ id: "c", kind: "claude", run: { groupId: "g1" } as never }),
+      sess({ id: "sh", kind: "shell", run: { groupId: "g1" } as never }),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+});
+
+describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () => {
+  const p = (...phases: Sess["phase"][]) => groupPhase(phases.map((ph, i) => taskSess("s" + i, { phase: ph })));
+
+  it("lets a failure outrank anything that came after it", () => {
+    // The case worst-of exists for: a failed build stops the chain, so the steps
+    // behind it never run. Last-of would report `done` on a broken chain.
+    expect(p("error", "done")).toBe("error");
+    expect(p("done", "error", "idle")).toBe("error");
+  });
+  it("is not done while any step is still going", () => {
+    expect(p("done", "working")).toBe("working");
+    expect(p("done", "thinking")).toBe("working");
+  });
+  it("reads a step queued behind a sequential dependency as still working", () => {
+    expect(p("done", "idle")).toBe("working");
+  });
+  it("is done only when every step is", () => {
+    expect(p("done", "done", "done")).toBe("done");
+  });
+  it("is ended only when every step is", () => {
+    expect(p("ended", "ended")).toBe("ended");
+    expect(p("ended", "done")).toBe("done");
+  });
+});
+
+describe("nextInGroup — closing one tile stays in the mosaic", () => {
+  const m = (...ids: string[]) => ids.map((id) => taskSess(id, {}, { groupId: "g1" }));
+  it("promotes the tile that FOLLOWS the one closing", () => {
+    // The grid reflows into the gap, so closing the top-left tile makes the next one
+    // top-left — that is the one to look at.
+    expect(nextInGroup(m("a", "b", "c"), "a")?.id).toBe("b");
+    expect(nextInGroup(m("a", "b", "c"), "b")?.id).toBe("c");
+  });
+  it("falls back to the previous tile when the last one closes", () => {
+    expect(nextInGroup(m("a", "b", "c"), "c")?.id).toBe("b");
+  });
+  it("has nothing to offer when the group had one member", () => {
+    expect(nextInGroup(m("only"), "only")).toBeNull();
+  });
+  it("returns null for a session that isn't in the group at all", () => {
+    // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
+    expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
   });
 });

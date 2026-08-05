@@ -315,11 +315,18 @@ pub(crate) async fn gh_claim(
 /// The failure mode this exists to prevent is a graveyard of dead claims: a claim that
 /// is never released is worse than no claim, because it tells a colleague someone is
 /// working on something nobody is.
+///
+/// **It undoes what the claim wrote, never a blanket reset.** `unassign` and `label`
+/// come from the frontend's ledger record of what actually landed, because the two
+/// failure directions are not symmetrical: leaving a stale claim up costs a colleague
+/// one wasted glance, while stripping an assignment a human made by hand is this app
+/// editing someone else's planning signal on the strength of a guess.
 #[tauri::command]
 pub(crate) async fn gh_release(
     root: String,
     number: i64,
     kind: String,
+    unassign: bool,
     label: String,
     body: String,
 ) -> ClaimOutcome {
@@ -328,8 +335,10 @@ pub(crate) async fn gh_release(
         let n = number.to_string();
         let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
 
-        if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
-            out.problems.push(format!("unassign: {}", classify(&e)));
+        if unassign {
+            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
+                out.problems.push(format!("unassign: {}", classify(&e)));
+            }
         }
         if !label.is_empty() {
             if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-label", &label]) {
@@ -476,17 +485,22 @@ pub(crate) async fn gh_close_issue(root: String, number: i64, comment: String) -
 /// **Absent means everything is allowed.** A repo that has never heard of Episko must
 /// not silently disable features, and a missing file is not a policy. Only keys that
 /// are present and `false` take anything away — the file is a ceiling, never a default.
+///
+/// There was a `push_branch` ceiling here. Nothing ever implemented the thing it
+/// bounded — `gh_claim` never took the argument and dispatch creates no branch — so a
+/// project switching it off was refusing a capability that did not exist. An unknown
+/// key in a hand-written `[claim]` table is ignored on read, so a file still carrying
+/// `push_branch` keeps working; it simply no longer pretends to decide anything.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub(crate) struct ClaimAllow {
     pub assign: bool,
     pub comment: bool,
-    pub push_branch: bool,
     pub label: bool,
 }
 
 impl Default for ClaimAllow {
     fn default() -> Self {
-        Self { assign: true, comment: true, push_branch: true, label: true }
+        Self { assign: true, comment: true, label: true }
     }
 }
 
@@ -499,7 +513,6 @@ struct RawFile { claim: Option<RawClaim> }
 struct RawClaim {
     assign: Option<bool>,
     comment: Option<bool>,
-    push_branch: Option<bool>,
     label: Option<bool>,
 }
 
@@ -511,7 +524,6 @@ pub(crate) fn parse_allow(toml_text: &str) -> ClaimAllow {
     let Some(c) = file.claim else { return a };
     if let Some(x) = c.assign { a.assign = x; }
     if let Some(x) = c.comment { a.comment = x; }
-    if let Some(x) = c.push_branch { a.push_branch = x; }
     if let Some(x) = c.label { a.label = x; }
     a
 }
@@ -795,7 +807,7 @@ mod tests {
         // Tim's case exactly: "we don't use assignments for planning, but people might".
         let a = parse_allow("[claim]\nassign = false\n");
         assert!(!a.assign);
-        assert!(a.comment && a.push_branch && a.label);
+        assert!(a.comment && a.label);
     }
 
     #[test]

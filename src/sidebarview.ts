@@ -11,13 +11,18 @@
 // over ProjGroups and WtClusters already split and sorted, and this only paints
 // them.
 
-import { basename, esc, fmtShort, relTime, tilde } from "./format";
-import { apiErrText, statusKey, type ExtSession, type Restorable, type Sess } from "./types";
+import { basename, esc, relTime, tilde } from "./format";
 import {
-  accentFor, activeId, externals, extMirrorId, folderDirty, pastMirrorId, peekPrefs,
-  sessions, wtGroup,
+  apiErrText, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
+} from "./types";
+import {
+  accentFor, activeId, collapsedRuns, externals, extMirrorId, folderDirty, pastMirrorId,
+  peekPrefs, sessions, stageGroup, wtGroup,
 } from "./state";
-import { clusterByWorktree, clusterIsLive, type GroupSummary, type ProjGroup, type WtCluster } from "./grouping";
+import {
+  checkoutOf, clusterByWorktree, clusterIsLive, foldRunGroups, type GroupSummary,
+  type ProjGroup, type RunItem, type WtCluster,
+} from "./grouping";
 import type { GroupDef } from "./projgroups";
 
 // ---------- the header of a user-defined project group ----------
@@ -87,12 +92,16 @@ const clusterChip = (c: WtCluster) =>
 
 // `chip` (chip mode only) tags the row with its worktree's colour-coded branch,
 // which expands from a bare ⑃ to the branch name on row hover.
-function sessionRow(s: Sess, chip?: WtCluster): string {
+function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   const k = statusKey(s);
   // Prefer the abbreviated title; fall back to the branch/worktree only until
   // Claude sets a title, so idle rows stay identifiable. (Branch is kept in the
   // stage header — dropped here to save sidebar space.)
-  const label = s.kind === "task" ? `▶ ${s.run?.label ?? "task"}` : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
+  // `nested` drops the ▶: inside a run group every row is a step of one, so the
+  // group's own header carries the mark and repeating it is just noise.
+  const label = s.kind === "task"
+    ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
+    : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
   // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited).
   // tasks keep the status glyphs: an exit code *is* a done/error phase, so a red
   // build reads exactly like a broken session in the rail.
@@ -120,6 +129,50 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
     <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
     <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
 }
+/// One launch of a `dependsOn` chain, as a single collapsible **block**.
+///
+/// Deliberately not a row that looks like its own steps. A group header is a different
+/// kind of thing — a summary of N runs, and the thing you click to tile them — so it
+/// gets a surface of its own with the steps inset inside it, and the whole set reads as
+/// one object in the sidebar rather than as N+1 siblings competing for the same rank.
+///
+/// The header carries the group's *aggregate* phase, so a red chain reads red without
+/// expanding it. Clicking it tiles the members across the stage (the one place they are
+/// legible side by side); the ▸ affordance is a separate hit target, because "show me
+/// all of it" and "show me the step list" are different questions.
+function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster): string {
+  const open = !collapsedRuns.has(it.id);
+  const gcls = GCLASS[it.phase] || "g-idle";
+  const tiled = stageGroup === it.id;
+  const failed = it.members.filter((m) => m.phase === "error").length;
+  // Count what's left rather than what there was: "2 of 4 done" is what you want
+  // mid-chain, and once it's over the tally is the whole story.
+  const done = it.members.filter((m) => m.run?.exitCode != null || m.phase === "ended").length;
+  const tally = failed ? `${failed} failed` : done < it.members.length ? `${done}/${it.members.length}` : `${it.members.length} steps`;
+  const chipHtml = chip
+    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+    : "";
+  const head = `<div class="rgrow${tiled ? " on" : ""}" data-rungroup="${esc(it.id)}"
+      title="${esc(it.label)} · ${it.members.length} steps — open them side by side">
+    <span class="rgtwist${open ? " open" : ""}" data-rgtoggle="${esc(it.id)}" title="${open ? "Collapse" : "Expand"} the steps">▸</span>
+    <span class="sglyph ${gcls}">${GLYPH[it.phase] || GLYPH.idle}</span>
+    <span class="rgname" title="${esc(it.label)}">${esc(it.label)}</span>${chipHtml}
+    <span class="rgtally${failed ? " bad" : ""}">${esc(tally)}</span>
+    <span class="sclose" data-closerun="${esc(it.id)}" title="Close every pane in this run">✕</span></div>`;
+  const body = open ? `<div class="rgsteps">${it.members.map((m) => sessionRow(m, undefined, true)).join("")}</div>` : "";
+  return `<div class="rgroup${tiled ? " on" : ""}${open ? " open" : ""}">${head}${body}</div>`;
+}
+
+/// Paint a session list with each `dependsOn` chain folded into one row. Every
+/// wtGroup mode goes through here, so a run group looks the same in all four.
+function rows(list: Sess[], chipFor?: (s: Sess) => WtCluster | undefined): string {
+  return foldRunGroups(list)
+    .map((it) => it.kind === "group"
+      ? runGroupRow(it, chipFor?.(it.members[0]))
+      : sessionRow(it.s, chipFor?.(it.s)))
+    .join("");
+}
+
 // The full body of a project group (owned sessions + external rows), shaped by the
 // worktree-grouping mode. subheader → ⑃ cluster headers with nested rows; chip →
 // flat rows each tagged with a colour-coded branch chip; off/toplevel → plain flat
@@ -129,7 +182,7 @@ function sessionRow(s: Sess, chip?: WtCluster): string {
 // **Only checkouts with something running in them appear here.** The idle ones moved
 // to `peekBody` — see the block comment there for why.
 export function groupBody(p: ProjGroup): string {
-  const flat = () => p.sessions.map((s) => sessionRow(s)).join("") + p.externals.map((e) => extRow(e)).join("");
+  const flat = () => rows(p.sessions) + p.externals.map((e) => extRow(e)).join("");
   if (wtGroup === "subheader") {
     // `cl` still folds the idle checkouts in (`withEmpty`), because their *count* is
     // what decides whether this project is worth clustering at all: one live checkout
@@ -138,7 +191,9 @@ export function groupBody(p: ProjGroup): string {
     const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) return cl.filter(clusterIsLive).map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
-      const body = c.sessions.map((s) => sessionRow(s)).join("") + c.externals.map((e) => extRow(e)).join("");
+      // `rows`, not a bare sessionRow map: a cluster is exactly where the run-group
+      // fold has to happen, since a chain's panes all share one checkout.
+      const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("");
       // The cluster header already answers the only question the worktree dialog
       // would ask — which checkout — so its ＋ launches straight into `c.key`.
       // `data-root` carries the repo root separately: it is the colorKey every
@@ -155,7 +210,9 @@ export function groupBody(p: ProjGroup): string {
     const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) {
       const byKey = new Map(cl.map((c) => [c.key, c]));
-      return p.sessions.map((s) => sessionRow(s, byKey.get(s.workdir || p.path))).join("")
+      // Same key clusterByWorktree used, or a task pane whose cwd is a subfolder
+      // gets no chip at all.
+      return rows(p.sessions, (s) => byKey.get(checkoutOf(s, p.path)))
         + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
     }
   }
@@ -251,12 +308,3 @@ function extRow(e: ExtSession, chip?: WtCluster): string {
     <span class="sjump" data-jump="${e.pid}" title="Jump to its terminal ↗">↗</span></div>`;
 }
 
-// The trailing column in the sidebar, and the palette subtitle. A background run
-// never claims to be finished, so it reads "bg" for as long as it lives.
-export function taskStateText(s: Sess): string {
-  const r = s.run;
-  if (!r) return "";
-  if (s.phase === "working") return r.background ? "bg" : fmtShort(Date.now() - r.startedAt);
-  if (r.exitCode == null) return "";
-  return r.exitCode === 0 ? fmtShort(Date.now() - r.startedAt) : `exit ${r.exitCode}`;
-}

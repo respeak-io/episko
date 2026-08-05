@@ -143,6 +143,17 @@ export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
+// A run group tiled across the stage (its `run.groupId`), from clicking the group's
+// sidebar header. NOT a fourth owner of the stage: `activeId` still names the one
+// *focused* pane — it is what the header, inspector, footer and keystrokes read — and
+// this only says "also show that pane's group siblings beside it". So the invariant
+// above is unchanged, and every existing activeId consumer keeps working untouched.
+// Mutually exclusive with `mirror` for the obvious reason: a mirror has no group.
+export let stageGroup: string | null = null;
+export function setStageGroup(g: string | null) { stageGroup = g; }
+// Run groups the user has collapsed. Deliberately NOT persisted: the ids are
+// per-launch uuids, so a saved entry could never match anything on a later run.
+export const collapsedRuns = new Set<string>();
 // Claude Code sessions started OUTSIDE Episko (a plain terminal, an IDE). We
 // discover them from ~/.claude/sessions/<pid>.json (via the backend), show them
 // in the sidebar as read-only, and can jump to their terminal window.
@@ -238,3 +249,16 @@ export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.ex
 // identifier); `all_sessions_resources` in pty.rs does the summing and the per-pid
 // rate differencing, because that is where the previous readings live.
 export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, primed: false };
+
+// Which window the inspector's read/written total covers. `run` is what the figure
+// always was — the kernel counters of the claude processes THIS Episko spawned, which
+// go back to zero every launch — and it was labelled a bare "total", so it read as a
+// lifetime number that happened to be small. `today` is the default because it is the
+// question the footer's spend beside it already answers, and `all` is everything the
+// `cc-io` rollup has banked since it started keeping one. Cycled by clicking the row.
+export type IoScope = "today" | "run" | "all";
+export const IO_SCOPES: IoScope[] = ["today", "run", "all"];
+export let ioScope: IoScope =
+  (IO_SCOPES as string[]).includes(localStorage.getItem("cc-io-scope") || "")
+    ? localStorage.getItem("cc-io-scope") as IoScope : "today";
+export function setIoScope(s: IoScope) { ioScope = s; }

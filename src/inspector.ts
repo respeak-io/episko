@@ -13,16 +13,17 @@
 // something for the bootstrap trim to sweep up.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $ } from "./dom";
-import { esc, fmtShort, tilde } from "./format";
-import { apiErrText, isAgent, phaseText, statusKey, type Sess } from "./types";
-import { pinnedIds, togglePin } from "./tasks";
+import { $, stageGen } from "./dom";
+import { esc, tilde } from "./format";
+import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
+import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
 import { sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  driftHtml, gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml, vitalHtml, wsetHtml,
+  driftHtml, dwellText, gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml,
+  vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 export function renderInspector(s: Sess | null) {
@@ -31,7 +32,7 @@ export function renderInspector(s: Sess | null) {
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
   $("iPillTxt").textContent = s ? (s.attention ? s.attention : phaseText(s)) : "–";
-  if (!s) { $("inspector").innerHTML = `<div class="insp-empty">No session selected.</div>`; return; }
+  if (!s) { paintInspector(`<div class="insp-empty">No session selected.</div>`); return; }
 
   const html: string[] = [];
   // ACT — a pending permission is the only thing that should ever jump the queue.
@@ -63,20 +64,60 @@ export function renderInspector(s: Sess | null) {
   if (s.git) html.push(wsetHtml(s));
   html.push(timelineHtml(s));                                     // activity, by tool
   html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
-  $("inspector").innerHTML = html.join("");
+  paintInspector(html.join(""));
+  // The dwell is patched, never rendered — see `paintInspector`. Do this after the
+  // assignment above, so a fresh #iDwell gets its text before the frame is painted.
+  tickDwell(s);
+}
+
+/**
+ * Assign `#inspector` only when the markup changed — the same guard ./sidebar and
+ * ./dashboard use, on the surface that most needed it.
+ *
+ * **This one is a correctness fix, not a saving.** The inspector rides `renderAll`, so
+ * on a busy fleet it was rebuilt several times a second, and it holds the app's most
+ * consequential buttons: a pending permission's *Allow / Deny / In terminal*. Replacing
+ * a node between mousedown and mouseup means the `click` fires on the container rather
+ * than the button, `closest("[data-perm]")` finds nothing, and **the decision is
+ * silently dropped** — on a session that is blocked waiting for exactly that answer.
+ *
+ * The guard only bites because the dwell clock is kept *out* of the compared string.
+ * `dwellText` is `m:ss`, so leaving it in made the markup differ every second by
+ * construction and no repaint would ever have been skipped. main.ts already patches
+ * `#iDwell` by `textContent` once a second for the neighbouring reason (an innerHTML
+ * assignment restarts the heartbeat's CSS animation); this makes that the *only* way it
+ * is ever written, rather than a second mechanism racing the render.
+ */
+/// Keyed by `stageGen` as well as the markup: ./mirror and ./dashboard write this same
+/// element, and every route to them goes through `takeStage`. Without it, leaving a
+/// session for the dashboard and coming back would match a string that is no longer on
+/// screen and skip the repaint that puts it there.
+let lastInspHtml: string | null = null;
+let lastInspGen = -1;
+function paintInspector(html: string) {
+  if (html === lastInspHtml && stageGen === lastInspGen) return;
+  lastInspHtml = html;
+  lastInspGen = stageGen;
+  $("inspector").innerHTML = html;
+}
+/// The one field the render path deliberately leaves blank, filled here and by main.ts's
+/// one-second tick. Exported so the tick has a single implementation to call.
+export function tickDwell(s: Sess) {
+  const el = document.getElementById("iDwell");
+  if (el) el.textContent = dwellText(s);
 }
 
 function renderShellInspector(s: Sess) {
   const ended = s.phase === "ended";
   const pill = $("iPill"); pill.className = "pill " + (ended ? "ended" : "idle");
   $("iPillTxt").textContent = ended ? "exited" : "shell";
-  $("inspector").innerHTML = `
+  paintInspector(`
     <div class="ext-card">
       <div class="ext-hl">❯ Plain shell</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
       <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
-    </div>`;
+    </div>`);
 }
 
 function renderTaskInspector(s: Sess) {
@@ -102,18 +143,25 @@ function renderTaskInspector(s: Sess) {
     ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
     : "";
 
+  // NOT through `paintInspector`: this card wires per-element listeners below, so a
+  // skipped repaint would bind a second set to the same nodes and fire every action
+  // twice. It carries a live "Running 0:12" anyway, so there is nothing to skip — but
+  // the cache must be told, or the next agent repaint could match a string this
+  // assignment has already replaced.
+  lastInspHtml = null;
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">▶ ${esc(r.label)}</div>
       <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
       <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
+      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(runElapsed(r))}</span></div>
       ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
     </div>
     <div class="tacts">
       ${handoff}
       <button class="tact" data-rerun="1">⟳ Re-run</button>
+      ${lastRunnableById.get(r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">⋯ Parameters</button>` : ""}
       <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
       <button class="tact" data-reveal="1">↗ Reveal source</button>
       ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
@@ -121,6 +169,7 @@ function renderTaskInspector(s: Sess) {
 
   const insp = $("inspector");
   insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
+  insp.querySelector("[data-reparams]")?.addEventListener("click", () => rerunTask(s, true));
   insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
   insp.querySelector("[data-reveal]")?.addEventListener("click", () => revealSource(r.root, r.sourceFile));
   insp.querySelector("[data-kill]")?.addEventListener("click", () => invoke("kill_session", { sessionId: s.id }).catch(() => {}));

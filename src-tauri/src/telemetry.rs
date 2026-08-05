@@ -119,15 +119,22 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
 /// native process, which `serde_json` then refuses to parse — silently dropping
 /// every payload. (Verified empirically.)
 ///
-/// **Windows runs the two halves in different shells, and only one of them can be
-/// told which.** `shell` is a *hook* field; Claude Code has no such field for the
-/// statusLine and routes it through Git Bash whenever Git Bash is installed (else
-/// PowerShell). So the hooks are pinned to `powershell` and written in it, while
-/// the statusLine command must parse in *either* shell: no `&` call operator, no
-/// `$null` (Git Bash would expand it away and leave a bare `1>`), no
-/// `Write-Output`, and forward slashes, since Git Bash eats lone backslashes as
-/// escapes. `echo` and single-quoted arguments mean the same thing in both.
-/// Getting this wrong costs no hook and no error — just every figure the
+/// **The hooks run no shell at all; the statusLine has to.** A command hook takes
+/// an *exec form* — `command` plus an `args` array, each element passed as one
+/// argument with no quoting and no shell in between — so the hooks name `curl`
+/// directly. That is what removes the per-hook shell process: on Windows the
+/// previous shell form was pinned to `"shell": "powershell"`, which meant a whole
+/// PowerShell launch (~220 ms, and a second process) for every PreToolUse,
+/// PostToolUse, Stop and Notification of every session, just to reach curl. It
+/// also retires the entire quoting hazard, since nothing re-parses these strings.
+///
+/// The statusLine gets no such escape: Claude Code defines no `args` and no
+/// `shell` for it, and routes it through Git Bash whenever Git Bash is installed
+/// (else PowerShell). So that one command must still parse in *either* shell: no
+/// `&` call operator, no `$null` (Git Bash would expand it away and leave a bare
+/// `1>`), no `Write-Output`, and forward slashes, since Git Bash eats lone
+/// backslashes as escapes. `echo` and single-quoted arguments mean the same thing
+/// in both. Getting this wrong costs no hook and no error — just every figure the
 /// statusLine carries (model, context %, cost, duration, rate limits), silently.
 pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io::Result<String> {
     let mut dir = std::env::temp_dir();
@@ -139,37 +146,43 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
     // runtime session_id (/clear, /compact, /resume all mint a new one). The id is
     // baked into the generated command — no dependence on env propagation.
     #[cfg(windows)]
-    let (statusline_cmd, hook_cmd, shell): (String, String, Option<&str>) = {
-        let curl = r"C:\Windows\System32\curl.exe";
+    let (statusline_cmd, curl, null_dev): (String, &str, &str) = {
         // Shell-agnostic (see above): the statusLine can't say which shell it wants,
         // so it says nothing either shell would choke on. `-o NUL` replaces the
         // PowerShell-only `1>$null 2>$null`; `echo` replaces `Write-Output`.
         let statusline = format!(
             "C:/Windows/System32/curl.exe -s -o NUL --max-time 1 -X POST 'http://127.0.0.1:{port}/statusline' -H 'X-CC-Session: {session_id}' --data-binary '@-'; echo cc-launcher"
         );
-        // Hooks *are* pinned to PowerShell below, so this half stays PowerShell.
-        let hook = format!(
-            "& '{curl}' -s --max-time 2 -X POST 'http://127.0.0.1:{port}/hook' -H 'X-CC-Session: {session_id}' --data-binary '@-' 1>$null 2>$null"
-        );
-        (statusline, hook, Some("powershell"))
+        (statusline, r"C:\Windows\System32\curl.exe", "NUL")
     };
     #[cfg(not(windows))]
-    let (statusline_cmd, hook_cmd, shell): (String, String, Option<&str>) = {
+    let (statusline_cmd, curl, null_dev): (String, &str, &str) = {
         let statusline = format!(
             "i=$(/bin/cat); printf '%s' \"$i\" | /usr/bin/curl -s --max-time 1 -X POST 'http://127.0.0.1:{port}/statusline' -H 'X-CC-Session: {session_id}' --data-binary @- >/dev/null 2>&1; printf 'cc-launcher'"
         );
-        let hook = format!(
-            "/usr/bin/curl -s --max-time 2 -X POST 'http://127.0.0.1:{port}/hook' -H 'X-CC-Session: {session_id}' --data-binary @- >/dev/null 2>&1 || true"
-        );
-        (statusline, hook, None)
+        (statusline, "/usr/bin/curl", "/dev/null")
     };
 
-    // Build the command-hook leaf once (adding `shell` on Windows) and clone it per
-    // event, so the platform choice lives in exactly one place.
-    let mut hook_leaf = serde_json::json!({ "type": "command", "command": hook_cmd, "async": true, "timeout": 5 });
-    if let Some(sh) = shell {
-        hook_leaf["shell"] = serde_json::Value::String(sh.to_string());
-    }
+    // Exec form: `args` elements reach curl verbatim, so there is no shell to pick
+    // and nothing to quote. Built once and cloned per event.
+    //
+    // No `|| true` counterpart is needed for the shell form this replaces. These are
+    // `async`, so Claude does not wait on them, and the only exit code that means
+    // anything to a hook is 2 (block the tool) — which curl uses for "failed to
+    // initialize" and never for a refused connection (7) or a timeout (28). A
+    // telemetry POST that misses therefore stays what it was: invisible.
+    let hook_leaf = serde_json::json!({
+        "type": "command",
+        "command": curl,
+        "args": [
+            "-s", "-o", null_dev, "--max-time", "2",
+            "-X", "POST", format!("http://127.0.0.1:{port}/hook"),
+            "-H", format!("X-CC-Session: {session_id}"),
+            "--data-binary", "@-",
+        ],
+        "async": true,
+        "timeout": 5,
+    });
 
     let events = [
         "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
@@ -274,10 +287,24 @@ mod tests {
             let leaf = &matchers[0]["hooks"][0];
             assert_eq!(leaf["type"], "command", "{ev}");
             assert_eq!(leaf["async"], true, "{ev} must stay fire-and-forget");
-            let cmd = leaf["command"].as_str().unwrap_or_else(|| panic!("{ev} has no command"));
-            assert!(cmd.contains(curl), "{ev} must call curl by absolute path: {cmd}");
-            assert!(cmd.contains(&format!("X-CC-Session: {sid}")), "{ev} must tag the POST with our stable id");
-            assert!(cmd.contains("http://127.0.0.1:45678/hook"), "{ev} must POST to our port");
+            // Exec form: `command` is the executable ITSELF, never shell command text,
+            // and every argument is its own `args` element. That is what means no shell
+            // is spawned per hook — the thing this shape exists for — so an equality
+            // check here, not a `contains`: command text that happens to start with the
+            // curl path would run through a shell again and still pass a substring test.
+            assert_eq!(leaf["command"], curl, "{ev} must name the curl binary itself");
+            let args: Vec<&str> = leaf["args"].as_array()
+                .unwrap_or_else(|| panic!("{ev} must use exec form (an args array)"))
+                .iter().map(|a| a.as_str().unwrap_or_else(|| panic!("{ev} arg is not a string"))).collect();
+            assert!(args.contains(&format!("X-CC-Session: {sid}").as_str()),
+                "{ev} must tag the POST with our stable id: {args:?}");
+            assert!(args.contains(&"http://127.0.0.1:45678/hook"), "{ev} must POST to our port: {args:?}");
+            assert!(args.contains(&"@-"), "{ev} must forward Claude's stdin payload: {args:?}");
+            // Nothing may re-parse these, so nothing may need quoting. A stray quote
+            // would reach curl as part of the value rather than being stripped.
+            for a in &args {
+                assert!(!a.contains('\'') && !a.contains('"'), "{ev} arg {a:?} is quoted — exec form takes it literally");
+            }
         }
 
         let perm = &hooks["PermissionRequest"][0]["hooks"][0];
@@ -293,18 +320,12 @@ mod tests {
         // command parses in either shell, which `statusline_command_posts_from_every_
         // shell_claude_might_pick` proves by running the string this file generates.
         assert!(statusline.get("shell").is_none(), "the statusLine has no shell field to set: {statusline}");
-        #[cfg(windows)]
-        {
-            // Claude Code's default hook shell on Windows is Git Bash, so the
-            // PowerShell hook commands must say so.
-            assert_eq!(hooks["Stop"][0]["hooks"][0]["shell"], "powershell");
-            assert!(perm.get("shell").is_none(), "an http hook has no shell to set");
-        }
-        #[cfg(not(windows))]
-        {
-            // Off Windows the field must be absent, not empty.
-            assert!(hooks["Stop"][0]["hooks"][0].get("shell").is_none());
-        }
+        // …and now neither does a hook. `shell` only applies to the shell form; with
+        // `args` set Claude Code ignores it, so carrying one would read as a pinned
+        // shell while no shell runs at all — the same lie the statusLine one was.
+        assert!(hooks["Stop"][0]["hooks"][0].get("shell").is_none(),
+            "an exec-form hook has no shell to pin");
+        assert!(perm.get("shell").is_none(), "an http hook has no shell to set");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -584,6 +605,80 @@ mod tests {
         }
         assert!(!ran.is_empty(), "no shell was available to run the statusLine command in");
         eprintln!("statusLine verified through: {}", ran.join(", "));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The hook's **exec form**, actually executed — `command` spawned directly with
+    /// its `args`, exactly as Claude Code runs it, with no shell anywhere.
+    ///
+    /// The sibling statusLine test exists because a shell might not parse our string.
+    /// This one exists for the opposite hazard, and it is the one the exec form
+    /// introduces: with no shell, nothing strips quotes and nothing splits words. An
+    /// argument written the way it would be written *for* a shell — `'X-CC-Session:
+    /// …'`, or a whole `-H foo` in one element — reaches curl with the quotes still
+    /// on it or as a single unparsable argument. curl then fails, `-s` keeps it quiet,
+    /// `async` means Claude never waits, and the pane loses every phase it has while
+    /// looking perfectly healthy. Reading the JSON back cannot catch that: the strings
+    /// are exactly what we meant to write. Only curl's own argv parsing is
+    /// authoritative, so this runs it. No Claude and no tokens — it's just curl.
+    #[test]
+    fn hook_exec_form_posts_without_any_shell() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("telemetry", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+
+        let sid = format!("test-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+        let path = write_instrument_settings(port, &sid).expect("settings file should be written");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let leaf = &v["hooks"]["PostToolUse"][0]["hooks"][0];
+        let prog = leaf["command"].as_str().expect("hook command").to_string();
+        let args: Vec<String> = leaf["args"].as_array().expect("hook args (exec form)")
+            .iter().map(|a| a.as_str().expect("arg is a string").to_string()).collect();
+
+        // A PostToolUse body, trimmed to what `applyHook` and `noteGitCommand` read.
+        // `session_id` differs from ours deliberately: the header is what routes it.
+        let payload = concat!(
+            r#"{"session_id":"claude-rotated","hook_event_name":"PostToolUse","#,
+            r#""cwd":"/tmp/x","tool_name":"Bash","tool_input":{"command":"git checkout -b feat"}}"#
+        );
+
+        // Spawned with no shell in between — the argv Claude Code itself would build.
+        let mut child = std::process::Command::new(&prog)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("could not spawn the hook binary {prog}: {e}"));
+        let mut sin = child.stdin.take().expect("child stdin");
+        sin.write_all(payload.as_bytes()).expect("pipe the payload in");
+        drop(sin); // EOF is what `--data-binary @-` waits for
+        let out = child.wait_with_output().expect("wait for the hook command");
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        assert!(
+            out.status.success() && err.is_empty(),
+            "the hook argv did not run cleanly ({}):\n  {prog} {args:?}\n  {err}",
+            out.status
+        );
+        // `-o <null device>` is per-platform and easy to get backwards; a wrong one
+        // leaves the response body on stdout instead of discarding it.
+        assert!(out.stdout.is_empty(), "the hook must print nothing: {:?}", String::from_utf8_lossy(&out.stdout));
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the hook ran but nothing reached the telemetry server");
+        let ev: serde_json::Value = serde_json::from_str(&raw).expect("event payload should be json");
+        assert_eq!(ev["kind"], "hook");
+        assert_eq!(ev["data"]["session_id"], sid.as_str(), "the -H arg must route it to our launch id");
+        assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "the resume target must survive");
+        // A quote that survived into the value, or a body mangled in transit, lands
+        // here as a parse failure rather than as these fields.
+        assert_eq!(ev["data"]["hook_event_name"], "PostToolUse");
+        assert_eq!(ev["data"]["tool_input"]["command"], "git checkout -b feat");
 
         let _ = std::fs::remove_file(&path);
     }

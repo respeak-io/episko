@@ -20,7 +20,10 @@ use std::sync::Mutex;
 
 use tauri::State;
 
-use crate::platform::{augmented_path, norm_path, physical_cwd, sys_command};
+use crate::platform::{
+    augmented_path, kill_pid_tree, norm_path, path_holders, physical_cwd, remove_tree, sys_command,
+    PathHolder,
+};
 use crate::AppState;
 
 /// Create a git worktree with a new (or existing) branch off `repo_dir`.
@@ -326,7 +329,14 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
 fn same_path(a: &str, b: &str) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
+        // One side is gone — which is not an edge case here but the main event: a
+        // removed worktree is exactly a path that no longer resolves. With nothing to
+        // canonicalize against, compare the canonical *spelling* rather than the raw
+        // strings. Every path the frontend sends and every path git prints has been
+        // through `norm_path` already, so this changes no answer today; it stops the
+        // one caller that forgets from failing on a forward slash alone, and off
+        // Windows it is the identity this always was.
+        _ => norm_path(a) == norm_path(b),
     }
 }
 
@@ -380,24 +390,27 @@ fn remove_worktree_impl(
             summary: format!("{label} is locked — unlock it first"),
             output: String::new(),
             suggest: Some(format!("git worktree unlock \"{path}\" && git worktree remove \"{path}\"")),
+            ..Default::default()
         });
     }
 
     let out = git_run(git_cmd(repo_dir, &["worktree", "remove", path]), 30)?;
     if !out.status.success() {
-        // The folder was deleted by hand: nothing to remove, only an administrative
-        // record in .git/worktrees. `prune` is the operation git actually wants here,
-        // and it can't lose work — the tree is already gone.
-        if !std::path::Path::new(path).is_dir() {
-            let pruned = git_run(git_cmd(repo_dir, &["worktree", "prune"]), 15)?;
-            if pruned.status.success() {
-                return Ok(GitActionResult {
-                    ok: true,
-                    summary: format!("Pruned {label} — its folder was already gone"),
-                    output: String::new(),
-                    suggest: None,
-                });
-            }
+        // **A non-zero exit does NOT mean nothing happened**, and assuming it did is
+        // the bug this branch exists to answer. `git worktree remove` deletes the
+        // checkout directory first and unregisters it second, and git's own source
+        // continues past a failed delete because "there's no going back from here" —
+        // so a folder it could not remove (Windows: any process holding it) leaves the
+        // worktree *already unregistered* and exit 255. Reporting that as a refusal
+        // and handing over `--force` produced the one command guaranteed to fail:
+        // `fatal: '<path>' is not a working tree`.
+        //
+        // So ask the only question that separates the two states. Note this is asked
+        // even when the folder is gone: a hand-deleted checkout also lands here on
+        // older gits (newer ones exit 0 and never reach this), and "not registered
+        // any more" covers both without a second special case.
+        if !still_registered(repo_dir, path) {
+            return finish_removal(repo_dir, path, branch, delete_branch, &label);
         }
         let combined = [
             String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -409,36 +422,176 @@ fn remove_worktree_impl(
             summary: first,
             output: combined,
             suggest: Some(format!("git worktree remove --force \"{path}\"")),
+            ..Default::default()
         });
     }
 
+    finish_removal(repo_dir, path, branch, delete_branch, &label)
+}
+
+/// Everything that follows a worktree leaving git's records, shared by the clean exit
+/// and the partial one — because from here they are the same situation: the worktree
+/// is gone, and what is left is a folder that may or may not still be on disk and a
+/// branch that may or may not be worth deleting.
+fn finish_removal(
+    repo_dir: &str,
+    path: &str,
+    branch: &str,
+    delete_branch: bool,
+    label: &str,
+) -> Result<GitActionResult, String> {
+    let stranded = ensure_folder_gone(path);
+
     // Best-effort: drop the now-empty `.cc-worktrees/<repo>/` parent so the sibling
-    // tree doesn't accumulate empty dirs. `remove_dir` only succeeds when empty.
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        let _ = std::fs::remove_dir(parent);
+    // tree doesn't accumulate empty dirs. `remove_dir` only succeeds when empty, which
+    // is also the whole guard — a checkout the user put somewhere of their own has a
+    // parent full of their things, and this cannot touch it. Skipped while the folder
+    // is stranded, when the parent is by definition not empty.
+    if stranded.is_none() {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 
-    if delete_branch && !branch.is_empty() && branch != "(detached)" {
+    let mut res = if delete_branch && !branch.is_empty() && branch != "(detached)" {
         // Safe-delete only: `git branch -d` refuses an unmerged branch. If it does,
         // the worktree is already gone — report success and offer the force command.
         let del = git_run(git_cmd(repo_dir, &["branch", "-d", branch]), 15)?;
         if del.status.success() {
-            return Ok(GitActionResult {
+            GitActionResult { ok: true, summary: format!("Removed worktree and branch {branch}"), ..Default::default() }
+        } else {
+            GitActionResult {
                 ok: true,
-                summary: format!("Removed worktree and branch {branch}"),
-                output: String::new(),
-                suggest: None,
-            });
+                summary: format!("Removed worktree — kept branch {branch} (not fully merged)"),
+                output: String::from_utf8_lossy(&del.stderr).trim().to_string(),
+                suggest: Some(format!("git branch -D \"{branch}\"")),
+                ..Default::default()
+            }
         }
-        return Ok(GitActionResult {
-            ok: true,
-            summary: format!("Removed worktree — kept branch {branch} (not fully merged)"),
-            output: String::from_utf8_lossy(&del.stderr).trim().to_string(),
-            suggest: Some(format!("git branch -D \"{branch}\"")),
-        });
-    }
+    } else {
+        GitActionResult { ok: true, summary: format!("Removed worktree {label}"), ..Default::default() }
+    };
 
-    Ok(GitActionResult { ok: true, summary: format!("Removed worktree {label}"), output: String::new(), suggest: None })
+    if let Some(s) = stranded {
+        // `ok` stays true, and that is the honest answer rather than a convenient one:
+        // the worktree IS removed, the roster HAS changed, and the caller must refresh
+        // exactly as it would on a clean run. What is left is a directory — a separate
+        // problem, carried in a separate field, with its own repair.
+        res.summary = format!("Removed {label} — its folder is still on disk");
+        res.suggest = None;
+        res.stranded = Some(s);
+    }
+    Ok(res)
+}
+
+/// Is `path` still one of `repo_dir`'s worktrees? The question `remove_worktree_impl`
+/// has to ask after a failure, and deliberately a fresh listing rather than a re-use
+/// of the one taken at the top — the whole point is that git may have changed it.
+///
+/// Unknown counts as *still registered*: if the listing itself failed we have learned
+/// nothing, and the old behaviour (report git's refusal, offer the force command) is
+/// the right thing to fall back to.
+fn still_registered(repo_dir: &str, path: &str) -> bool {
+    let Ok(out) = git_run(git_cmd(repo_dir, &["worktree", "list", "--porcelain"]), 15) else {
+        return true;
+    };
+    if !out.status.success() {
+        return true;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|p| same_path(&norm_path(p), path))
+}
+
+/// What is left of a removed worktree when its directory would not delete.
+#[derive(serde::Serialize, Debug, Default)]
+pub(crate) struct Stranded {
+    /// The checkout directory still on disk.
+    path: String,
+    /// The first path inside it that refused — what the holder probe was run against.
+    stuck: String,
+    /// The OS's own reason, for the debug log and for the case with no holders at all.
+    reason: String,
+    holders: Vec<PathHolder>,
+}
+
+/// Delete the checkout directory, and if it won't go, say who is keeping it.
+///
+/// Retried before anything is reported, because the commonest holder by far is a
+/// process that was asked to die moments ago and whose handles outlive the signal by
+/// milliseconds — an answer worth having before the UI says a word. Deliberately short
+/// and bounded: past a second this is no longer a race, it is somebody's editor.
+fn ensure_folder_gone(path: &str) -> Option<Stranded> {
+    let p = std::path::Path::new(path);
+    let mut last = None;
+    for wait in [90u64, 200, 400] {
+        match remove_tree(p) {
+            Ok(()) => return None,
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(wait));
+    }
+    // One final attempt after the last backoff, so the longest wait is not wasted.
+    if remove_tree(p).is_ok() {
+        return None;
+    }
+    let (stuck, err) = last?;
+    let stuck = norm_path(&stuck.to_string_lossy());
+    Some(Stranded {
+        path: norm_path(path),
+        holders: path_holders(path, Some(&stuck)),
+        reason: err.to_string(),
+        stuck,
+    })
+}
+
+/// The outcome of a purge attempt: whether the folder went, and if not, the refreshed
+/// picture of what is still holding it.
+#[derive(serde::Serialize, Debug, Default)]
+pub(crate) struct PurgeResult {
+    gone: bool,
+    stranded: Option<Stranded>,
+}
+
+/// Second half of a stranded removal: terminate the processes named in `kill`, then
+/// try the folder again. Only ever reached from a `Stranded` the app just produced.
+///
+/// Two guards, and neither is ceremony. **The holders are re-probed before anything is
+/// killed**, and only a pid still holding this folder is touched — the list came from
+/// an earlier answer, pids are reused, and killing a stale one means killing whatever
+/// inherited its number. And the path must be at least two levels deep, so a bug that
+/// arrives here with a drive root or a bare `C:\foo` deletes nothing.
+#[tauri::command(async)]
+pub(crate) fn purge_worktree_folder(path: String, kill: Vec<u32>) -> Result<PurgeResult, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(PurgeResult { gone: true, stranded: None });
+    }
+    if !p.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+    if p.parent().and_then(|x| x.parent()).is_none() {
+        return Err(format!("refusing to purge a top-level path: {path}"));
+    }
+    let Some(s) = ensure_folder_gone(&path) else {
+        return Ok(PurgeResult { gone: true, stranded: None });
+    };
+    let us = std::process::id();
+    let killed = s
+        .holders
+        .iter()
+        .filter(|h| h.pid != us && kill.contains(&h.pid))
+        .filter(|h| kill_pid_tree(h.pid))
+        .count();
+    if killed == 0 {
+        return Ok(PurgeResult { gone: false, stranded: Some(s) });
+    }
+    log::info!("purge {path} · killed {killed} holder(s)");
+    // A tree kill is still only a signal; `ensure_folder_gone` retries, which is what
+    // actually covers the gap between the kill returning and the handles closing.
+    let after = ensure_folder_gone(&path);
+    Ok(PurgeResult { gone: after.is_none(), stranded: after })
 }
 
 /// The tip commit of a checkout or a ref — what the new-session dialog's detail
@@ -523,6 +676,7 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
             summary: "uncommitted changes — switching would carry them across".into(),
             output: String::new(),
             suggest: Some(format!("git switch \"{branch}\"")),
+            ..Default::default()
         });
     }
 
@@ -531,8 +685,7 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         return Ok(GitActionResult {
             ok: true,
             summary: format!("Switched to {branch}"),
-            output: String::new(),
-            suggest: None,
+            ..Default::default()
         });
     }
     let combined = [
@@ -545,6 +698,7 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         summary: first,
         output: combined,
         suggest: Some(format!("git switch \"{branch}\"")),
+        ..Default::default()
     })
 }
 
@@ -575,8 +729,7 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
         return Ok(GitActionResult {
             ok: true,
             summary: format!("Deleted branch {branch}"),
-            output: String::new(),
-            suggest: None,
+            ..Default::default()
         });
     }
     let combined = [
@@ -589,6 +742,7 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
         summary: first,
         output: combined,
         suggest: Some(format!("git branch -D \"{branch}\"")),
+        ..Default::default()
     })
 }
 
@@ -821,7 +975,7 @@ pub(crate) fn git_branch(workdir: String) -> Option<String> {
     if b.is_empty() || b == "HEAD" { None } else { Some(b) }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub(crate) struct HeadInfo {
     /// Branch name when on a branch; None when HEAD is detached.
     branch: Option<String>,
@@ -829,31 +983,109 @@ pub(crate) struct HeadInfo {
     short: String,
 }
 
+/// The two git directories a working directory answers to, resolved without
+/// spawning git. `.0` is the **per-worktree** dir (where `HEAD` lives), `.1` the
+/// **common** dir (where `refs/` and `packed-refs` live). They are the same path
+/// for a main checkout and differ for a linked worktree, which is the whole reason
+/// this returns a pair: a worktree has its own `HEAD` but shares every branch ref.
+///
+/// Mirrors `repo_root_of`'s walk — including its refusal to search past a `.git`
+/// file whose target is gone (a pruned worktree is "not a repository" to git, and
+/// following the dangling pointer would answer for a repo that has forgotten it).
+fn git_dirs(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let phys = physical_cwd(cwd);
+    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
+    while let Some(d) = dir {
+        let dot = d.join(".git");
+        match std::fs::metadata(&dot) {
+            Ok(m) if m.is_dir() => return Some((dot.clone(), dot)),
+            Ok(_) => {
+                let link = std::fs::read_to_string(&dot).ok()?;
+                let target = link.trim().strip_prefix("gitdir:")?.trim();
+                let abs = d.join(target);
+                if !abs.exists() {
+                    return None;
+                }
+                let flat = abs.to_string_lossy().replace('\\', "/");
+                // …/<repo>/.git/worktrees/<name> → common is …/<repo>/.git
+                let common = match flat.rfind("/.git/worktrees/") {
+                    Some(i) => std::path::PathBuf::from(format!("{}/.git", &flat[..i])),
+                    // A submodule's `…/.git/modules/<name>` is its own everything.
+                    None => abs.clone(),
+                };
+                return Some((abs, common));
+            }
+            Err(_) => dir = d.parent(),
+        }
+    }
+    None
+}
+
+/// Resolve a ref name (`refs/heads/main`) to its full sha, reading the loose file
+/// first and falling back to `packed-refs`. `None` means the ref does not exist —
+/// which for HEAD's target is exactly the unborn-branch case (`git init`, no commit
+/// yet), and callers depend on telling that apart from a detached HEAD.
+fn resolve_ref(common: &std::path::Path, name: &str) -> Option<String> {
+    let sha = |s: &str| {
+        let t = s.trim();
+        // A loose ref may itself be symbolic; refs that deep are vanishingly rare
+        // and git resolves them recursively, so decline rather than guess.
+        (t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| t.to_string())
+    };
+    if let Ok(t) = std::fs::read_to_string(common.join(name)) {
+        if let Some(s) = sha(&t) {
+            return Some(s);
+        }
+    }
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    packed.lines().find_map(|l| {
+        let l = l.trim();
+        if l.starts_with('#') || l.starts_with('^') {
+            return None;
+        }
+        let (s, r) = l.split_once(' ')?;
+        (r.trim() == name).then(|| sha(s)).flatten()
+    })
+}
+
 /// Live HEAD of a working directory, so the UI can show the branch that is
 /// *actually* checked out rather than the one a worktree was created with (a
-/// worktree shows whatever branch is checked out, and that can change). Returns
-/// None if the dir isn't a git repo. LC_ALL=C keeps output locale-independent.
+/// worktree shows whatever branch is checked out, and that can change).
+///
+/// **Read off the filesystem, with no `git` process at all** — the same trade
+/// `worktree_heads` and `repo_root_of` already make, and for a sharper reason: this
+/// is on the 4s branch poll, once per open session. It used to cost *two* spawns
+/// each (`rev-parse --short HEAD`, then `symbolic-ref`), so a three-session fleet
+/// spent 1.5 git processes per second re-reading a file — and on Windows, where
+/// process creation dominates, that was a measurable share of the app's whole load.
+///
+/// Returns `None` for anything that isn't a repo **with at least one commit**, and
+/// the "with a commit" half is load-bearing rather than incidental: `projmenu.ts`
+/// uses exactly that to drop the *Commit graph…* row for a freshly `git init`ed
+/// folder. An unborn HEAD still names a branch in `.git/HEAD`, so it is only the
+/// missing ref that distinguishes it — which is why `resolve_ref` failing is
+/// treated as "no repo" and not as "detached".
 #[tauri::command(async)]
 pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
-    let git = |args: &[&str]| {
-        sys_command("git")
-            .env("LC_ALL", "C")
-            .arg("-C").arg(&workdir)
-            .args(args)
-            .output()
+    let (gitdir, common) = git_dirs(&workdir)?;
+    let text = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let t = text.trim();
+    let (branch, full) = match t.strip_prefix("ref:") {
+        Some(r) => {
+            let name = r.trim();
+            // Unborn: HEAD names a branch that has no commit, so there is no ref to
+            // resolve. git calls that "not a repository with a HEAD", and so do we.
+            let sha = resolve_ref(&common, name)?;
+            (Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string()), sha)
+        }
+        // Detached: HEAD holds the sha itself.
+        None if t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()) => (None, t.to_string()),
+        None => return None,
     };
-    let head = git(&["rev-parse", "--short", "HEAD"]).ok()?;
-    if !head.status.success() {
-        return None;
-    }
-    let short = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    // symbolic-ref succeeds only when on a branch; fails on detached HEAD.
-    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    Some(HeadInfo { branch, short })
+    // Fixed at 7 rather than reproducing git's auto-abbreviation (`core.abbrev`
+    // widens with repo size). This is only ever shown as the "(detached @…)" label,
+    // where a stable prefix is what the display wants; nothing compares it to git's.
+    Some(HeadInfo { branch, short: full.chars().take(7).collect() })
 }
 
 /// The same answer as `git_repo_info`'s first half — the repo's MAIN worktree root —
@@ -1364,7 +1596,7 @@ pub(crate) fn git_commit_message(workdir: String, sha: String) -> Result<String,
     Ok(msg.to_string())
 }
 
-#[derive(serde::Serialize, Debug)]
+#[derive(serde::Serialize, Debug, Default)]
 pub(crate) struct GitActionResult {
     ok: bool,
     /// One line for the toast.
@@ -1374,6 +1606,13 @@ pub(crate) struct GitActionResult {
     /// Set when the action can't be finished safely from a button. The UI offers to
     /// open a terminal prefilled with this, rather than leaving the user guessing.
     suggest: Option<String>,
+    /// `remove_worktree` only, and only in the one state git can leave behind: the
+    /// worktree is unregistered — so this is `ok: true` and the roster really did
+    /// change — but its directory is still on disk because something has it open.
+    /// Neither `ok` alone can express that, which is why it is a field and not a
+    /// wording; `purge_worktree_folder` is what acts on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stranded: Option<Stranded>,
 }
 
 /// Fetch / pull / push for a session's working directory — the "git fluff" a
@@ -1408,6 +1647,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
             summary: summary.to_string(),
             output: String::new(),
             suggest: Some(suggest.to_string()),
+            ..Default::default()
         })
     };
 
@@ -1437,8 +1677,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                 return Ok(GitActionResult {
                     ok: true,
                     summary: "already up to date".into(),
-                    output: String::new(),
-                    suggest: None,
+                    ..Default::default()
                 });
             }
             vec!["pull", "--ff-only"]
@@ -1465,8 +1704,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                 return Ok(GitActionResult {
                     ok: true,
                     summary: "nothing to push".into(),
-                    output: String::new(),
-                    suggest: None,
+                    ..Default::default()
                 });
             }
             vec!["push"]
@@ -1489,7 +1727,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
             "pull" => format!("pulled {behind} commit{}", if behind == 1 { "" } else { "s" }),
             _ => format!("pushed {ahead} commit{}", if ahead == 1 { "" } else { "s" }),
         };
-        return Ok(GitActionResult { ok: true, summary, output: combined, suggest: None });
+        return Ok(GitActionResult { ok: true, summary, output: combined, ..Default::default() });
     }
 
     // git said no for a reason we didn't predict (local edits in the way, a hook
@@ -1501,6 +1739,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
         summary: first,
         output: combined,
         suggest: Some(format!("git {}", args.join(" "))),
+        ..Default::default()
     })
 }
 
@@ -2081,6 +2320,92 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// `git_head` reads `.git` directly instead of spawning git twice per session per
+    /// poll, so — exactly as with `repo_root_of` — the test that matters is a
+    /// *substitution* one: every case is asserted against what git itself answers, not
+    /// against a restatement of the implementation.
+    ///
+    /// The cases are the ones that actually differ in the file layout. An unborn HEAD
+    /// is the subtle one: `.git/HEAD` names a branch whether or not any commit exists,
+    /// so only the missing ref tells the two apart — and `projmenu.ts` relies on the
+    /// `None` to drop its *Commit graph…* row for a fresh `git init`.
+    #[test]
+    fn git_head_matches_git_without_spawning_it() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+
+        // Ask git the same question, the way git_head used to.
+        let via_git = |dir: &Path| -> Option<(Option<String>, String)> {
+            let rp = Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap();
+            if !rp.status.success() {
+                return None; // no repo, or an unborn HEAD
+            }
+            let full = String::from_utf8_lossy(&rp.stdout).trim().to_string();
+            let sr = Command::new("git").current_dir(dir)
+                .args(["symbolic-ref", "--quiet", "--short", "HEAD"]).output().unwrap();
+            let branch = sr.status.success()
+                .then(|| String::from_utf8_lossy(&sr.stdout).trim().to_string())
+                .filter(|s| !s.is_empty());
+            Some((branch, full))
+        };
+        let agree = |dir: &Path, what: &str| {
+            let ours = git_head(dir.to_string_lossy().to_string());
+            match (via_git(dir), &ours) {
+                (None, None) => {}
+                (Some((branch, full)), Some(h)) => {
+                    assert_eq!(h.branch, branch, "branch disagreed with git ({what})");
+                    assert!(full.starts_with(&h.short) && !h.short.is_empty(),
+                        "short {:?} is not a prefix of HEAD {full} ({what})", h.short);
+                }
+                (g, o) => panic!("git said {:?}, we said {:?} ({what})", g.map(|x| x.0), o.as_ref().map(|x| &x.branch)),
+            }
+            ours
+        };
+
+        // Unborn HEAD: a repo, but no commit — must be None, not "detached".
+        assert!(agree(&repo, "unborn").is_none(), "a repo with no commits has no HEAD to report");
+
+        let commit = |msg: &str| {
+            git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        };
+        commit("init");
+
+        // On a branch, from the checkout and from a subdirectory of it.
+        assert_eq!(agree(&repo, "main").unwrap().branch.as_deref(), Some("main"));
+        let sub = repo.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(agree(&sub, "subdir").unwrap().branch.as_deref(), Some("main"));
+
+        // Packed refs: `pack-refs` deletes the loose file, so the ref now resolves
+        // only via `packed-refs` — the fallback that would otherwise go untested.
+        git(&repo, &["pack-refs", "--all"]);
+        assert!(!repo.join(".git/refs/heads/main").exists(), "fixture must have packed the ref away");
+        assert_eq!(agree(&repo, "packed").unwrap().branch.as_deref(), Some("main"));
+
+        // A linked worktree has its OWN HEAD but shares the repo's refs — the case
+        // the (gitdir, common) split exists for.
+        let wt = wt_root(&repo).join("side");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        assert!(wt.join(".git").is_file(), "fixture must be a linked worktree, not a clone");
+        assert_eq!(agree(&wt, "worktree").unwrap().branch.as_deref(), Some("side"));
+        assert_eq!(agree(&repo, "repo beside a worktree").unwrap().branch.as_deref(), Some("main"),
+            "the main checkout keeps its own HEAD");
+
+        // Detached HEAD: branch is None and `short` is what labels the pane.
+        git(&repo, &["checkout", "-q", "--detach"]);
+        let d = agree(&repo, "detached").unwrap();
+        assert!(d.branch.is_none(), "a detached HEAD has no branch");
+        assert_eq!(d.short.len(), 7, "the detached label needs a short sha: {d:?}");
+
+        // Not a repository at all.
+        assert!(git_head(std::env::temp_dir().to_string_lossy().to_string()).is_none());
+
+        let _ = std::fs::remove_dir_all(wt_root(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     /// One repo reached by two spellings must resolve to ONE root, because the sidebar
     /// groups projects by exact string equality — two spellings mean a repo that no
     /// longer merges with its own worktrees.
@@ -2212,6 +2537,19 @@ canonicalizehostname false
 
         git(Path::new(&made), &["checkout", "-q", "--detach"]);
         assert_eq!(worktree_heads(repo.clone()).iter().find(|w| !w.is_main).unwrap().branch, "(detached)");
+
+        // A checkout whose folder has gone stays LISTED, flagged `exists: false`. Both
+        // halves matter and they pull in opposite directions: git keeps its record in
+        // `.git/worktrees` until pruned, so dropping the row would hide the one thing
+        // that still needs cleaning up — while treating it as a place to work would
+        // spawn a PTY into nothing. The frontend reads this flag to decide between
+        // "remove this worktree" and "prune git's record of it", which is the difference
+        // between a destructive warning and a housekeeping one.
+        std::fs::remove_dir_all(&made).expect("hand-delete the checkout");
+        let heads = worktree_heads(repo.clone());
+        let linked = heads.iter().find(|w| !w.is_main).expect("still listed once pruned-pending");
+        assert!(!linked.exists, "the folder is gone: {linked:?}");
+        assert!(heads.iter().find(|w| w.is_main).expect("main").exists, "the repo itself is fine");
 
         // A directory that is not a repo answers empty rather than erroring.
         let plain = scratch_dir();
@@ -2835,15 +3173,97 @@ canonicalizehostname false
             "locked handoff should unlock, not force: {r:?}");
         assert!(Path::new(&locked).exists(), "locked worktree must survive the refusal");
 
-        // Hand-deleted folder: pruned, and it leaves the listing.
+        // Hand-deleted folder: it leaves the listing, whichever way git gets there.
+        // Modern git removes a vanished checkout with exit 0; older gits fail and are
+        // caught by the `still_registered` branch. Assert the outcome, not the route.
         let r = remove_worktree_impl(&repo, &gone, "gone-wt", false).expect("call returns");
-        assert!(r.ok, "a vanished worktree should prune cleanly: {r:?}");
+        assert!(r.ok, "a vanished worktree should remove cleanly: {r:?}");
+        assert!(r.stranded.is_none(), "nothing is on disk to strand: {r:?}");
         assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "gone-wt"),
-            "gone-wt should be pruned out of the listing");
+            "gone-wt should be out of the listing");
 
         git(&dir, &["worktree", "unlock", &locked]);
         let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The bug this whole path exists for.** `git worktree remove` deletes the
+    /// checkout directory first and unregisters it second, and continues past a failed
+    /// delete because — in git's own words — "there's no going back from here". So on
+    /// Windows, where a directory any process holds open cannot be deleted, a non-zero
+    /// exit leaves the worktree *already gone from git* with its folder still on disk.
+    ///
+    /// Read as a plain failure, that produced the one handoff guaranteed to fail:
+    /// `git worktree remove --force <path>` → `fatal: '<path>' is not a working tree`.
+    /// So the three assertions here are the three halves of the answer — it is not a
+    /// refusal, it offers no force command, and it says what is left over.
+    ///
+    /// Windows-only because it is a Windows-only behaviour: POSIX unlinks a directory
+    /// out from under its holders and this state cannot arise.
+    ///
+    /// The share mode is the fixture's whole trick, and it has to be exactly this.
+    /// Rust's `File::open` passes all three share flags, so a plain open is deletable
+    /// and reproduces nothing; denying *everything* (`share_mode(0)`) overshoots the
+    /// other way — git can no longer read the file for its own cleanliness check, so
+    /// it refuses with "contains modified or untracked files" and never reaches the
+    /// delete this test is about. `READ | WRITE` (no `DELETE`) is the real-world shape:
+    /// an editor holding a file open, which git reads happily and Windows will not
+    /// unlink.
+    #[cfg(windows)]
+    #[test]
+    fn a_worktree_whose_folder_is_held_is_removed_not_refused() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ_WRITE: u32 = 0x0000_0001 | 0x0000_0002;
+
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        // The checkout needs a file to hold; a repo of empty commits has none.
+        std::fs::write(dir.join("keep.txt"), "content\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false",
+                    "commit", "-q", "-m", "base"]);
+        let repo = dir.to_str().unwrap().to_string();
+        let wt = create_worktree(repo.clone(), "held-wt".into(), None).expect("held worktree");
+
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ_WRITE) // no FILE_SHARE_DELETE — the whole point
+            .open(Path::new(&wt).join("keep.txt"))
+            .expect("hold a file in the checkout");
+
+        let r = remove_worktree_impl(&repo, &wt, "held-wt", false).expect("call returns");
+        assert!(r.ok, "the worktree IS removed — reporting a refusal is the bug: {r:?}");
+        assert!(r.suggest.is_none(), "--force cannot work once git has unregistered it: {r:?}");
+        let s = r.stranded.as_ref().expect("the folder is still on disk, and must be reported");
+        assert!(!s.reason.is_empty(), "the OS's own reason travels with it: {s:?}");
+        assert!(Path::new(&wt).exists(), "the folder really is still there");
+        assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "held-wt"),
+            "git has already unregistered it — that is what makes --force fail");
+
+        // Release the handle and the repair goes through with nothing to kill: the
+        // holder list is what a purge acts on, not what it needs to succeed.
+        drop(held);
+        let p = purge_worktree_folder(wt.clone(), vec![]).expect("purge returns");
+        assert!(p.gone && p.stranded.is_none(), "an unheld folder purges cleanly: {p:?}");
+        assert!(!Path::new(&wt).exists(), "the folder should be gone now");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard on the destructive command. `purge_worktree_folder` deletes a tree and
+    /// kills processes, so the one thing it must never accept is a path shallow enough
+    /// to be somebody's whole drive — a bug upstream of it must not become an erased
+    /// disk. The depth rule is crude on purpose: it cannot be argued with.
+    #[test]
+    fn purge_refuses_a_top_level_path() {
+        let root = if cfg!(windows) { "C:\\" } else { "/" };
+        assert!(purge_worktree_folder(root.to_string(), vec![]).is_err(), "a drive root must be refused");
+        // A path that does not exist is not an error — it is the outcome being asked
+        // for, and a retry after a successful purge lands here.
+        let missing = scratch_dir().join("never-created");
+        let r = purge_worktree_folder(missing.to_string_lossy().to_string(), vec![]).expect("call returns");
+        assert!(r.gone, "nothing to delete counts as gone: {r:?}");
     }
 
     /// The detail pane's HEAD line. Parsing is NUL-separated so a subject containing

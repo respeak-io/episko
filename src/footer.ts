@@ -16,7 +16,7 @@ import { esc, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecast5h, forecast7d, rl, type Forecast } from "./rl";
 import { phaseText, statusKey, type Engine, type Sess } from "./types";
-import { setTokenScanning, tokenScanning, usageRow } from "./usageview";
+import { costPopHtml, setTokenScanning, tokenScanning, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
 import { renderSettings, setTab, settingsOpen } from "./settings";
 import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
@@ -25,7 +25,8 @@ import {
   availEngines, engineDef, sessions, setTermEngine, termEngine,
 } from "./state";
 import {
-  setTokenDays, todayKey, tokenDays, tokenScanAt, usage, type DayUsage,
+  daySpend, setTokenDays, todayKey, tokenDays, tokenScanAt, usage, usageDetail,
+  type DayUsage,
 } from "./usage";
 
 // Two things the exclusive-menu rule and the reactor need that this module does not
@@ -44,6 +45,9 @@ export function renderFoot() {
   paintFootRl("fRl7", "fRl7Reset", forecast7d());
   $("fEngine").textContent = engineDef(termEngine).label;
   if ($("usagePop").classList.contains("show")) renderUsagePop();
+  // Same rule as the usage popup: repaint only while it is actually on screen, so the
+  // day's spend ticks up under the pointer instead of going stale the moment it opens.
+  if ($("costPop").classList.contains("show")) renderCostPop();
 }
 // Colour the footer % by its forecast (not its raw level), and show a muted
 // countdown to that window's reset beside it — see the forecast section above.
@@ -76,6 +80,27 @@ function openUsagePop() {
 }
 export function closeUsagePop() { $("usagePop").classList.remove("show"); }
 
+// ---------- today's spend, split (footer "today $x.xx") ----------
+// The limits segment beside it has opened a detail popover since it shipped, and the
+// spend — the one number on the bar people actually chase — was inert. It has the same
+// question behind it ("where is that going?") and the answer is already stored:
+// `cc-usage-detail` carries the per-project split, and per-session since this shipped.
+function renderCostPop() {
+  const live = new Set([...sessions.values()].map((s) => s.id));
+  $("costPop").innerHTML = costPopHtml(daySpend(usageDetail, todayKey(), usage[todayKey()] || 0), live);
+}
+function openCostPop() {
+  const r = $("fCostSeg").getBoundingClientRect();
+  const pop = $("costPop");
+  renderCostPop();
+  closeFootMenus("costPop");
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 268)) + "px";
+  pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  pop.style.top = "auto";
+  pop.classList.add("show");
+}
+export function closeCostPop() { $("costPop").classList.remove("show"); }
+
 
 // Scan the transcripts for token totals, at most once per 10 min (a full read of
 // the recent corpus). Async + cached, so the tab paints instantly from localStorage
@@ -98,6 +123,7 @@ export function closeFootMenus(keep?: string) {
   const menus: [string, () => void][] = [
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
+    ["costPop", closeCostPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }
@@ -111,6 +137,9 @@ const SHORTCUTS: { label: string; chords: string[][] }[] = [
   { label: "Command palette", chords: [["⌘", "K"]] },
   { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
   { label: "Open a terminal here", chords: [["⌘", "T"]] },
+  { label: "Run the default build task", chords: [["⌘", "⇧", "B"]] },
+  { label: "Run the default test task", chords: [["⌘", "⇧", "T"]] },
+  { label: "Run a task…", chords: [["⌘", "⇧", "R"]] },
   { label: "Session history", chords: [["⌘", "⇧", "H"]] },
   { label: `Reveal this folder in ${FILE_MANAGER}`, chords: [["⌘", "⏎"]] },
   { label: "Toggle sidebar", chords: [["⌘", "B"]] },
@@ -216,4 +245,5 @@ $("attnBadge").addEventListener("click", () => {
 
 $("fEngineSeg").addEventListener("click", (e) => { e.stopPropagation(); $("enginePop").classList.contains("show") ? closeEnginePop() : openEnginePopover(); });
 $("fUsageSeg").addEventListener("click", (e) => { e.stopPropagation(); $("usagePop").classList.contains("show") ? closeUsagePop() : openUsagePop(); });
+$("fCostSeg").addEventListener("click", (e) => { e.stopPropagation(); $("costPop").classList.contains("show") ? closeCostPop() : openCostPop(); });
 $("fShortSeg").addEventListener("click", (e) => { e.stopPropagation(); $("shortPop").classList.contains("show") ? closeShortPop() : openShortPop(); });

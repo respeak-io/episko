@@ -13,6 +13,129 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Windows: a session no longer launches a PowerShell for every hook.** Each lifecycle
+  event — every tool call, every turn, every notification — used to start a whole
+  PowerShell just to reach `curl`, about 220ms and a second process each time, per
+  session. Claude Code can now be handed the command and its arguments directly, with no
+  shell in between, so a hook is one short-lived `curl` and nothing else. The statusLine
+  still needs a shell and is unchanged.
+! **The branch shown beside a session cost two `git` processes a session, every four
+  seconds.** With a few sessions open that was a git launched roughly twice a second to
+  re-read a file that hadn't changed — enough, on Windows, where starting a process is
+  the expensive part, to be a real share of what the machine was doing. It reads `.git`
+  directly now, like the worktree roster beside it already did. Nothing on screen
+  changes.
++ **Running a task that takes parameters no longer costs a dialog.** *Run* now starts it
+  with what it already knows — the values you gave last time, or the definition's own
+  defaults — and a `⋯` button beside the row (⌥⏎, or *⋯ Parameters* on a finished run)
+  is there for the times you want to change them. The row's tooltip shows the command as
+  it will actually run, so nothing is filled in behind your back, and the prompt still
+  opens by itself when a value genuinely has nowhere to come from.
+! **A `just` recipe taking `*args` stops asking for them.** A `*name` parameter takes
+  zero or more arguments, so `just saas-start` is a complete command — but it was read as
+  a required value and put a prompt in front of every run. `+name`, which does want at
+  least one, is unchanged. Such a recipe can also now be a run-on-stop rule.
+! **The parameter prompt looks like the rest of the app.** Its Cancel button was drawing
+  as a raw platform button, and the pair sat flush against the field above them.
+
+~ **The menu-bar menu shows status in colour, and groups sessions by project.** Every
+  row used to be one long string — glyph, project, branch and status — and a menu item's
+  text is always drawn in the menu's own colour, so `◆` (waiting on you) and `✕` (the
+  turn died) arrived the same grey as *Quit*: the two states you open that menu for were
+  the two it could not show. The double spaces meant to line the columns up did nothing
+  either, the menu font being proportional. Each session now carries its status as a
+  real coloured icon in the sidebar's own vocabulary — amber ●, green ✓, pink ◆, red ✕,
+  hollow ○ idle — under a heading naming its project, so the row itself is just the
+  branch. The colours are read from the app's stylesheet rather than restated, so they
+  cannot drift from the sidebar's.
+
+! **Today's disk figure is today's, rather than last night's arriving late.** The daily
+  I/O rollup credited a reading to the day the *poll* happened, and the poll only runs
+  while a session is on stage — so a stretch with the dashboard up, or the window in the
+  background, went unsampled and the next reading dropped the whole gap on whichever day
+  it landed in. Across a midnight that meant a full evening of churn appearing as a
+  morning's work: 530MB reported on a day that had done about 25MB, while the evening
+  that earned it showed 54MB. An increment measured across a boundary is now spread over
+  the days it actually covers, and a minute-by-minute heartbeat keeps the window short
+  even with nothing on stage. The heartbeat reads only the counters — no `git` call
+  beside it, and no more writing than before, because a disk meter that churns the disk
+  is measuring itself.
+
+! **Starting an agent on an issue now actually claims it.** *Claim & start* has never
+  written anything to GitHub. The call was one argument short, and a call that is one
+  argument short is not a partial call — it is no call at all, so no assignee, no label
+  and no comment have landed since the feature shipped, behind a toast that cheerfully
+  said *Started on #232*. Handing the issue back when the agent stops was broken the same
+  way and even quieter. Both write what they say they will now, and a claim that only
+  half lands says so on screen instead of in a log nobody opens.
+! **A dispatched prompt is sent, rather than left sitting in the box.** The Enter that
+  submits it travelled in the same keystroke burst as the prompt itself — and Claude
+  reads a burst as a *paste*, where a carriage return is a new line, not a send. So the
+  agent you started was still waiting for you to press Enter, which is the one thing the
+  button exists to spare you.
+~ **The dispatch sheet no longer promises a worktree it does not make**, and *push the
+  branch now* is gone with it. Nothing ever implemented that switch — there was no branch
+  to push and the command never took the argument — and a control that cannot act is
+  worse than one that is missing, because flipping it reads as a decision taken.
+~ **The disk-I/O total looks like something you can click, and says why clicking it
+  sometimes changes nothing.** The row cycles three windows — today, this run, everything
+  recorded — but it was pixel-identical to the two static rows above it until you happened
+  to hover, so there was nothing to suggest it did anything. It now carries a `⟳`. And on
+  a machine's first day all three windows genuinely read the same, because the only day
+  recorded *is* today and all of it *was* this run: correct, and indistinguishable from a
+  dead button, so the row now says so in a line that disappears the moment they diverge.
+! **"Everything recorded" no longer claims zero on a machine that has recorded nothing.**
+  An empty rollup rendered as `0 B read · 0 B written`, which says the disk sat idle
+  rather than that nothing was kept — the distinction the per-project spend strip already
+  makes with a dash. It reads *not recorded* now.
+! **Removing a worktree on Windows no longer half-works.** `git worktree remove` deletes
+  the checkout folder *before* it unregisters the worktree, and carries on past a failed
+  delete — so on Windows, where a folder any process holds open cannot be deleted, a
+  removal would leave the worktree gone from git with its directory still on disk.
+  Episko read that as "nothing happened" and offered `git worktree remove --force`, the
+  one command that could no longer work: *fatal: is not a working tree*. It now asks
+  whether the worktree is still registered rather than guessing from the folder, and the
+  common cause is gone too — removing a checkout from a session waits for that session's
+  process to actually die, instead of deleting the folder it is still sitting in.
++ **When a folder won't delete, Episko says who is holding it.** Processes it started are
+  cleared without asking; anything else — an editor, a dev server, a terminal you left
+  open — is listed by name, with the choice to terminate them and retry or leave the
+  folder alone. Read-only files, which nothing is holding at all, are simply cleared.
+
+## 0.14.0 — 2026-08-03
+A day's work becomes something the team can read, and the app gets quieter underneath.
+
++ **The project dashboard says when it is still reading.** Opening a project costs a
+  scan of every transcript on the machine, three git calls and — on a GitHub repo — two
+  more `gh` calls after those, and none of it used to show. The strip led with a
+  confident row of zeros, the aside was simply short a card or two, and a folder still
+  being read looked exactly like a folder with nothing in it. Every wait now draws the
+  shape of what is coming: the strip, the timeline, the aside's cards, and the issues
+  card that arrives last. A day whose sentence is still being written says *writing*
+  beside the plain headline it already has, rather than hiding a line you can read to
+  promise a better one.
+! **Every project in the sidebar opens its dashboard, not just the ones with a session
+  running.** A folder Episko knew about only from a session in another terminal, only
+  from past sessions, or from a worktree whose session had ended simply did not respond
+  to the click — with nothing greyed out to say why, because the header was built without
+  the handler rather than with a disabled one. A worktree's header now opens its
+  *project's* dashboard, too: keyed to the checkout it matched no sessions at all, so the
+  timeline showed commits nobody appeared to have worked on. Checkouts are a card inside
+  the project, which is where they belong.
+! **Clicking a session from the project dashboard opens it.** Picking an external or a
+  restorable session while the dashboard was on screen changed the header, the inspector
+  and the accent colour but left the dashboard itself sitting on top of the transcript it
+  had just loaded, so the click read as recolouring the page. Leaving a dashboard you had
+  collapsed to its icon rail (⌘I) also carried the rail onto the next session, where it
+  held the wrong buttons — and closing the dashboard with nothing else running left a
+  blank stage instead of the "no sessions" card. All three were the same missing
+  handover: what takes the stage now says so in one place, and everything else steps
+  aside.
+! **The dashboard no longer shows the last project's answers under the new project's
+  name.** Clicking from one project to another kept the previous one's tier for a beat,
+  so a repository could flash *not a repo* — losing the worktree and commit-graph verbs
+  with it — and a GitHub project's issues could appear briefly under a folder that has
+  none.
 + **Projects can be grouped, and a group folds away.** Name a set of projects — *Work*,
   *Side* — and collapse it to a single line when you are not in it. Right-click a project
   for *Add to group…*, or drag it onto a group the way you already drag one to reorder;
@@ -36,6 +159,12 @@ Markers: `+` new · `~` changed · `!` fixed
   makes it cheaper than a summary per person, not dearer. Nothing in the app offered it
   before: the timeline now says so at its foot once there is something to share, and the
   inspector carries *Share the work log…* beside the other project verbs.
++ **↗ Jump to its terminal works on Windows.** Clicking an external session used to
+  answer *"focusing external sessions isn't supported on Windows yet"*; it now brings
+  the hosting window forward — Windows Terminal, VS Code, or a plain console alike. With
+  several windows of one app open it picks the one running that session rather than
+  whichever was last in front. macOS still lands on the exact tab; Windows has no tty to
+  aim at, so it lands on the window.
 ~ **Your own half never reaches a file.** It was one sentence blending both, which meant
   a committed line was whoever generated it last describing the part of the day they
   personally saw — and your session titles and daily spend went into a file that gets
@@ -52,6 +181,62 @@ Markers: `+` new · `~` changed · `!` fixed
   empty section behind for the next one, and every build shipped with that section
   showing in the sidebar — a row that opened on a heading, "not released yet", and
   nothing else.
+~ **The generated-by-a-model mark reads as a mark, not as the last word of the
+  sentence.** In the shared box it sits in the box's own bottom-right corner instead of
+  trailing the text wherever it happened to wrap.
+~ **The dashboard's right-hand column gets more room and takes a share of a wide
+  window.** Issues, checkouts and notes all put a title next to a number, and at a fixed
+  width every one of them was cut short while the timeline beside them — one capped
+  sentence per row — took the whole of any extra space.
+~ **Every action in the project inspector says what it does.** Four of them carried a
+  label and nothing else while the rest had a line underneath, so the list read as two
+  kinds of thing.
+! **Removing a worktree that is already gone says so up front.** A checkout merged and
+  deleted outside Episko still asked the full "the folder goes, its branch is deleted"
+  warning, and only after you clicked through did it report that the folder had been gone
+  all along. It now offers to prune git's leftover record of it instead, and says plainly
+  that nothing is lost.
+! **The hover bar of checkouts appears on projects with nothing running.** Resting on a
+  project revealed its idle worktrees only if something was already running in that repo —
+  and closing the last session made the rows disappear again. Episko now knows a
+  project's checkouts whether or not it is busy, which is exactly when you want to start
+  one.
+! **A permission decision can no longer be swallowed by a repaint.** The inspector was
+  rebuilt on every telemetry event — several times a second with a few agents running —
+  so a click on *Allow* that happened to span one of those rebuilds landed on nothing,
+  leaving the session waiting on an answer you had already given. The panel now repaints
+  only when something on it changed. The collapsed project rail is the same fix.
+~ **Episko writes to disk far less while it is just running.** Three records were
+  persisted on every status update from every session — roughly once a second on a busy
+  fleet, mostly rewriting bytes that hadn't changed, one of them 25× larger than the
+  figure it accompanied. The day's spend is still saved the instant it changes; the
+  breakdowns behind it are saved on a timer and flushed when you quit. Daily records are
+  also capped now instead of growing forever.
++ **The day's spend opens.** *today $x.xx* in the status bar is now a button, like the
+  limits beside it: it shows what the day cost, split by project and by session, and
+  clicking a session that is still running jumps to it. Whatever the split can't account
+  for is a row of its own rather than quietly missing, so the popover can never read
+  lower than the segment that opened it.
+~ **The inspector's read/written figure says which window it covers, and defaults to
+  today.** It was labelled *total* while showing neither a daily nor a lifetime number:
+  the processes' own counters, which start again every time Episko does. Episko now keeps
+  a daily record, and the row cycles today → this run → everything recorded.
+~ **One ＋ on the project dashboard, not two.** *New session* and *New worktree session…*
+  sat one above the other, so picking the right row meant knowing whether the folder was
+  a repo — which is what the dialog asks about anyway. *New session* now opens that
+  dialog, exactly as ＋ Session in the header already did, and starts straight away in a
+  folder that has no branches to choose between.
+! **The dashboard's buttons stop flickering under the pointer.** ▶ Start and everything
+  beside it pulsed between their hover and resting colours while the mouse sat still on
+  them — the whole pane was rebuilt on every telemetry event, so with a few agents
+  running the button was destroyed and recreated several times a second. The same rebuild
+  emptied the note box while you were typing in it. Both stop: the dashboard now repaints
+  only what actually changed, which on a quiet minute is nothing.
+! **Starting an agent on an issue works, and the claim gets written.** Every dispatch from
+  the dashboard reported *Could not start a session* — while starting one. The pane was
+  there and the agent was idle in it: what never arrived was the prompt naming the issue,
+  and the claim that tells a colleague somebody has this one. Dispatching a note had the
+  same hole, and consumed the note on the way through.
 ! **A project's day summaries appear straight away.** Every past day's sentence was
   already on disk from the first time you looked, but the timeline asked for today's
   first — and today is the one day that has to be re-written, so a week of summaries
@@ -71,7 +256,6 @@ Markers: `+` new · `~` changed · `!` fixed
   the remote wasn't GitHub. `gh` had been resolving those aliases all along.
 
 ## 0.13.7 — 2026-08-01
-
 The project dashboard stops being a page you can only read.
 
 ~ **The stage header's buttons work on a project dashboard.** ◷ History, ❯ Terminal and
@@ -82,7 +266,6 @@ The project dashboard stops being a page you can only read.
   ⌘⏎ follow.
 
 ## 0.13.6 — 2026-08-01
-
 Housekeeping on the surfaces 0.13 added, plus two in History.
 
 ! **The project dashboard's top strip reads as five figures again.** It was printing

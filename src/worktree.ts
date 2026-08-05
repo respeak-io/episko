@@ -18,11 +18,20 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import type { DiffStat, GitActionResult, Phase, Sess } from "./types";
-import { engineDef, externals, permMode, permModeDef, sessions, termEngine } from "./state";
+import type { DiffStat, GitActionResult, Phase, PurgeResult, Sess, Stranded } from "./types";
+import {
+  engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
+} from "./state";
+// The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
+// killed pane is actually *dead* rather than merely signalled — which is what a
+// directory deletion on Windows has to wait for. A logic module, so no cycle.
+import { waitForExit } from "./tasks";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
-let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<void> = async () => {};
+// Resolves to the new session id, or null if the spawn failed. Nothing in this module
+// uses it — the dialog starts a session and is done — but the type must match panes.ts's
+// so a caller that DOES need the id can't be handed a hook that quietly drops it.
+let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<string | null> = async () => null;
 export function setWtLaunch(fn: typeof launch) { launch = fn; }
 let closeSession: (id: string) => void = () => {};
 export function setWtCloseSession(fn: typeof closeSession) { closeSession = fn; }
@@ -942,6 +951,75 @@ async function wtCreate(branch: string, base = "") {
   } finally { wtBusy = false; }
 }
 
+// How long to give a killed session to actually die before its folder is touched.
+// The same number and the same reason as actions.ts's KILL_WAIT_MS: `kill_session`
+// sends a signal and returns, so only `pty-exit` proves the process was reaped — and
+// until it is, Windows will not delete a directory that process is sitting in. Bounded
+// because a wedged process must not strand the removal forever; past the bound we
+// proceed and the folder either deletes or reports who has it.
+const KILL_WAIT_MS = 5000;
+
+// Close every Episko session in a checkout and wait for the processes to be *gone*,
+// not merely signalled.
+//
+// The ordering is load-bearing twice over. Each waiter is registered BEFORE its kill,
+// or a fast exit resolves into nothing; and `closeSession` comes last, because it
+// settles pending waiters itself (with -1, so a dependency chain can't deadlock) and
+// would otherwise resolve the very wait this exists for. An already-ended pane is
+// excluded from the race entirely — its process is long gone, no `pty-exit` is coming,
+// and waiting on it would spend the whole bound for nothing.
+async function closeSessionsIn(list: Sess[]) {
+  const running = list.filter((s) => s.phase !== "ended");
+  const dead = running.map((s) => {
+    const w = waitForExit(s.id);
+    void invoke("kill_session", { sessionId: s.id }).catch(() => {});
+    return w;
+  });
+  if (dead.length) {
+    await Promise.race([Promise.all(dead), new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
+  }
+  for (const s of list) closeSession(s.id);
+}
+
+// A worktree that has left git's records but whose folder is still on disk. Two steps,
+// and the split is the whole design: processes Episko started are cleared without
+// asking — the click already decided they should die, and finishing that job is not a
+// new decision — while anything else is somebody's editor or build, which is a
+// question. Nothing here is reached unless a delete has already failed and been
+// retried in the backend, so an empty holder list means the OS refused for a reason
+// no process explains, and says so rather than inventing a culprit.
+async function strandedFlow(s: Stranded, label: string) {
+  const purge = (kill: number[]) =>
+    invoke<PurgeResult>("purge_worktree_folder", { path: s.path, kill })
+      .catch((e) => { dlog("warn", `purge ${s.path}: ${e}`); return null; });
+
+  let cur = s;
+  const ours = cur.holders.filter((h) => h.ours).map((h) => h.pid);
+  if (ours.length) {
+    const r = await purge(ours);
+    if (r?.gone) { toast(`Removed ${label}`); return; }
+    if (r?.stranded) cur = r.stranded;
+  }
+  const foreign = cur.holders.filter((h) => !h.ours);
+  if (!foreign.length) {
+    toast(`${label} removed — its folder wouldn't delete: ${cur.reason}`);
+    return;
+  }
+  const one = foreign.length === 1;
+  const who = foreign
+    .map((h) => `  • ${h.name} (${h.pid}) — ${h.why === "cwd" ? "sitting in this folder" : "has a file open"}`)
+    .join("\n");
+  const ok = await ask(
+    `${label} is removed, but its folder is still on disk:\n${cur.path}\n\nHeld by:\n${who}\n\n`
+    + `Terminating ${one ? "it" : "them"} ends whatever ${one ? "it is" : "they are"} doing`
+    + ` — an editor loses unsaved work, a build stops.`,
+    { title: "Folder still in use", kind: "warning", okLabel: "Terminate & retry", cancelLabel: "Leave it" },
+  );
+  if (!ok) { toast(`Folder left at ${basename(cur.path)}/ — nothing else of the worktree remains`); return; }
+  const r = await purge(foreign.map((h) => h.pid));
+  toast(r?.gone ? `Removed ${label}` : `${basename(cur.path)}/ still wouldn't delete — ${r?.stranded?.reason ?? "unknown"}`);
+}
+
 // The backend never forces: a dirty tree is refused and its --force command handed to
 // a terminal, so nothing uncommitted is ever clobbered by a click here.
 async function wtDoRemove(deleteBranch: boolean) {
@@ -952,17 +1030,24 @@ async function wtDoRemove(deleteBranch: boolean) {
   try {
     const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch });
     dlog(r.ok ? "info" : "warn", `worktree remove · ${w.branch || w.path} · ${r.summary}`);
-    toast(r.ok ? r.summary : `${r.summary} → opening a terminal`);
     if (!r.ok && r.suggest) {
-      // The handoff must run from the repo root, never the worktree being deleted —
-      // git refuses to remove the tree you're standing in.
+      // git refused and changed nothing, so the roster is exactly as it was. The
+      // handoff must run from the repo root, never the worktree being deleted — git
+      // refuses to remove the tree you're standing in.
+      toast(`${r.summary} → opening a terminal`);
       closeWt();
       await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir });
       return;
     }
+    toast(r.summary);
     wtArmed = "";
-    await wtLoad(true);                 // this dialog's own list…
-    if (r.ok) await refreshGitViews();  // …and the ⑃ roster the sidebar draws behind it
+    // Unconditional from here, where it used to be gated on `ok`: a stranded removal
+    // reports `ok: true` *and* is precisely the case where git has already changed the
+    // roster, so a refresh skipped on failure left a checkout on screen that no longer
+    // existed. A re-read after a harmless refusal costs one listing.
+    await wtLoad(true);       // this dialog's own list…
+    await refreshGitViews();  // …and the ⑃ roster the sidebar draws behind it
+    if (r.stranded) await strandedFlow(r.stranded, wtLabelOf(w));
   } catch (e) {
     dlog("error", `worktree remove failed: ${e}`);
     toast("worktree: " + e);
@@ -991,34 +1076,58 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     return;
   }
   const live = wtSessionsIn(path);
-  // Never close a session that still has a dirty tree — hand the decision (and a
-  // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
-  // enough to try", since the backend still refuses (without forcing) if it's wrong.
-  const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
-  if (ds && ds.dirty > 0) {
-    toast(`${label}: uncommitted changes — commit or discard first`);
-    await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
-    return;
+  // **Is the folder even there?** A checkout merged and removed outside Episko — a PR
+  // landing, a `git worktree remove` in your own terminal — leaves an administrative
+  // record in `.git/worktrees` and a cluster here for as long as a session of ours still
+  // names it. Asked the generic question below, that read as a destructive warning about
+  // a folder full of work, when nothing was there to lose. The ⑃ dialog has always said
+  // this plainly (`wtConfirmHtml`); this path is the one that didn't.
+  //
+  // The roster is the authority and it is already in memory — `worktree_heads` is what
+  // the sidebar draws from, refreshed every 4s. Unknown means "assume it is there": the
+  // backend removes a vanished checkout cleanly if we are wrong (git exits 0 on one, and
+  // `still_registered` catches the gits that don't), so the cost of guessing that way is
+  // one honest sentence, where the reverse would offer to prune a live checkout.
+  const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => w.path === path);
+  const gone = known ? !known.exists : false;
+  if (gone) {
+    if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone — this only clears git's record of it. Nothing is lost.`,
+      { title: "Prune worktree", kind: "info", okLabel: "Prune", cancelLabel: "Cancel" })) return;
+  } else {
+    // Never close a session that still has a dirty tree — hand the decision (and a
+    // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
+    // enough to try", since the backend still refuses (without forcing) if it's wrong.
+    const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
+    if (ds && ds.dirty > 0) {
+      toast(`${label}: uncommitted changes — commit or discard first`);
+      await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
+      return;
+    }
+    const closes = live.length === 0 ? "Nothing is running in it"
+      : live.length === 1 ? "Its session closes"
+      : `Its ${live.length} sessions close`;
+    if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
+      { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
   }
-  const closes = live.length === 0 ? "Nothing is running in it"
-    : live.length === 1 ? "Its session closes"
-    : `Its ${live.length} sessions close`;
-  if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
-    { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
-  for (const s of live) {
-    closeSession(s.id);
-    await invoke("kill_session", { sessionId: s.id }).catch(() => {}); // ensure the backend guard sees it gone
-  }
+  // Waits for the processes to actually be reaped, and that wait is the difference
+  // between a removal that works and one that half-works: git deletes the checkout
+  // directory before it unregisters the worktree, and Windows will not delete a
+  // directory a live process is sitting in. Killing and removing in the same breath
+  // is what produced a worktree gone from git with its folder still on disk.
+  await closeSessionsIn(live);
   try {
     const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path, branch, deleteBranch: true });
     dlog(r.ok ? "info" : "warn", `worktree remove · ${label} · ${r.summary}`);
-    // The cluster this was invoked from is drawn from the ⑃ roster, which only a
-    // re-read drops — renderAll alone would leave the header on screen until the poll.
-    if (r.ok) { toast(r.summary); await refreshGitViews(); }
     // The handoff must run from the repo root, never the worktree being deleted —
     // git refuses to remove the tree you're standing in.
-    else if (r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir }); }
+    if (!r.ok && r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir }); }
     else toast(r.summary);
+    // The cluster this was invoked from is drawn from the ⑃ roster, which only a
+    // re-read drops — renderAll alone would leave the header on screen until the poll.
+    // Unconditional: a stranded removal is `ok: true` and has already changed the
+    // roster, and a refusal that changed nothing costs one listing to confirm it.
+    await refreshGitViews();
+    if (r.stranded) await strandedFlow(r.stranded, label);
   } catch (e) {
     dlog("error", `worktree remove failed: ${e}`);
     toast("worktree: " + e);

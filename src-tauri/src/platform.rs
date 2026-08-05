@@ -115,6 +115,242 @@ pub(crate) fn sys_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process
     c
 }
 
+// ---------- deleting a directory something else is holding ----------
+// Three leaves that only make sense together, and only exist because of one
+// difference between the platforms: **Windows refuses to delete a directory any
+// process has open**, where POSIX unlinks it and lets the last handle close in its
+// own time. So a folder Episko has been asked to remove can survive the removal,
+// and the only useful thing to say about that is *who* is keeping it.
+
+/// One process keeping a path alive, as `path_holders` reports it.
+///
+/// Two fields carry the design. `why` separates the two ways a folder gets pinned,
+/// because they are found by different means and read differently to a human: a
+/// **cwd** holder is a process sitting in the folder (a terminal, a dev server, the
+/// dying PTY pane whose removal started this), and a **file** holder has an open
+/// handle (an editor, a watcher, an indexer). `ours` is what lets a caller finish its
+/// own job silently — a process Episko launched is one it has already decided to
+/// kill — while never terminating somebody else's editor without being asked.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub(crate) struct PathHolder {
+    pub pid: u32,
+    /// Process name as the OS spells it (`Code.exe`, `node`) — the UI shows it verbatim.
+    pub name: String,
+    /// `"cwd"` or `"file"`.
+    pub why: &'static str,
+    /// Episko itself, or a descendant of it.
+    pub ours: bool,
+}
+
+/// True when `p` is `root` or sits underneath it. Case-insensitive on Windows, where
+/// the filesystem is, and where the same folder legitimately arrives in more than one
+/// spelling (see `norm_path`).
+fn under(p: &std::path::Path, root: &std::path::Path) -> bool {
+    let (a, b) = (p.to_string_lossy(), root.to_string_lossy());
+    let (a, b) = if cfg!(windows) {
+        (norm_path(&a).to_lowercase(), norm_path(&b).to_lowercase())
+    } else {
+        (a.to_string(), b.to_string())
+    };
+    a == b || a.starts_with(&format!("{b}{}", std::path::MAIN_SEPARATOR))
+}
+
+/// Which processes are holding `dir` — by working directory, and (Windows only, and
+/// only when `stuck` names the file that actually refused) by open handle.
+///
+/// Best-effort by construction: this is a diagnostic shown *after* something already
+/// failed, so every probe inside it degrades to "found nothing" rather than to an
+/// error the caller would have to explain on top of the failure it is already
+/// explaining. An empty list is an honest answer — a handle can be released between
+/// the delete failing and this running, which is also why the caller retries first.
+pub(crate) fn path_holders(dir: &str, stuck: Option<&str>) -> Vec<PathHolder> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let root = std::path::PathBuf::from(norm_path(dir));
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+    );
+    // pid → (ppid, name), so ancestry and naming both come out of the one snapshot
+    // rather than costing a second process table walk each.
+    let procs: std::collections::HashMap<u32, (Option<u32>, String)> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| {
+            (pid.as_u32(), (p.parent().map(|x| x.as_u32()), p.name().to_string_lossy().to_string()))
+        })
+        .collect();
+    let us = std::process::id();
+    // Same walk and same cap as `ProcTable::is_descendant_of`: the bound is what stops
+    // a ppid cycle, which Windows can produce after pid reuse hands a dead parent's
+    // number to a new process.
+    let ours = |mut pid: u32| {
+        for _ in 0..24 {
+            if pid == us {
+                return true;
+            }
+            match procs.get(&pid).and_then(|(pp, _)| *pp) {
+                Some(pp) if pp > 1 && pp != pid => pid = pp,
+                _ => return false,
+            }
+        }
+        false
+    };
+
+    let mut out: Vec<PathHolder> = Vec::new();
+    for (pid, p) in sys.processes() {
+        let pid = pid.as_u32();
+        if pid == us {
+            continue; // we are not holding it, and offering to kill ourselves is absurd
+        }
+        if p.cwd().is_some_and(|c| under(c, &root)) {
+            out.push(PathHolder {
+                pid,
+                name: p.name().to_string_lossy().to_string(),
+                why: "cwd",
+                ours: ours(pid),
+            });
+        }
+    }
+    if let Some(stuck) = stuck {
+        for (pid, name) in file_handle_holders(stuck) {
+            if pid != us && !out.iter().any(|h| h.pid == pid) {
+                out.push(PathHolder { pid, name, why: "file", ours: ours(pid) });
+            }
+        }
+    }
+    // Ours first: the caller clears those without asking, so they should read as the
+    // part already handled rather than as part of the problem.
+    out.sort_by_key(|h| (!h.ours, h.pid));
+    out
+}
+
+/// Which processes have `file` open, via the Restart Manager — the API the Windows
+/// installer stack uses for precisely this question, and the reason `remove_tree`
+/// bothers to report *which* path refused: RM registers files, and "something under
+/// this directory" is not a file it can be asked about.
+#[cfg(windows)]
+fn file_handle_holders(file: &str) -> Vec<(u32, String)> {
+    use windows_sys::Win32::System::RestartManager::{
+        RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY,
+        RM_PROCESS_INFO,
+    };
+    // A list longer than this is not a diagnostic anyone reads, and the allocation is
+    // ours to bound. RmGetList refuses a short buffer outright (ERROR_MORE_DATA fills
+    // nothing), so this is a give-up threshold rather than a truncation.
+    const MAX: u32 = 256;
+    let wide: Vec<u16> = file.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut session: u32 = 0;
+    let mut key = vec![0u16; CCH_RM_SESSION_KEY as usize + 1];
+    unsafe {
+        if RmStartSession(&mut session, 0, key.as_mut_ptr()) != 0 {
+            return vec![];
+        }
+        let names = [wide.as_ptr() as windows_sys::core::PCWSTR];
+        let mut found: Vec<(u32, String)> = vec![];
+        if RmRegisterResources(session, 1, names.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null()) == 0 {
+            let (mut needed, mut have, mut reason) = (0u32, 0u32, 0u32);
+            // Two-call idiom: ask the size, then fetch. The first call is expected to
+            // fail with ERROR_MORE_DATA, so its return value says nothing useful.
+            RmGetList(session, &mut needed, &mut have, std::ptr::null_mut(), &mut reason);
+            if needed > 0 && needed <= MAX {
+                let mut infos = vec![RM_PROCESS_INFO::default(); needed as usize];
+                have = needed;
+                if RmGetList(session, &mut needed, &mut have, infos.as_mut_ptr(), &mut reason) == 0 {
+                    for i in infos.iter().take(have as usize) {
+                        let n = i.strAppName.iter().position(|c| *c == 0).unwrap_or(i.strAppName.len());
+                        found.push((i.Process.dwProcessId, String::from_utf16_lossy(&i.strAppName[..n])));
+                    }
+                }
+            }
+        }
+        RmEndSession(session);
+        found
+    }
+}
+
+/// No counterpart outside Windows, and none is needed: a directory whose files are
+/// open still deletes there, so this half of the diagnostic never has a question to
+/// answer. The cwd scan in `path_holders` is cross-platform and stays.
+#[cfg(not(windows))]
+fn file_handle_holders(_file: &str) -> Vec<(u32, String)> {
+    vec![]
+}
+
+/// Kill `pid` **and its descendants**. The tree matters: `kill_session` terminates the
+/// PTY's direct child, and on Windows a `node` dev server that child started outlives
+/// it — still sitting in the folder, still pinning it.
+///
+/// Returns whether the kill was issued, not whether the process is gone; the caller
+/// re-probes rather than trusting this, because a signal is not a reaping (the same
+/// distinction `followSessionDrift` waits on `pty-exit` for).
+pub(crate) fn kill_pid_tree(pid: u32) -> bool {
+    if pid <= 4 {
+        return false; // 0 and 4 are the kernel's own on Windows; nothing good is here
+    }
+    #[cfg(windows)]
+    {
+        sys_command("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).status().is_ok_and(|s| s.success())
+    }
+    #[cfg(not(windows))]
+    {
+        // Negative pid targets the process group, which is the closest POSIX analogue
+        // of /T; a session leader is the common case for a PTY child. Fall back to the
+        // bare pid when it leads no group.
+        let grp = sys_command("kill").arg("-9").arg(format!("-{pid}")).status().is_ok_and(|s| s.success());
+        grp || sys_command("kill").arg("-9").arg(pid.to_string()).status().is_ok_and(|s| s.success())
+    }
+}
+
+/// `std::fs::remove_dir_all` with the two things a stranded checkout needs from it:
+/// it reports **which** path refused, and it clears the read-only attribute first.
+///
+/// The first is what makes the failure explainable — `path_holders` can only ask the
+/// Restart Manager about a file, and the standard library's error carries no path at
+/// all. The second is a Windows failure mode in its own right: a read-only file
+/// (something a vendored dependency or a packing tool left behind) fails `remove_file`
+/// with PermissionDenied while *nothing* is holding it, which would otherwise be
+/// reported as a mystery with an empty holder list.
+///
+/// Never follows a link. A junction or symlink inside a checkout is removed as the
+/// link it is, so whatever it points at is untouched — the one way a recursive delete
+/// can do damage far outside the directory it was aimed at.
+pub(crate) fn remove_tree(path: &std::path::Path) -> Result<(), (std::path::PathBuf, std::io::Error)> {
+    let fail = |e: std::io::Error| (path.to_path_buf(), e);
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        // Already gone is the outcome being asked for, not a failure to report.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fail(e)),
+    };
+    let ft = md.file_type();
+    if ft.is_symlink() {
+        // A Windows directory junction needs `remove_dir`, a file symlink needs
+        // `remove_file`, and `symlink_metadata` does not reliably tell the two apart
+        // across platforms — so try one and fall back rather than branching on a
+        // flag that lies on one of them.
+        return std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path)).map_err(fail);
+    }
+    if ft.is_dir() {
+        for e in std::fs::read_dir(path).map_err(fail)?.flatten() {
+            remove_tree(&e.path())?;
+        }
+        return std::fs::remove_dir(path).map_err(fail);
+    }
+    #[cfg(windows)]
+    if md.permissions().readonly() {
+        let mut perm = md.permissions();
+        // Clippy flags `set_readonly(false)` because on Unix it grants write to
+        // everyone; this arm is Windows-only, where it clears one attribute bit, and
+        // making the file deletable is the entire point.
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perm);
+    }
+    std::fs::remove_file(path).map_err(fail)
+}
+
 /// Resolve the absolute path to the `claude` binary. GUI apps get a stripped PATH
 /// (Finder on macOS, no inherited shell env on Windows), so we check common install
 /// locations first and fall back to a `which`/`where` probe.
@@ -172,13 +408,101 @@ pub(crate) fn resolve_claude() -> String {
     "claude".to_string()
 }
 
+/// Marker fencing the PATH in a shell probe's output, so rc-file chatter can't be
+/// mistaken for part of the value.
+#[cfg(not(windows))]
+const PATH_MARK: &str = "__EPISKO_PATH__";
+
+/// The PATH the user's own terminal has, harvested once per app run. `None` when the
+/// probe failed or returned something that isn't a PATH — callers fall back.
+#[cfg(not(windows))]
+static SHELL_PATH: std::sync::LazyLock<Option<String>> =
+    std::sync::LazyLock::new(probe_shell_path);
+
+/// Pull the PATH out of a shell probe's stdout.
+///
+/// The rc files this deliberately lets run *print things* — a powerlevel10k gitstatus
+/// warning, a motd, a version-manager notice — so the value is fenced by markers
+/// rather than assumed to be the whole output.
+///
+/// Rejects anything that doesn't look like a PATH. fish interpolates `$PATH` as a
+/// space-separated list, and half a PATH silently shadowing the fallback is worse
+/// than not probing at all.
+#[cfg(not(windows))]
+fn path_from_probe(out: &str) -> Option<String> {
+    let val = out.split(PATH_MARK).nth(1)?.trim();
+    let dirs: Vec<&str> = val.split(':').filter(|d| !d.is_empty()).collect();
+    if dirs.len() < 2 || !dirs.iter().any(|d| std::path::Path::new(d).is_dir()) {
+        return None;
+    }
+    Some(val.to_string())
+}
+
+/// Ask the user's login shell what PATH it would give a command, **interactively**.
+///
+/// `-i` is the entire point, and it is not a detail. zsh reads `~/.zshrc` only for
+/// *interactive* shells, and `.zshrc` is where nvm, pnpm's `PNPM_HOME`, mise and
+/// Homebrew's `shellenv` actually get exported. A plain `-l -c` sources `.zprofile`
+/// and `.zlogin` and misses every one of them — which is how a task running
+/// `pnpm tauri dev` died with `command not found: pnpm` while the identical line
+/// worked in the user's terminal, and how a `just` install went undiscovered.
+///
+/// Run once, off the caller's back, and never for the task itself: an interactive
+/// shell prints its rc noise, which is fine to parse out of a probe and unacceptable
+/// in a task's pane.
+#[cfg(not(windows))]
+fn probe_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let script = format!("printf '%s%s%s' '{PATH_MARK}' \"$PATH\" '{PATH_MARK}'");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell)
+            .args(["-i", "-l", "-c"])
+            .arg(&script)
+            // An rc file that reads stdin would otherwise wait forever.
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(out.ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()));
+    });
+    // A pathological rc file must cost a fallback, not a hung UI: `augmented_path` is
+    // on the git-poll path, so the first caller is whoever polls first.
+    let out = rx.recv_timeout(std::time::Duration::from_secs(5)).ok()??;
+    path_from_probe(&out)
+}
+
+/// Warm `SHELL_PATH` off the UI's back. `LazyLock` blocks its *first* caller, and that
+/// caller would otherwise be a git poll or a task launch.
+#[cfg(not(windows))]
+pub(crate) fn warm_shell_path() {
+    std::thread::spawn(|| {
+        let _ = SHELL_PATH.as_deref();
+    });
+}
+
+#[cfg(windows)]
+pub(crate) fn warm_shell_path() {}
+
 /// A PATH that includes the usual per-user bin dirs, so the spawned `claude`
 /// (and anything it shells out to) is found even under a stripped PATH.
+///
+/// `~/.cargo/bin` is here for the task introspectors, not for `claude`: `just` and
+/// `mise` are Rust binaries that `cargo install` puts nowhere else, and a listing
+/// tool this can't find makes a whole provider's tasks vanish.
 #[cfg(not(windows))]
 pub(crate) fn augmented_path() -> String {
     let home = home_dir();
-    let base = std::env::var("PATH").unwrap_or_default();
-    format!("{home}/.local/bin:{home}/.claude/local:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{base}")
+    let fallbacks = format!(
+        "{home}/.local/bin:{home}/.claude/local:{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    );
+    match SHELL_PATH.as_deref() {
+        // The user's own ordering goes first, deliberately. If nvm puts a node ahead
+        // of `/usr/local/bin`, a task has to get nvm's one — otherwise "works in
+        // iTerm, fails in Episko" is back, just further down the stack.
+        Some(p) => format!("{p}:{fallbacks}"),
+        // No probe: today's behaviour, which under Finder means the fallbacks are
+        // doing all the work (the process PATH is `/usr/bin:/bin:/usr/sbin:/sbin`).
+        None => format!("{fallbacks}:{}", std::env::var("PATH").unwrap_or_default()),
+    }
 }
 
 /// Windows uses `;` as the PATH separator; include the native-installer bin dir and
@@ -188,7 +512,7 @@ pub(crate) fn augmented_path() -> String {
     let home = home_dir();
     let base = std::env::var("PATH").unwrap_or_default();
     let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    format!(r"{home}\.local\bin;{home}\.claude\local;{sysroot}\System32;{base}")
+    format!(r"{home}\.local\bin;{home}\.claude\local;{home}\.cargo\bin;{sysroot}\System32;{base}")
 }
 
 /// Single-quote a string for safe inclusion in a POSIX shell script.
@@ -203,9 +527,11 @@ pub(crate) fn sh_quote(s: &str) -> String {
 /// **Not compiled on Windows at all**, and that is now load-bearing rather than tidy.
 /// There used to be a `cfg(windows)` stub returning None, because `session_resources`
 /// called this on every platform for per-session CPU/RAM; that reader now measures disk
-/// I/O through `sysinfo` instead, which leaves `focus_external_session` — itself
-/// macOS-only — as the sole caller. A stub with no callers is `dead_code`, which is a
-/// **CI failure** under `-D warnings`, and one only the Windows leg can see.
+/// I/O through `sysinfo` instead, which leaves the *macOS half* of
+/// `focus_external_session` as the sole caller — the Windows half now exists too, but
+/// finds its window through the win32 window APIs and never asks `ps` anything. A stub
+/// with no callers is `dead_code`, which is a **CI failure** under `-D warnings`, and
+/// one only the Windows leg can see.
 ///
 /// The general shape of that trap: removing the last cross-platform caller of a
 /// cfg-gated helper breaks the *other* platform's build, invisibly from this one. The
@@ -629,6 +955,99 @@ mod tests {
     #[cfg(target_os = "macos")]
     use std::sync::atomic::Ordering;
 
+    /// A process sitting in a folder is the commonest thing keeping it undeletable —
+    /// a terminal, a dev server, or the PTY pane a worktree removal has just killed —
+    /// and it is the half of the probe that works on every OS. `ours` is asserted
+    /// alongside it because the two answers are used together: the caller clears its
+    /// own processes without asking and only ever puts somebody else's in a dialog,
+    /// so a child of ours reported as foreign would turn a silent cleanup into a
+    /// prompt about a process the user never started.
+    #[test]
+    fn path_holders_finds_a_process_sitting_in_the_folder_and_knows_it_is_ours() {
+        let dir = crate::testutil::scratch_dir();
+        let path = dir.to_string_lossy().to_string();
+        // Something that stays alive without stdin and exists on a bare runner.
+        #[cfg(windows)]
+        let mut child = sys_command("cmd.exe")
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a child in the folder");
+        #[cfg(not(windows))]
+        let mut child = sys_command("sleep")
+            .arg("30")
+            .current_dir(&dir)
+            .spawn()
+            .expect("spawn a child in the folder");
+
+        // The process table is a snapshot, and a just-spawned child need not be in the
+        // first one — retry briefly rather than racing it.
+        let mut found = None;
+        for _ in 0..20 {
+            if let Some(h) = path_holders(&path, None).into_iter().find(|h| h.pid == child.id()) {
+                found = Some(h);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let h = found.expect("the child should be reported as holding its own cwd");
+        assert_eq!(h.why, "cwd", "found by working directory, not by handle: {h:?}");
+        assert!(h.ours, "a child of the test process is ours: {h:?}");
+        assert!(!h.name.is_empty(), "a holder must be nameable to be shown: {h:?}");
+    }
+
+    /// `remove_tree` exists for two things the standard library will not do, and both
+    /// are load-bearing for a stranded checkout: it names the path that refused (the
+    /// Restart Manager can only be asked about a *file*, and `remove_dir_all`'s error
+    /// carries none), and it clears the read-only attribute — a Windows-only failure
+    /// where nothing is holding the folder at all, which would otherwise be reported
+    /// as a mystery with an empty holder list.
+    #[test]
+    fn remove_tree_deletes_a_nested_read_only_tree_and_reports_what_refuses() {
+        let dir = crate::testutil::scratch_dir();
+        let deep = dir.join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("plain.txt"), "x").unwrap();
+        let ro = deep.join("locked.txt");
+        std::fs::write(&ro, "x").unwrap();
+        let mut perm = std::fs::metadata(&ro).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&ro, perm).unwrap();
+
+        assert!(remove_tree(&dir).is_ok(), "a read-only file must not stop the delete");
+        assert!(!dir.exists(), "the whole tree should be gone");
+
+        // A path that was never there is the outcome being asked for, not an error —
+        // `ensure_folder_gone` retries, so this is hit on every successful second pass.
+        assert!(remove_tree(&dir).is_ok(), "deleting nothing succeeds");
+    }
+
+    /// The one way a recursive delete can do damage far outside the directory it was
+    /// aimed at. A checkout with a symlink in it is ordinary (a shared `node_modules`,
+    /// a fixture pointing at real data), and following one would delete the target's
+    /// contents while reporting that a worktree had been cleaned up.
+    #[cfg(unix)]
+    #[test]
+    fn remove_tree_removes_a_link_and_never_what_it_points_at() {
+        let dir = crate::testutil::scratch_dir();
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("precious.txt"), "keep me").unwrap();
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
+
+        assert!(remove_tree(&tree).is_ok());
+        assert!(!tree.exists(), "the tree itself goes");
+        assert!(outside.join("precious.txt").exists(), "the link's target must survive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// All three real-world spellings of one Windows folder (git's forward
     /// slashes, the dialog's native path, VS Code's lowercase drive) must
     /// collapse to a single string, or the sidebar splits the project.
@@ -640,6 +1059,50 @@ mod tests {
         assert_eq!(norm_path(r"E:\already\native"), r"E:\already\native");
         assert_eq!(norm_path(r"\\server\share\x"), r"\\server\share\x");
         assert_eq!(norm_path(""), "");
+    }
+
+    /// The shell probe runs rc files on purpose, and rc files talk. powerlevel10k
+    /// prints a gitstatus warning, nvm prints notices, hosts print a motd — so the
+    /// PATH has to be fenced and extracted, never assumed to be the whole stdout.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_probe_survives_rc_file_chatter() {
+        let noisy = format!(
+            "  Restart Zsh to retry gitstatus initialization:\n\n    exec zsh\n\
+             {PATH_MARK}/opt/homebrew/bin:/usr/bin:/bin{PATH_MARK}\n"
+        );
+        assert_eq!(path_from_probe(&noisy).as_deref(), Some("/opt/homebrew/bin:/usr/bin:/bin"));
+    }
+
+    /// Anything that isn't a PATH must be refused, because the probe's value goes
+    /// *ahead* of the fallbacks — a mangled one shadows them instead of helping.
+    /// fish is the live case: it interpolates `$PATH` space-separated.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_probe_refuses_what_is_not_a_path() {
+        // fish: no separators at all.
+        assert_eq!(path_from_probe(&format!("{PATH_MARK}/usr/bin /bin{PATH_MARK}")), None);
+        // The shell died before printing, or printed only noise.
+        assert_eq!(path_from_probe("command not found: printf"), None);
+        assert_eq!(path_from_probe(&format!("{PATH_MARK}{PATH_MARK}")), None);
+        // Colon-separated but nothing on it exists — a stale or fabricated value.
+        assert_eq!(
+            path_from_probe(&format!("{PATH_MARK}/nope/one:/nope/two{PATH_MARK}")),
+            None
+        );
+    }
+
+    /// The probe is the mechanism the pnpm/just failures needed, so assert it works
+    /// against this machine's real shell rather than only against fixtures. Skipped
+    /// rather than failed where there's no usable `SHELL` (a bare CI container).
+    #[cfg(not(windows))]
+    #[test]
+    fn augmented_path_carries_the_fallback_dirs_whether_or_not_the_probe_lands() {
+        let p = augmented_path();
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+            assert!(p.contains(dir), "augmented PATH lost {dir}: {p}");
+        }
+        assert!(p.contains(".cargo/bin"), "cargo-installed tools need this: {p}");
     }
 
     #[cfg(not(windows))]
