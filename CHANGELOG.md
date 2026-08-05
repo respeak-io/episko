@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A reload no longer loses your panes — they come back, scrollback included.** A
+  webview reload left every `claude` process running with nothing on screen attached
+  to it, and then offered the orphans back as dormant rows with *Resume* enabled — a
+  second `--resume` against a transcript its live process still owns, which silently
+  interleaves both conversations into one file. Two halves fix it: the sidebar and
+  History now ask the backend which PTYs it actually holds, so a live orphan can
+  never read as resumable; and startup rebuilds a pane for each one, replaying the
+  recent output the backend now retains per session, so the conversation is simply
+  on screen again where it was.
 ! **Opening the working set no longer costs a git process per untracked file.** Each
   untracked file entered the peek's patch through its own `git diff --no-index` — up to
   300 processes back to back on one click, each allocating a console on Windows, which

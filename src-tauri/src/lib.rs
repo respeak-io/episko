@@ -46,6 +46,15 @@ pub(crate) struct Session {
     /// Working directory this session runs in. Lets `remove_worktree` refuse to
     /// delete a worktree that still has a live embedded session inside it.
     workdir: String,
+    /// Which spawner made this pane: "claude" | "shell" | "task". The frontend's
+    /// `Sess.kind` is the authority in normal operation; this copy exists for the
+    /// one state where the frontend has no `Sess` — a reload orphan — so adoption
+    /// can rebuild claude panes and leave shells and tasks alone (#47 stage 2).
+    kind: &'static str,
+    /// The recent raw output of this PTY (see `pty::ScrollBuf`), shared with the
+    /// reader thread. What lets a pane rebuilt after a webview reload start with
+    /// its scrollback instead of blank.
+    scrollback: std::sync::Arc<Mutex<pty::ScrollBuf>>,
 }
 
 pub(crate) struct AppState {
@@ -498,6 +507,8 @@ pub fn run() {
             pty::write_pty,
             pty::resize_pty,
             pty::kill_session,
+            pty::live_sessions,
+            pty::read_scrollback,
             git::git_branch,
             git::git_head,
             git::git_diffstat,

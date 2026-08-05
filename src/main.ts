@@ -28,10 +28,10 @@ import {
 } from "./actions";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
-  launch, launchShell, launchTask, launchWorktree, noteDrift, noteGitCommand,
-  openPlainTerminal, openRunGroup, pollIo, refreshGitViews, refreshPaneCaps,
-  refreshSessionStats, renderHeader, requestLaunch, runGit, scheduleDismiss, setActive,
-  setPanesRenderAll, syncStageButtons, toggleRunGroup,
+  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
+  noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
+  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -405,9 +405,13 @@ function renderAll() {
 // (theme, sort, engine, font, token scan) through setSettingsHost below.
 
 // ---------- events ----------
-listen<{ sessionId: string; data: string }>("pty-output", (e) => {
+listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   const s = sessions.get(e.payload.sessionId); if (!s?.term) return;
   const bytes = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
+  // A pane mid-adoption queues instead of writing: its scrollback snapshot must
+  // land first, and whether this chunk is already inside that snapshot is decided
+  // by seq when adoptSession flushes the queue (#47).
+  if (s.adopt) { s.adopt.pending.push({ seq: e.payload.seq, bytes }); return; }
   s.term.write(bytes);
   // A task keeps a small tail of its own output so a failure can be handed to a
   // Claude session without re-reading the pane. Bounded hard — this is a hint for
@@ -811,9 +815,11 @@ setInterval(() => { void pollIo(); }, 60_000);
 refreshExternals();
 setInterval(refreshExternals, 3000);
 
-// surface the sessions that were open when Episko last closed, so they can be
-// resumed instead of lost. Read-only until the user actually clicks Resume.
-void loadDormants();
+// Re-adopt any pane a webview reload orphaned — the backend still holds its PTY —
+// and only THEN reconcile the roster: an adopted id is live again, so it must not
+// also come back as a dormant row (#47). A normal start finds no orphans and the
+// await is one empty IPC round-trip.
+void adoptOrphans().finally(() => void loadDormants());
 // Nothing else persists the roster on the way out: closeSession and the telemetry
 // tick both save, but a quit with live, quiet sessions would otherwise write nothing.
 window.addEventListener("beforeunload", flushRoster);

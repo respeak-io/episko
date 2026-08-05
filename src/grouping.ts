@@ -13,11 +13,11 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import type { ExtSession, Phase, Restorable, Sess } from "./types";
+import type { ExtSession, LiveSess, Phase, Restorable, Sess } from "./types";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, dormants, externals, FAVORITES, folderDirty, projGroups, projOrder,
-  sessions, sortMode, wtGroup, worktreesByRepo,
+  accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
+  projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -144,6 +144,32 @@ export function allProjects(): ProjGroup[] {
     p.dormants.push(d);
   }
   return list;
+}
+// A session that's live right now must not be offered for restore: Claude doesn't
+// lock the transcript, so a second --resume of the same id silently interleaves
+// both conversations into one file. Three sources, because each sees sessions the
+// others can't: the frontend map (our own panes), `backendLive` (a PTY the backend
+// still holds while the map has no pane for it — every pane after a webview reload,
+// #47; invisible as an external too, since `list_external_sessions` excludes owned
+// pids), and the externals list (another terminal entirely).
+export function dormantBusy(d: Restorable): boolean {
+  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
+  if (backendLive.has(d.id)) return true;
+  return externals.some((e) => e.session_id === d.resumeId);
+}
+// Which backend PTYs need a pane rebuilt after a webview reload, and under what
+// identity (#47 stage 2). Claude panes only: a shell is cheap to reopen and carries
+// no conversation, and a task pane's `run` metadata — label, chain, how its exit is
+// read — did not survive the reload, so a bare terminal claiming to be that task
+// would lie about everything but the bytes. The roster supplies the identity the
+// pane was launched under; an orphan the roster has no entry for still adopts with
+// `meta: null` — a running conversation is worth more than a tidy label, and the
+// caller derives one from `workdir`. Takes the roster as a parameter because it
+// runs at startup, BEFORE `loadDormants` has filtered it into `dormants`.
+export function orphanAdoptions(back: LiveSess[], roster: Restorable[]): { id: string; workdir: string; meta: Restorable | null }[] {
+  return back
+    .filter((b) => b.kind === "claude" && !sessions.has(b.id))
+    .map((b) => ({ id: b.id, workdir: b.workdir, meta: roster.find((r) => r?.id === b.id) ?? null }));
 }
 export function projectList(): ProjGroup[] {
   const list = allProjects();

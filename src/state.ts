@@ -162,6 +162,14 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
+// Launch ids of every PTY the BACKEND holds (`live_sessions`, refreshed on the
+// externals poll, lowercased at the call site). In normal operation this repeats
+// the `sessions` map; the one state where they disagree is a webview reload, which
+// empties the map while every PTY runs on (#47). Those orphans are invisible as
+// externals too — `list_external_sessions` excludes owned pids — so this set is
+// the only thing that lets `dormantBusy`/`histBusy` refuse to resume one.
+export let backendLive: ReadonlySet<string> = new Set();
+export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
 export interface EngineDef { id: Engine; label: string; sub: string }

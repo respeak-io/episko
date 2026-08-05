@@ -28,8 +28,9 @@
 // `portable_pty::CommandBuilder`, which the leaf layer must not import),
 // `interactive_shell`, `task_shell`, `find_ghostty`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -184,25 +185,76 @@ pub(crate) fn spawn_claude(
         state.owned_pids.lock().unwrap().insert(p);
     }
 
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone() },
     );
 
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
+}
+
+/// The recent raw output of one PTY, kept so a pane rebuilt after a webview reload
+/// does not start blank (#47 stage 2). Bounded — this is scrollback, not a
+/// transcript — and grown only as used, so an idle fleet pays nothing up front.
+///
+/// `seq` counts chunks, and it is what makes adoption replay exact: the reader
+/// appends and takes the seq under this lock, then emits the chunk tagged with it,
+/// and `read_scrollback` snapshots bytes-plus-seq under the same lock. So a chunk
+/// with `seq <= snapshot.seq` is *inside* the snapshot and one above it is not —
+/// without that, a chunk emitted around the snapshot either duplicates or goes
+/// missing in the rebuilt pane, and both corrupt the REPL's screen state.
+pub(crate) struct ScrollBuf {
+    buf: VecDeque<u8>,
+    seq: u64,
+    evicted: bool,
+}
+
+pub(crate) const SCROLLBACK_MAX: usize = 256 * 1024;
+
+impl ScrollBuf {
+    pub(crate) fn new() -> Self {
+        ScrollBuf { buf: VecDeque::new(), seq: 0, evicted: false }
+    }
+    /// Append one reader chunk and return the seq that names it.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> u64 {
+        self.buf.extend(chunk.iter().copied());
+        if self.buf.len() > SCROLLBACK_MAX {
+            self.buf.drain(..self.buf.len() - SCROLLBACK_MAX);
+            self.evicted = true;
+        }
+        self.seq += 1;
+        self.seq
+    }
+    /// Everything retained, plus the seq of the last chunk it contains. Once the
+    /// front has been evicted the buffer starts mid-line — likely mid escape
+    /// sequence, which would eat characters up to the next terminator on replay —
+    /// so it is trimmed to the first newline. A stream with no newline at all
+    /// (one alternate-screen repaint) is kept whole rather than dropped.
+    pub(crate) fn snapshot(&self) -> (Vec<u8>, u64) {
+        let mut v: Vec<u8> = self.buf.iter().copied().collect();
+        if self.evicted {
+            if let Some(p) = v.iter().position(|&b| b == b'\n') {
+                v.drain(..=p);
+            }
+        }
+        (v, self.seq)
+    }
 }
 
 /// Spawn the reader (PTY output → `pty-output`) and reaper (`pty-exit` + session
 /// cleanup) threads shared by every embedded PTY pane — a `claude` session or a
 /// plain shell. `child_pid` is removed from `owned_pids` on exit (a no-op for a
-/// shell, which was never inserted there).
+/// shell, which was never inserted there). `scroll` is the same buffer the session
+/// in `AppState` holds; the reader appends before it emits (see `ScrollBuf`).
 fn stream_pty_session(
     app: AppHandle,
     session_id: String,
     mut reader: Box<dyn Read + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     child_pid: Option<u32>,
+    scroll: Arc<Mutex<ScrollBuf>>,
 ) {
     let app_out = app.clone();
     let sid_out = session_id.clone();
@@ -212,9 +264,10 @@ fn stream_pty_session(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    let seq = scroll.lock().unwrap().push(&buf[..n]);
                     let encoded = STANDARD.encode(&buf[..n]);
                     if app_out
-                        .emit("pty-output", serde_json::json!({ "sessionId": sid_out, "data": encoded }))
+                        .emit("pty-output", serde_json::json!({ "sessionId": sid_out, "data": encoded, "seq": seq }))
                         .is_err()
                     {
                         break;
@@ -301,11 +354,12 @@ pub(crate) fn spawn_shell(
     let child_pid = child.process_id();
     // Deliberately NOT added to owned_pids: a plain shell isn't a claude process
     // and never registers in ~/.claude/sessions, so it can't leak as "external".
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
 }
 
@@ -486,11 +540,12 @@ pub(crate) fn spawn_task(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
     Ok(())
 }
 
@@ -789,6 +844,53 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
 }
 
 #[derive(serde::Serialize)]
+pub(crate) struct LiveSession {
+    id: String,
+    kind: &'static str,
+    workdir: String,
+}
+
+/// Every embedded PTY the backend currently holds — claude, shell and task panes
+/// alike. The frontend's own map answers this in normal operation; this command
+/// exists for the one state where the two disagree: a webview reload empties the
+/// frontend map while every PTY here runs on (#47). Two consumers: the busy
+/// guards (`dormantBusy`/`histBusy` read the ids off the externals poll, so an
+/// orphan reads "running right now" and a second `--resume` can't interleave the
+/// transcript its live process still owns), and startup adoption, which uses
+/// `kind` and `workdir` to rebuild a pane per claude orphan.
+#[tauri::command]
+pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, workdir: s.workdir.clone() })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct ScrollbackSnapshot {
+    /// base64 of the retained bytes — the same encoding `pty-output` uses.
+    data: String,
+    /// Seq of the last chunk the snapshot contains. A queued `pty-output` event
+    /// with `seq` at or below this is already in `data` and must be dropped by
+    /// the adopter; one above it is not and must be written after it.
+    seq: u64,
+}
+
+/// The retained output of one live PTY, for a pane being rebuilt after a webview
+/// reload (#47 stage 2). Read under the same lock the reader appends under, so
+/// the returned seq is exact — see `ScrollBuf` for why that matters.
+#[tauri::command]
+pub(crate) fn read_scrollback(state: State<AppState>, session_id: String) -> Result<ScrollbackSnapshot, String> {
+    let map = state.sessions.lock().unwrap();
+    let s = map.get(&session_id).ok_or_else(|| format!("no such session: {session_id}"))?;
+    let (bytes, seq) = s.scrollback.lock().unwrap().snapshot();
+    Ok(ScrollbackSnapshot { data: STANDARD.encode(&bytes), seq })
+}
+
+#[derive(serde::Serialize)]
 pub(crate) struct Resources {
     /// Bytes/second read from disk, averaged over the gap since the previous sample.
     read_bps: f64,
@@ -953,6 +1055,77 @@ fn fold_io(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- scrollback ring buffer (#47 stage 2) ----------
+
+    /// The invariant adoption stands on: snapshot at ANY point mid-stream, keep the
+    /// chunks whose seq is above the snapshot's, and snapshot + kept chunks must
+    /// equal the stream's tail exactly — no byte doubled, none lost. This is the
+    /// protocol the frontend runs (queue while the snapshot is in flight, drop
+    /// `seq <= snapshot.seq`, write the rest), driven over every split point.
+    #[test]
+    fn snapshot_plus_later_chunks_reconstructs_the_stream_exactly() {
+        let chunks: Vec<&[u8]> = vec![b"alpha\n", b"beta", b"\x1b[31mred\x1b[0m\n", b"tail"];
+        for split in 0..=chunks.len() {
+            let mut sb = ScrollBuf::new();
+            let mut emitted: Vec<(u64, &[u8])> = Vec::new();
+            let mut snap = None;
+            for (i, c) in chunks.iter().enumerate() {
+                if i == split {
+                    snap = Some(sb.snapshot());
+                }
+                emitted.push((sb.push(c), c));
+            }
+            let (mut replay, seq) = snap.unwrap_or_else(|| sb.snapshot());
+            for (s, c) in &emitted {
+                if *s > seq {
+                    replay.extend_from_slice(c);
+                }
+            }
+            let whole: Vec<u8> = chunks.concat();
+            assert_eq!(replay, whole, "split at chunk {split} lost or doubled bytes");
+        }
+    }
+
+    /// The cap keeps the newest bytes, not the oldest — scrollback answers "what
+    /// just happened", so the front is what an overflow must sacrifice.
+    #[test]
+    fn overflow_evicts_the_front_and_keeps_the_tail() {
+        let mut sb = ScrollBuf::new();
+        sb.push(b"old line\n");
+        sb.push(&vec![b'x'; SCROLLBACK_MAX]);
+        let (bytes, _) = sb.snapshot();
+        assert!(bytes.len() <= SCROLLBACK_MAX);
+        assert!(bytes.iter().all(|&b| b == b'x'), "the old line must be gone, not the fill");
+    }
+
+    /// An evicted buffer starts mid-line — likely mid escape sequence, which on
+    /// replay eats characters up to the next terminator — so the snapshot trims to
+    /// the first newline. Before any eviction it must NOT trim: the first bytes a
+    /// young session produced are real output, not a torn line.
+    #[test]
+    fn snapshot_trims_to_a_newline_only_after_eviction() {
+        let mut sb = ScrollBuf::new();
+        sb.push(b"first\nsecond\n");
+        assert_eq!(sb.snapshot().0, b"first\nsecond\n", "no eviction, nothing to trim");
+
+        let mut sb = ScrollBuf::new();
+        // Fill so that eviction leaves a torn fragment ahead of a clean line.
+        sb.push(&vec![b'a'; SCROLLBACK_MAX]);
+        sb.push(b"\ncomplete line\n");
+        let (bytes, _) = sb.snapshot();
+        assert!(bytes.starts_with(b"complete line\n"), "the torn front must go");
+    }
+
+    /// One alternate-screen repaint can be 100% newline-free; trimming would then
+    /// throw away the entire screen, so a no-newline buffer is kept whole.
+    #[test]
+    fn snapshot_keeps_a_newline_free_buffer_whole_even_after_eviction() {
+        let mut sb = ScrollBuf::new();
+        sb.push(&vec![b'y'; SCROLLBACK_MAX + 10]);
+        let (bytes, _) = sb.snapshot();
+        assert_eq!(bytes.len(), SCROLLBACK_MAX);
+    }
 
     /// The whole reason `fold_io` differences per pid instead of over one summed total.
     ///

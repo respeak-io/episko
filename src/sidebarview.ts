@@ -16,12 +16,12 @@ import {
   apiErrText, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, activeId, collapsedRuns, externals, extMirrorId, folderDirty, pastMirrorId,
-  peekPrefs, sessions, stageGroup, wtGroup,
+  accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId,
+  peekPrefs, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, foldRunGroups, type GroupSummary,
-  type ProjGroup, type RunItem, type WtCluster,
+  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import type { GroupDef } from "./projgroups";
 
@@ -290,13 +290,6 @@ function dormantRow(d: Restorable): string {
     <span class="sbranch">${esc(label)}</span>
     <span class="past-tag">${busy ? "busy" : when}</span>
     <span class="sclose" data-forget="${d.id}" title="Remove from list — the conversation stays on disk">✕</span></div>`;
-}
-// A session that's live right now must not be offered for restore: Claude doesn't
-// lock the transcript, so a second --resume of the same id silently interleaves
-// both conversations into one file.
-export function dormantBusy(d: Restorable): boolean {
-  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
-  return externals.some((e) => e.session_id === d.resumeId);
 }
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
