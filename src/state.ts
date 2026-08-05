@@ -162,7 +162,7 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
-// Launch ids of every PTY the BACKEND holds (`live_session_ids`, refreshed on the
+// Launch ids of every PTY the BACKEND holds (`live_sessions`, refreshed on the
 // externals poll, lowercased at the call site). In normal operation this repeats
 // the `sessions` map; the one state where they disagree is a webview reload, which
 // empties the map while every PTY runs on (#47). Those orphans are invisible as

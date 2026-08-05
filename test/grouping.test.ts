@@ -9,8 +9,9 @@ import {
 import {
   allProjects, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
-  nextAfterClose, nextInGroup, orderedSessions, projectList, reactorLabel,
-  reactorState, splitByWorktree, urgencyRank, type ProjGroup, type SidebarSlot,
+  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
+  reactorLabel, reactorState, splitByWorktree, urgencyRank,
+  type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
 import { taskPrefs } from "../src/tasks";
@@ -990,5 +991,34 @@ describe("dormantBusy — a live session must not be offered for restore", () =>
   it("frees the row once the orphan's process exits and the poll catches up", () => {
     setBackendLive(new Set());
     expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
+  });
+});
+
+describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", () => {
+  const live = (o: Partial<{ id: string; kind: string; workdir: string }> = {}) =>
+    ({ id: "o1", kind: "claude", workdir: "/w/epi", ...o });
+
+  it("adopts a claude orphan under its roster identity", () => {
+    const out = orphanAdoptions([live()], [dorm({ id: "o1", resumeId: "rot", project: "Epi!" })]);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe("o1");
+    expect(out[0].meta?.resumeId).toBe("rot");
+    expect(out[0].meta?.project).toBe("Epi!");
+  });
+
+  it("still adopts an orphan the roster forgot, with meta null", () => {
+    // A running conversation is worth more than a tidy label — the caller derives
+    // one from the workdir.
+    const out = orphanAdoptions([live()], []);
+    expect(out).toEqual([{ id: "o1", workdir: "/w/epi", meta: null }]);
+  });
+
+  it("leaves shells and tasks alone — their metadata did not survive the reload", () => {
+    expect(orphanAdoptions([live({ kind: "shell" }), live({ id: "o2", kind: "task" })], [])).toEqual([]);
+  });
+
+  it("never adopts a pane the frontend already has", () => {
+    open(sess({ id: "o1" }));
+    expect(orphanAdoptions([live()], [])).toEqual([]);
   });
 });

@@ -21,7 +21,7 @@ import { renderFoot } from "./footer";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import { dormantBusy, orderedSessions } from "./grouping";
-import { isAgent, type DiffStat, type ExtSession, type Restorable, type Sess } from "./types";
+import { isAgent, type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess } from "./types";
 import {
   accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
@@ -81,10 +81,10 @@ export async function refreshExternals() {
     // has no pane for it and `list_external_sessions` excludes its pid (#47).
     const [list, live] = await Promise.all([
       invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] }),
-      invoke<string[]>("live_session_ids"),
+      invoke<LiveSess[]>("live_sessions"),
     ]);
     setExternals(list);
-    setBackendLive(new Set(live.map((id) => id.toLowerCase())));
+    setBackendLive(new Set(live.map((l) => l.id.toLowerCase())));
     // Scour each external repo for its logo, keyed by the same repo_root the sidebar
     // groups by — otherwise ext-only projects would forever show the accent dot.
     // probeIcon dedupes by key, so this hits the backend at most once per repo.
