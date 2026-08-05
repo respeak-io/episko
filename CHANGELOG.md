@@ -19,6 +19,12 @@ Markers: `+` new · `~` changed · `!` fixed
   is exactly the creation storm behind the occasional `git.exe` `0xc0000142` dialog.
   The cap is now 25, and the viewer's existing truncation note covers the rest — nobody
   reads 300 untracked files in a peek.
+~ **The statusLine ticks every 10 seconds instead of every 3.** The tick is the idle
+  cadence only — an active session's statusLine already re-runs on its own events — and
+  on Windows each tick costs a Git Bash, a curl and a console, per session, on or off
+  screen, forever. Nothing it carries (model, context %, cost, duration, rate limits)
+  moves faster than minutes while a session sits idle, so this is the same figures at a
+  third of the process churn.
 
 + **A task chain is one row, and it opens into a tiled stage.** A `dependsOn` launch
   still runs one pane per step — an exit code per step is what the phase glyphs are —

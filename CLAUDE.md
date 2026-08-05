@@ -1102,9 +1102,10 @@ And the things that hold however the files are arranged:
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn that died is not a turn that finished, and only one hook knows which.** Claude Code fires `StopFailure` (not `Stop`) when the API kills a turn — a 529, a rate limit, a dead key — carrying an `error` enum (`overloaded`, `rate_limit`, `authentication_failed`, `max_output_tokens`, …) and the `error_details` text the pane shows. Everything *after* that point looks identical to a clean finish: the same 60-second idle `Notification` (`notification_type: "idle_prompt"`) arrives either way. Unguarded it relabelled the turn "your turn" and turned the red ✕ green a minute after the failure — which shipped, and is why `Sess.apiErr` exists. It is set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit` / `PreToolUse` / `SessionStart` / `SessionEnd`), and **`endTurn` is the single place that decides done vs. error** — both `Stop` and the idle nudge go through it, and the run-on-stop rule is skipped while it's set. Every surface that spells a state out reads `phaseText(s)`, not `PILL_TEXT[s.phase]`, so the reason travels with the glyph: "API overloaded" means wait, "auth failed" means go fix your credentials, and a bare ✕ means neither.
 - **A `localStorage` write on the telemetry path is a disk write, and there are three
-  cadences here — pick deliberately.** The statusLine fires **every 3s per session**
-  (`refreshInterval` in `write_instrument_settings`), so anything `applyStatusline`
-  reaches runs ~once a second on a working fleet. Measured on a real store: `cc-usage`
+  cadences here — pick deliberately.** The statusLine fires **every 10s per session**
+  (`refreshInterval` in `write_instrument_settings`) plus event-driven re-runs while a
+  session is active, so anything `applyStatusline` reaches still runs several times a
+  minute on a working fleet. Measured on a real store: `cc-usage`
   980 chars, `cc-usage-detail` **24,586**, `cc-cost-base` 718, `cc-icons` 91,882.
   - **Eager** — `cc-usage`, the day's money. Small, and a crash-lost dollar cannot be
     reconstructed from anything.

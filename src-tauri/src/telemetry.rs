@@ -208,7 +208,17 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
 
     // No `shell` here: Claude Code doesn't define one for the statusLine, so setting
     // it would be silently ignored while reading as though the shell were pinned.
-    let statusline = serde_json::json!({ "type": "command", "command": statusline_cmd, "refreshInterval": 3, "padding": 0 });
+    //
+    // `refreshInterval` is the *idle* cadence only — an active session's statusLine is
+    // already re-run event-driven (new assistant message, /compact, a mode change) —
+    // and it is baked into the settings file at launch, so it ticks for every running
+    // session forever, on or off screen. On Windows each tick is a Git Bash + curl +
+    // console (no `shell` field to pin it), which at 3s measured ~6 process spawns a
+    // second on a 3-session fleet. Nothing read off the statusLine (model, context %,
+    // cost, duration, rate limits) moves faster than minutes while a session is idle,
+    // so 10s keeps the figures and the frontend's un-end backstop alive at a third of
+    // the cost. Don't drop it entirely: idle sessions have no events to ride.
+    let statusline = serde_json::json!({ "type": "command", "command": statusline_cmd, "refreshInterval": 10, "padding": 0 });
 
     let settings = serde_json::json!({
         "statusLine": statusline,

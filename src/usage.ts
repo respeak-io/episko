@@ -64,7 +64,7 @@ export function dayKeyOf(ms: number) { const d = new Date(ms); return `${d.getFu
  * `cc-usage-detail` is *attribution*, it is **25× bigger** (24,586 chars over the same
  * 33 days, and growing with every session now that it carries a per-session map), and
  * it was written on the same trigger — every cost delta, so up to once per session per
- * `refreshInterval` (3s). That is a 25KB `stringify` + synchronous `setItem` roughly
+ * `refreshInterval` (10s). That is a 25KB `stringify` + synchronous `setItem` roughly
  * once a second on a working fleet, to record a breakdown read once a day.
  *
  * So the detail write is floored. Divergence after a crash is not a silent loss:
@@ -464,7 +464,7 @@ function saveBaselines() {
 export function costDelta(conv: string, total: number): number {
   const prev = costBaseline.get(conv)?.t;
   costBaseline.set(conv, { t: total, at: Date.now() });
-  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (3s) per
+  // **Only when the figure moved.** A statusLine fires every `refreshInterval` (10s) per
   // session whether or not anything was spent, and this used to serialise and write the
   // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
   // forever. An unchanged total leaves nothing to persist but `at`, and `at` exists
