@@ -146,6 +146,14 @@ export function prefillInputs(r: Runnable, project: string): Runnable | null {
   return applyInputs(r, vals);
 }
 
+/// The attended run surfaces' shared first step, so Run and re-run cannot drift:
+/// `withParams` is the explicit *Run with parameters…* verb and always asks when
+/// there is anything to ask about; otherwise reuse what can be reused. `null`
+/// means the caller should open the prompt.
+export function resolveRunInputs(r: Runnable, project: string, withParams = false): Runnable | null {
+  return withParams && r.inputs.length ? null : prefillInputs(r, project);
+}
+
 // The most recent discovery result, so a re-run doesn't need the picker open.
 export const lastRunnableById = new Map<string, Runnable>();
 

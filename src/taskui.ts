@@ -32,7 +32,7 @@ import { activeId, dashMirror, externals, extMirrorId, sessions } from "./state"
 import { bumpFrec, frecScore } from "./palette";
 import {
   applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
-  prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, RUNNERS,
+  prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
   runnerFor, setRunner, stopRuleBlocked, stopRules, toggleHidden, togglePin,
   toggleStopRule, trustProject,
   type Provider, type Runner, type TaskLaunchOpts,
@@ -482,12 +482,15 @@ function pickRun(how: "run" | "pin" | "params") {
 
 /// Start a runnable, asking only for what it cannot answer itself. `withParams` is
 /// the explicit *Run with parameters…* verb and always asks — that is the whole
-/// difference between the two buttons, and every surface that runs a task goes
-/// through here so they cannot drift apart.
-export function runRunnable(r: Runnable, project: string, opts: TaskLaunchOpts, withParams = false) {
-  const ready = withParams && r.inputs.length ? null : prefillInputs(r, project);
-  if (!ready) { openInputPrompt(r, project, opts); return; }
+/// difference between the two buttons. Every attended surface either calls this
+/// (the picker, ⌘K, ⌘⇧B) or shares `resolveRunInputs` (re-run, which closes the
+/// old pane first), so the verbs cannot drift apart. Returns whether it launched,
+/// so a chord with no picker on screen can toast only when something started.
+export function runRunnable(r: Runnable, project: string, opts: TaskLaunchOpts, withParams = false): boolean {
+  const ready = resolveRunInputs(r, project, withParams);
+  if (!ready) { openInputPrompt(r, project, opts); return false; }
   void launchWithDeps(ready, project, opts);
+  return true;
 }
 
 /// VS Code's ⌘⇧B / ⌘⇧T — run the project's *default* build (or test) task.
@@ -519,11 +522,10 @@ export async function runDefaultTask(kind: "build" | "test") {
   dlog("info", `${kind} task · ${pick.id} · ${c.project}`);
   bumpFrec("task:" + pick.id);
   const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
-  // Even the one-chord path stops for an ${input:…}: the alternative is a dialog-less
-  // hang or a command with a literal ${input:x} in it.
-  if (pick.inputs.length) { openInputPrompt(pick, c.project, o); return; }
-  toast(`▶ ${pick.label}`);
-  void launchWithDeps(pick, c.project, o);
+  // The chord prefills like every other run surface — the dialog opens only for an
+  // input that has no answer anywhere, since the alternative is a dialog-less hang
+  // or a command with a literal ${input:x} in it.
+  if (runRunnable(pick, c.project, o)) toast(`▶ ${pick.label}`);
 }
 
 // Trusting a folder means Episko may execute code from it to enumerate tasks, so

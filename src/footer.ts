@@ -60,13 +60,23 @@ function paintFootRl(pctId: string, resetId: string, f: Forecast) {
 // The forecast presentation (foreText / verdictChip / usageRow) and the whole
 // Usage analytics panel now live in ./usageview. What stays here is what talks to
 // the DOM or the backend: the popup below, and refreshTokens.
+
+// While a popover is open, renderFoot/renderAttn repaint it on every telemetry
+// event — and an innerHTML assignment between mousedown and mouseup drops the
+// click on its data-sel buttons. Same guard as renderSidebar: assign only when
+// the markup actually changed (docs/architecture.md).
+let lastUsagePop = "", lastCostPop = "", lastAttnPop = "";
+
 function renderUsagePop() {
   const noData = rl.h5 == null && rl.d7 == null;
-  $("usagePop").innerHTML = `<div class="up-h">Claude usage limits</div>
+  const html = `<div class="up-h">Claude usage limits</div>
     ${usageRow("Session", "5-hour window", forecast5h())}
     ${usageRow("Weekly", "7-day window", forecast7d())}
     <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live · account-wide</span></div>
     ${noData ? `<div class="up-note">Appears once a running session reports a statusLine.</div>` : ""}`;
+  if (html === lastUsagePop) return;
+  lastUsagePop = html;
+  $("usagePop").innerHTML = html;
 }
 function openUsagePop() {
   const r = $("fUsageSeg").getBoundingClientRect();
@@ -87,7 +97,10 @@ export function closeUsagePop() { $("usagePop").classList.remove("show"); }
 // `cc-usage-detail` carries the per-project split, and per-session since this shipped.
 function renderCostPop() {
   const live = new Set([...sessions.values()].map((s) => s.id));
-  $("costPop").innerHTML = costPopHtml(daySpend(usageDetail, todayKey(), usage[todayKey()] || 0), live);
+  const html = costPopHtml(daySpend(usageDetail, todayKey(), usage[todayKey()] || 0), live);
+  if (html === lastCostPop) return;
+  lastCostPop = html;
+  $("costPop").innerHTML = html;
 }
 function openCostPop() {
   const r = $("fCostSeg").getBoundingClientRect();
@@ -190,11 +203,12 @@ function openAttnPop(list: Sess[]) {
   const r = $("attnBadge").getBoundingClientRect();
   const pop = $("attnPop");
   closeFootMenus("attnPop");
-  pop.innerHTML = list.map((s) => {
+  const html = list.map((s) => {
     const k = statusKey(s);
     const reason = s.attention || phaseText(s);
     return `<button class="ap-item" data-sel="${s.id}"><span class="ap-dot ${GCLASS[k]}">${GLYPH[k]}</span><span class="ap-main"><span class="ap-proj">${esc(s.project)}</span><span class="ap-ttl">${esc(badgeLabel(s))}</span></span><span class="ap-reason ${GCLASS[k]}">${esc(abbr(reason, 42))}</span></button>`;
   }).join("");
+  if (html !== lastAttnPop) { lastAttnPop = html; pop.innerHTML = html; }
   pop.style.right = Math.max(8, window.innerWidth - r.right) + "px";
   pop.style.left = "auto";
   pop.style.top = (r.bottom + 6) + "px";
