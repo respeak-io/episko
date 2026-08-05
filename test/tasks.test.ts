@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { InputSpec, Runnable } from "../src/types";
+import { runElapsed, taskStateText, type InputSpec, type Runnable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  applyInputs, applyRunner, execCmd, exitWaiters, lastRunnableById, launchWithDeps,
-  prefillInputs, rememberedInput, rememberInput, resolveDeps, setTaskLauncher,
-  setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
+  applyInputs, applyRunner, execCmd, exitWaiters, findDepCycle, lastRunnableById,
+  launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps,
+  setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
 } from "../src/tasks";
 
@@ -12,7 +12,8 @@ const run = (o: Partial<Runnable> = {}): Runnable => ({
   id: "npm:test", label: "test", detail: null, source: "npm", sourceFile: "package.json",
   group: null, exec: { mode: "argv", program: "npm", args: ["run", "test"] },
   cwd: "/w/epi", env: {}, background: false, inputs: [],
-  dependsOn: [], dependsOrder: "parallel", blocked: null, ...o,
+  dependsOn: [], dependsOrder: "parallel", blocked: null,
+  compound: false, defaultFor: null, ...o,
 });
 const inputSpec = (o: Partial<InputSpec> = {}): InputSpec =>
   ({ id: "name", kind: "promptString", description: "Name", default: null, options: [], password: false, optional: false, ...o });
@@ -287,7 +288,7 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
 
 describe("launchWithDeps — the chain", () => {
   it("launches straight away when there is nothing to wait for", async () => {
-    await expect(launchWithDeps(run(), "epi", {})).resolves.toBe("run1");
+    await expect(launchWithDeps(run(), "epi", {})).resolves.toEqual({ ok: true, id: "run1" });
     expect(labels()).toEqual(["test"]);
   });
   it("runs dependencies before the task itself", async () => {
@@ -298,7 +299,7 @@ describe("launchWithDeps — the chain", () => {
     finish("run1", 0);
     await settle();
     expect(labels()).toEqual(["build", "test"]);
-    await expect(p).resolves.toBe("run2");
+    await expect(p).resolves.toEqual({ ok: true, id: "run2" });
   });
   it("starts parallel dependencies together — VS Code's default", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
@@ -308,7 +309,7 @@ describe("launchWithDeps — the chain", () => {
     finish("run2", 0); finish("run1", 0);
     await settle();
     expect(labels()).toEqual(["a", "b", "test"]);
-    await expect(p).resolves.toBe("run3");
+    await expect(p).resolves.toEqual({ ok: true, id: "run3" });
   });
   it("holds each sequence dependency until the previous one exits", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
@@ -320,7 +321,7 @@ describe("launchWithDeps — the chain", () => {
     expect(labels()).toEqual(["a", "b"]);
     finish("run2", 0);
     await settle();
-    await expect(p).resolves.toBe("run3");
+    await expect(p).resolves.toEqual({ ok: true, id: "run3" });
   });
   it("does not test a build that didn't happen", async () => {
     seed(run({ id: "npm:build", label: "build" }));
@@ -329,7 +330,7 @@ describe("launchWithDeps — the chain", () => {
     finish("run1", 1); // the build failed
     await settle();
     expect(labels()).toEqual(["build"]);
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
     expect(toasts).toEqual([expect.stringContaining("a dependency failed")]);
   });
   it("stops a sequence at the first failure instead of running the rest", async () => {
@@ -339,7 +340,7 @@ describe("launchWithDeps — the chain", () => {
     finish("run1", 1);
     await settle();
     expect(labels()).toEqual(["a"]); // b never started
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("still waits for every parallel dependency before giving up", async () => {
     // Parallel means they all run; the *result* is the conjunction.
@@ -351,7 +352,7 @@ describe("launchWithDeps — the chain", () => {
     expect(labels()).toEqual(["a", "b"]);
     finish("run2", 0);
     await settle();
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("treats a dependency that would not start at all as a failure", async () => {
     seed(run({ id: "npm:build", label: "build", blocked: "needs an editor" }));
@@ -359,7 +360,7 @@ describe("launchWithDeps — the chain", () => {
     const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
     await settle();
     expect(labels()).toEqual([]);
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("runs the whole chain when a dependency has dependencies of its own", async () => {
     seed(run({ id: "npm:gen", label: "gen" }), run({ id: "npm:build", label: "build", dependsOn: ["gen"] }));
@@ -372,7 +373,7 @@ describe("launchWithDeps — the chain", () => {
     finish("run2", 0);
     await settle();
     expect(labels()).toEqual(["gen", "build", "test"]);
-    await expect(p).resolves.toBe("run3");
+    await expect(p).resolves.toEqual({ ok: true, id: "run3" });
   });
   it("does not run a task whose dependency label matches nothing", async () => {
     // A renamed build is exactly as dangerous as a failed one: testing against
@@ -381,7 +382,7 @@ describe("launchWithDeps — the chain", () => {
     await settle();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
     expect(labels()).toEqual([]);
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("launches nothing at all when the chain is a cycle", async () => {
     seed(run({ id: "npm:a", label: "a", dependsOn: ["test"] }), run({ id: "npm:test", label: "test", dependsOn: ["a"] }));
@@ -389,7 +390,7 @@ describe("launchWithDeps — the chain", () => {
     await settle();
     expect(toasts[0]).toMatch(/dependency cycle/);
     expect(labels()).toEqual([]); // neither member runs half a chain
-    await expect(p).resolves.toBeNull();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("narrates an unresolved dependency to the debug console", async () => {
     const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
@@ -406,7 +407,12 @@ describe("launchWithDeps — the chain", () => {
     expect(dep.focus).toBe(false);            // an unattended run stays unattended…
     expect(dep.colorKey).toBe("/w/epi");
     expect(dep.forSession).toBeUndefined();   // …but the build step isn't verifying a turn
-    expect(dep.discoveredIn).toBeUndefined(); // and must resolve its own source root
+    // `discoveredIn` IS inherited, and this assertion used to say the opposite. It is
+    // the directory *discovery ran in*, not the parent's cwd, and a dependency comes
+    // out of that same discovery result — so withholding it only made `run.root` fall
+    // back to the repo root, which mis-clustered the pane, pointed reveal-source at
+    // the wrong folder, and let the cwd preference override a declared `options.cwd`.
+    expect(dep.discoveredIn).toBe("/w/epi/sub");
   });
   it("keeps the parent's own identity intact", async () => {
     seed(run({ id: "npm:build", label: "build" }));
@@ -435,5 +441,275 @@ describe("launchWithDeps — the chain", () => {
     await settle();
     await p;
     expect(logs).toContain("warn task npm:test skipped: dependency failed");
+  });
+});
+
+describe("launchWithDeps — compound tasks and background dependencies", () => {
+  // The shape this exists for, taken from a real tasks.json:
+  //   "Dev: Frontend + Backend" -> dependsOn [vite dev, uvicorn --reload], no command
+  // Both dependencies are servers that never exit. Awaiting them hung the chain
+  // forever; and the compound itself has nothing to spawn.
+  const server = (label: string) => run({ id: "vscode:" + label, label, background: true });
+  const compound = (deps: string[]) =>
+    run({ id: "vscode:dev", label: "Dev: Frontend + Backend", compound: true,
+          defaultFor: "build", dependsOn: deps, exec: { mode: "shell", line: "" } });
+
+  it("starts a whole stack of servers without waiting for any of them to exit", async () => {
+    seed(server("vite dev"), server("uvicorn"));
+    const p = launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", {});
+    await settle();
+    // Nothing has exited and nothing ever will — yet the chain is complete.
+    expect(labels()).toEqual(["vite dev", "uvicorn"]);
+    await expect(p).resolves.toEqual({ ok: true, id: null });
+  });
+
+  it("launches no pane for the compound itself — its dependencies were the work", async () => {
+    seed(server("vite dev"));
+    await launchWithDeps(compound(["vite dev"]), "epi", {});
+    await settle();
+    expect(labels()).not.toContain("Dev: Frontend + Backend");
+  });
+
+  it("groups the stack it started, so it folds into one sidebar row", async () => {
+    seed(server("vite dev"), server("uvicorn"));
+    await launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", {});
+    await settle();
+    const gids = new Set(launched.map((l) => l.opts.groupId));
+    expect(gids.size).toBe(1);
+    expect([...gids][0]).toBeTruthy();
+    expect(launched[0].opts.groupLabel).toBe("Dev: Frontend + Backend");
+  });
+
+  it("still fails the chain when a dependency cannot be launched at all", async () => {
+    seed(server("vite dev"));
+    launchFails = ["vite dev"];
+    const p = launchWithDeps(compound(["vite dev"]), "epi", {});
+    await settle();
+    await expect(p).resolves.toEqual({ ok: false, id: null });
+    expect(toasts).toEqual([expect.stringContaining("a dependency failed")]);
+  });
+
+  it("a NON-background dependency is still waited for", async () => {
+    // The fix must not turn every dependency into fire-and-forget: "build then test"
+    // only means anything if the build's exit code is actually read.
+    seed(run({ id: "npm:build", label: "build" }));
+    const p = launchWithDeps(run({ label: "test", dependsOn: ["build"] }), "epi", {});
+    await settle();
+    expect(labels()).toEqual(["build"]);   // test has NOT started
+    finish("run1", 0);
+    await settle();
+    expect(labels()).toEqual(["build", "test"]);
+    await expect(p).resolves.toEqual({ ok: true, id: "run2" });
+  });
+
+  it("a compound nested as a dependency satisfies its parent", async () => {
+    // The bug this guards: a compound returns no pane id, and reading that absence
+    // as failure would make any chain that depends on one fail for no reason.
+    seed(server("vite dev"), compound(["vite dev"]));
+    const p = launchWithDeps(
+      run({ label: "smoke", dependsOn: ["Dev: Frontend + Backend"] }), "epi", {});
+    await settle();
+    expect(labels()).toEqual(["vite dev", "smoke"]);
+    await expect(p).resolves.toEqual({ ok: true, id: "run2" });
+  });
+
+  it("refuses a compound as a run-on-stop rule — a failure would have no pane", () => {
+    expect(stopRuleBlocked(compound(["vite dev"]))).toMatch(/no pane to report to/);
+  });
+});
+
+describe("launchWithDeps — what a dependency inherits", () => {
+  it("passes the discovery directory down, so a dep's root is its checkout", () => {
+    // Clearing this fell back to the repo root, which put reveal-source in the wrong
+    // folder, clustered the pane under the wrong checkout, and let the "run in repo
+    // root" preference override a dependency's own declared cwd.
+    seed(run({ id: "npm:build", label: "build" }));
+    void launchWithDeps(run({ dependsOn: ["build"] }), "epi", { discoveredIn: "/w/wt-feat" });
+    return settle().then(() => {
+      expect(launched[0].r.label).toBe("build");
+      expect(launched[0].opts.discoveredIn).toBe("/w/wt-feat");
+    });
+  });
+  it("still withholds forSession — a dep is not the run being verified", async () => {
+    seed(run({ id: "npm:build", label: "build" }));
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", { forSession: "sess-1" });
+    await settle();
+    expect(launched[0].opts.forSession).toBeUndefined();
+    finish("run1", 0);
+    await settle();
+    // The task that owns the rule keeps it.
+    expect(launched[1].opts.forSession).toBe("sess-1");
+    await p;
+  });
+});
+
+describe("taskStateText — a finished run's duration must stop moving", () => {
+  // Only `phase` and `run` are read, so the fixture stays to those.
+  const t = (run: Partial<NonNullable<Sess["run"]>>, phase: Sess["phase"] = "working"): Sess =>
+    ({ phase, kind: "task", run: {
+      id: "npm:x", label: "x", source: "npm", sourceFile: "package.json", cmd: "x",
+      background: false, startedAt: 1_000_000, exitCode: null, tail: [], root: "/w", ...run,
+    } } as Sess);
+  const NOW = 1_000_000 + 83_000;   // 1m 23s after the start
+
+  it("freezes a finished run at its exit, not at now", () => {
+    // The bug: every repaint measured a *completed* step against Date.now(), so four
+    // steps that each took under a second all read the same ever-growing "1m 23s".
+    const done = t({ exitCode: 0, endedAt: 1_000_000 + 419 }, "done");
+    expect(taskStateText(done, NOW)).toBe("0s");
+    // …and it stays put as the clock moves on.
+    expect(taskStateText(done, NOW + 600_000)).toBe("0s");
+  });
+  it("still counts up while the run is actually going", () => {
+    expect(taskStateText(t({}), NOW)).toBe("1m 23s");
+    expect(taskStateText(t({}), 1_000_000 + 4_000)).toBe("4s");
+  });
+  it("reads bg for a background run for as long as it lives, then its duration", () => {
+    expect(taskStateText(t({ background: true }), NOW)).toBe("bg");
+    // A server that finally exits is no longer "bg" — it has a real duration.
+    expect(taskStateText(t({ background: true, exitCode: 0, endedAt: 1_000_000 + 60_000 }, "done"), NOW))
+      .toBe("1m 0s");
+  });
+  it("reports a failure by code, which has no duration to show", () => {
+    expect(taskStateText(t({ exitCode: 3, endedAt: NOW }, "error"), NOW)).toBe("exit 3");
+  });
+  it("falls back to now for a run that exited before endedAt was recorded", () => {
+    // A pane restored from an older build has no endedAt; better an approximate
+    // duration than a blank or a crash.
+    expect(taskStateText(t({ exitCode: 0 }, "done"), NOW)).toBe("1m 23s");
+  });
+  it("says nothing for a pane that is not a run", () => {
+    expect(taskStateText({ phase: "idle", kind: "claude" } as Sess, NOW)).toBe("");
+  });
+
+  // The inspector's "Took" row, the sidebar column and a tiled pane's caption each had
+  // their own `Date.now() - startedAt`, and fixing two of the three is how the bug
+  // survived being "fixed". They all call this now, so pin it directly.
+  describe("runElapsed — the one source every duration reads", () => {
+    const r = (o: Partial<NonNullable<Sess["run"]>>) => t(o).run!;
+    it("stops at the exit for a finished run, whatever the clock says", () => {
+      const done = r({ exitCode: 0, endedAt: 1_000_000 + 419 });
+      expect(runElapsed(done, NOW)).toBe("0s");
+      expect(runElapsed(done, NOW + 3_600_000)).toBe("0s");
+    });
+    it("freezes a FAILED run too — the inspector shows a duration beside the exit code", () => {
+      const bad = r({ exitCode: 1, endedAt: 1_000_000 + 2_000 });
+      expect(runElapsed(bad, NOW)).toBe("2s");
+    });
+    it("keeps counting while the run is still going", () => {
+      expect(runElapsed(r({}), NOW)).toBe("1m 23s");
+    });
+  });
+});
+
+describe("launchWithDeps — a DAG is walked once, not once per path", () => {
+  // The real shape, from a `Dev: Frontend + Backend` that launched 27 panes for 11
+  // tasks: several tasks name the same dependency, so every path to it started it
+  // again. `uv sync` ran six times, `pnpm install` and `docker compose up` four each.
+  const seedDiamond = () => seed(
+    run({ id: "vscode:pnpm-install", label: "pnpm install" }),
+    run({ id: "vscode:fe-pw", label: "fe playwright", dependsOn: ["pnpm install"] }),
+    run({ id: "vscode:vite", label: "vite dev", background: true, dependsOn: ["pnpm install", "fe playwright"] }),
+    run({ id: "vscode:uv", label: "uv sync" }),
+    run({ id: "vscode:be-pw", label: "be playwright", dependsOn: ["uv sync"] }),
+    run({ id: "vscode:uvicorn", label: "uvicorn", background: true, dependsOn: ["uv sync", "be playwright"] }),
+  );
+  const dev = () => run({
+    id: "vscode:dev", label: "Dev", compound: true, dependsOrder: "parallel",
+    dependsOn: ["vite dev", "uvicorn"], exec: { mode: "shell", line: "" },
+  });
+  // Exit whatever has started under these labels, the way the pty-exit listener does.
+  const finishAll = async (...ls: string[]) => {
+    for (const l of ls) for (const x of launched.filter((y) => y.r.label === l)) finish(x.id, 0);
+    await settle();
+  };
+
+  it("starts each distinct task exactly once per launch", async () => {
+    seedDiamond();
+    const p = launchWithDeps(dev(), "epi", {});
+    await settle();
+    // Both leaves are named by two different dependents. One launch each, and the
+    // dependents wait rather than starting their own copy.
+    expect(labels().sort()).toEqual(["pnpm install", "uv sync"]);
+    await finishAll("pnpm install", "uv sync");
+    expect(labels().sort()).toEqual(["be playwright", "fe playwright", "pnpm install", "uv sync"]);
+    await finishAll("fe playwright", "be playwright");
+    expect(labels().filter((l) => l === "pnpm install")).toHaveLength(1);
+    expect(labels().filter((l) => l === "uv sync")).toHaveLength(1);
+    expect(labels().sort()).toEqual(
+      ["be playwright", "fe playwright", "pnpm install", "uv sync", "uvicorn", "vite dev"]);
+    await expect(p).resolves.toEqual({ ok: true, id: null });
+  });
+
+  it("lets both dependents share ONE wait on a shared dependency", async () => {
+    // exitWaiters holds a single resolver per session id, so two dependents each
+    // calling waitForExit on the same pane would clobber one another and one branch
+    // would hang for ever. They await one promise now — if they did not, the chain
+    // below would never reach the servers.
+    seedDiamond();
+    const p = launchWithDeps(dev(), "epi", {});
+    await settle();
+    await finishAll("pnpm install", "uv sync");
+    await finishAll("fe playwright", "be playwright");
+    expect(labels()).toContain("vite dev");
+    expect(labels()).toContain("uvicorn");
+    await expect(p).resolves.toEqual({ ok: true, id: null });
+  });
+
+  it("still fails every dependent when the shared dependency fails", async () => {
+    seedDiamond();
+    launchFails = ["pnpm install"];
+    const p = launchWithDeps(dev(), "epi", {});
+    await settle();
+    await finishAll("uv sync");          // let the other half of the fan-out finish
+    await finishAll("be playwright");
+    // The frontend half never got past its install, so no server on that side.
+    expect(labels()).not.toContain("vite dev");
+    await expect(p).resolves.toEqual({ ok: false, id: null });
+  });
+
+  it("keeps the whole chain in one run group", async () => {
+    seedDiamond();
+    const p = launchWithDeps(dev(), "epi", {});
+    await settle();
+    await finishAll("pnpm install", "uv sync");
+    await finishAll("fe playwright", "be playwright");
+    expect(new Set(launched.map((l) => l.opts.groupId)).size).toBe(1);
+    await p;
+  });
+});
+
+describe("findDepCycle — caught before anything launches", () => {
+  it("finds a cycle and names the loop", () => {
+    seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
+         run({ id: "b", label: "b", dependsOn: ["a"] }));
+    expect(findDepCycle(lastRunnableById.get("a")!)).toEqual(["a", "b", "a"]);
+  });
+  it("finds a cycle that only closes further down", () => {
+    seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
+         run({ id: "b", label: "b", dependsOn: ["c"] }),
+         run({ id: "c", label: "c", dependsOn: ["b"] }));
+    expect(findDepCycle(lastRunnableById.get("a")!)).toEqual(["b", "c", "b"]);
+  });
+  it("does NOT mistake a diamond for a cycle", () => {
+    // The whole point: `d` is reachable by two paths and that is perfectly legal.
+    seed(run({ id: "a", label: "a", dependsOn: ["b", "c"] }),
+         run({ id: "b", label: "b", dependsOn: ["d"] }),
+         run({ id: "c", label: "c", dependsOn: ["d"] }),
+         run({ id: "d", label: "d" }));
+    expect(findDepCycle(lastRunnableById.get("a")!)).toBeNull();
+  });
+  it("ignores a label that resolves to nothing — that is resolveDeps's error", () => {
+    seed(run({ id: "a", label: "a", dependsOn: ["ghost"] }));
+    expect(findDepCycle(lastRunnableById.get("a")!)).toBeNull();
+  });
+  it("stops the launch before a single pane starts", async () => {
+    seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
+         run({ id: "b", label: "b", dependsOn: ["a"] }));
+    const p = launchWithDeps(lastRunnableById.get("a")!, "epi", {});
+    await settle();
+    expect(labels()).toEqual([]);          // nothing half-started
+    expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
+    await expect(p).resolves.toEqual({ ok: false, id: null });
   });
 });

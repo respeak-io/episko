@@ -14,8 +14,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, stageGen } from "./dom";
-import { esc, fmtShort, tilde } from "./format";
-import { apiErrText, isAgent, phaseText, statusKey, type Sess } from "./types";
+import { esc, tilde } from "./format";
+import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
 import { sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
@@ -155,7 +155,7 @@ function renderTaskInspector(s: Sess) {
       <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
       <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(fmtShort(Date.now() - r.startedAt))}</span></div>
+      <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(runElapsed(r))}</span></div>
       ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
     </div>
     <div class="tacts">
