@@ -821,7 +821,7 @@ pub(crate) fn git_branch(workdir: String) -> Option<String> {
     if b.is_empty() || b == "HEAD" { None } else { Some(b) }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub(crate) struct HeadInfo {
     /// Branch name when on a branch; None when HEAD is detached.
     branch: Option<String>,
@@ -829,31 +829,109 @@ pub(crate) struct HeadInfo {
     short: String,
 }
 
+/// The two git directories a working directory answers to, resolved without
+/// spawning git. `.0` is the **per-worktree** dir (where `HEAD` lives), `.1` the
+/// **common** dir (where `refs/` and `packed-refs` live). They are the same path
+/// for a main checkout and differ for a linked worktree, which is the whole reason
+/// this returns a pair: a worktree has its own `HEAD` but shares every branch ref.
+///
+/// Mirrors `repo_root_of`'s walk — including its refusal to search past a `.git`
+/// file whose target is gone (a pruned worktree is "not a repository" to git, and
+/// following the dangling pointer would answer for a repo that has forgotten it).
+fn git_dirs(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let phys = physical_cwd(cwd);
+    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
+    while let Some(d) = dir {
+        let dot = d.join(".git");
+        match std::fs::metadata(&dot) {
+            Ok(m) if m.is_dir() => return Some((dot.clone(), dot)),
+            Ok(_) => {
+                let link = std::fs::read_to_string(&dot).ok()?;
+                let target = link.trim().strip_prefix("gitdir:")?.trim();
+                let abs = d.join(target);
+                if !abs.exists() {
+                    return None;
+                }
+                let flat = abs.to_string_lossy().replace('\\', "/");
+                // …/<repo>/.git/worktrees/<name> → common is …/<repo>/.git
+                let common = match flat.rfind("/.git/worktrees/") {
+                    Some(i) => std::path::PathBuf::from(format!("{}/.git", &flat[..i])),
+                    // A submodule's `…/.git/modules/<name>` is its own everything.
+                    None => abs.clone(),
+                };
+                return Some((abs, common));
+            }
+            Err(_) => dir = d.parent(),
+        }
+    }
+    None
+}
+
+/// Resolve a ref name (`refs/heads/main`) to its full sha, reading the loose file
+/// first and falling back to `packed-refs`. `None` means the ref does not exist —
+/// which for HEAD's target is exactly the unborn-branch case (`git init`, no commit
+/// yet), and callers depend on telling that apart from a detached HEAD.
+fn resolve_ref(common: &std::path::Path, name: &str) -> Option<String> {
+    let sha = |s: &str| {
+        let t = s.trim();
+        // A loose ref may itself be symbolic; refs that deep are vanishingly rare
+        // and git resolves them recursively, so decline rather than guess.
+        (t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| t.to_string())
+    };
+    if let Ok(t) = std::fs::read_to_string(common.join(name)) {
+        if let Some(s) = sha(&t) {
+            return Some(s);
+        }
+    }
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    packed.lines().find_map(|l| {
+        let l = l.trim();
+        if l.starts_with('#') || l.starts_with('^') {
+            return None;
+        }
+        let (s, r) = l.split_once(' ')?;
+        (r.trim() == name).then(|| sha(s)).flatten()
+    })
+}
+
 /// Live HEAD of a working directory, so the UI can show the branch that is
 /// *actually* checked out rather than the one a worktree was created with (a
-/// worktree shows whatever branch is checked out, and that can change). Returns
-/// None if the dir isn't a git repo. LC_ALL=C keeps output locale-independent.
+/// worktree shows whatever branch is checked out, and that can change).
+///
+/// **Read off the filesystem, with no `git` process at all** — the same trade
+/// `worktree_heads` and `repo_root_of` already make, and for a sharper reason: this
+/// is on the 4s branch poll, once per open session. It used to cost *two* spawns
+/// each (`rev-parse --short HEAD`, then `symbolic-ref`), so a three-session fleet
+/// spent 1.5 git processes per second re-reading a file — and on Windows, where
+/// process creation dominates, that was a measurable share of the app's whole load.
+///
+/// Returns `None` for anything that isn't a repo **with at least one commit**, and
+/// the "with a commit" half is load-bearing rather than incidental: `projmenu.ts`
+/// uses exactly that to drop the *Commit graph…* row for a freshly `git init`ed
+/// folder. An unborn HEAD still names a branch in `.git/HEAD`, so it is only the
+/// missing ref that distinguishes it — which is why `resolve_ref` failing is
+/// treated as "no repo" and not as "detached".
 #[tauri::command(async)]
 pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
-    let git = |args: &[&str]| {
-        sys_command("git")
-            .env("LC_ALL", "C")
-            .arg("-C").arg(&workdir)
-            .args(args)
-            .output()
+    let (gitdir, common) = git_dirs(&workdir)?;
+    let text = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let t = text.trim();
+    let (branch, full) = match t.strip_prefix("ref:") {
+        Some(r) => {
+            let name = r.trim();
+            // Unborn: HEAD names a branch that has no commit, so there is no ref to
+            // resolve. git calls that "not a repository with a HEAD", and so do we.
+            let sha = resolve_ref(&common, name)?;
+            (Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string()), sha)
+        }
+        // Detached: HEAD holds the sha itself.
+        None if t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()) => (None, t.to_string()),
+        None => return None,
     };
-    let head = git(&["rev-parse", "--short", "HEAD"]).ok()?;
-    if !head.status.success() {
-        return None;
-    }
-    let short = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    // symbolic-ref succeeds only when on a branch; fails on detached HEAD.
-    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    Some(HeadInfo { branch, short })
+    // Fixed at 7 rather than reproducing git's auto-abbreviation (`core.abbrev`
+    // widens with repo size). This is only ever shown as the "(detached @…)" label,
+    // where a stable prefix is what the display wants; nothing compares it to git's.
+    Some(HeadInfo { branch, short: full.chars().take(7).collect() })
 }
 
 /// The same answer as `git_repo_info`'s first half — the repo's MAIN worktree root —
@@ -2076,6 +2154,92 @@ canonicalizehostname false
         // Not a repository at all, at any level above it.
         let bare = std::env::temp_dir();
         assert_eq!(repo_root_of(&bare.to_string_lossy()), None);
+
+        let _ = std::fs::remove_dir_all(wt_root(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// `git_head` reads `.git` directly instead of spawning git twice per session per
+    /// poll, so — exactly as with `repo_root_of` — the test that matters is a
+    /// *substitution* one: every case is asserted against what git itself answers, not
+    /// against a restatement of the implementation.
+    ///
+    /// The cases are the ones that actually differ in the file layout. An unborn HEAD
+    /// is the subtle one: `.git/HEAD` names a branch whether or not any commit exists,
+    /// so only the missing ref tells the two apart — and `projmenu.ts` relies on the
+    /// `None` to drop its *Commit graph…* row for a fresh `git init`.
+    #[test]
+    fn git_head_matches_git_without_spawning_it() {
+        let repo = scratch_dir();
+        git(&repo, &["init", "-q", "-b", "main"]);
+
+        // Ask git the same question, the way git_head used to.
+        let via_git = |dir: &Path| -> Option<(Option<String>, String)> {
+            let rp = Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap();
+            if !rp.status.success() {
+                return None; // no repo, or an unborn HEAD
+            }
+            let full = String::from_utf8_lossy(&rp.stdout).trim().to_string();
+            let sr = Command::new("git").current_dir(dir)
+                .args(["symbolic-ref", "--quiet", "--short", "HEAD"]).output().unwrap();
+            let branch = sr.status.success()
+                .then(|| String::from_utf8_lossy(&sr.stdout).trim().to_string())
+                .filter(|s| !s.is_empty());
+            Some((branch, full))
+        };
+        let agree = |dir: &Path, what: &str| {
+            let ours = git_head(dir.to_string_lossy().to_string());
+            match (via_git(dir), &ours) {
+                (None, None) => {}
+                (Some((branch, full)), Some(h)) => {
+                    assert_eq!(h.branch, branch, "branch disagreed with git ({what})");
+                    assert!(full.starts_with(&h.short) && !h.short.is_empty(),
+                        "short {:?} is not a prefix of HEAD {full} ({what})", h.short);
+                }
+                (g, o) => panic!("git said {:?}, we said {:?} ({what})", g.map(|x| x.0), o.as_ref().map(|x| &x.branch)),
+            }
+            ours
+        };
+
+        // Unborn HEAD: a repo, but no commit — must be None, not "detached".
+        assert!(agree(&repo, "unborn").is_none(), "a repo with no commits has no HEAD to report");
+
+        let commit = |msg: &str| {
+            git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T",
+                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        };
+        commit("init");
+
+        // On a branch, from the checkout and from a subdirectory of it.
+        assert_eq!(agree(&repo, "main").unwrap().branch.as_deref(), Some("main"));
+        let sub = repo.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(agree(&sub, "subdir").unwrap().branch.as_deref(), Some("main"));
+
+        // Packed refs: `pack-refs` deletes the loose file, so the ref now resolves
+        // only via `packed-refs` — the fallback that would otherwise go untested.
+        git(&repo, &["pack-refs", "--all"]);
+        assert!(!repo.join(".git/refs/heads/main").exists(), "fixture must have packed the ref away");
+        assert_eq!(agree(&repo, "packed").unwrap().branch.as_deref(), Some("main"));
+
+        // A linked worktree has its OWN HEAD but shares the repo's refs — the case
+        // the (gitdir, common) split exists for.
+        let wt = wt_root(&repo).join("side");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        assert!(wt.join(".git").is_file(), "fixture must be a linked worktree, not a clone");
+        assert_eq!(agree(&wt, "worktree").unwrap().branch.as_deref(), Some("side"));
+        assert_eq!(agree(&repo, "repo beside a worktree").unwrap().branch.as_deref(), Some("main"),
+            "the main checkout keeps its own HEAD");
+
+        // Detached HEAD: branch is None and `short` is what labels the pane.
+        git(&repo, &["checkout", "-q", "--detach"]);
+        let d = agree(&repo, "detached").unwrap();
+        assert!(d.branch.is_none(), "a detached HEAD has no branch");
+        assert_eq!(d.short.len(), 7, "the detached label needs a short sha: {d:?}");
+
+        // Not a repository at all.
+        assert!(git_head(std::env::temp_dir().to_string_lossy().to_string()).is_none());
 
         let _ = std::fs::remove_dir_all(wt_root(&repo));
         let _ = std::fs::remove_dir_all(&repo);

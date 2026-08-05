@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Windows: a session no longer launches a PowerShell for every hook.** Each lifecycle
+  event — every tool call, every turn, every notification — used to start a whole
+  PowerShell just to reach `curl`, about 220ms and a second process each time, per
+  session. Claude Code can now be handed the command and its arguments directly, with no
+  shell in between, so a hook is one short-lived `curl` and nothing else. The statusLine
+  still needs a shell and is unchanged.
+! **The branch shown beside a session cost two `git` processes a session, every four
+  seconds.** With a few sessions open that was a git launched roughly twice a second to
+  re-read a file that hadn't changed — enough, on Windows, where starting a process is
+  the expensive part, to be a real share of what the machine was doing. It reads `.git`
+  directly now, like the worktree roster beside it already did. Nothing on screen
+  changes.
 + **Running a task that takes parameters no longer costs a dialog.** *Run* now starts it
   with what it already knows — the values you gave last time, or the definition's own
   defaults — and a `⋯` button beside the row (⌥⏎, or *⋯ Parameters* on a finished run)
