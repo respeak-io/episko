@@ -8,7 +8,10 @@
 //   probe — a German git says "existiert bereits", not "already exists".
 // - **Never destroy a checkout something is using.** `remove_worktree` and
 //   `switch_branch` consult `AppState.sessions` by `same_path`, so a worktree with
-//   a live embedded session in it is refused rather than deleted.
+//   a live embedded session in it is refused rather than deleted. The two ask
+//   different questions of that map, because they cost different things: removal
+//   deletes the folder, so *any* pane there stops it; a switch only moves HEAD under
+//   panes that survive it, so only work in flight does (`blocks_switch`).
 //
 // `git_cmd`/`git_run` are git-only and live here; they call down into
 // `platform::{sys_command, augmented_path}`, which is why platform.rs had to move
@@ -640,6 +643,41 @@ pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
     })
 }
 
+/// Whether a live pane of this `Session::kind` alone forbids switching its folder's
+/// branch. The kind is all the backend has — the phase that decides it for a claude
+/// pane never leaves the frontend — so this answers only where the kind is enough:
+///
+/// - `task` — yes, unconditionally. It is running (an exited one is no longer in the
+///   map), and a build that starts on one branch and finishes on another is worthless.
+/// - `shell` — no. It is the user's own prompt; refusing `git switch` on behalf of the
+///   pane that exists to accept it is the app arguing with itself.
+/// - `claude` — no *here*. Mid-turn is a real blocker and the frontend refuses it
+///   (`midFlight` in src/types.ts); idle is not, and this layer cannot tell them apart.
+fn blocks_switch(kind: &str) -> bool {
+    kind == "task"
+}
+
+/// The `git switch` invocation for a target, paired with the terminal handoff for it.
+///
+/// One function because they are one decision and they must not disagree: a dirty tree
+/// hands `suggest` over verbatim, and for a remote-only target `git switch <branch>`
+/// resolves to something else entirely — or to nothing. `track` is `Some(remote_ref)`
+/// only when the branch has no local ref *and* that remote ref is real, which is what
+/// makes `base` safe for the caller to pass unconditionally.
+fn switch_args<'a>(branch: &'a str, track: Option<&'a str>) -> (Vec<&'a str>, String) {
+    match track {
+        // `--track` outright rather than leaning on git's DWIM: the guess only happens
+        // while `checkout.guess` and `branch.autoSetupMerge` are at their defaults, and a
+        // user who turned either off would get a branch with no upstream — after which
+        // push/pull need arguments and the picker's ahead/behind reads empty forever.
+        Some(b) => (
+            vec!["switch", "--track", "-c", branch, b],
+            format!("git switch --track -c \"{branch}\" \"{b}\""),
+        ),
+        None => (vec!["switch", branch], format!("git switch \"{branch}\"")),
+    }
+}
+
 /// Move the repo's main working tree to another branch.
 ///
 /// Episko's whole model is "don't switch, branch out" — worktrees exist so two pieces
@@ -648,20 +686,50 @@ pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
 /// problem, and a terminal was the only way out. This is that lever, with the guards
 /// that make it safe to expose:
 ///
-/// - Refused while Episko sessions run in the root: switching moves the ground under a
-///   live agent's cwd mid-edit.
+/// - Refused while a **task** pane runs in the root — see `blocks_switch` above.
 /// - Refused when the target is checked out in another worktree (git refuses too, but
 ///   this says which one).
 /// - Refused on a dirty tree. `git switch` would silently CARRY uncommitted changes to
 ///   the new branch — not destructive, but a state change the UI never explained, which
 ///   is the same rule `git_action` and `remove_worktree` follow. Handed to a terminal.
+///
+/// `base` is the remote-tracking ref a **remote-only** target should be cut from
+/// ("origin/foo"), and it is the same parameter `create_worktree` takes, with the same
+/// meaning and the same `--track` detection. A colleague's branch is a destination you'd
+/// want the root to move to as readily as a worktree, and the alternative was a terminal
+/// and two commands. Ignored when the branch already exists locally.
+///
+/// The first guard used to be "any session at all", and that made the lever unreachable
+/// in the one situation it exists for: a root folder you keep an agent parked in. What
+/// actually must not move is a tree with *work in flight* on it, which is a question
+/// about a pane's state — and a claude pane's phase lives only in the frontend, so
+/// `midFlight` owns that half and `blocks_switch` owns the half the backend can see.
+/// Two things keep the split honest rather than merely trusting: a task's whole life is
+/// visible here (the reaper drops a session from the map the moment its PTY exits, so a
+/// `task` in the map IS a running one), and the dirty-tree refusal below independently
+/// catches any agent that has written a byte, whatever the frontend believed.
 #[tauri::command(async)]
-pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: String) -> Result<GitActionResult, String> {
+pub(crate) fn switch_branch(
+    state: State<AppState>,
+    repo_dir: String,
+    branch: String,
+    base: Option<String>,
+) -> Result<GitActionResult, String> {
     if branch.trim().is_empty() {
         return Err("no branch given".into());
     }
-    if state.sessions.lock().unwrap().values().any(|s| same_path(&s.workdir, &repo_dir)) {
-        return Err("sessions are running in this folder — close them first".into());
+    let blocked = state
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|s| same_path(&s.workdir, &repo_dir) && blocks_switch(s.kind))
+        .count();
+    if blocked > 0 {
+        return Err(format!(
+            "{blocked} task{} running in this folder — a run that changes branch mid-flight has verified nothing",
+            if blocked == 1 { " is" } else { "s are" }
+        ));
     }
     if list_worktrees(repo_dir.clone()).iter()
         .any(|w| !same_path(&w.path, &repo_dir) && w.branch == branch)
@@ -669,22 +737,48 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         return Err(format!("{branch} is already checked out in another worktree"));
     }
 
+    // Cutting a local branch from a remote-tracking ref, the same detection
+    // `create_worktree` makes and for the same reason: without `--track`, `git push` and
+    // `git pull` in the switched-to folder need arguments and the picker's ahead/behind
+    // reads empty forever. Git's own DWIM would usually do this, but only while
+    // `checkout.guess` and `branch.autoSetupMerge` are at their defaults — a user who
+    // turned either off would get a silently untracked branch, so it is said outright.
+    //
+    // Conditioned on the branch NOT existing locally, which is what makes `base` safe to
+    // pass unconditionally: the switch target may have grown a local ref since the list
+    // was read (a colleague's branch you fetched in a terminal), and the answer to that
+    // is to switch to the branch, not to fail on `-c`.
+    let ref_exists = |r: String| {
+        git_run(git_cmd(&repo_dir, &["rev-parse", "--verify", "--quiet", &r]), 10)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let track = if ref_exists(format!("refs/heads/{branch}")) {
+        None
+    } else {
+        base.as_deref().filter(|b| ref_exists(format!("refs/remotes/{b}")))
+    };
+    let (args, suggest) = switch_args(&branch, track);
+
     let status = git_run(git_cmd(&repo_dir, &["--no-optional-locks", "status", "--porcelain"]), 20)?;
     if status.status.success() && !status.stdout.is_empty() {
         return Ok(GitActionResult {
             ok: false,
             summary: "uncommitted changes — switching would carry them across".into(),
             output: String::new(),
-            suggest: Some(format!("git switch \"{branch}\"")),
+            suggest: Some(suggest.clone()),
             ..Default::default()
         });
     }
 
-    let out = git_run(git_cmd(&repo_dir, &["switch", &branch]), 30)?;
+    let out = git_run(git_cmd(&repo_dir, &args), 30)?;
     if out.status.success() {
         return Ok(GitActionResult {
             ok: true,
-            summary: format!("Switched to {branch}"),
+            summary: match track {
+                Some(b) => format!("Switched to {branch}, tracking {b}"),
+                None => format!("Switched to {branch}"),
+            },
             ..Default::default()
         });
     }
@@ -697,7 +791,7 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         ok: false,
         summary: first,
         output: combined,
-        suggest: Some(format!("git switch \"{branch}\"")),
+        suggest: Some(suggest),
         ..Default::default()
     })
 }
@@ -2049,6 +2143,40 @@ mod tests {
     /// A machine with no ssh config at all. Every assertion below that uses it is also
     /// asserting the alias lookup was **not** needed to reach the answer.
     fn no_aliases(_: &str) -> Option<String> { None }
+
+    /// `switch_branch` itself needs a real `AppState`, whose `Session` holds a live PTY —
+    /// nothing a unit test can build. Its rule is extracted precisely so the half the
+    /// backend owns can still be pinned, because the other half (`midFlight`, in
+    /// src/types.ts) is written to agree with it and the two drift silently: a
+    /// disagreement shows up as the frontend offering a switch the backend then refuses,
+    /// which reads as a bug in git.
+    #[test]
+    fn only_a_running_task_blocks_a_branch_switch_from_the_backend_side() {
+        assert!(blocks_switch("task"));
+        // A shell is the user's own prompt, and an agent's phase is not visible here —
+        // an idle claude pane must not be mistaken for a working one.
+        assert!(!blocks_switch("shell"));
+        assert!(!blocks_switch("claude"));
+        // An unknown kind is not a blocker: `Session::kind` is set by our own spawners,
+        // so a new one is a pane we added, not an unexplained hazard to refuse on.
+        assert!(!blocks_switch(""));
+    }
+
+    /// The pair that must never disagree. The failure is silent and one-sided: the switch
+    /// runs the right command, and only the *dirty tree* path — the one nobody exercises
+    /// on purpose — hands a terminal a command that does something else.
+    #[test]
+    fn a_remote_only_switch_tracks_and_hands_over_the_same_command() {
+        let (args, suggest) = switch_args("feat/x", Some("origin/feat/x"));
+        assert_eq!(args, ["switch", "--track", "-c", "feat/x", "origin/feat/x"]);
+        assert_eq!(suggest, "git switch --track -c \"feat/x\" \"origin/feat/x\"");
+        // A branch that is already here is moved to, never cut again — `-c` on an
+        // existing branch is a hard git error, and this is reached whenever the local ref
+        // appeared between the list being read and the click.
+        let (args, suggest) = switch_args("dev", None);
+        assert_eq!(args, ["switch", "dev"]);
+        assert_eq!(suggest, "git switch \"dev\"");
+    }
 
     #[test]
     fn parse_remote_reads_every_spelling_git_accepts() {

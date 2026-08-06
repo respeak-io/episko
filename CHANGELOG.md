@@ -13,6 +13,32 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Switch branch… is on the ⌂ header's right-click menu**, next to the checkout's other
+  verbs. It was reachable only by opening the worktree dialog and finding the repo row
+  first — three steps from the thing you were already pointing at. The row is the repo's
+  own folder only (a worktree keeps its branch, which is what a worktree is for) and says
+  before the click what it will cost: which sessions stay open, or which are still
+  working and worth waiting for.
+
++ **You can switch the folder to a branch that only exists on a remote** — a colleague's
+  work, or your own from another machine. It cuts a local branch set to track the remote
+  one, so `git push` and `git pull` there take no arguments afterwards, and the card says
+  so before you commit to it. Previously the picker listed local branches only, and a
+  branch you could plainly see in the same dialog's *Remote branches* group was reachable
+  only through a terminal.
+
+~ **An open session no longer blocks switching the repo folder's branch — work in
+  flight does.** *Switch branch…* refused whenever any pane lived in the folder, which
+  made it unreachable in exactly the case it exists for: a root you keep an agent parked
+  in. Closing a conversation you wanted to keep, to change what HEAD points at, was the
+  only way out. Now the question is whether anything is actually running: an agent
+  mid-turn (or holding a permission) blocks, a task blocks until it exits, and a
+  terminal pane never does — it is the prompt you would type `git switch` into. When
+  something does block, the card names it and offers a jump to it instead of "close it
+  first"; when nothing does, the sessions that stay open are named too, along with the
+  branch their next turn will land on. A dirty tree still gets a terminal rather than a
+  silent carry-across.
+
 ! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
 ! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isExited, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
+import { isExited, midFlight, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setBackendLive, setDormants,
@@ -976,6 +976,36 @@ describe("isExited — the process behind the pane is gone", () => {
     expect(isExited(taskSess("t", { phase: "error" }, { exitCode: 1 }))).toBe(true);
     // A task pane with no run record yet cannot claim to have exited.
     expect(isExited(sess({ kind: "task", phase: "error" }))).toBe(false);
+  });
+});
+
+describe("midFlight — work in flight, the question a branch switch asks", () => {
+  it("counts a claude pane only while its turn is actually moving", () => {
+    expect(midFlight(sess({ phase: "working" }))).toBe(true);
+    expect(midFlight(sess({ phase: "thinking" }))).toBe(true);
+    // A blocking permission is mid-turn too: the tool call fires the instant you allow
+    // it, so the ground must not have moved between the ask and the answer.
+    expect(midFlight(sess({ phase: "idle", attention: "Bash" }))).toBe(true);
+    // The three ways an agent waits on YOU. None of them is touching the tree, and this
+    // is the whole point of the predicate — one parked conversation used to make a
+    // folder unswitchable.
+    expect(midFlight(sess({ phase: "idle" }))).toBe(false);
+    expect(midFlight(sess({ phase: "done" }))).toBe(false);
+    expect(midFlight(sess({ phase: "error" }))).toBe(false);
+    expect(midFlight(sess({ phase: "ended" }))).toBe(false);
+  });
+  it("never counts a shell — it is the prompt you would type `git switch` into", () => {
+    expect(midFlight(sess({ kind: "shell", phase: "working" }))).toBe(false);
+    expect(midFlight(sess({ kind: "shell", phase: "idle" }))).toBe(false);
+  });
+  it("counts a task until it exits, whatever phase it is showing", () => {
+    expect(midFlight(taskSess("build"))).toBe(true);
+    // A run's done/error are its exit code, not a live state — once it has one, the
+    // build it was verifying is over and the branch under it is free to move.
+    expect(midFlight(taskSess("build", { phase: "done" }, { exitCode: 0 }))).toBe(false);
+    expect(midFlight(taskSess("build", { phase: "error" }, { exitCode: 1 }))).toBe(false);
+    // A background run is still a run: it holds the tree for as long as it lives.
+    expect(midFlight(taskSess("watch", {}, { background: true }))).toBe(true);
   });
 });
 
