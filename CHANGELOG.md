@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Settings › Worktrees can exempt the projects you are already working in from the
+  hover-reveal: with *Keep them listed in projects with a session* on, a project with a
+  pane open in any of its checkouts keeps its idle ones on screen — that is the moment
+  the sibling worktree is the next thing you launch into, and hovering for it every time
+  is a toll. Projects with nothing running still collapse, so the rail's length still
+  tracks what you are doing. Off by default, and the preview shows both halves at once.
 ! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
 ! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
 
