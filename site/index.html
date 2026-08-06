@@ -780,22 +780,29 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
 .bento-head h2{font-family:var(--font-display);font-weight:600;letter-spacing:-.03em;font-size:clamp(30px,4.5vw,46px);line-height:1.02;margin:14px 0 0;}
 .bento-head h2 .b{background:linear-gradient(180deg,#fff,color-mix(in srgb,var(--accent) 55%,#fff));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
 .bento-head p{color:var(--muted);max-width:560px;margin:14px 0 0;font-size:15px;}
-.bento-grid{max-width:1160px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:13px;}
+.bento-grid{max-width:1160px;margin:0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;}
 .bt{position:relative;display:flex;flex-direction:column;gap:8px;padding:18px 19px 16px;border-radius:14px;background:linear-gradient(180deg,var(--lift),transparent 46%),var(--panel);border:1px solid var(--hair);overflow:hidden;transition:border-color .3s,transform .3s;}
 .bt:hover{border-color:var(--accent-line);transform:translateY(-2px);}
 .bt.w2{grid-column:span 2;}
 .bt h3{margin:0;font-family:var(--font-display);font-weight:600;font-size:16.5px;letter-spacing:-.01em;}
 .bt p{margin:0;font-size:12.5px;line-height:1.6;color:var(--muted);}
 .bt .bt-tag{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted-2);font-weight:700;}
-.bt-mono{margin-top:auto;padding:8px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--hair);font:10.5px var(--font-mono);color:var(--muted-2);display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden;}
+/* a garnish that outgrows its card fades out at an ellipsis, never a hard clip */
+.bt-mono{margin-top:auto;padding:8px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--hair);font:10.5px/1.6 var(--font-mono);color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .bt-mono .em{color:var(--accent-ink);}
 .bt-mono .ok{color:var(--st-done);}
 .bt-mono .warn{color:var(--st-working);}
 .bt-mono .bad{color:var(--st-error);}
 .bt-mono .att{color:var(--st-attention);}
 .bt-graph{margin-top:auto;width:100%;height:52px;}
-@media (max-width:900px){
-  .bento-grid{grid-template-columns:1fr;}
+/* the 4-track grid is a desktop shape: two tracks once a plain card would fall
+   under ~260px, one on phones — where a w2 span must also stop spanning */
+@media (max-width:1240px){
+  /* dense: a w2 card after a lone single would otherwise leave a hole beside it */
+  .bento-grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:dense;}
+}
+@media (max-width:640px){
+  .bento-grid{grid-template-columns:minmax(0,1fr);}
   .bt.w2{grid-column:auto;}
 }
 
@@ -964,6 +971,18 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:16px
   .uv-cols{grid-template-columns:minmax(0,1fr);}
   .uv-head{flex-wrap:wrap;gap:10px;}
   .uv-cardh{flex-wrap:wrap;gap:4px;}
+
+  /* project dashboard: five strip tiles, a verb row and a 1.5fr/1fr split are
+     desktop shapes too — reflow the tiles, wrap the header, stack the columns */
+  .db-box{padding:13px 13px 15px;}
+  .db-head{flex-wrap:wrap;align-items:flex-start;gap:10px;}
+  .db-title{flex-wrap:wrap;}
+  .db-verbs{flex-wrap:wrap;}
+  .db-strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr));}
+  .db-cols{grid-template-columns:minmax(0,1fr);}
+  .db-dh{flex-wrap:wrap;}
+  /* the ✦ mark sits in the box's corner; reserve it a line so text can't run under it */
+  .db-team{padding-bottom:17px;}
 }
 
 /* phones proper: tighten the densest panels so they stay legible rather than pretty */
