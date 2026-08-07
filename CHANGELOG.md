@@ -49,6 +49,21 @@ Markers: `+` new · `~` changed · `!` fixed
   placeholder used to stand in for up to four cards, which read as nothing being there
   rather than as something being on its way.
 
+! **A password typed into a pane on Windows arrives whole.** Windows' ConPTY does not
+  hand a terminal's bytes to the program — it re-synthesizes them as console key
+  events, and for a great many characters (`§ ° ± ¿ – — ' ' " " ✓`, and the no-break
+  space a passphrase copied out of a document carries) it does that as an Alt+numpad
+  sequence, where the character rides on the key-*up* record. Every hidden-prompt
+  reader built on the Windows CRT — `getpass` in Python, and so any script that asks
+  you for a key — takes characters from key-*down* records only, so those characters
+  were silently missing from the secret: 54 of 86 sampled non-ASCII characters never
+  arrived. Nothing said so. gpg reported `Bad session key`, which is also what it says
+  for a genuinely wrong passphrase, so the hunt started in the secret store rather
+  than in the terminal. Episko now answers ConPTY the way Windows Terminal does — with
+  key records instead of text — for exactly those characters, which is why the same
+  key worked there and not here. ASCII, `^C`, arrows, pastes and Claude Code's own
+  keys go down the pipe byte for byte as before, and nothing changes on macOS.
+
 ## 0.16.0 — 2026-08-07
 The branches nobody will touch again get a broom, switching branch waits only for
 work actually in flight, and the projects you are working in keep their checkouts
