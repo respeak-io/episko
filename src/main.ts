@@ -233,12 +233,17 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
+  // nests under the project rather than becoming a top-level group of its own.
+  handToTerminal: (project, dir, cmd) => {
+    void handToTerminal(project, dir, cmd, { colorKey: dashMirror()?.root ?? dir });
+  },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
-  // The Branches view's four seams: the roster re-read after a cleanup, the terminal a
-  // refused `-D` goes to, and the trunk chip's popover + its persisted choice.
+  // The Branches view's other three seams: the roster re-read after a cleanup, and the
+  // trunk chip's popover + its persisted choice. (Its refused `-D` goes to the same
+  // `handToTerminal` above as ⇣ Pull's refusals.)
   refreshGit: () => refreshGitViews(),
-  handToTerminal: (project, dir, cmd) => { void handToTerminal(project, dir, cmd, { colorKey: dir }); },
   pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   openHistory: () => { void openHistory(true); },

@@ -13,6 +13,7 @@
 import type { HistEntry } from "./history";
 import { histProject } from "./history";
 import { dayKeyOf, trailDays, type TrailCommit, type TrailDay } from "./trail";
+import type { DiffStat, WtHead } from "./types";
 import type { UDay } from "./usage";
 
 // ---------- what a folder can show ----------
@@ -157,6 +158,51 @@ export function densePerDay(days: TrailDay[], span: number, now: number): number
   const day = 86_400_000;
   for (let i = span - 1; i >= 0; i--) out.push(byKey.get(dayKeyOf(now - i * day)) ?? 0);
   return out;
+}
+
+// ---------- pulling ----------
+
+/**
+ * Which checkout the dashboard's ⇣ Pull acts on: **the repo's main worktree**, never
+ * whichever folder happens to be highlighted.
+ *
+ * A dashboard is keyed by the repo root (`repoRoot ?? path`), so in the ordinary case
+ * this is the root itself and the lookup changes nothing. It exists for the case where
+ * it doesn't: `worktree_heads` reads each checkout's path out of git's own `gitdir`
+ * file, which is the only spelling guaranteed to be the one git will accept, and a repo
+ * whose main worktree has been moved or renamed under git's nose reports a path the
+ * root no longer matches. Falling back to `root` keeps the button live for a folder the
+ * heads probe never answered for (it runs after, and can fail) — `git_action` then
+ * refuses on its own terms rather than the button being mysteriously absent.
+ *
+ * A vanished checkout is skipped for the obvious reason: git cannot pull into a folder
+ * that is not there, and the root is at least a place to try.
+ */
+export function mainCheckout(heads: WtHead[], root: string): string {
+  return heads.find((h) => h.is_main && h.exists)?.path || root;
+}
+
+/**
+ * What a pull would find, **as of the last fetch** — which on a dashboard may be very
+ * old indeed, and that is the whole reason this is a state rather than a boolean.
+ *
+ * Nothing on a dashboard runs git on a schedule (that is the pane's one invariant), so
+ * `behind: 0` here does not mean "up to date", it means "nothing has looked recently".
+ * So `level` is **not** a reason to grey the button out, unlike the session inspector's
+ * pull, which sits beside a fetch button and a working set that the dirty poll keeps
+ * fresh. The dashboard's verb fetches first for the same reason.
+ *
+ * `no-upstream` and `diverged` are likewise states to *say*, not to disable on: those
+ * are exactly the cases `git_action` refuses with the command that would work, and the
+ * refusal hands over a prefilled terminal. Disabling them would amputate the useful half.
+ */
+export type PullState = "unknown" | "no-upstream" | "diverged" | "behind" | "level";
+
+export function pullState(g: DiffStat | null | undefined): PullState {
+  if (!g) return "unknown";
+  if (!g.upstream) return "no-upstream";
+  if (g.ahead > 0 && g.behind > 0) return "diverged";
+  return g.behind > 0 ? "behind" : "level";
 }
 
 /// How many days back the dashboard looks. A preference, because "how far back is

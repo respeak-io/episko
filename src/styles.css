@@ -2056,6 +2056,12 @@ select.in-ctl { cursor: pointer; }
 .ia:hover .ic { color: var(--accent-ink); }
 .ia .lb { font-size: 11.5px; font-weight: 550; }
 .ia .sb { display: block; font: 9.5px var(--font-mono); color: var(--muted-2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Only ever a verb that is *already running* — see `pullState` for why the awkward git
+   states keep their button live. So this reads as "in progress", not as "unavailable". */
+.ia[disabled], .isb[disabled] { opacity: .5; cursor: default; }
+.ia[disabled]:hover { background: none; }
+.ia[disabled]:hover .ic { color: var(--muted-2); }
+.isb[disabled]:hover { color: var(--muted-2); background: none; border-color: transparent; }
 .ip-sep { height: 1px; background: var(--hair); margin: 5px 3px; }
 .db-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 
