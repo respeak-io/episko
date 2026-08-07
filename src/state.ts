@@ -85,6 +85,22 @@ export let wtGroup: WtGroup = (localStorage.getItem("cc-worktree-group") as WtGr
 if (!WT_GROUPS.includes(wtGroup)) wtGroup = "subheader";
 export function setWtGroup(m: WtGroup) { wtGroup = WT_GROUPS.includes(m) ? m : "subheader"; }
 
+// --- the trunk each project is measured against -----------------------------------
+// Which branch "merged" and a remote branch's ahead/behind are compared to, per repo.
+// Default (an absent entry) is the primary remote's own default branch, which is what
+// git already knows; this is the override for the repos where that answer is wrong —
+// a `develop` trunk, a release branch, a fork whose origin/HEAD points somewhere stale.
+//
+// Keyed by repo root and local, not committed: it changes what the branch picker SHOWS,
+// never what any command does to a branch. `git_branch_list` re-validates the ref and
+// falls back to the real default if it has gone, so a stale entry here cannot mislead.
+export let cmpBase: Record<string, string> = (safeParse<Record<string, string>>(localStorage.getItem("cc-cmp-base")) ?? {}) as Record<string, string>;
+export function setCmpBase(repoDir: string, ref: string) {
+  const next = { ...cmpBase };
+  if (ref) next[repoDir] = ref; else delete next[repoDir];
+  cmpBase = next;
+}
+
 // --- sidebar peek ---------------------------------------------------------------
 // Whether resting on a project reveals the checkouts nothing is running in, and for
 // how long. The rules (and the clamping below) live in ./peek, which is pure and

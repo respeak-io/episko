@@ -23,8 +23,15 @@ import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, t
 // module, and mirror.ts already reaches for it from the render layer for the same reason:
 // "is that terminal busy?" has one answer and this is where it lives.
 import { extWorking } from "./sidebarview";
+// The branch shapes and the trunk helpers are ./branches's — one owner, so the picker's
+// `vs origin/main` chip and the Branches view's footer can never name different trunks
+// for the same repo. The cleanup itself is that view's; this dialog decides where a
+// session starts and nothing more.
 import {
-  engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
+  remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
+} from "./branches";
+import {
+  cmpBase, engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
 } from "./state";
 // The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
 // killed pane is actually *dead* rather than merely signalled — which is what a
@@ -53,6 +60,11 @@ export function setWtHandToTerminal(fn: typeof handToTerminal) { handToTerminal 
 // than an import because panes.ts already imports this module.
 let refreshGitViews: () => Promise<void> = async () => {};
 export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = fn; }
+// The trunk override is a persisted preference, so the write belongs to actions.ts — but
+// importing it here would close a cycle (actions → panes → worktree), so it arrives as a
+// hook instead. Seam rule 2, and the reason `state.ts`'s bare setter is not called direct.
+let saveCmpBase: (repoDir: string, ref: string) => void = () => {};
+export function setWtSaveCmpBase(fn: typeof saveCmpBase) { saveCmpBase = fn; }
 
 // Every answer to "where should this session run?" is a directory, so every answer
 // is a row: the repo itself, its worktrees, its branches, and whatever you type.
@@ -66,8 +78,8 @@ export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = 
 // `remote: true` inverts how the row is read: it has no local branch at all, so `name`
 // is the local branch a checkout WOULD create and `upstream` the ref it would track.
 // See the BranchInfo doc comment in git.rs.
-type BranchInfo = { name: string; current: boolean; checked_out: boolean; upstream: string; ahead: number; behind: number; gone: boolean; remote: boolean; rel: string; unix: number };
-type WtInfo = { path: string; branch: string; is_main: boolean; dirty: boolean; merged: boolean; locked: boolean; exists: boolean };
+// `BranchInfo`/`WtInfo` are ./branches's — one owner for the shapes both the picker and
+// the Branches view read, so a field added to the Rust struct lands in one place here.
 type CommitInfo = { short: string; subject: string; author: string; rel: string };
 
 type DestKind = "repo" | "wt" | "branch" | "remote" | "create";
@@ -156,6 +168,17 @@ function wtSyncMeta(b: BranchInfo): string {
   if (!b.upstream) return `<span class="wt-tag det" title="No remote branch tracks this — it has never been pushed">local</span>`;
   return (b.ahead ? `<span class="wt-ab wt-ahead" title="${b.ahead} commit(s) not yet pushed to ${esc(b.upstream)}">↑${b.ahead}</span>` : "")
     + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) on ${esc(b.upstream)} not pulled yet">↓${b.behind}</span>` : "");
+}
+
+/** A remote-only branch against its remote's default — the standing GitHub's branches
+ *  view puts on every row. `base` empty means it could not be measured (no default ref,
+ *  a second remote, or a git too old for `%(ahead-behind:)`); silence is then honest,
+ *  where `↑0 ↓0` would read as "in sync". */
+function wtBaseMeta(b: BranchInfo): string {
+  if (!b.base) return `<span class="wt-tag rem" title="Only on ${esc(b.upstream)} — no local branch yet">${esc(wtRemoteOf(b))}</span>`;
+  if (!b.ahead && !b.behind) return `<span class="wt-tag merged" title="Identical to ${esc(b.base)}">even</span>`;
+  return (b.ahead ? `<span class="wt-ab wt-ahead" title="${b.ahead} commit(s) ${esc(b.base)} doesn't have">↑${b.ahead}</span>` : "")
+    + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) on ${esc(b.base)} that this branch doesn't have">↓${b.behind}</span>` : "");
 }
 
 /** The same fact as wtSyncMeta, spelled out for the detail pane. */
@@ -306,7 +329,7 @@ async function wtReadLocal(quiet = false) {
   if (!quiet) { wtLoading = true; wtRender(); }
   const [wts, branches, head] = await Promise.all([
     invoke<WtInfo[]>("list_worktrees", { repoDir }).catch(() => [] as WtInfo[]),
-    invoke<BranchInfo[]>("git_branch_list", { repoDir }).catch(() => [] as BranchInfo[]),
+    invoke<BranchInfo[]>("git_branch_list", { repoDir, base: cmpBase[repoDir] ?? null }).catch(() => [] as BranchInfo[]),
     invoke<string | null>("git_branch", { workdir: repoDir }).catch(() => null),
   ]);
   if (gen !== wtGen || !wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on
@@ -427,19 +450,27 @@ function wtBuild(): Dest[] {
       kind: "remote", group: "Remote branches", ic: "⇣", br: b, clash,
       label: b.name, sub: "", dir: wtTargetDir(repoDir, b.name), branch: b.name,
       tags: [], stale: b.unix > 0 && now - b.unix > STALE,
-      meta: `<span class="wt-tag rem" title="Only on ${esc(b.upstream)} — no local branch yet">${esc(wtRemoteOf(b))}</span>`
-        + `<span class="wt-when">${esc(b.rel || "")}</span>`,
+      // The row GitHub's branches view shows: how far it is from the default branch, and
+      // whose commit is on the end of it. Both are the questions you actually have about
+      // a branch that exists only on a remote — is there anything on it, and is it mine.
+      // …but only on the row you are actually looking at (hovered or selected). Eleven
+      // rows each carrying a standing and a name is a wall of numbers that squeezes the
+      // one thing you came to read — the branch name — down to `fea…audit-log`.
+      meta: `<span class="wt-rmeta">${wtBaseMeta(b)}`
+        + (b.author ? `<span class="wt-who" title="${esc(b.author)} wrote the last commit on this branch">${esc(b.author)}</span>` : "")
+        + `</span><span class="wt-when">${esc(b.rel || "")}</span>`,
       verb: clash ? "blocked — that folder exists" : `check ${b.upstream} out into a worktree & start`,
     });
   }
   return out;
 }
 
-/** The remote a remote-only row came from. `upstream` is exactly `<remote>/<name>`, so
- *  this is a slice rather than a split — the branch name may itself contain slashes. */
-function wtRemoteOf(b: BranchInfo) {
-  return b.upstream.slice(0, Math.max(0, b.upstream.length - b.name.length - 1));
-}
+/** The ref every branch here is measured against, and what the trunk chip can be set to
+ *  — ./branches owns both, so the dialog's chip and the Branches view's footer can never
+ *  name different trunks for the same repo. */
+const wtTrunk = () => trunkOf(wtBranches.concat(wtRemotes));
+const wtTrunkOptions = (): BranchPick[] => trunkOptions(wtBranches.concat(wtRemotes));
+const wtRemoteOf = branchRemoteOf;
 
 function wtRender() {
   wtRows = wtBuild();
@@ -452,7 +483,13 @@ function wtRender() {
     if (d.group && d.group !== lastGroup) {
       lastGroup = d.group;
       const n = wtRows.filter((x) => x.group === d.group).length;
-      html += `<div class="wt-gh">${d.group}<span class="gc">${n}</span><span class="rule"></span></div>`;
+      // The trunk everything in this dialog is measured against, where the numbers it
+      // decides are shown, and changeable there — git's own default is right until the
+      // day it isn't (a `develop` trunk, a stale origin/HEAD, a release line).
+      const cmp = d.group === "Remote branches" && wtTrunk()
+        ? `<button class="wt-cmp" type="button" data-wtpick="cmp" title="Branches are measured against this&#10;Click to compare against another branch">vs ${esc(wtTrunk())}</button>`
+        : "";
+      html += `<div class="wt-gh">${d.group}<span class="gc">${n}</span><span class="rule"></span>${cmp}</div>`;
     }
     html += `<button class="wt-item${d.kind === "create" ? " create" : ""}${d.stale ? " stale" : ""}${i === wtSel ? " on" : ""}"`
       + ` type="button" role="option" aria-selected="${i === wtSel}" data-wti="${i}" title="${esc(d.dir)}&#10;Double-click to ${esc(d.verb)}">`
@@ -649,6 +686,11 @@ function wtDetailHtml(d: Dest | undefined): string {
         + `from it and sets it to track <b>${esc(b.upstream)}</b>, so <b>git push</b> and <b>git pull</b> in the new worktree take no arguments.</div>`)
       + wtFacts([
         ["Last commit", wtCommitHtml(d)],
+        ...(b.author ? [["Author", `<span class="em">${esc(b.author)}</span>`] as [string, string]] : []),
+        ...(b.base ? [["Standing", !b.ahead && !b.behind
+          ? `<span class="good">even with ${esc(b.base)}</span>`
+          : `${b.ahead ? `<span class="em">↑${b.ahead}</span> ahead` : ""}${b.ahead && b.behind ? " · " : ""}`
+            + `${b.behind ? `<span class="em">↓${b.behind}</span> behind` : ""} <span class="dim">${esc(b.base)}</span>`] as [string, string]] : []),
         ["Will track", `<span class="em">${esc(b.upstream)}</span>`],
         ["Local branch", `<span class="em">${esc(b.name)}</span> <span class="dim">— created now</span>`],
         [clash ? "Would be" : "Will create", wtPathHtml(d.dir)],
@@ -930,7 +972,10 @@ let bPopOn: ((name: string) => void) | null = null;
 let bPopAnchor: HTMLElement | null = null;
 
 function bPopOpen() { return $("bPop").classList.contains("show"); }
-function openBranchPop(anchor: HTMLElement, items: BranchPick[], current: string, onPick: (name: string) => void) {
+// Exported for the Branches view's trunk chip: the popover element and its keyboard
+// handling belong to this dialog, and a second copy of both would be a second thing to
+// keep in step. The view reaches it through `DashHost.pickTrunk`.
+export function openBranchPop(anchor: HTMLElement, items: BranchPick[], current: string, onPick: (name: string) => void) {
   bPopItems = items; bPopOn = onPick; bPopAnchor = anchor;
   const at = items.findIndex((i) => i.name === current);
   bPopSel = at >= 0 && !items[at].disabled ? at : bPopFirst(items);
@@ -1254,7 +1299,15 @@ $("wtDlg").addEventListener("click", (e) => {
   if (pick) {
     if (bPopOpen()) { closeBranchPop(); return; }
     const head = wtRepoBranch || "HEAD";
-    if (pick.dataset.wtpick === "base") {
+    if (pick.dataset.wtpick === "cmp") {
+      // Changing the trunk changes numbers only git can recompute, so this re-reads
+      // rather than re-rendering. The empty option clears the override.
+      openBranchPop(pick, wtTrunkOptions(), cmpBase[wtCtx?.repoDir ?? ""] ?? "", (n) => {
+        if (!wtCtx) return;
+        saveCmpBase(wtCtx.repoDir, n);
+        void wtReadLocal(true);
+      });
+    } else if (pick.dataset.wtpick === "base") {
       openBranchPop(pick, wtBaseOptions(), wtBase || head, (n) => { wtBase = n === head ? "" : n; wtRender(); });
     } else {
       openBranchPop(pick, wtSwitchOptions(), wtSwitchTo || wtSwitchable()[0]?.name || "", (n) => { wtSwitchTo = n; wtRender(); });
@@ -1283,6 +1336,8 @@ $("wtDlg").addEventListener("click", (e) => {
     return;
   }
   const row = t.closest<HTMLElement>("[data-wti]");
+  // Picking a row is asking about that row, so it cancels an armed removal: one question
+  // on screen at a time.
   if (row) { wtSel = +row.dataset.wti!; wtArmed = ""; wtRender(); ($("wtQ") as HTMLInputElement).focus(); }
 });
 // Double-click a row to go, so the mouse path doesn't require crossing to the pane's

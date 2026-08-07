@@ -23,7 +23,7 @@ import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
-  setTheme, setWtGroup, toggleInsp, toggleProjGroup,
+  setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
   toggleRail, toggleTheme,
 } from "./actions";
 import {
@@ -52,7 +52,8 @@ import {
 } from "./sidebar";
 import {
   closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
-  setWtLaunch, setWtRefreshGit, setWtRenderAll, setWtSetActive,
+  openBranchPop, setWtLaunch, setWtRefreshGit, setWtRenderAll,
+  setWtSaveCmpBase, setWtSetActive,
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
@@ -234,6 +235,12 @@ setDashHost({
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
+  // The Branches view's four seams: the roster re-read after a cleanup, the terminal a
+  // refused `-D` goes to, and the trunk chip's popover + its persisted choice.
+  refreshGit: () => refreshGitViews(),
+  handToTerminal: (project, dir, cmd) => { void handToTerminal(project, dir, cmd, { colorKey: dir }); },
+  pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
+  saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
@@ -256,6 +263,9 @@ setWtRenderAll(renderAll);
 setWtHandToTerminal(handToTerminal);
 // …and removing one changes what checkouts exist, which only a git re-read notices.
 setWtRefreshGit(refreshGitViews);
+// The trunk a project's branches are measured against: a persisted preference, so the
+// write is actions.ts's — reached as a hook because the direct import would close a cycle.
+setWtSaveCmpBase(setCmpBase);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -545,7 +555,10 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
-  if (!t.closest("#bPop, [data-wtpick]")) closeBranchPop(false);
+  // Every anchor that OPENS this popover must be spared here, or the same click that
+  // opened it closes it again and the control reads as dead. `[data-dashbrtrunk]` is the
+  // Branches view's trunk chip; it shipped missing from this list and did nothing at all.
+  if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk]")) closeBranchPop(false);
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // data-forget and data-resume sit INSIDE a data-past row, so they must be matched

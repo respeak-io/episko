@@ -57,14 +57,14 @@ Three hard constraints shape this code:
 | Module | What |
 | --- | --- |
 | `lib.rs` | `run()`, `AppState`/`Session`, the window (see docs/native-ui.md), the tray mirror, the panic hook, `write_debug_file`/`log_frontend`, `confirm_quit`, and the `invoke_handler!` list |
-| `git.rs` | worktrees, branches (local **and** remote-only), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info |
+| `git.rs` | worktrees, branches (local **and** remote-only, each with its standing and author), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info, the branch sweeps (`sweep_branches`, `delete_remote_branches`) |
 | `tasks.rs` | runnable discovery — see docs/tasks.md |
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger — everything read out of `~/.claude` |
 | `pty.rs` | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
 | `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
-| `github.rs` | `gh` — issues/PRs, the claim writes, closing, the committed keep list |
+| `github.rs` | `gh` — issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force |
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
@@ -85,13 +85,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` — run vs. day vs. all
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()` — add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`) — 51 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`) — 52 modules
 
-**No framework, and no longer one file.** 51 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind — a telemetry burst from N sessions costs one paint, not N. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 52 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing — follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind — a telemetry burst from N sessions costs one paint, not N. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map — it belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty — no DOM, no Tauri, no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty-one — no DOM, no Tauri, no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -111,6 +111,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type — capture, filing, removal |
+| `branches.ts` | branch cleanup: what is worth deleting, what blocks it, and what each command is asked for (see docs/worktrees.md) |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
 | `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
@@ -124,7 +125,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour** — IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 51 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 52 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped — that is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.

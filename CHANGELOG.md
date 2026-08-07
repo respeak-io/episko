@@ -13,6 +13,19 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A Branches view, and the cleanup that goes with it.** A project's dashboard now
+  opens a full-screen table of every branch worth deleting — merged into the trunk,
+  orphaned by a deleted remote branch, or shipped in a pull request — with the checkout
+  each one holds, who wrote its last commit, and where it stands. Tick what should go
+  and it goes; a branch whose worktree is dirty, locked or has a session running is
+  shown with the reason rather than quietly missing. Episko runs git's *safe* delete,
+  and the one exception is spelled out on the row: a squash-merged branch is contained
+  in nothing, so only its merged pull request can vouch for it. Every deleted branch
+  comes back with the sha that restores it.
++ **Branches on the remote can be cleaned up too**, under the same roof and a narrower
+  rule: only what is provably in the trunk or provably merged, never a force, never the
+  default branch, and never a ref that moved since the list was read.
+
 + **Switch branch… is on the ⌂ header's right-click menu**, next to the checkout's other
   verbs. It was reachable only by opening the worktree dialog and finding the repo row
   first — three steps from the thing you were already pointing at. The row is the repo's
@@ -33,6 +46,12 @@ Markers: `+` new · `~` changed · `!` fixed
   the sibling worktree is the next thing you launch into, and hovering for it every time
   is a toll. Projects with nothing running still collapse, so the rail's length still
   tracks what you are doing. Off by default, and the preview shows both halves at once.
+
+~ **The new-session dialog says more about a branch and asks less of you.** A
+  remote-only branch shows how far it is from the trunk and whose commit is on the end
+  of it, for the row you are on. Which branch counts as "the trunk" is now a per-project
+  choice rather than always whatever HEAD happens to sit on — so a repo parked on a
+  feature branch stops calling half its history merged.
 
 ~ **An open session no longer blocks switching the repo folder's branch — work in
   flight does.** *Switch branch…* refused whenever any pane lived in the folder, which

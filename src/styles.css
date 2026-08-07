@@ -1190,6 +1190,17 @@ select.in-ctl { cursor: pointer; }
 .wt-ahead { color: var(--st-done); }   /* has commits the current branch doesn't */
 .wt-behind { color: var(--muted-2); }  /* trails the current branch */
 .wt-when { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+/* A remote row's standing and author: shown for the row you are ON, not for all of them
+   at once. Eleven branches each carrying ↑110 ↓10 and a name is a wall of numbers, and
+   it buys that wall by ellipsising the branch name — the one thing the row is for. The
+   detail pane keeps both facts permanently for the selected row. */
+.wt-rmeta { display: none; align-items: center; gap: 6px; }
+.wt-item:hover .wt-rmeta, .wt-item.on .wt-rmeta { display: inline-flex; }
+.wt-who { font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; }
+/* The trunk chip in the Remote branches header — the one control that changes what every
+   number in that section means, so it sits with them rather than in a settings panel. */
+.wt-cmp { flex: none; padding: 1px 6px; border-radius: 5px; cursor: pointer; border: 1px solid transparent; background: transparent; font: 9px var(--font-mono); letter-spacing: .04em; color: var(--muted-2); line-height: 15px; }
+.wt-cmp:hover, .wt-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 /* stale = no commit in a while; dim it, but recover on hover/highlight so a dim row
    is never a less reachable one */
 .wt-item.stale .wt-br, .wt-item.stale .wt-when, .wt-item.stale .wt-ab { opacity: .48; }
@@ -1258,7 +1269,6 @@ select.in-ctl { cursor: pointer; }
 .wt-cbtn.danger { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); color: var(--st-error); }
 .wt-cbtn.danger:hover { background: color-mix(in srgb, var(--st-error) 14%, transparent); }
 .wt-cbtn.ghost { border-color: transparent; color: var(--muted); }
-
 .wt-foot { flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 13px; border-top: 1px solid var(--hair); font: 9.5px var(--font-mono); color: var(--muted-2); }
 .wt-foot .k { font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 2px 5px; min-width: 15px; display: inline-block; text-align: center; }
 .wt-foot .sp { flex: 1; }
@@ -2077,6 +2087,56 @@ select.in-ctl { cursor: pointer; }
    columns stagger — the same trap the commit graph's row grid documents. */
 .ovl[data-view="work"]   { --cols: 46px 40px minmax(0, 1fr) 50px 112px; }
 .ovl[data-view="triage"] { --cols: 40px minmax(0, 1fr) 172px; }
+
+/* ---- the Branches view -------------------------------------------------------------
+   The cleanup, at the size the decision actually is. It lived in the ⑃ dialog's detail
+   column beside a second list, where a branch name, its evidence, its standing and its
+   author had to share ~340px — which is why the dialog's rows show most of that only on
+   hover. Here every column has room, so nothing has to be hidden to fit. */
+/* The branch name is the row's identity and gets the room first; the two right-hand
+   columns are short phrases with a known ceiling ("2 unpushed", "3 days ago"), so they
+   are fixed rather than fractional — `auto` would let each row size to its own text and
+   the columns would stagger, the trap the commit graph's row grid documents. */
+.dbbr, .dbbr-hd { display: grid; grid-template-columns: 26px minmax(150px, 1.7fr) minmax(120px, 1.3fr) 92px 92px 84px; gap: 10px; align-items: center; }
+.dbbr-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.dbbr-hd .r, .dbbr .r { text-align: right; }
+.dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbbr:hover { background: var(--surface); }
+/* Selected rows carry the same red as the ⑃ dialog's preview: whatever surface you are
+   on, "this is going" looks the same. */
+.dbbr.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
+.dbbr.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
+.dbbr.off { opacity: .55; }
+.dbbr .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbbr .why { display: flex; gap: 5px; align-items: center; overflow: hidden; }
+.dbbr .why .warn { font: 10px var(--font-mono); color: var(--st-working); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbbr .st, .dbbr .au, .dbbr .ag { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A result row is a different shape from a pick row — a name and an outcome, no checkbox
+   and no columns to line up with — so it gets its own grid rather than inheriting one
+   whose first track is 26px wide. Reusing it put every branch name in the tick column. */
+.dbbr.res { grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); }
+.dbbr .rr { font-size: 10px; color: var(--muted-2); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbbr .rr .sha { color: var(--muted); }
+.dbbr .rr .ok { color: var(--st-done); }
+.dbbr .rr .warn { color: var(--st-working); }
+.dbbr.sk .db-sk { display: block; }
+/* The checkbox: the same control as the dialog's, at the size a table row wants. */
+.brck { width: 15px; height: 15px; border-radius: 4px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface-2); display: grid; place-items: center; padding: 0; line-height: 1; }
+.brck.on { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
+.brck.on::after { content: "✓"; font: 700 10px/1 var(--font-ui); color: var(--st-error); }
+.brck[disabled] { cursor: not-allowed; opacity: .5; }
+.dbbr-act { display: flex; align-items: center; gap: 8px; padding: 12px 9px 4px; }
+.brgo { font: 600 11.5px var(--font-ui); padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 10%, transparent); color: var(--st-error); }
+.brgo:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); }
+.brgo[disabled] { opacity: .4; cursor: not-allowed; background: transparent; border-color: var(--hair-strong); color: var(--muted-2); }
+.dbbr-note { font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); padding: 2px 0 8px; }
+.dbbr-note.warn { color: var(--st-working); }
+.dbbr-note b { color: var(--text); font: 600 10px var(--font-mono); }
+.bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+/* The trunk chip in the remote block's header — the same control the ⑃ dialog's `vs
+   origin/main` chip is, in the header of the half whose whole Standing column it decides. */
+.bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }
+.bk-cmp:hover, .bk-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 .br, .tg, .kept, .lst-hd { grid-template-columns: var(--cols); }
 .lst-hd { display: grid; gap: 10px; align-items: center; padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .lst-hd .r { text-align: right; }
