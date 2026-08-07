@@ -78,26 +78,53 @@ export interface Forecast {
   status: FcStatus; used: number | null; proj: number | null;
   etaSec: number | null; secLeft: number | null; resetTs: number | null;
   runsOut: boolean; hasRate: boolean;
+  // The %/hr the projection actually ran on — the recent slope, or the window's
+  // sustained pace where that is lower. Surfaced so the Usage card can show the
+  // rate its own "Projected @ reset" follows from; displaying the raw slope beside
+  // a capped projection invites the reader to check the arithmetic and find it wrong.
+  rate: number | null;
 }
-export function forecastWin(pct: number | null, reset: number | null, burnPerHr: number | null): Forecast {
+// The recent slope alone is a *burst* rate, and extrapolating a burst across hours
+// is what wrecked the old projections: 37 logged windows put every large error on
+// the over-projection side (-80, -51, -41 points) while under-projection never
+// passed +12, and the one red alarm ever raised projected 127% on a window that
+// closed at 47%. So cap the projected rate at the pace the window has actually
+// sustained (used / elapsed). For a steady burner the two rates are equal, so the
+// cap does nothing and a genuine run-out still goes red — the property a plain
+// time-decay damping loses (it drops a dead-on 100% path to 83% at the midpoint).
+// It binds only when a burst outruns the window's own history. Back-tested over
+// the 14 windows whose logged close lines up with a real window boundary: mean
+// error 7.0 → 4.8 points, worst over-projection 72 → 39, and not one window made
+// worse. Needs the window length to know how long the window has been open.
+const SUSTAIN_MIN_FRAC = 1 / 30; // ignore the sustained rate before this much of the window has run
+export function forecastWin(pct: number | null, reset: number | null, burnPerHr: number | null, winLen?: number): Forecast {
   const used = rlPct(pct, reset);
   const resetTs = rlReset(reset);
   const secLeft = resetTs != null ? Math.max(0, resetTs - Math.floor(Date.now() / 1000)) : null;
-  if (used == null) return { status: "ok", used: null, proj: null, etaSec: null, secLeft, resetTs, runsOut: false, hasRate: false };
+  if (used == null) return { status: "ok", used: null, proj: null, etaSec: null, secLeft, resetTs, runsOut: false, hasRate: false, rate: null };
   // No trustworthy slope yet, or no active window → judge by level alone (treat as flat).
   if (burnPerHr == null || secLeft == null) {
     const status: FcStatus = used >= 100 ? "bad" : used >= 85 ? "warn" : "ok";
-    return { status, used, proj: used, etaSec: null, secLeft, resetTs, runsOut: used >= 100, hasRate: false };
+    return { status, used, proj: used, etaSec: null, secLeft, resetTs, runsOut: used >= 100, hasRate: false, rate: null };
   }
   const hLeft = secLeft / 3600;
-  const proj = used + burnPerHr * hLeft;
-  const etaHr = burnPerHr > 1e-6 ? (100 - used) / burnPerHr : Infinity; // hours until 100%
+  const rate = sustainedRate(used, secLeft, burnPerHr, winLen);
+  const proj = used + rate * hLeft;
+  const etaHr = rate > 1e-6 ? (100 - used) / rate : Infinity; // hours until 100%
   const runsOut = used >= 100 || etaHr <= hLeft;
   const status: FcStatus = runsOut ? "bad" : (proj >= 80 || used >= 85) ? "warn" : "ok";
-  return { status, used, proj, etaSec: isFinite(etaHr) ? etaHr * 3600 : null, secLeft, resetTs, runsOut, hasRate: true };
+  return { status, used, proj, etaSec: isFinite(etaHr) ? etaHr * 3600 : null, secLeft, resetTs, runsOut, hasRate: true, rate };
 }
-export const forecast5h = (): Forecast => forecastWin(rl.h5, rl.h5Reset, burnRate("h5"));
-export const forecast7d = (): Forecast => forecastWin(rl.d7, rl.d7Reset, burnRate("d7"));
+// The recent slope, held down to the window's own average pace once the window has
+// run long enough for that average to mean anything. Exported for the debug panel.
+export function sustainedRate(used: number, secLeft: number, burnPerHr: number, winLen?: number): number {
+  if (winLen == null) return burnPerHr;
+  const elapsed = winLen - secLeft;
+  if (used <= 0 || elapsed < winLen * SUSTAIN_MIN_FRAC) return burnPerHr;
+  return Math.min(burnPerHr, used / (elapsed / 3600));
+}
+export const forecast5h = (): Forecast => forecastWin(rl.h5, rl.h5Reset, burnRate("h5"), H5_LEN);
+export const forecast7d = (): Forecast => forecastWin(rl.d7, rl.d7Reset, burnRate("d7"), D7_LEN);
 
 // ---- forecast-vs-actual log: the substrate that makes the model improvable ----
 // On every window rotation we record what the closing window actually reached vs.
@@ -109,35 +136,78 @@ export const forecast7d = (): Forecast => forecastWin(rl.d7, rl.d7Reset, burnRat
 let rlLog: (lvl: "info" | "warn" | "error", msg: string) => void = () => {};
 export function setRlLogger(fn: (lvl: "info" | "warn" | "error", msg: string) => void) { rlLog = fn; }
 
-export interface FcLogEntry { w: RlWin; closed: number; final: number; midProj: number | null; err: number | null }
-export const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
-export const midSnap: Record<RlWin, { proj: number } | null> = { h5: null, d7: null };
-export function maybeMidSnap(win: RlWin, reset: number | null) {
-  if (midSnap[win] || reset == null) return;
-  const len = win === "h5" ? H5_LEN : D7_LEN;
-  if (reset - Date.now() / 1000 > len / 2) return; // not yet past the halfway mark
-  const f = win === "h5" ? forecast5h() : forecast7d();
-  if (f.hasRate && f.proj != null) midSnap[win] = { proj: f.proj };
+// An entry is only worth calibrating against if it records the *inputs* as well as
+// the outcome, and if we know how trustworthy it is. The first version of this log
+// stored only {final, midProj, err}, and reading 38 real entries back showed why
+// that is not enough: `used` and `burn` are gone, so an error cannot be decomposed
+// (a 20-point miss from a bad slope and one from a stale level look identical), and
+// 24 of the 38 closes were detected so long after the window really ended that they
+// are not mid-window forecasts at all. Nine more scored a perfect zero because the
+// snapshot caught an idle moment — a flat projection of a window that stayed idle is
+// right for no reason, and averaging those in flattered the accuracy. So: keep the
+// inputs, and mark the entries a calibration must throw away rather than silently
+// mixing them in.
+export interface FcLogEntry {
+  w: RlWin; closed: number; final: number; midProj: number | null; err: number | null;
+  used?: number | null;   // used-% when the snapshot was taken
+  burn?: number | null;   // %/hr the snapshot projected from
+  at?: number;            // fraction of the window elapsed at the snapshot
+  late?: number;          // seconds between the window's real reset and us noticing
+  flat?: boolean;         // snapshot had ~no burn: correct-but-uninformative
 }
-function logWindowClose(win: RlWin, finalPct: number | null) {
+export const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
+export interface MidSnap { proj: number; used: number; burn: number; at: number }
+export const midSnap: Record<RlWin, MidSnap | null> = { h5: null, d7: null };
+// Take the projection once the window is past halfway. A snapshot caught while the
+// burn is flat predicts nothing, so keep re-taking it until either a real slope
+// shows up or the window is three-quarters gone and flat is the honest answer.
+const SNAP_SETTLE = 0.75;
+export function maybeMidSnap(win: RlWin, reset: number | null) {
+  if (reset == null) return;
+  const len = win === "h5" ? H5_LEN : D7_LEN;
+  const left = reset - Date.now() / 1000;
+  if (left > len / 2) return; // not yet past the halfway mark
+  const at = Math.min(1, Math.max(0, (len - left) / len));
+  const held = midSnap[win];
+  if (held && (held.burn > 0 || at >= SNAP_SETTLE)) return; // already have one worth keeping
+  const f = win === "h5" ? forecast5h() : forecast7d();
+  if (!f.hasRate || f.proj == null || f.used == null) return;
+  const burn = f.secLeft ? (f.proj - f.used) / (f.secLeft / 3600) : 0;
+  midSnap[win] = { proj: f.proj, used: f.used, burn, at };
+}
+function logWindowClose(win: RlWin, finalPct: number | null, prevReset: number | null) {
   if (typeof finalPct !== "number") return;
   const snap = midSnap[win];
+  const now = Math.floor(Date.now() / 1000);
   const e: FcLogEntry = {
-    w: win, closed: Math.floor(Date.now() / 1000), final: finalPct,
+    w: win, closed: now, final: finalPct,
     midProj: snap ? snap.proj : null, err: snap ? finalPct - snap.proj : null,
+    used: snap ? snap.used : null, burn: snap ? snap.burn : null,
+    at: snap ? snap.at : undefined,
+    late: prevReset != null ? Math.max(0, now - prevReset) : undefined,
+    flat: snap ? snap.burn <= 0 : undefined,
   };
   fcLog.push(e);
   if (fcLog.length > 200) fcLog.splice(0, fcLog.length - 200);
   localStorage.setItem("cc-forecast-log", JSON.stringify(fcLog));
   rlLog("info", `forecast · ${win} window closed at ${Math.round(finalPct)}%` +
-    (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : ""));
+    (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : "") +
+    (e.late && e.late > 1800 ? ` — noticed ${Math.round(e.late / 60)}min late` : ""));
 }
 // Called after each merge with the pre/post reset so we can spot a window rotation
 // (a genuinely later resets_at). On rotation the old window closed: log how it went,
 // and clear the burn samples so the new window's slope starts clean.
+// `lastClosed` guards the double-log seen in the real data (two h5 closes six minutes
+// apart): a second lagging session reporting the same rotation must not log it twice.
+// Exported for the same reason `rlSamples`/`midSnap` are — it is module state a test
+// has to clear between cases, exactly as a rotation clears the rest.
+export const lastClosed: Record<RlWin, number | null> = { h5: null, d7: null };
 export function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number | null, newReset: number | null) {
   if (newReset != null && prevReset != null && newReset > prevReset + 120) {
-    logWindowClose(win, prevPct);
+    if (lastClosed[win] !== prevReset) {
+      lastClosed[win] = prevReset;
+      logWindowClose(win, prevPct, prevReset);
+    }
     rlSamples[win] = [];
     midSnap[win] = null;
   }

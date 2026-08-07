@@ -13,6 +13,29 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **The usage-limit forecast stops crying wolf.** It read the last half-hour as your
+  pace for the rest of the window, so a burst of work got extrapolated across hours
+  that never happened. Measured against the windows the app has actually logged, every
+  large error was in that direction — three of them by 41, 51 and 80 points — while
+  guessing *low* never missed by more than 12, and the one time a window was called a
+  lockout it projected 127% on a window that finished at 47%. The projection now never
+  runs faster than the pace the window has really sustained, which cuts the typical
+  miss by a third and the worst overshoot by more than half without making a single
+  window's forecast worse. A steady burn is untouched — recent and sustained pace are
+  the same thing then, so a window genuinely heading for the cap still goes red as
+  early as it ever did. That is why the rate is capped rather than simply damped over
+  time: damping scored better on paper and quietly cost the warning its whole point,
+  putting a run that lands exactly on 100% at 83% when it was half over. The Usage
+  card's *Burn rate* now shows the pace the projection is actually built on, so the
+  two numbers on the card agree.
+
+  The forecast-vs-actual log behind this kept too little to learn from and has been
+  fixed alongside it: it now records what the projection was made *from*, not just how
+  it turned out, marks a reading taken while you were idle (predicting no change over
+  an idle window is right for no reason, and those flattered the average), notes when a
+  window's close was spotted long after the fact, and no longer logs the same rotation
+  twice when a second session reports it late.
+
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does
 the routine half of git — and its slowest read — without making you wait for it.

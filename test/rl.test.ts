@@ -3,6 +3,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
   rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
+  lastClosed, H5_LEN,
 } from "../src/rl";
 
 // A fixed epoch so "one hour before the reset" is a number. 2027-01-15T08:00:00Z.
@@ -20,6 +21,7 @@ beforeEach(() => {
   rl.h5 = rl.h5Reset = rl.d7 = rl.d7Reset = null;
   fcLog.length = 0;
   midSnap.h5 = midSnap.d7 = null;
+  lastClosed.h5 = lastClosed.d7 = null;
   setRlLogger(() => {});
   store.clear();
 });
@@ -216,6 +218,48 @@ describe("forecastWin — will this window run out before it resets?", () => {
       expect(forecastWin(100, NOW_S + HOUR, 0)).toMatchObject({ status: "bad", runsOut: true });
     });
   });
+
+  // Extrapolating a burst across hours was the model's one systematic failure: over
+  // 37 logged windows every large error was an over-projection (-80, -51, -41 points)
+  // while under-projection never passed +12. Holding the projected rate down to the
+  // pace the window has actually sustained fixes that without touching the steady
+  // burner, who is the only reason the red alarm exists.
+  describe("the projected rate is capped at the pace the window has sustained", () => {
+    // 5h window, 1h left → 4h elapsed.
+    const late = NOW_S + HOUR;
+    it("ignores a burst the window's own history does not support", () => {
+      // 10% in 4h is 2.5 %/hr sustained; the last half-hour ran at 60 %/hr.
+      const f = forecastWin(10, late, 60, H5_LEN);
+      expect(f.proj).toBeCloseTo(10 + 2.5 * 1, 6); // not 10 + 60
+      expect(f.status).toBe("ok");
+    });
+    it("leaves a steady burner alone, so a real lockout still goes red", () => {
+      // 80% in 4h *is* 20 %/hr — recent and sustained agree, nothing is damped.
+      const f = forecastWin(80, late, 20, H5_LEN);
+      expect(f.proj).toBeCloseTo(100, 6);
+      expect(f).toMatchObject({ status: "bad", runsOut: true });
+    });
+    it("never raises a projection — a slow patch still reads as slow", () => {
+      // Sustained 20 %/hr but only 4 %/hr lately: the cap is a ceiling, not a floor.
+      expect(forecastWin(80, late, 4, H5_LEN).proj).toBeCloseTo(84, 6);
+    });
+    it("keeps out of the way early on, when the average means nothing", () => {
+      // 6 min into a 5h window there is no sustained pace to speak of, so the
+      // recent slope stands unaltered rather than being judged against noise.
+      const f = forecastWin(2, NOW_S + H5_LEN - 360, 30, H5_LEN);
+      expect(f.proj).toBeCloseTo(2 + 30 * ((H5_LEN - 360) / 3600), 6);
+    });
+    it("is unchanged when no window length is supplied", () => {
+      expect(forecastWin(10, late, 60).proj).toBeCloseTo(70, 6);
+    });
+    it("moves the eta onto the sustained pace too, not just the projection", () => {
+      // Otherwise the red branch would still fire off the uncapped burst rate and
+      // the fix would be cosmetic — the status reads `runsOut`, which reads the eta.
+      const f = forecastWin(10, late, 60, H5_LEN);
+      expect(f.etaSec).toBeCloseTo((100 - 10) / 2.5 * HOUR, 6);
+      expect(f.runsOut).toBe(false);
+    });
+  });
 });
 
 describe("maybeMidSnap — the halfway projection the log is later scored against", () => {
@@ -236,9 +280,13 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
     expect(midSnap.h5).toBeNull();
   });
   it("takes the projection once past it", () => {
+    // 30% used with 2h left of a 5h window: the recent slope is 30 %/hr but the
+    // window has only sustained 30/3 = 10 %/hr, and the projection uses the latter.
     withRate("h5", 2 * HOUR);
     maybeMidSnap("h5", rl.h5Reset);
-    expect(midSnap.h5!.proj).toBeCloseTo(30 + 30 * 2, 6);
+    expect(midSnap.h5!.proj).toBeCloseTo(30 + 10 * 2, 6);
+    expect(midSnap.h5!).toMatchObject({ used: 30, at: 0.6 });
+    expect(midSnap.h5!.burn).toBeCloseTo(10, 6);
   });
   it("keeps the first snapshot — the midpoint is a moment, not a running value", () => {
     withRate("h5", 2 * HOUR);
@@ -247,6 +295,19 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
     rl.h5 = 80;
     maybeMidSnap("h5", rl.h5Reset);
     expect(midSnap.h5!.proj).toBe(first);
+  });
+  it("replaces a flat snapshot until a real slope turns up", () => {
+    // Catching the halfway mark during an idle patch locks in "it will end where it
+    // is", which is a prediction of nothing. Keep looking while the burn reads zero.
+    pushRlSample("h5", 30); tick(20); pushRlSample("h5", 30); // flat, but a real span
+    rl.h5 = 30; rl.h5Reset = Math.floor(Date.now() / 1000) + 2 * HOUR;
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5).toMatchObject({ burn: 0, proj: 30 });
+    tick(20); pushRlSample("h5", 50); // work resumes
+    rl.h5 = 50; rl.h5Reset = Math.floor(Date.now() / 1000) + 100 * 60;
+    maybeMidSnap("h5", rl.h5Reset);
+    expect(midSnap.h5!.burn).toBeGreaterThan(0);
+    expect(midSnap.h5!.proj).toBeGreaterThan(50);
   });
   it("records nothing without a trustworthy burn rate", () => {
     // One reading is a level, not a slope; a projection from it would be invented.
@@ -335,6 +396,37 @@ describe("onRlUpdate — spotting a window rotation", () => {
     expect(fcLog.map((e) => e.w)).toEqual(["h5"]);
     expect(rlSamples.d7).toHaveLength(0);
   });
+  it("logs one rotation once, however many sessions report it", () => {
+    // Every session's statusLine carries the same account-wide numbers, so a lagging
+    // session announces a rotation the freshest session already announced. The real
+    // log has a pair of h5 closes six minutes apart from exactly this.
+    const closing = NOW_S + 600;
+    onRlUpdate("h5", 50, closing, closing + 5 * HOUR);
+    tick(6);
+    onRlUpdate("h5", 50, closing, closing + 5 * HOUR);
+    expect(fcLog).toHaveLength(1);
+  });
+  it("records the inputs, not just the outcome, so an error can be decomposed", () => {
+    // {final, midProj} alone cannot tell a bad slope from a stale level, which is
+    // why the first 38 entries could not be calibrated against without going back
+    // to the transcripts.
+    // A reset ten minutes gone: `late` is how long the window had really been over
+    // by the time a statusLine told us, which is what separates a mid-window
+    // forecast from one scored against a window that closed while the app was shut.
+    const reset = NOW_S - 600;
+    midSnap.h5 = { proj: 70, used: 55, burn: 6, at: 0.5 };
+    onRlUpdate("h5", 62, reset, reset + 5 * HOUR);
+    expect(fcLog[0]).toMatchObject({ used: 55, burn: 6, at: 0.5, flat: false, late: 600 });
+  });
+  it("marks a flat snapshot, which is right for no reason", () => {
+    // An idle moment projects `used` unchanged; if the window stays idle that scores
+    // a perfect zero. Nine of the first 38 entries were this, and averaging them in
+    // flattered the model — so they are labelled rather than silently counted.
+    const reset = NOW_S + 600;
+    midSnap.h5 = { proj: 40, used: 40, burn: 0, at: 0.5 };
+    onRlUpdate("h5", 40, reset, reset + 5 * HOUR);
+    expect(fcLog[0]).toMatchObject({ err: 0, flat: true });
+  });
 });
 
 describe("setRlLogger — narrating a window close without reaching into main.ts", () => {
@@ -354,7 +446,7 @@ describe("setRlLogger — narrating a window close without reaching into main.ts
   it("includes the prediction and its error when there was one", () => {
     const lines: string[] = [];
     setRlLogger((_l, msg) => lines.push(msg));
-    midSnap.h5 = { proj: 80 };
+    midSnap.h5 = { proj: 80, used: 60, burn: 8, at: 0.5 };
     onRlUpdate("h5", 93, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
     expect(lines[0]).toContain("predicted ~80%, err +13");
   });
@@ -371,7 +463,9 @@ describe("forecast5h / forecast7d — each reads its own window", () => {
 
     const f5 = forecast5h(), f7 = forecast7d();
     expect(f5).toMatchObject({ used: 40, secLeft: HOUR, hasRate: true });
-    expect(f5.proj).toBeCloseTo(40 + 40 * 1, 6); // 20 points in 30min = 40 %/hr
+    // 20 points in 30min is a 40 %/hr burst, but 4h of the window has produced only
+    // 40 points — 10 %/hr — so the projection runs on the pace actually sustained.
+    expect(f5.proj).toBeCloseTo(40 + 10 * 1, 6);
     expect(f7).toMatchObject({ used: 90, secLeft: 3 * 86400, hasRate: true });
     expect(f7.status).toBe("bad"); // 90% with days to go and a real slope
   });
