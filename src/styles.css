@@ -1530,6 +1530,44 @@ select.in-ctl { cursor: pointer; }
 .peekdemo .pkgo { font-size: 10px; }
 .peekhint { font-size: 11px; line-height: 1.5; color: var(--muted-2); max-width: 58ch; }
 
+/* ---------- Settings › Sounds ----------
+   Deliberately built out of the peek control's parts (.peekrow, .peekstep, .peekhint)
+   and the shared .sw / .chip-opt, so the two panels read as one window rather than as
+   two people's work. What is new here is only the per-event row. */
+.sndbox { display: flex; flex-direction: column; gap: 13px; margin-top: 11px; }
+.sndbox.off { opacity: .55; }
+.sndbox .set-fbtn[disabled] { opacity: .35; cursor: default; }
+.sndbox .set-fbtn[disabled]:hover { border-color: var(--hair-strong); background: var(--surface); }
+.sndbox .set-freset[disabled] { opacity: .35; cursor: default; }
+.sndbox .set-freset[disabled]:hover { color: var(--muted); border-color: var(--hair); }
+.sndwhen { display: flex; flex-direction: column; gap: 6px; }
+.sndlist { display: flex; flex-direction: column; gap: 3px; }
+/* A row, not a card: ten cards is a wall. The switch, the sound name and ▶ all sit on
+   one line so the column of switches can be read straight down. */
+.sndev { border-radius: 9px; border: 1px solid transparent; padding: 7px 9px; transition: background .14s, border-color .14s, opacity .14s; }
+.sndev:hover { background: var(--surface); border-color: var(--hair); }
+/* Dimmed rather than hidden — a switched-off alert is still information, and you need
+   to see the whole list to judge how noisy the set is. */
+.sndev.off { opacity: .5; }
+.sndev.off:hover { opacity: .8; }
+.sndev-h { display: flex; align-items: center; gap: 9px; }
+.sndev-g { flex: none; width: 15px; text-align: center; font-size: 11px; color: var(--muted-2); }
+.sndev-t { flex: 1; min-width: 0; }
+.sndev-l { font-size: 12px; font-weight: 650; }
+.sndev-s { font-size: 10.5px; color: var(--muted-2); line-height: 1.4; margin-top: 1px; max-width: 46ch; }
+.sndtone { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 7px; cursor: pointer;
+  font: 600 10.5px var(--font-ui); color: var(--muted); background: var(--surface); border: 1px solid var(--hair-strong); }
+.sndtone:hover { color: var(--text); border-color: var(--accent-line); }
+.sndtone.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); }
+.sndtone-c { font-size: 8px; opacity: .7; transition: transform .14s; }
+.sndtone.on .sndtone-c { transform: rotate(180deg); }
+.sndplay { flex: none; width: 24px; height: 24px; border-radius: 7px; cursor: pointer; display: grid; place-items: center;
+  font-size: 9px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.sndplay:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.sndplay:active { transform: scale(.92); }
+/* Indented to the row's text, so an open strip visibly belongs to its event. */
+.sndtones { margin: 8px 0 3px 24px; }
+
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
