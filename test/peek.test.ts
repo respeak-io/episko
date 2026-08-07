@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   clampPeekPrefs, PEEK_CLOSE_RANGE, PEEK_DEFAULTS, PEEK_IDLE, PEEK_OPEN_RANGE,
-  peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick, type PeekPrefs,
+  peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekStaysOpen, peekTick,
+  type PeekPrefs,
 } from "../src/peek";
 
-const P: PeekPrefs = { enabled: true, openMs: 1000, closeMs: 3000 };
+const P: PeekPrefs = { enabled: true, pinLive: false, openMs: 1000, closeMs: 3000 };
 const T = 1_000_000;
 
 /** Drive the machine the way ./sidebar does: apply every deadline up to `now`. */
@@ -36,8 +37,40 @@ describe("clampPeekPrefs", () => {
     expect(clampPeekPrefs({ enabled: false }).enabled).toBe(false);
   });
 
+  it("leaves the busy-project exemption off unless it was explicitly switched on", () => {
+    // The opposite default to `enabled`, so it reads the opposite test — and every
+    // cc-peek blob written before the setting existed has no such key at all.
+    expect(clampPeekPrefs({}).pinLive).toBe(false);
+    expect(clampPeekPrefs({ enabled: true, openMs: 900 }).pinLive).toBe(false);
+    expect(clampPeekPrefs({ pinLive: true }).pinLive).toBe(true);
+    expect(clampPeekPrefs({ pinLive: "yes" } as never).pinLive).toBe(false);
+  });
+
   it("rounds, because a fractional millisecond in a stepper reads as a bug", () => {
     expect(clampPeekPrefs({ openMs: 1000.6 }).openMs).toBe(1001);
+  });
+});
+
+describe("peekStaysOpen", () => {
+  it("collapses everything by default — the exemption is opt-in", () => {
+    expect(peekStaysOpen(P, true)).toBe(false);
+    expect(peekStaysOpen(P, false)).toBe(false);
+  });
+
+  it("exempts only the live projects, and only when the switch is on", () => {
+    const pin = { ...P, pinLive: true };
+    expect(peekStaysOpen(pin, true)).toBe(true);
+    // The point of the default staying narrow: a project with nothing running still
+    // folds its checkouts away, which is the whole reason peek exists.
+    expect(peekStaysOpen(pin, false)).toBe(false);
+  });
+
+  it("keeps every checkout listed when peek itself is off, live or not", () => {
+    // Off has never meant "hidden for good" — the rows stay reachable, and the
+    // exemption is beside the point once nothing collapses.
+    for (const pinLive of [false, true]) for (const live of [false, true]) {
+      expect(peekStaysOpen({ ...P, enabled: false, pinLive }, live)).toBe(true);
+    }
   });
 });
 

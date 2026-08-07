@@ -12,7 +12,10 @@
 // item's text is always drawn in the menu's own colour, so `◆` (waiting on you) and
 // `✕` (the turn died) used to arrive the same grey as "Quit" — the two states you
 // open this menu for were the two it could not show. Since the header now carries the
-// project, the row label drops it and reads as the branch alone.
+// project, the row label reads as the session's own summary — the OSC title Claude
+// keeps updated with what the conversation is about — with the branch stepping in
+// only until a title arrives: four panes on `main` all read "main — your turn", which
+// names nothing.
 
 import { invoke } from "@tauri-apps/api/core";
 import { phaseText, statusKey, type Sess } from "./types";
@@ -73,6 +76,16 @@ function rowIcon(s: Sess): { shape: string; cls: string } {
   return { shape: SHAPE[k] ?? "disc", cls: GCLASS[k] ?? "g-idle" };
 }
 
+// One line, bounded width: whitespace collapsed (a stray newline would wrap the
+// native item) and cut with an ellipsis. A menu sizes itself to its widest row, so
+// DESC_MAX *is* the menu's width policy — 44 keeps a full row (icon, summary,
+// "— your turn") readable without one long-winded summary stretching every row.
+const DESC_MAX = 44;
+function clip(t: string): string {
+  const x = t.replace(/\s+/g, " ").trim();
+  return x.length <= DESC_MAX ? x : x.slice(0, DESC_MAX - 1).trimEnd() + "…";
+}
+
 let lastTraySig = "";
 export function updateTray() {
   const groups = projectList().filter((p) => p.sessions.length);
@@ -82,9 +95,10 @@ export function updateTray() {
     rows.push({ kind: "header", label: p.name });
     for (const s of p.sessions) {
       const branch = s.worktree ? `⑃ ${s.branch}` : (s.branch || "session");
+      const desc = clip(s.title) || branch;
       const status = s.attention ? s.attention : phaseText(s);
       const { shape, cls } = rowIcon(s);
-      rows.push({ kind: "session", id: s.id, label: `${branch} — ${status}`, shape, rgb: classRgb(cls) });
+      rows.push({ kind: "session", id: s.id, label: `${desc} — ${status}`, shape, rgb: classRgb(cls) });
     }
   }
   const list = groups.flatMap((p) => p.sessions);

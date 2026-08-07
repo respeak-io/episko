@@ -18,7 +18,11 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import type { DiffStat, GitActionResult, Phase, PurgeResult, Sess, Stranded } from "./types";
+import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded } from "./types";
+// The one thing an external session's registry file says about what it is doing. A view
+// module, and mirror.ts already reaches for it from the render layer for the same reason:
+// "is that terminal busy?" has one answer and this is where it lives.
+import { extWorking } from "./sidebarview";
 // The branch shapes and the trunk helpers are ./branches's — one owner, so the picker's
 // `vs origin/main` chip and the Branches view's footer can never name different trunks
 // for the same repo. The cleanup itself is that view's; this dialog decides where a
@@ -213,7 +217,11 @@ function wtUpstreamHtml(b: BranchInfo): string {
 // occasionally not what you came for, and the detail pane's buttons are right there.
 type WtMode = "launch" | "manage";
 let wtMode: WtMode = "launch";
-export async function openWt(project: string, repoDir: string, knownBranch?: string | null, opts: { manage?: boolean; focusDir?: string } = {}) {
+// `armSwitch` opens straight onto the root's switch card — the ⑃ cluster menu's *Switch
+// branch…* row, which is a verb, not a place to browse. It arms rather than acts: every
+// guard, the branch picker and the dirty-tree handoff live in that card, and a menu row
+// that switched a branch on click would have to grow all three back.
+export async function openWt(project: string, repoDir: string, knownBranch?: string | null, opts: { manage?: boolean; focusDir?: string; armSwitch?: boolean } = {}) {
   wtCtx = { project, repoDir };
   wtSel = 0; wtArmed = ""; wtBusy = false; wtBase = ""; wtSwitchTo = ""; wtFetchedAt = 0;
   wtRepoBranch = knownBranch || "";   // seeded by requestLaunch, which already asked
@@ -249,9 +257,15 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   await wtLoad();
   // After the first read, since that is what builds the rows to search. A checkout git
   // no longer lists (removed under us) simply leaves the repo row selected.
-  if (opts.focusDir && wtCtx) {   // …and not if it was closed while the read was in flight
-    const i = wtRows.findIndex((d) => d.dir === opts.focusDir);
-    if (i > 0) { wtSel = i; wtRender(); }
+  //
+  // `>= 0` rather than `> 0`: index 0 is the repo row, and re-selecting it is a no-op
+  // *unless* something armed a card on it, which is exactly what `armSwitch` does. The
+  // arm has to be set before the render, or the pane paints the row's ordinary detail
+  // and the card only appears on the next keystroke.
+  const focus = opts.armSwitch ? repoDir : opts.focusDir;
+  if (focus && wtCtx) {   // …and not if it was closed while the read was in flight
+    const i = wtRows.findIndex((d) => d.dir === focus);
+    if (i >= 0) { wtSel = i; if (opts.armSwitch) wtArmed = repoDir; wtRender(); }
   }
 }
 
@@ -798,14 +812,35 @@ function wtBaseOptions(): BranchPick[] {
 // branch" is normally a worktree, and this stays deliberately secondary — but the root's
 // branch is the default parent of every new worktree, so a root parked somewhere stale
 // needed an escape that wasn't "drop to a shell".
+//
+// What blocks it is *work in flight*, not a pane (`midFlight`). The old rule was "any
+// session at all", which made the lever unreachable in exactly the situation you want
+// it: a folder you keep an agent parked in. Closing an idle conversation to rename what
+// HEAD points at is a bad trade, and it was the only one on offer.
 function wtSwitchHtml(): string {
   if (!wtCtx) return "";
-  const running = wtSessionsIn(wtCtx.repoDir).length;
+  const { repoDir } = wtCtx;
+  const here = wtSessionsIn(repoDir);
+  const busy = here.filter(midFlight);
+  // A session in someone else's terminal is counted the same way, with the one signal
+  // its registry file carries: `extWorking` is the whole of what we know about it, so an
+  // active one blocks and a quiet one only warns — the same shape as our own panes,
+  // reached with far less information.
+  const extHere = externals.filter((e) => e.cwd === repoDir);
+  const extBusy = extHere.filter(extWorking);
   const pick = wtSwitchable();
-  if (running) {
+  if (busy.length || extBusy.length) {
+    const agents = busy.filter((s) => s.kind === "claude").length;
+    const runs = busy.filter((s) => s.kind === "task").length;
+    const what: string[] = [];
+    if (agents) what.push(`${agents} agent${agents === 1 ? " is" : "s are"} mid-turn`);
+    if (runs) what.push(`${runs} task${runs === 1 ? " is" : "s are"} still running`);
+    if (extBusy.length) what.push(`${extBusy.length} session${extBusy.length === 1 ? " is" : "s are"} working outside Episko`);
     return `<div class="wt-danger"><span class="q">Switch this folder's branch?</span>`
-      + `<span class="w"><span class="em">${running} session${running === 1 ? " is" : "s are"} running here.</span> `
-      + `Switching would move the ground under ${running === 1 ? "it" : "them"} mid-edit, so Episko won't. Close ${running === 1 ? "it" : "them"} first.</span>`
+      + `<span class="w"><span class="em">${what.join(", ")}.</span> `
+      + `Switching would move the ground under that work mid-edit, so Episko won't — but only while it lasts. `
+      + `Simply having a session open here doesn't block it: wait for this to land, or stop it.</span>`
+      + (busy.length ? wtSessHtml(busy) : "")
       + `<span class="row"><button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
   }
   if (!pick.length) {
@@ -814,38 +849,78 @@ function wtSwitchHtml(): string {
       + `<span class="row"><button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
   }
   const sel = wtSwitchTo || pick[0].name;
-  return `<div class="wt-danger"><span class="q">Switch <b>${esc(basename(wtCtx.repoDir))}</b> to another branch?</span>`
+  // A remote-only target does one thing more than a switch: it brings a name into the
+  // repo. That is a change to the branch list, not just to HEAD, so it is said before
+  // the click rather than discovered in the toast afterwards.
+  const from = pick.find((o) => o.name === sel)?.base;
+  const cut = from
+    ? `<span class="w"><b>${esc(sel)}</b> exists only on <b>${esc(from)}</b>. Switching cuts a local branch from it, `
+      + `set to track it — so <b>git push</b> and <b>git pull</b> here take no arguments afterwards.</span>`
+    : "";
+  // Whatever is still open here has no work in flight, or the wall above would have
+  // caught it — so say what the switch means for it rather than letting the card imply
+  // the folder is empty. Nothing gets cut off; what moves is the ground the *next* thing
+  // lands on, and an agent whose whole conversation is about the branch it was launched
+  // on has no way to notice that by itself. An exited pane is left out of the count: it
+  // is a transcript on screen, not something the switch reaches.
+  const stay = here.filter((s) => !isExited(s)).length + extHere.length;
+  const note = stay
+    ? `<div class="wt-warn note"><span class="t">${stay} session${stay === 1 ? "" : "s"} stay${stay === 1 ? "s" : ""} open</span>`
+      + `Nothing here is mid-turn, so no work is cut off. But this folder is where `
+      + `${stay === 1 ? "it lives" : "they live"}, so the next thing that happens in `
+      + `${stay === 1 ? "it" : "them"} — your next prompt, the next command you type — happens on `
+      + `<b>${esc(sel)}</b>, however the conversation reads.</div>`
+    : "";
+  return `<div class="wt-danger"><span class="q">Switch <b>${esc(basename(repoDir))}</b> to another branch?</span>`
     + `<span class="w">The repo's own folder moves — every worktree keeps its own branch, untouched. `
     + `This also changes what new worktrees branch from by default.</span>`
     + `<span class="row">${wtPickBtn("switch", sel)}</span>`
+    + cut
+    + note
     + `<span class="w">Episko only switches a <b>clean</b> tree: git would carry uncommitted changes across to the new branch, `
     + `which is a change it never announced. If yours is dirty you get a terminal instead.</span>`
     + `<span class="row"><button class="wt-cbtn danger" type="button" data-wtact="doswitch">Switch branch</button>`
     + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
 }
 
-/** Branches the root can actually move to: not current, not held by a worktree. */
+/** Branches the root can actually move to: not current, not held by a worktree — plus
+ *  every branch that exists only on a remote, which the switch cuts a local ref from. */
 function wtSwitchOptions(): BranchPick[] {
   // git allows exactly one checkout per branch, so anything a worktree holds — or the
   // root already has — can't be switched to. List them anyway, disabled and explained:
   // silently omitting them is what made `dev` look like it had gone missing.
   const held = new Map<string, string>();
   for (const w of wtWts) if (!w.is_main && w.branch) held.set(w.branch, basename(w.path));
-  return wtBranches.map((b) => b.current
+  const local = wtBranches.map((b) => b.current
     ? { name: b.name, note: "already checked out here", disabled: true }
     : held.has(b.name)
       ? { name: b.name, note: `checked out in ${held.get(b.name)}/`, disabled: true }
       : { name: b.name, note: b.rel || "" });
+  // A colleague's branch, or your own from another machine. Nothing here has a local ref
+  // yet — `git_branch_list` only calls a row remote-only when no local branch shares its
+  // name — so none can be held by a worktree, and `base` is what makes the ref the switch
+  // cuts track the one it came from. Last, and marked: they are the only options that
+  // bring a name into the repo rather than moving between names it already has.
+  const remote = wtRemotes.map((b) => ({
+    name: b.name, ic: "⇣", base: b.upstream,
+    note: `only on ${wtRemoteOf(b)} — creates a local branch tracking it`,
+  }));
+  return [...local, ...remote];
 }
 const wtSwitchable = () => wtSwitchOptions().filter((o) => !o.disabled);
 async function wtDoSwitch() {
   if (!wtCtx || wtBusy) return;
   const { project, repoDir } = wtCtx;
-  const branch = wtSwitchTo || wtSwitchable()[0]?.name;
+  const pick = wtSwitchable();
+  const target = pick.find((o) => o.name === wtSwitchTo) ?? pick[0];
+  const branch = target?.name;
   if (!branch) return;
   wtBusy = true;
   try {
-    const r = await invoke<GitActionResult>("switch_branch", { repoDir, branch });
+    // `base` is set for a remote-only target and null otherwise; the backend ignores it
+    // for a branch that turns out to exist locally after all, which is what makes it safe
+    // to send from a list that was read some seconds ago.
+    const r = await invoke<GitActionResult>("switch_branch", { repoDir, branch, base: target.base ?? null });
     dlog(r.ok ? "info" : "warn", `switch · ${basename(repoDir)} · ${r.summary}`);
     toast(r.ok ? r.summary : `${r.summary} → opening a terminal`);
     if (!r.ok && r.suggest) {
@@ -855,6 +930,12 @@ async function wtDoSwitch() {
     }
     wtArmed = ""; wtSwitchTo = ""; wtRepoBranch = branch;
     await wtLoad(true);
+    // Sessions may now be sitting in this folder, and every one of them is showing the
+    // branch it was launched on. `refreshBranches` would correct them within the 4s poll;
+    // this is the app changing HEAD itself, so it has no excuse to lag behind its own
+    // action — a sidebar naming a branch this dialog just left is a lie about where a
+    // pane is, not a stale label.
+    void refreshGitViews();
   } catch (e) {
     dlog("error", `switch failed: ${e}`);
     toast("switch: " + e);
@@ -877,6 +958,13 @@ interface BranchPick {
    *  vanishes from the list reads as a bug: you go looking for `dev`, it isn't there,
    *  and nothing tells you it's held by a worktree. */
   disabled?: boolean;
+  /** Overrides the row glyph. Only the remote-only rows set it (`⇣`, the same glyph the
+   *  main list gives them): they are the ones that bring a name into the repo, and a
+   *  note alone doesn't survive being skimmed. */
+  ic?: string;
+  /** The remote-tracking ref to cut this branch from, for a target with no local ref.
+   *  Absent means "the branch is already here" — see `switch_branch`. */
+  base?: string;
 }
 let bPopItems: BranchPick[] = [];
 let bPopSel = 0;
@@ -909,7 +997,7 @@ function renderBranchPop() {
   $("bPopList").innerHTML = shown.length
     ? shown.map((i, n) => `<button class="mp-item${n === bPopSel ? " on" : ""}${i.disabled ? " dis" : ""}" type="button" role="option"`
         + ` aria-selected="${n === bPopSel}" aria-disabled="${!!i.disabled}"${i.disabled ? " disabled" : ""} data-bpick="${esc(i.name)}">`
-        + `<span class="mp-ic">${i.disabled ? "⊘" : "⌥"}</span><span class="mp-main"><span class="mp-l">${esc(i.name)}</span>`
+        + `<span class="mp-ic">${i.disabled ? "⊘" : i.ic || "⌥"}</span><span class="mp-main"><span class="mp-l">${esc(i.name)}</span>`
         + (i.note ? `<span class="mp-s">${esc(i.note)}</span>` : "")
         + `</span><span class="mp-check">✓</span></button>`).join("")
     : `<div class="bp-none">No branch matches that.</div>`;

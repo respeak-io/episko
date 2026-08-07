@@ -25,11 +25,46 @@ Markers: `+` new · `~` changed · `!` fixed
 + **Branches on the remote can be cleaned up too**, under the same roof and a narrower
   rule: only what is provably in the trunk or provably merged, never a force, never the
   default branch, and never a ref that moved since the list was read.
+
++ **Switch branch… is on the ⌂ header's right-click menu**, next to the checkout's other
+  verbs. It was reachable only by opening the worktree dialog and finding the repo row
+  first — three steps from the thing you were already pointing at. The row is the repo's
+  own folder only (a worktree keeps its branch, which is what a worktree is for) and says
+  before the click what it will cost: which sessions stay open, or which are still
+  working and worth waiting for.
+
++ **You can switch the folder to a branch that only exists on a remote** — a colleague's
+  work, or your own from another machine. It cuts a local branch set to track the remote
+  one, so `git push` and `git pull` there take no arguments afterwards, and the card says
+  so before you commit to it. Previously the picker listed local branches only, and a
+  branch you could plainly see in the same dialog's *Remote branches* group was reachable
+  only through a terminal.
+
++ Settings › Worktrees can exempt the projects you are already working in from the
+  hover-reveal: with *Keep them listed in projects with a session* on, a project with a
+  pane open in any of its checkouts keeps its idle ones on screen — that is the moment
+  the sibling worktree is the next thing you launch into, and hovering for it every time
+  is a toll. Projects with nothing running still collapse, so the rail's length still
+  tracks what you are doing. Off by default, and the preview shows both halves at once.
+
 ~ **The new-session dialog says more about a branch and asks less of you.** A
   remote-only branch shows how far it is from the trunk and whose commit is on the end
   of it, for the row you are on. Which branch counts as "the trunk" is now a per-project
   choice rather than always whatever HEAD happens to sit on — so a repo parked on a
   feature branch stops calling half its history merged.
+
+~ **An open session no longer blocks switching the repo folder's branch — work in
+  flight does.** *Switch branch…* refused whenever any pane lived in the folder, which
+  made it unreachable in exactly the case it exists for: a root you keep an agent parked
+  in. Closing a conversation you wanted to keep, to change what HEAD points at, was the
+  only way out. Now the question is whether anything is actually running: an agent
+  mid-turn (or holding a permission) blocks, a task blocks until it exits, and a
+  terminal pane never does — it is the prompt you would type `git switch` into. When
+  something does block, the card names it and offers a jump to it instead of "close it
+  first"; when nothing does, the sessions that stay open are named too, along with the
+  branch their next turn will land on. A dirty tree still gets a terminal rather than a
+  silent carry-across.
+
 ! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
 ! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
 

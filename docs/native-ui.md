@@ -19,7 +19,7 @@ Easy to get wrong:
 
 ## The tray menu
 
-The OS owns the font, row height, highlight and radius; Episko controls each row's string and its 16px image. Sessions group under their project and carry status as a coloured icon beside a `branch — status` label; the header row says which repo.
+The OS owns the font, row height, highlight and radius; Episko controls each row's string and its 16px image. Sessions group under their project and carry status as a coloured icon beside a `title — status` label — the title being Claude's own OSC summary of the conversation (clipped to one line; the branch fills in until a summary arrives); the header row says which repo. The menu is as wide as its widest row, so the clip length in `tray.ts` is the width policy.
 
 - **Menu item text is always drawn in the menu's own colour** — glyphs in labels (`◆` waiting, `✕` died) arrived Quit-grey. Icons are images and are **not** tinted, which is the whole reason they exist.
 - **Therefore the icon must not be a template image** — the exact opposite of the tray icon in `run()`, which *is* one. Swap the two and every dot comes out menu-grey.
