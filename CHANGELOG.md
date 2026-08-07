@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.17.0 — 2026-08-07
+The fleet can finally reach you from another window, and a project's dashboard does
+the routine half of git — and its slowest read — without making you wait for it.
+
 + **Episko can now reach you from another window.** Every signal it had until now was
   visual — the sidebar glyph, the attention badge, the tray — and all three need the
   window in front of you, which is the opposite of why you run six agents at once. A
