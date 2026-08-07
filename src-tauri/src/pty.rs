@@ -30,6 +30,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
@@ -186,13 +187,148 @@ pub(crate) fn spawn_claude(
     }
 
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
+    let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone(), win32_input: win32.clone() },
     );
 
-    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
+}
+
+/// ConPTY's request for win32 input records, and its withdrawal. ConPTY emits the
+/// first thing in its first output chunk; nothing in a PTY on any other OS ever
+/// sends either.
+const WIN32_INPUT_ON: &[u8] = b"\x1b[?9001h";
+const WIN32_INPUT_OFF: &[u8] = b"\x1b[?9001l";
+
+/// Latch `ESC[?9001h` / `ESC[?9001l` out of a chunk of PTY output. `carry` holds the
+/// tail of the previous chunk so a mode string split across two reads is still seen —
+/// missing it is silent, and degrades exactly to the bug below.
+///
+/// Compiled everywhere so it is type-checked and unit-tested from a Mac (CLAUDE.md's
+/// cfg-flip trick); only the Windows reader calls it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn note_win32_input_mode(chunk: &[u8], carry: &mut Vec<u8>, flag: &AtomicBool) {
+    let mut buf = std::mem::take(carry);
+    buf.extend_from_slice(chunk);
+    // Last one wins: a chunk could carry both (it never does in practice).
+    let mut set: Option<bool> = None;
+    for w in buf.windows(WIN32_INPUT_ON.len()) {
+        if w == WIN32_INPUT_ON {
+            set = Some(true);
+        } else if w == WIN32_INPUT_OFF {
+            set = Some(false);
+        }
+    }
+    if let Some(v) = set {
+        flag.store(v, Ordering::Relaxed);
+    }
+    let keep = buf.len().min(WIN32_INPUT_ON.len() - 1);
+    *carry = buf.split_off(buf.len() - keep);
+}
+
+/// Re-encode a keystroke for a ConPTY that asked for win32 input records.
+///
+/// **The bug this exists for.** ConPTY does not hand a terminal's bytes to the child:
+/// it *parses* them and synthesizes console key events. For a character it can best-fit
+/// into the console's OEM code page, conhost synthesizes an **Alt+numpad** sequence —
+/// and the character rides on the Alt **key-up** record. `_getwch`, the CRT call behind
+/// Python's `getpass` — so behind any script that asks you for a key — takes characters
+/// from key-**down** records only, so those characters are dropped, silently, out of a
+/// secret nobody can see. (Not every reader: gpg's own prompt and .NET's `Read-Host
+/// -AsSecureString` were both measured intact. The CRT path is the one that loses.)
+/// Measured on this machine, 54 of 86
+/// sampled non-ASCII characters vanish that way, `§ ° ± ¿ – — ' ' " " • ✓` and, most
+/// dangerously, `U+00A0` NO-BREAK SPACE, which is what a passphrase copied out of a
+/// document carries. The failure is indistinguishable from a wrong secret: gpg reports
+/// "Bad session key", the same error it gives for a genuinely wrong passphrase, and the
+/// hunt starts in the secret store instead of the terminal.
+///
+/// Windows Terminal never hits this because it answers `ESC[?9001h` with key records
+/// instead of text — which is exactly why the same key works there and not here.
+/// So do we, for the characters at risk.
+///
+/// **Only non-ASCII is re-encoded.** All 95 printable ASCII characters round-trip
+/// byte-exactly through the VT path (verified), so leaving them alone keeps every
+/// existing key path — `^C`, arrows, Claude Code's TUI chords, bracketed paste — on
+/// bytes identical to today's. An escape sequence is copied verbatim for the same
+/// reason: its parameters are ours to deliver, not ours to re-encode.
+///
+/// Non-BMP characters go as their two UTF-16 surrogates, one record pair each, which
+/// is what the mode's `Uc` field is: a UTF-16 code unit, not a scalar value.
+fn win32_input_encode(data: &str) -> String {
+    let mut out = String::with_capacity(data.len());
+    let mut it = data.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            out.push(c);
+            copy_escape(&mut it, &mut out);
+        } else if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                // Vk and Sc are 0: we know the character, not which key produced it,
+                // and that is precisely what conhost needs to stop guessing.
+                out.push_str(&format!("\x1b[0;0;{unit};1;0;1_"));
+                out.push_str(&format!("\x1b[0;0;{unit};0;0;1_"));
+            }
+        }
+    }
+    out
+}
+
+/// What actually goes down the pipe for one write. Borrowed unless ConPTY asked for
+/// records, so the common path writes the caller's bytes with no copy and no rewrite.
+/// Split out of `write_pty` so the round-trip test drives the real decision rather
+/// than a second copy of it.
+fn pty_payload<'a>(win32_input: &AtomicBool, data: &'a str) -> std::borrow::Cow<'a, str> {
+    if win32_input.load(Ordering::Relaxed) {
+        std::borrow::Cow::Owned(win32_input_encode(data))
+    } else {
+        std::borrow::Cow::Borrowed(data)
+    }
+}
+
+/// Copy one escape sequence through untouched, ESC already emitted. Belt and braces:
+/// every sequence a terminal sends is ASCII, so the `is_ascii` arm above would pass it
+/// through anyway — but that is a property of today's key rules, and this makes "we
+/// never rewrite the inside of a sequence" a rule of the encoder instead.
+fn copy_escape(it: &mut std::iter::Peekable<std::str::Chars>, out: &mut String) {
+    match it.peek() {
+        // CSI: parameters, then a final byte in @..~
+        Some('[') => {
+            out.push(it.next().unwrap());
+            for c in it.by_ref() {
+                out.push(c);
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        }
+        // OSC: terminated by BEL or ST (ESC \)
+        Some(']') => {
+            out.push(it.next().unwrap());
+            while let Some(c) = it.next() {
+                out.push(c);
+                if c == '\u{7}' {
+                    break;
+                }
+                if c == '\x1b' {
+                    if let Some(n) = it.next() {
+                        out.push(n);
+                    }
+                    break;
+                }
+            }
+        }
+        // ESC O A (SS3 arrows), ESC b (alt-chords), ESC ESC …: one byte, and whatever
+        // follows is an ordinary character again.
+        Some(_) => out.push(it.next().unwrap()),
+        None => {}
+    }
 }
 
 /// The recent raw output of one PTY, kept so a pane rebuilt after a webview reload
@@ -255,15 +391,26 @@ fn stream_pty_session(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     child_pid: Option<u32>,
     scroll: Arc<Mutex<ScrollBuf>>,
+    win32_input: Arc<AtomicBool>,
 ) {
+    // Nothing on a real tty ever asks for win32 input records, so the flag stays as
+    // `write_pty` found it: false, i.e. bytes through untouched.
+    #[cfg(not(windows))]
+    let _ = win32_input;
     let app_out = app.clone();
     let sid_out = session_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
+        #[cfg(windows)]
+        let mut carry: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // Windows only: on every other OS nothing ever sends this, and the
+                    // output path is hot enough not to pay for a scan that can't hit.
+                    #[cfg(windows)]
+                    note_win32_input_mode(&buf[..n], &mut carry, &win32_input);
                     let seq = scroll.lock().unwrap().push(&buf[..n]);
                     let encoded = STANDARD.encode(&buf[..n]);
                     if app_out
@@ -355,11 +502,12 @@ pub(crate) fn spawn_shell(
     // Deliberately NOT added to owned_pids: a plain shell isn't a claude process
     // and never registers in ~/.claude/sessions, so it can't leak as "external".
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
+    let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone(), win32_input: win32.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
 }
 
@@ -541,11 +689,12 @@ pub(crate) fn spawn_task(
     let killer = child.clone_killer();
     let child_pid = child.process_id();
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
+    let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone(), win32_input: win32.clone() },
     );
-    stream_pty_session(app, session_id, reader, child, child_pid, scroll);
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
 }
 
@@ -809,11 +958,15 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
     Ok(())
 }
 
+/// Every keystroke, paste and app-written line goes through here — the one place that
+/// decides what a PTY's child actually receives, which is why the encoding decision
+/// lives here rather than in any one spawner or in the frontend.
 #[tauri::command]
 pub(crate) fn write_pty(state: State<AppState>, session_id: String, data: String) -> Result<(), String> {
     let mut map = state.sessions.lock().unwrap();
     if let Some(s) = map.get_mut(&session_id) {
-        s.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        let payload = pty_payload(&s.win32_input, &data);
+        s.writer.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
         s.writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1060,6 +1213,274 @@ fn fold_io(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- what a program reading a secret receives ----------
+
+    /// ASCII is left alone, byte for byte. Every existing key path — `^C`, an arrow
+    /// key, Claude Code's chords, an ordinary line — must go down the pipe exactly as
+    /// it does today, because all 95 printable ASCII characters already round-trip
+    /// exactly and a rewrite could only lose that.
+    #[test]
+    fn ascii_input_is_never_rewritten() {
+        for s in [
+            "hunter2\r",
+            "\x03",                       // ^C
+            "\x1b[A\x1b[B\x1b[C\x1b[D",   // arrows
+            "\x1b[200~pasted\x1b[201~",   // bracketed paste, markers included
+            "\x1bOA",                     // SS3
+            "~!@#$%^&*()_+-=[]{}|;':\",./<>?`\\",
+        ] {
+            assert_eq!(win32_input_encode(s), s, "rewrote an ASCII-only write: {s:?}");
+        }
+    }
+
+    /// A non-ASCII character becomes a key-DOWN/key-UP record pair carrying its exact
+    /// UTF-16 code unit. Without this the character is best-fit-mapped into an
+    /// Alt+numpad sequence by conhost and arrives on a key-UP record, where every
+    /// hidden-prompt reader on Windows drops it.
+    #[test]
+    fn a_non_ascii_character_becomes_a_key_record_pair() {
+        assert_eq!(
+            win32_input_encode("ä"),
+            "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_"
+        );
+        // U+2713 CHECK MARK — one of the 54-of-86 sampled characters that vanish.
+        assert_eq!(
+            win32_input_encode("✓"),
+            "\x1b[0;0;10003;1;0;1_\x1b[0;0;10003;0;0;1_"
+        );
+    }
+
+    /// `Uc` is a UTF-16 code unit, not a scalar value, so a non-BMP character is two
+    /// record pairs — its surrogates. Sending the scalar would deliver garbage.
+    #[test]
+    fn a_non_bmp_character_goes_as_its_two_surrogates() {
+        assert_eq!(
+            win32_input_encode("🔑"), // U+1F511 -> D83D DD11
+            "\x1b[0;0;55357;1;0;1_\x1b[0;0;55357;0;0;1_\
+             \x1b[0;0;56593;1;0;1_\x1b[0;0;56593;0;0;1_"
+        );
+    }
+
+    /// Only the characters are re-encoded — the sequence around them is delivered as
+    /// it was written. A pasted value keeps its brackets so the child's own request
+    /// for bracketed paste is still honoured.
+    #[test]
+    fn escape_sequences_are_delivered_untouched() {
+        assert_eq!(
+            win32_input_encode("\x1b[200~é\x1b[201~"),
+            "\x1b[200~\x1b[0;0;233;1;0;1_\x1b[0;0;233;0;0;1_\x1b[201~"
+        );
+        // An OSC's payload is the app's business, terminator included.
+        assert_eq!(win32_input_encode("\x1b]11;rgb:00/00/00\x07"), "\x1b]11;rgb:00/00/00\x07");
+    }
+
+    /// The flag is latched from ConPTY's own announcement, and only that. A PTY that
+    /// never asks — every PTY on macOS and Linux — keeps the untouched byte path.
+    #[test]
+    fn the_mode_is_latched_from_conptys_announcement() {
+        let flag = AtomicBool::new(false);
+        let mut carry = Vec::new();
+        note_win32_input_mode(b"\x1b[?25h hello", &mut carry, &flag);
+        assert!(!flag.load(Ordering::Relaxed), "latched on unrelated output");
+        assert_eq!(pty_payload(&flag, "ä"), "ä", "should still be the untouched path");
+
+        note_win32_input_mode(b"\x1b[6n\x1b[?9001h\x1b[?1004h", &mut carry, &flag);
+        assert!(flag.load(Ordering::Relaxed));
+        assert_eq!(pty_payload(&flag, "ä"), "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_");
+
+        note_win32_input_mode(b"\x1b[?9001l", &mut carry, &flag);
+        assert!(!flag.load(Ordering::Relaxed), "withdrawal must be honoured too");
+    }
+
+    /// The announcement split across two reads is still seen. Missing it is silent and
+    /// degrades to exactly the bug, so the carry is not an optimisation.
+    #[test]
+    fn the_mode_is_latched_across_a_chunk_boundary() {
+        let flag = AtomicBool::new(false);
+        let mut carry = Vec::new();
+        note_win32_input_mode(b"junk\x1b[?90", &mut carry, &flag);
+        assert!(!flag.load(Ordering::Relaxed));
+        note_win32_input_mode(b"01h more", &mut carry, &flag);
+        assert!(flag.load(Ordering::Relaxed), "a split announcement was missed");
+    }
+
+    // ---------- the round trip, over a real PTY ----------
+
+    /// Set for the child half of `secret_input_reaches_the_child_byte_exact`, which is
+    /// this same test binary re-run with a filter. Without it the helper would sit and
+    /// wait for input during a plain `cargo test -- --ignored` pass (RELEASE.md's).
+    const CHILD_ENV: &str = "EPISKO_PTY_ROUNDTRIP_CHILD";
+
+    /// The child: read a secret the way a hidden prompt does, and report the exact
+    /// bytes it got. Not a test — the `#[test]` is how the parent re-enters this
+    /// binary without shipping a second executable or depending on a python.
+    #[test]
+    #[ignore = "helper process for secret_input_reaches_the_child_byte_exact"]
+    fn pty_roundtrip_child() {
+        if std::env::var(CHILD_ENV).is_err() {
+            return;
+        }
+        println!("READY");
+        let got = read_secret();
+        // Hex, so the report survives the terminal it travels over.
+        println!("GOT:{}", got.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    }
+
+    /// Windows: exactly what `_getwch` does — and therefore what Python's `getpass`,
+    /// and every other hidden-prompt reader on Windows, does. Characters come from
+    /// key-DOWN records only; that is the whole bug.
+    #[cfg(windows)]
+    fn read_secret() -> String {
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, ReadConsoleInputW, INPUT_RECORD, KEY_EVENT, STD_INPUT_HANDLE,
+        };
+        let h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        let mut out = String::new();
+        let mut units: Vec<u16> = Vec::new();
+        loop {
+            let mut rec: INPUT_RECORD = unsafe { std::mem::zeroed() };
+            let mut n = 0u32;
+            if unsafe { ReadConsoleInputW(h, &mut rec, 1, &mut n) } == 0 || n == 0 {
+                break;
+            }
+            if rec.EventType != KEY_EVENT as u16 {
+                continue;
+            }
+            let k = unsafe { rec.Event.KeyEvent };
+            if k.bKeyDown == 0 {
+                continue; // <- the drop: a synthesized character rides on the key UP
+            }
+            let ch = unsafe { k.uChar.UnicodeChar };
+            if ch == 0 {
+                continue;
+            }
+            if ch == 13 || ch == 10 {
+                break;
+            }
+            units.push(ch);
+            // Decode as we go so a surrogate pair lands as one character.
+            out = String::from_utf16_lossy(&units);
+        }
+        out
+    }
+
+    /// Unix: a real tty in canonical mode hands over the line; the terminator is the
+    /// tty's own (ICRNL turns the CR into NL) and is not part of the secret.
+    #[cfg(not(windows))]
+    fn read_secret() -> String {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        line.trim_end_matches(['\r', '\n']).to_string()
+    }
+
+    /// **The regression test.** Feed a real PTY the known-tricky inputs — a value
+    /// terminated by CR, a pasted value, and one carrying non-ASCII — and require the
+    /// child to read back exactly the characters that were sent.
+    ///
+    /// Fails on Windows without `win32_input_encode`: `✓`, `§` and `U+00A0` are
+    /// best-fit-mapped by conhost into Alt+numpad sequences and arrive on key-UP
+    /// records, where a hidden-prompt reader never looks — so the secret comes out
+    /// short and gpg calls it a bad passphrase.
+    #[test]
+    fn secret_input_reaches_the_child_byte_exact() {
+        // "typed then Enter", "pasted then Enter", "non-ASCII, including the
+        // no-break space a passphrase copied out of a document carries".
+        let cases: [(&str, &str, &str); 4] = [
+            ("plain typed", "hunter2\r", "hunter2"),
+            ("pasted", "\x1b[200~Correct-Horse-42\x1b[201~\r", "Correct-Horse-42"),
+            ("non-ascii", "sëcrét✓§\r", "sëcrét✓§"),
+            ("no-break space", "ab\u{a0}cd\r", "ab\u{a0}cd"),
+        ];
+        for (name, send, want) in cases {
+            let got = round_trip(send);
+            // A real tty passes the paste brackets to the child (the child asked for
+            // them); ConPTY consumes them. Either way the *value* must be exact.
+            let got = got.replace("\x1b[200~", "").replace("\x1b[201~", "");
+            assert_eq!(got, want, "{name}: the child did not receive what was sent");
+        }
+    }
+
+    /// Drive one value through a real PTY the way the app does: latch the mode from
+    /// the child's output, encode the write through `pty_payload`, read the report.
+    fn round_trip(send: &str) -> String {
+        use std::time::{Duration, Instant};
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new(std::env::current_exe().expect("current_exe"));
+        cmd.arg("--exact");
+        cmd.arg("pty::tests::pty_roundtrip_child");
+        cmd.arg("--ignored");
+        cmd.arg("--nocapture");
+        cmd.env(CHILD_ENV, "1");
+        cmd.cwd(std::env::temp_dir());
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn child");
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
+        let out = Arc::new(Mutex::new(String::new()));
+        let flag = Arc::new(AtomicBool::new(false));
+
+        let (o2, w2, f2) = (out.clone(), writer.clone(), flag.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            let mut carry = Vec::new();
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                note_win32_input_mode(&buf[..n], &mut carry, &f2);
+                // ConPTY asks the terminal where the cursor is and stalls the child
+                // until something answers. xterm.js does this for us in the app; a
+                // PTY test that skips it simply hangs.
+                if buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
+                    let mut g = w2.lock().unwrap();
+                    let _ = g.write_all(b"\x1b[1;1R");
+                    let _ = g.flush();
+                }
+                o2.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+
+        let wait_for = |marker: &str| {
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(30) {
+                if out.lock().unwrap().contains(marker) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait_for("READY"), "child never started: {}", out.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(200));
+        {
+            let payload = pty_payload(&flag, send);
+            let mut g = writer.lock().unwrap();
+            g.write_all(payload.as_bytes()).expect("write");
+            g.flush().expect("flush");
+        }
+        let seen = wait_for("GOT:");
+        let _ = child.kill();
+        let text = out.lock().unwrap().clone();
+        assert!(seen, "child never reported what it read: {text}");
+        let hex: String = text
+            .split("GOT:")
+            .nth(1)
+            .unwrap_or("")
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+            .collect();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
 
     // ---------- scrollback ring buffer (#47 stage 2) ----------
 
