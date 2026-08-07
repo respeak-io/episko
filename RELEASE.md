@@ -155,6 +155,33 @@ All CSS/markup or native chrome, so `tsc` and the suites say nothing about any o
       stack. This is a cascade order that has broken once (`.set-inline` has to stay
       after `.set-group`), and it fails silently and only visually.
 
+### Sound alerts
+
+Unit tests cover every decision (`test/sound.test.ts`); what they cannot cover is
+whether anything comes out of the speakers, and **every failure mode here is silent** —
+a broken alert is indistinguishable from a switched-off one.
+
+- [ ] **The pane auditions itself.** Settings ⌘, → **Sounds**: click each row's ▶.
+      Ten rows must each make a *distinguishable* noise, and the volume steppers must
+      change how loud the next one is. Then click a row's sound name — the strip of ten
+      tones opens under it, and picking one plays it and closes nothing else.
+- [ ] **The first sound of a cold start is audible.** The real trap: autoplay policy
+      leaves the context suspended until a gesture, so **quit, reopen, and without
+      clicking anything in the window** let a session reach a permission (or ⌘, and
+      click ▶ as the very first click). If the first one is silent and the second is
+      not, the unlock listener in `chime.ts` is broken.
+- [ ] **A permission chimes from the background.** Set *Play* → **Only when Episko is
+      in the background**, put another window in front, and have a session ask for
+      approval. It must ring there and **not** ring when you are looking at Episko.
+- [ ] **A burst is one sound.** Start three or four agents and give them all the same
+      prompt so they finish together. That must be one chime, not four. Then check the
+      exception: a permission arriving right after another session's "your turn" must
+      **still** ring — the urgent one is never the one swallowed.
+- [ ] **A failed tool call is silent by default**, and a turn the API kills is not.
+      Run something that fails a Bash call mid-turn: no noise (that is `toolFail`, off
+      by default). Switch it on and it should sound — this is the split the phase
+      machine already draws for the label.
+
 ### The blocking path
 
 - [ ] **A permission is answerable.** Ask a session to run something needing

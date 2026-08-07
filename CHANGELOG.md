@@ -13,6 +13,42 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Episko can now reach you from another window.** Every signal it had until now was
+  visual — the sidebar glyph, the attention badge, the tray — and all three need the
+  window in front of you, which is the opposite of why you run six agents at once. A
+  blocked permission was the worst of it: Claude stopped, doing nothing, until you
+  happened to look. **Settings › Sounds** gives ten moments a noise — a permission, your
+  turn, a failed turn, a run passing or failing, a usage-limit mark, a session starting
+  or ending — each with its own sound from a palette of ten, a master volume, and an
+  *only when Episko is in the background* mode. Every button in the pane plays what it
+  does, because a list of names is unusable until you have heard one.
+  Three of the ten start switched off (a tool call failing, a session ending, a session
+  launching): they fire on routine activity, and a set of alerts you learn to ignore
+  makes the permission chime worthless too. For the same reason a burst is one sound,
+  not six — the same moment genuinely reaches the app twice, and a fleet moving together
+  is still one moment — except that a *more urgent* event always cuts through, so a
+  permission landing right after a "your turn" is never the one that gets swallowed.
+
++ **⇣ Pull on the project dashboard** — fast-forward a repo's main checkout without
+  opening a session or a shell for it. It *fetches first*, always: nothing on a dashboard
+  runs git on a schedule, so the ahead/behind it knows is as old as the last fetch, and a
+  pull that trusted it would report "already up to date" without ever reaching the remote.
+  The subtitle says which number it is reading and how old that number is. Everything
+  unsafe stays refused: the pull is `--ff-only`, and a diverged branch or one tracking no
+  upstream hands you a prefilled terminal with the command that *would* work. A pull that
+  landed re-reads the whole pane — including a colleague's `.episko/digest.md` and notes,
+  which is most of the reason to pull from here.
+
+! **The dashboard's GitHub card arrives seconds sooner, and says it is coming.** Its
+  `gh` calls were fired *after* the local reads finished — so the network could not start
+  until a scan of every transcript on the machine had completed, for a card that has
+  nothing to do with any of them. They now start first, the three `gh` calls run at once
+  instead of one after another (1.7–2.3s of them became 0.7–1.0s), and the cards are no
+  longer hidden behind the rest of the load, so an answer that arrives early is shown
+  early. The GitHub half also gets a skeleton of its own during the wait: one generic
+  placeholder used to stand in for up to four cards, which read as nothing being there
+  rather than as something being on its way.
+
 ## 0.16.0 — 2026-08-07
 The branches nobody will touch again get a broom, switching branch waits only for
 work actually in flight, and the projects you are working in keep their checkouts

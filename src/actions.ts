@@ -25,6 +25,7 @@ import {
   saveFavorites, saveProjGroups, sessions, termEngine,
   setFavorites, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
+  soundPrefs, setSoundPrefs as setSoundPrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
   type SortMode, type WtGroup,
@@ -34,6 +35,7 @@ import {
   renameGroup, setCollapsed, type GroupStore,
 } from "./projgroups";
 import type { PeekPrefs } from "./peek";
+import type { SoundPrefs } from "./sound";
 import type { PermMode } from "./types";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
@@ -125,6 +127,16 @@ export function setPeekPrefs(p: PeekPrefs) {
   closePeek();
   renderSidebar();
   renderSettings(); // the live preview in the Worktrees tab reads these values
+}
+
+// And again for the sound alerts. `renderSettings` alone, not `renderAll`: nothing
+// outside the Sounds tab shows any of this — a sound is not a surface — so a repaint
+// of the sidebar, the tray and the inspector would be work for no pixels. (./chime
+// reads `soundPrefs` live at play time, so nothing has to be pushed to it.)
+export function setSoundPrefs(p: SoundPrefs) {
+  setSoundPrefsState(p);
+  localStorage.setItem("cc-sound", JSON.stringify(soundPrefs));
+  renderSettings();
 }
 
 // ---------- the user's named groups of projects ----------

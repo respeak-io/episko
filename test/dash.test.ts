@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports (state.ts reads it at load)
 import {
   canShare, clampRange, dashDays, dashPulse, densePerDay, DASH_RANGE_DEFAULT,
-  projectCost, projectTier, type ProjectFacts,
+  mainCheckout, projectCost, projectTier, pullState, type ProjectFacts,
 } from "../src/dash";
 import type { HistEntry } from "../src/history";
 import type { TrailCommit } from "../src/trail";
+import type { DiffStat, WtHead } from "../src/types";
 import type { UDay } from "../src/usage";
 
 const facts = (o: Partial<ProjectFacts> = {}): ProjectFacts =>
@@ -139,6 +140,51 @@ describe("densePerDay — the chart must not drop the quiet days", () => {
   });
   it("is all zeroes when nothing happened at all", () => {
     expect(densePerDay([], 7, NOW)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+});
+
+describe("mainCheckout — which folder ⇣ Pull acts on", () => {
+  const head = (o: Partial<WtHead> = {}): WtHead =>
+    ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
+
+  it("is git's own main worktree, not whichever checkout sorts first", () => {
+    const heads = [
+      head({ path: "/w/epi-feat", branch: "feat/x", is_main: false }),
+      head({ path: "/w/epi", branch: "main" }),
+    ];
+    expect(mainCheckout(heads, "/w/epi")).toBe("/w/epi");
+  });
+  it("falls back to the root when the heads probe answered with nothing", () => {
+    // It runs after the timeline and is allowed to fail — the button stays live and
+    // git_action refuses on its own terms, which beats the verb silently vanishing.
+    expect(mainCheckout([], "/w/epi")).toBe("/w/epi");
+  });
+  it("ignores a checkout whose folder is gone — git cannot pull into it", () => {
+    expect(mainCheckout([head({ path: "/w/deleted", exists: false })], "/w/epi")).toBe("/w/epi");
+  });
+});
+
+describe("pullState — the numbers are as old as the last fetch, and it says so", () => {
+  const ds = (o: Partial<DiffStat> = {}): DiffStat => ({
+    added: 0, removed: 0, files: 0, untracked: 0, dirty: 0,
+    upstream: "origin/main", ahead: 0, behind: 0, ...o,
+  });
+
+  it("is unknown before the probe answers, and for a folder git could not read", () => {
+    expect(pullState(null)).toBe("unknown");
+    expect(pullState(undefined)).toBe("unknown");
+  });
+  it("separates the two zeroes: no upstream is not up to date", () => {
+    // Both read `behind: 0`, and conflating them swallows the one case that has a real
+    // answer — the backend's refusal names the --set-upstream-to that fixes it.
+    expect(pullState(ds({ upstream: null }))).toBe("no-upstream");
+    expect(pullState(ds())).toBe("level");
+  });
+  it("calls a branch with work on both sides diverged, not behind", () => {
+    // ff-only would fail; the backend refuses up front and hands over `git pull --rebase`.
+    expect(pullState(ds({ ahead: 2, behind: 3 }))).toBe("diverged");
+    expect(pullState(ds({ ahead: 2 }))).toBe("level");
+    expect(pullState(ds({ behind: 3 }))).toBe("behind");
   });
 });
 

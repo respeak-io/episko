@@ -23,9 +23,11 @@ import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
   copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
-  setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
+  setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
   toggleRail, toggleTheme,
 } from "./actions";
+import { playSound, setSoundLogger } from "./chime";
+import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
@@ -60,7 +62,7 @@ import {
   toggleDbg,
 } from "./debug";
 import { basename, setHome } from "./format";
-import { setRlLogger } from "./rl";
+import { rl, setRlLogger } from "./rl";
 import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 // The commit-graph panel needs nothing from here — it is opened from the project
@@ -223,8 +225,10 @@ setMirrorRenderAll(renderAll);
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setPeekPrefs,
+  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs,
 });
+// "Why was there no noise?" is otherwise unanswerable from outside the player.
+setSoundLogger(dlog);
 // The task panels run tasks, hand commands to terminals and put panes on stage —
 // none of which they own.
 // The dashboard acts on a project through verbs it does not own — the launcher, the
@@ -233,12 +237,17 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
+  // nests under the project rather than becoming a top-level group of its own.
+  handToTerminal: (project, dir, cmd) => {
+    void handToTerminal(project, dir, cmd, { colorKey: dashMirror()?.root ?? dir });
+  },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
-  // The Branches view's four seams: the roster re-read after a cleanup, the terminal a
-  // refused `-D` goes to, and the trunk chip's popover + its persisted choice.
+  // The Branches view's other three seams: the roster re-read after a cleanup, and the
+  // trunk chip's popover + its persisted choice. (Its refused `-D` goes to the same
+  // `handToTerminal` above as ⇣ Pull's refusals.)
   refreshGit: () => refreshGitViews(),
-  handToTerminal: (project, dir, cmd) => { void handToTerminal(project, dir, cmd, { colorKey: dir }); },
   pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   openHistory: () => { void openHistory(true); },
@@ -504,6 +513,10 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     // trims on the way off). See trimScrollback for why claude panes only.
     if (isAgent(s) && activeId !== s.id) trimScrollback(s);
   }
+  // A task's exit code is its verdict; anything else just stopped. After the branches
+  // above so a task has its `exitCode` before this reads the kind, and in one place
+  // rather than three so the two outcomes can never diverge.
+  playSound(exitSound(s.kind, code));
   renderAll();
 });
 
@@ -523,7 +536,19 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
     s.resumeId = rt;
     flushRoster(); // rare and load-bearing — never let a debounce lose this one
   }
+  // Sound alerts read the state machine's verdict rather than the raw payload: what a
+  // hook MEANS is ./phase's decision (done vs. error, a permission vs. any other
+  // notification), and a second reading of the payload here would be a second copy of
+  // that decision — the copy that drifts. So snapshot, apply, compare. Both snapshots
+  // are three fields; this costs nothing per event.
+  const before = soundSnap(s);
+  const rlBefore = { h5: rl.h5, d7: rl.d7 };
   if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
+  const ev = hookSound(before, soundSnap(s));
+  if (ev) playSound(ev);
+  // Rate limits are account-wide, so this is deliberately outside the per-session
+  // branch above: one crossing, one chime, however many sessions report it.
+  if (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null) playSound("limit");
   queueRosterSave();
   renderAll();
 });
@@ -539,6 +564,11 @@ listen<{ id: string; data: any }>("permission", (e) => {
   s.pendingCmd = permCmd(data);
   s.pendingPermId = id;
   s.pendRisk = riskLevel(data.tool_name, data.tool_input);
+  // The one alert the whole feature is for: Claude is stopped until this is answered,
+  // and nothing else in the app can reach you from another window. The matching
+  // `PermissionRequest` hook usually rings a beat earlier or later — `SOUND_REPEAT_MS`
+  // is what makes the pair one sound rather than two.
+  playSound("permission");
   renderAll();
 });
 
