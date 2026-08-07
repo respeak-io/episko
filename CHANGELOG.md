@@ -13,6 +13,26 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **⇣ Pull on the project dashboard** — fast-forward a repo's main checkout without
+  opening a session or a shell for it. It *fetches first*, always: nothing on a dashboard
+  runs git on a schedule, so the ahead/behind it knows is as old as the last fetch, and a
+  pull that trusted it would report "already up to date" without ever reaching the remote.
+  The subtitle says which number it is reading and how old that number is. Everything
+  unsafe stays refused: the pull is `--ff-only`, and a diverged branch or one tracking no
+  upstream hands you a prefilled terminal with the command that *would* work. A pull that
+  landed re-reads the whole pane — including a colleague's `.episko/digest.md` and notes,
+  which is most of the reason to pull from here.
+
+! **The dashboard's GitHub card arrives seconds sooner, and says it is coming.** Its
+  `gh` calls were fired *after* the local reads finished — so the network could not start
+  until a scan of every transcript on the machine had completed, for a card that has
+  nothing to do with any of them. They now start first, the three `gh` calls run at once
+  instead of one after another (1.7–2.3s of them became 0.7–1.0s), and the cards are no
+  longer hidden behind the rest of the load, so an answer that arrives early is shown
+  early. The GitHub half also gets a skeleton of its own during the wait: one generic
+  placeholder used to stand in for up to four cards, which read as nothing being there
+  rather than as something being on its way.
+
 ! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
 ! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
 

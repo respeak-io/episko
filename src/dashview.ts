@@ -10,10 +10,10 @@ import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
 // renderer calls, and ./dom is the shared leaf everything may import (it touches no DOM
 // at module scope, which is what keeps it safe in vitest's node environment).
 import { FILE_MANAGER } from "./dom";
-import type { Pulse, ProjectFacts, ProjectTier } from "./dash";
+import { pullState, type Pulse, type ProjectFacts, type ProjectTier } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
-import type { WtHead } from "./types";
+import type { DiffStat, WtHead } from "./types";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import type { GhThread, Holder, KeptIssue } from "./ghwork";
 
@@ -353,6 +353,38 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
 
 // ---------- the inspector: the project's context menu, standing open ----------
 
+/**
+ * What the ⇣ Pull verb is about to do, from the main checkout's last-known upstream
+ * state. `g` is null until the probe answers — and stays null for a folder git could not
+ * read — which `pullState` renders as the plainest wording rather than as an absence:
+ * the button works either way, because it fetches before it decides anything.
+ */
+export interface DashPull {
+  /// The branch on the main checkout's HEAD — the thing being fast-forwarded.
+  branch: string;
+  /// Where that branch sat against its upstream **at the last fetch**, which on a
+  /// dashboard is as old as the last time anything ran git in that folder.
+  g: DiffStat | null;
+  /// A pull in flight. The one state that greys the button — see `pullState` for why
+  /// none of the others do.
+  busy: boolean;
+}
+
+/// The subtitle under ⇣ Pull. Every wording says what it is reading and how fresh that
+/// is, because the number is the part a reader would otherwise assume is live.
+function pullSub(p: DashPull): string {
+  if (p.busy) return "fetching, then fast-forwarding…";
+  const g = p.g;
+  const b = p.branch || "the main checkout";
+  switch (pullState(g)) {
+    case "no-upstream": return `${b} tracks no upstream`;
+    case "diverged": return `diverged — ${g!.ahead} ahead, ${g!.behind} behind`;
+    case "behind": return `${g!.behind} behind ${g!.upstream} at the last fetch`;
+    case "level": return `level with ${g!.upstream} at the last fetch`;
+    default: return `fetch, then fast-forward ${b}`;
+  }
+}
+
 /// `known` is whether `project_facts` has answered *for this project yet*. It is not the
 /// same question as "is anything loading": a range change reloads the timeline without
 /// putting the tier back in doubt, and blanking the repo verbs for it would be a flicker
@@ -361,10 +393,10 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
 export function dashInspector(
   root: string, tier: ProjectTier, f: ProjectFacts | null,
   live: { id: string; label: string; glyph: string; cls: string; ctx: string }[],
-  shared: boolean, known = true,
+  shared: boolean, known = true, pull: DashPull | null = null,
 ): string {
-  const act = (a: string, ic: string, lb: string, sb = "", cls = "") =>
-    `<button class="ia ${cls}" data-dashact="${a}"><span class="ic">${ic}</span>`
+  const act = (a: string, ic: string, lb: string, sb = "", cls = "", off = false) =>
+    `<button class="ia ${cls}" data-dashact="${a}"${off ? " disabled" : ""}><span class="ic">${ic}</span>`
     + `<span><span class="lb">${esc(lb)}</span>${sb ? `<span class="sb">${esc(sb)}</span>` : ""}</span></button>`;
   const repo = known && tier !== "none";
   const chips = [
@@ -385,6 +417,8 @@ export function dashInspector(
       ${act("terminal", "❯", "Open terminal here", "a plain shell, no Claude")}
       ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
       <div class="ip-sep"></div>
+      ${repo && pull ? act("pull", "⇣", pull.busy ? "Pulling…" : "Pull",
+        pullSub(pull), "", pull.busy) : ""}
       ${repo ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
       ${act("history", "◷", "History…", "reopen a session you closed")}
       ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
@@ -404,9 +438,10 @@ export function dashInspector(
 export function dashStrip(
   accent: string, initial: string, tier: ProjectTier,
   live: { id: string; glyph: string; cls: string; label: string }[], known = true,
+  pull: DashPull | null = null,
 ): string {
-  const b = (a: string, ic: string, t: string, cls = "") =>
-    `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}">${ic}</button>`;
+  const b = (a: string, ic: string, t: string, cls = "", off = false) =>
+    `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}"${off ? " disabled" : ""}>${ic}</button>`;
   // Same `known` gate as the inspector: the rail is the *same* verbs, and two surfaces
   // offering a different set of them for a second is worse than either alone.
   const repo = known && tier !== "none";
@@ -418,6 +453,7 @@ export function dashStrip(
     ${b("terminal", "❯", "Open terminal here")}
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>
+    ${repo && pull ? b("pull", "⇣", `Pull — ${pullSub(pull)}`, "", pull.busy) : ""}
     ${repo ? b("graph", "⑂", "Commit graph…") : ""}
     ${b("history", "◷", "History…")}
     ${b("folder", "⌂", "Open project folder")}

@@ -232,6 +232,11 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
+  // nests under the project rather than becoming a top-level group of its own.
+  handToTerminal: (project, dir, cmd) => {
+    void handToTerminal(project, dir, cmd, { colorKey: dashMirror()?.root ?? dir });
+  },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
   openHistory: () => { void openHistory(true); },
