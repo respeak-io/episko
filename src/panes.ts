@@ -22,6 +22,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { $, takeStage, toast } from "./dom";
+import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
@@ -141,6 +142,10 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (term) term.writeln(`\r\n\x1b[31m[launch error] ${e}\x1b[0m`);
     else pane.innerHTML = `<div class="ext-pane"><h2>Couldn't launch ${esc(eng.label)}</h2><p>${esc(String(e))}</p></div>`;
   }
+  // Off by default — you were standing right here — but it is the one confirmation an
+  // EXTERNAL engine gives that the window really opened somewhere else. Only a spawn
+  // that worked: the failure above already toasts, and a chirp under it reads as success.
+  if (spawned) playSound("launched");
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });

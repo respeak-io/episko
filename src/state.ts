@@ -23,6 +23,7 @@
 import { basename, hslToHex } from "./format";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
+import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
@@ -108,6 +109,16 @@ export function setCmpBase(repoDir: string, ref: string) {
 // than three keys, because the three are only ever read together.
 export let peekPrefs: PeekPrefs = clampPeekPrefs(safeParse(localStorage.getItem("cc-peek")));
 export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
+
+// --- sound alerts ---------------------------------------------------------------
+// Whether Episko makes a noise when something wants you, and which noise. One JSON
+// blob under cc-sound for the third time and the same reason as cc-peek above: the
+// master switch, the volume and the ten per-event rows are only ever read together,
+// and a per-event key that outlived its event is a corruption nobody could diagnose.
+// The rules, the catalogue and the clamping are ./sound, which is pure and tested;
+// this only holds the value.
+export let soundPrefs: SoundPrefs = clampSoundPrefs(safeParse(localStorage.getItem("cc-sound")));
+export function setSoundPrefs(p: SoundPrefs) { soundPrefs = clampSoundPrefs(p); }
 // Shared by every preference stored as a JSON blob (peek above, the project groups
 // higher up). A corrupt or hand-edited value must not take the app down during module
 // import, the same stance ./tasks and ./notes take with their own stores — and the

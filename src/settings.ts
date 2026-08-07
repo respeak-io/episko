@@ -17,9 +17,15 @@ import { basename, esc, tilde } from "./format";
 import type { Engine, PermMode } from "./types";
 import {
   ALL_PERM_MODES, availEngines, engineDef, peekPrefs, permMode, setTermFontSize,
-  SORT_META, SORT_MODES, sortMode, termEngine, termFontSize, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import {
+  isDefaultSoundPrefs, SOUND_EVENTS, soundDefaults, toneDef, TONES, VOLUME_RANGE,
+  VOLUME_STEP, type SoundEvent, type SoundEventDef, type SoundPrefs, type SoundWhen,
+  type ToneId,
+} from "./sound";
+import { previewEvent, previewTone } from "./chime";
 import {
   PEEK_CLOSE_RANGE, PEEK_DEFAULTS, PEEK_IDLE, PEEK_OPEN_RANGE, peekEnter, peekLeave,
   peekLeaveAll, peekNextDeadline, peekStaysOpen, peekTick, type PeekPrefs, type PeekState,
@@ -51,11 +57,13 @@ export interface SettingsHost {
   setPermMode: (m: PermMode) => void;
   // Ditto. ./actions clamps through ./peek, persists and repaints the sidebar.
   setPeekPrefs: (p: PeekPrefs) => void;
+  // Ditto again — ./actions clamps through ./sound, persists and repaints this window.
+  setSoundPrefs: (p: SoundPrefs) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
-  setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {},
+  setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -74,6 +82,10 @@ type SetControl =
   // can actually hover to feel the numbers. A stepper alone is a guess — "is 1000ms
   // right?" has no answer until you have rested a pointer on something for 1000ms.
   | { kind: "peek"; label: string; hint?: string }
+  // Sound alerts: the master switch, the volume, the focus rule and a row per event.
+  // One control rather than a `render` tab for the same reason `peek` is one — they
+  // are one decision, and a `render` tab also widens the dialog (see renderSettings).
+  | { kind: "sound"; label: string; hint?: string }
   // A single on/off switch.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
@@ -117,6 +129,13 @@ const SET_TABS: SetTab[] = [
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
+    ],
+  },
+  {
+    id: "sounds", label: "Sounds", glyph: "♪",
+    controls: () => [
+      { kind: "sound", label: "Sound alerts",
+        hint: "Episko is built for a fleet you are deliberately not watching, and every other signal it has — the glyph, the badge, the tray — needs the window in front of you. Click a row's sound name to change it; every button here plays what it does." },
     ],
   },
   {
@@ -351,6 +370,68 @@ function renderPeekControl(): string {
   </div>`;
 }
 
+// ---------- the sound control: a volume, a focus rule, and a row per event ----------
+// Every button in here PLAYS what it changes, and that is the design rather than a
+// flourish: a list of ten names ("Chime", "Drop", "Buzz") is unusable — nobody knows
+// what a "Drop" is until they have heard one, and a settings pane you cannot audition
+// is a pane you set once at random and never touch again. So changing a tone plays it,
+// switching an event on plays it, and nudging the volume plays at the new volume.
+//
+// Which row's tone strip is open. Module state like `setTab`, and deliberately not
+// persisted — it is where you are looking, not something you chose.
+let soundPick: SoundEvent | null = null;
+
+function volStepper(v: number): string {
+  return `<div class="set-font peekstep">
+    <span class="peekstep-l">Volume</span>
+    <button class="set-fbtn" data-setsound="vol:${-VOLUME_STEP}" ${v <= VOLUME_RANGE.min ? "disabled" : ""} aria-label="Quieter">−</button>
+    <span class="set-fval mono">${v}%</span>
+    <button class="set-fbtn" data-setsound="vol:${VOLUME_STEP}" ${v >= VOLUME_RANGE.max ? "disabled" : ""} aria-label="Louder">+</button>
+  </div>`;
+}
+// One event. The switch is the same `.sw` the rest of the window uses; the tone name is
+// a disclosure button, so ten tones × ten events stay out of sight until asked for.
+function soundRow(d: SoundEventDef): string {
+  const cfg = soundPrefs.events[d.id];
+  const open = soundPick === d.id;
+  const tone = toneDef(cfg.tone);
+  const strip = open
+    ? `<div class="chips sndtones">${TONES.map((t) =>
+        `<button class="chip-opt ${t.id === cfg.tone ? "on" : ""}" data-setsound="tone:${d.id}:${t.id}" title="${esc(t.hint)}">${esc(t.label)}</button>`).join("")}</div>`
+    : "";
+  return `<div class="sndev${cfg.on ? "" : " off"}">
+    <div class="sndev-h">
+      <span class="sndev-g">${d.glyph}</span>
+      <div class="sndev-t"><div class="sndev-l">${esc(d.label)}</div><div class="sndev-s">${esc(d.hint)}</div></div>
+      <button class="sndtone${open ? " on" : ""}" data-setsound="pick:${d.id}" aria-expanded="${open}">${esc(tone.label)}<span class="sndtone-c">▾</span></button>
+      <button class="sndplay" data-setsound="play:${d.id}" title="Play it" aria-label="Play ${esc(d.label)}">▶</button>
+      <button class="sw${cfg.on ? " on" : ""}" data-setsound="ev:${d.id}" role="switch" aria-checked="${cfg.on}"></button>
+    </div>${strip}
+  </div>`;
+}
+const WHEN_SEGS: { value: SoundWhen; label: string }[] = [
+  { value: "always", label: "Always" },
+  { value: "away", label: "Only when Episko is in the background" },
+];
+function renderSoundControl(): string {
+  const p = soundPrefs;
+  return `<div class="sndbox${p.enabled ? "" : " off"}">
+    <div class="peekrow">
+      ${volStepper(p.volume)}
+      <button class="set-freset" data-setsound="reset" ${isDefaultSoundPrefs(p) ? "disabled" : ""}>Reset</button>
+    </div>
+    <div class="sndwhen">
+      <div class="peekstep-l">Play</div>
+      <div class="chips">${WHEN_SEGS.map((w) =>
+        `<button class="chip-opt ${p.when === w.value ? "on" : ""}" data-setsound="when:${w.value}">${esc(w.label)}</button>`).join("")}</div>
+    </div>
+    <div class="sndlist">${SOUND_EVENTS.map(soundRow).join("")}</div>
+    <div class="peekhint">${p.enabled
+      ? "The last three start switched off: they fire on routine activity, or on something you did yourself. Turning everything on is exactly how a set of alerts becomes background noise you stop hearing — which costs you the permission chime too."
+      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and ▶ still plays — auditioning is how you decide whether to switch them back on."}</div>
+  </div>`;
+}
+
 function renderSetControl(c: SetControl): string {
   const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
   if (c.kind === "wtpreview") {
@@ -362,6 +443,13 @@ function renderSetControl(c: SetControl): string {
     return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
       + `<button class="sw${peekPrefs.enabled ? " on" : ""}" data-setpeek="toggle" role="switch"`
       + ` aria-checked="${peekPrefs.enabled}"></button></div>${renderPeekControl()}</div>`;
+  }
+  if (c.kind === "sound") {
+    // Same shape as `peek` above: the master switch rides the label row, the panel it
+    // governs sits under it, because they are one decision.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${soundPrefs.enabled ? " on" : ""}" data-setsound="toggle" role="switch"`
+      + ` aria-checked="${soundPrefs.enabled}"></button></div>${renderSoundControl()}</div>`;
   }
   if (c.kind === "font") {
     return `<div class="set-group">${head}<div class="set-font">
@@ -446,6 +534,59 @@ function applyPeekSetting(cmd: string) {
   else if (which === "close") host.setPeekPrefs({ ...peekPrefs, closeMs: peekPrefs.closeMs + +delta });
 }
 
+/**
+ * A press in the sound panel. Everything routes through `host.setSoundPrefs`, which
+ * clamps, persists and re-renders this window — so the markup above is always painted
+ * from the stored value rather than from what a handler thought it had set.
+ *
+ * The previews are the other half. Note which ones deliberately do NOT play: switching
+ * an event *off*, and Reset — a burst of ten tones is not a useful answer to "make it
+ * quieter", and hearing a sound as you switch it off says the wrong thing entirely.
+ */
+function applySoundSetting(cmd: string) {
+  const p = soundPrefs;
+  const set = (next: SoundPrefs) => host.setSoundPrefs(next);
+  const withEvent = (id: SoundEvent, patch: Partial<SoundPrefs["events"][SoundEvent]>) =>
+    set({ ...p, events: { ...p.events, [id]: { ...p.events[id], ...patch } } });
+
+  if (cmd === "reset") { soundPick = null; set(soundDefaults()); return; }
+  if (cmd === "toggle") {
+    const enabled = !p.enabled;
+    set({ ...p, enabled });
+    // Say so out loud when switching on — the panel is otherwise a list of promises,
+    // and this is the moment the browser's autoplay gate is known to be open (a click
+    // just landed), so a silent one here is worth knowing about.
+    if (enabled) previewEvent("done");
+    return;
+  }
+  const [verb, a, b] = cmd.split(":");
+  if (verb === "vol") {
+    // Clamping is `clampSoundPrefs`' job; the buttons disable at the bounds and this
+    // catches the rest, exactly as the peek steppers do.
+    set({ ...p, volume: p.volume + Number(a) });
+    previewTone(soundPrefs.events.done.tone); // the NEW volume — soundPrefs is live
+    return;
+  }
+  if (verb === "when") { set({ ...p, when: a === "away" ? "away" : "always" }); return; }
+  if (verb === "ev") {
+    const id = a as SoundEvent;
+    const on = !p.events[id].on;
+    withEvent(id, { on });
+    if (on) previewEvent(id);
+    return;
+  }
+  // The disclosure. Only one strip is open at a time — ten open strips is the list you
+  // were trying not to show.
+  if (verb === "pick") { soundPick = soundPick === a ? null : (a as SoundEvent); renderSettings(); return; }
+  if (verb === "tone") {
+    const id = a as SoundEvent;
+    withEvent(id, { tone: b as ToneId });
+    previewTone(b as ToneId);
+    return;
+  }
+  if (verb === "play") previewEvent(a as SoundEvent);
+}
+
 // ---------- the preview's own peek driver ----------
 // Same reducer as the sidebar's, its own state. It reads `peekPrefs` at event time
 // rather than capturing it, so a stepper press is felt on the very next hover with
@@ -506,6 +647,8 @@ $("setBody").addEventListener("click", (e) => {
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
   const pk = (e.target as HTMLElement).closest<HTMLElement>("[data-setpeek]");
   if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
+  const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
+  if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const r = (e.target as HTMLElement).closest<HTMLElement>("[data-urange]");
   if (r) { setUsageRange(+r.dataset.urange!); renderSettings(); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");

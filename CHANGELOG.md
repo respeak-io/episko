@@ -13,6 +13,22 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Episko can now reach you from another window.** Every signal it had until now was
+  visual — the sidebar glyph, the attention badge, the tray — and all three need the
+  window in front of you, which is the opposite of why you run six agents at once. A
+  blocked permission was the worst of it: Claude stopped, doing nothing, until you
+  happened to look. **Settings › Sounds** gives ten moments a noise — a permission, your
+  turn, a failed turn, a run passing or failing, a usage-limit mark, a session starting
+  or ending — each with its own sound from a palette of ten, a master volume, and an
+  *only when Episko is in the background* mode. Every button in the pane plays what it
+  does, because a list of names is unusable until you have heard one.
+  Three of the ten start switched off (a tool call failing, a session ending, a session
+  launching): they fire on routine activity, and a set of alerts you learn to ignore
+  makes the permission chime worthless too. For the same reason a burst is one sound,
+  not six — the same moment genuinely reaches the app twice, and a fleet moving together
+  is still one moment — except that a *more urgent* event always cuts through, so a
+  permission landing right after a "your turn" is never the one that gets swallowed.
+
 + **⇣ Pull on the project dashboard** — fast-forward a repo's main checkout without
   opening a session or a shell for it. It *fetches first*, always: nothing on a dashboard
   runs git on a schedule, so the ahead/behind it knows is as old as the last fetch, and a
