@@ -27,6 +27,13 @@ Markers: `+` new · `~` changed · `!` fixed
   branch you could plainly see in the same dialog's *Remote branches* group was reachable
   only through a terminal.
 
++ Settings › Worktrees can exempt the projects you are already working in from the
+  hover-reveal: with *Keep them listed in projects with a session* on, a project with a
+  pane open in any of its checkouts keeps its idle ones on screen — that is the moment
+  the sibling worktree is the next thing you launch into, and hovering for it every time
+  is a toll. Projects with nothing running still collapse, so the rail's length still
+  tracks what you are doing. Off by default, and the preview shows both halves at once.
+
 ~ **An open session no longer blocks switching the repo folder's branch — work in
   flight does.** *Switch branch…* refused whenever any pane lived in the folder, which
   made it unreachable in exactly the case it exists for: a root you keep an agent parked

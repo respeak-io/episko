@@ -239,6 +239,13 @@ export function initSidebarPeek() {
     const path = g?.dataset.path;
     if (!path || path === peekHover) return;
     peekHover = path;
+    // A group whose checkouts are already listed takes no part in this. It has nothing
+    // to reveal, so arming it would draw the countdown hairline for a second and then
+    // do nothing visible — an animation promising something that already happened — and
+    // opening it would hand it the "already inside an expanded rail" shortcut (peekEnter),
+    // which would then expand the NEXT group you pass over instantly. The rail is only
+    // expanded there because a setting says so, not because you asked for it.
+    if (g!.querySelector(".pgpeek.open")) return;
     peekAdvance(peekEnter(peek, path, Date.now(), peekPrefs));
   });
   container.addEventListener("mouseout", (e) => {
