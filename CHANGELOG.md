@@ -14,60 +14,35 @@ Markers: `+` new · `~` changed · `!` fixed
 ## Unreleased
 
 + **The disk-I/O box explains itself.** A day of agents reads as a gigabyte written, which
-  looks like a bug and isn't, so the `i` on the box now opens the three reasons the
-  figures look the way they do. Claude Code appends to its transcript and fsyncs after
-  every message, and each flush commits whole blocks — measured here at **~32× the
-  transcript's own growth**. That is Claude Code's own journalling; Episko only reports
-  the counters, and there is nothing here it can batch away. The panel also says why
-  *reads* look small (a page-cache hit never reaches the disk) and why child processes
-  are absent — a child that wrote 120 MiB moved its parent's counter by exactly zero, so
-  the `git`, `ripgrep` and `node` work under an agent is invisible no matter how the
-  process tree is walked.
+  looks like a bug and isn't, so the `i` on the box now says why: Claude Code fsyncs its
+  transcript after every message and each flush commits whole blocks (~32× the
+  transcript's own growth), page-cache hits never reach the disk, and an exited child's
+  bytes are never added to its parent — so the `git` and `ripgrep` work under an agent is
+  invisible here no matter how the process tree is walked.
 
-! **The usage-limit forecast stops crying wolf.** It read the last half-hour as your
-  pace for the rest of the window, so a burst of work got extrapolated across hours
-  that never happened. Measured against the windows the app has actually logged, every
-  large error was in that direction — three of them by 41, 51 and 80 points — while
-  guessing *low* never missed by more than 12, and the one time a window was called a
-  lockout it projected 127% on a window that finished at 47%. The projection now never
-  runs faster than the pace the window has really sustained, which cuts the typical
-  miss by a third and the worst overshoot by more than half without making a single
-  window's forecast worse. A steady burn is untouched — recent and sustained pace are
-  the same thing then, so a window genuinely heading for the cap still goes red as
-  early as it ever did. That is why the rate is capped rather than simply damped over
-  time: damping scored better on paper and quietly cost the warning its whole point,
-  putting a run that lands exactly on 100% at 83% when it was half over. The Usage
-  card's *Burn rate* now shows the pace the projection is actually built on, so the
-  two numbers on the card agree.
+! **The usage-limit forecast stops crying wolf.** It read the last half-hour as your pace
+  for the rest of the window, so a burst got extrapolated across hours that never
+  happened — once projecting 127% on a window that finished at 47%. It is now capped at
+  the pace the window has actually sustained: across the windows the app has logged, the
+  typical miss drops by a third and the worst overshoot by more than half, and no window's
+  forecast got worse. A steady burn is untouched, so one genuinely heading for the cap
+  still goes red as early as it ever did. *Burn rate* on the Usage card now shows the pace
+  the projection is built on.
 
-  The forecast-vs-actual log behind this kept too little to learn from and has been
-  fixed alongside it: it now records what the projection was made *from*, not just how
-  it turned out, marks a reading taken while you were idle (predicting no change over
-  an idle window is right for no reason, and those flattered the average), notes when a
-  window's close was spotted long after the fact, and no longer logs the same rotation
-  twice when a second session reports it late.
+! **The I/O figures were labelled in the wrong units.** They all divide by 1024, so they
+  were always KiB, MiB and GiB — the old labels understated what you were reading by up to
+  7.4%. Fixed in the resource box and in History's transcript sizes; the rate column grew
+  to fit and can no longer wrap.
 
-! **The I/O figures were labelled in the wrong units.** Every one of them divides by
-  1024, so they were always KiB, MiB and GiB — calling them KB, MB and GB understated
-  what you were reading by 2.4%, 4.9% and 7.4% respectively. The labels now match the
-  arithmetic, in the resource box and in History's transcript sizes. The rate column
-  grew to fit and can no longer wrap: at its old width the longer string silently
-  reflowed onto a second line instead of overflowing where anyone would see it.
-
-! **A password typed into a pane on Windows arrives whole.** Windows' ConPTY does not
-  hand a terminal's bytes to the program — it re-synthesizes them as console key
-  events, and for a great many characters (`§ ° ± ¿ – — ' ' " " ✓`, and the no-break
-  space a passphrase copied out of a document carries) it does that as an Alt+numpad
-  sequence, where the character rides on the key-*up* record. Every hidden-prompt
-  reader built on the Windows CRT — `getpass` in Python, and so any script that asks
-  you for a key — takes characters from key-*down* records only, so those characters
-  were silently missing from the secret: 54 of 86 sampled non-ASCII characters never
-  arrived. Nothing said so. gpg reported `Bad session key`, which is also what it says
-  for a genuinely wrong passphrase, so the hunt started in the secret store rather
-  than in the terminal. Episko now answers ConPTY the way Windows Terminal does — with
-  key records instead of text — for exactly those characters, which is why the same
-  key worked there and not here. ASCII, `^C`, arrows, pastes and Claude Code's own
-  keys go down the pipe byte for byte as before, and nothing changes on macOS.
+! **A password typed into a pane on Windows arrives whole.** ConPTY re-synthesizes typed
+  bytes as console key events, and for many characters (`§ ° ± – — " ✓`, and the no-break
+  space a passphrase copied out of a document carries) it uses an Alt+numpad sequence,
+  where the character rides on the key-*up* record — which `getpass`, and every other CRT
+  hidden-prompt reader, ignores. 54 of 86 sampled non-ASCII characters never reached the
+  secret and nothing said so: gpg reported `Bad session key`, which is also what it says
+  for a genuinely wrong passphrase. Episko now answers ConPTY with key records, as Windows
+  Terminal does. ASCII, `^C`, arrows and pastes go down the pipe byte for byte as before,
+  and nothing changes on macOS.
 
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does
