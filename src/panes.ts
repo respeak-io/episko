@@ -39,6 +39,7 @@ import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderFoot } from "./footer";
+import { updateTray } from "./tray";
 import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
@@ -111,7 +112,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   sessions.set(id, s);
   term?.onTitleChange((t) => {
     const c = cleanTitle(t, s);
-    if (c !== s.title) { s.title = c; renderSidebar(); if (activeId === id) renderHeader(s); }
+    // The tray row reads the title too, and this path bypasses renderAll — without
+    // the nudge the menu shows the old summary until the next telemetry tick.
+    if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === id) renderHeader(s); }
   });
   setActive(id);
   // A restored session takes over its roster entry: drop the dormant row so the
@@ -245,7 +248,7 @@ async function adoptSession(o: { id: string; workdir: string; meta: Restorable |
   sessions.set(o.id, s);
   term.onTitleChange((t) => {
     const c = cleanTitle(t, s);
-    if (c !== s.title) { s.title = c; renderSidebar(); if (activeId === o.id) renderHeader(s); }
+    if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === o.id) renderHeader(s); }
   });
   try {
     const snap = await invoke<{ data: string; seq: number }>("read_scrollback", { sessionId: o.id });
