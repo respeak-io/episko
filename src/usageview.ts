@@ -13,7 +13,7 @@
 // decide between a skeleton and a "no data" line.
 
 import { esc, fmtClock, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
-import { burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
+import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
 import { accentFor } from "./state";
 import {
   tokenDays, U_MONTHS, uBuckets, uDkey, uModels, usage, usageRange, usageWindow,
@@ -315,12 +315,14 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
   </div>`;
 }
 function forecastBlockHtml(): string {
-  const b7 = burnRate("d7");
+  // Both cards read the rate the forecast ran on (`f.rate`), not the raw recent
+  // slope, so "Burn rate" and "Projected @ reset" always agree with each other.
+  const f5 = forecast5h(), f7 = forecast7d();
   return `<div class="fc-block">
     <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?</span></div>
     <div class="fc-grid">
-      ${fcWinHtml("Session", "5-hour window", forecast5h(), burnRate("h5"), H5_LEN, "%/hr")}
-      ${fcWinHtml("Weekly", "7-day window", forecast7d(), b7 == null ? null : b7 * 24, D7_LEN, "%/day")}
+      ${fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr")}
+      ${fcWinHtml("Weekly", "7-day window", f7, f7.rate == null ? null : f7.rate * 24, D7_LEN, "%/day")}
     </div>
   </div>`;
 }
