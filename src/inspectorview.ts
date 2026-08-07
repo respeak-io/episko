@@ -15,7 +15,7 @@
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { ioAll, ioInfo, ioScope, sessions, type IoScope } from "./state";
+import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
@@ -267,6 +267,9 @@ function ioText(scope: IoScope): string {
 ///
 /// Kept as data rather than one blob of markup so the shape stays obvious and the strings
 /// stay greppable.
+///
+/// The panel expands rather than appearing, and getting that to happen at all is the
+/// interesting part — see `ioInfoAnim`.
 const IO_INFO: Array<[string, string]> = [
   ["Writes run far above the conversation",
     "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks — measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
@@ -275,8 +278,30 @@ const IO_INFO: Array<[string, string]> = [
   ["Child processes are not counted",
     "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
 ];
+/// How long the expander takes. Mirrored in styles.css (`rinfo-open`) — the two have to
+/// agree, because this file decides when the animation is *over*.
+const IO_INFO_MS = 220;
+/// The inline `style` that makes the expander survive this app's render model.
+///
+/// A CSS **transition** is useless here: `#inspector` is rebuilt by `innerHTML` on every
+/// pass, so the node that would transition is a brand-new one already in its final state
+/// — which is why `.pfbody`'s transition in the sidebar never actually plays either. A
+/// keyframes **animation** does run on a freshly-inserted node, so that is what this uses.
+///
+/// But that trades one bug for another: the inspector repaints on telemetry, so a repaint
+/// landing 80ms into the animation would insert *another* fresh node and play the whole
+/// expansion again — the panel would visibly collapse and re-open under a busy fleet.
+/// A negative `animation-delay` fixes it: it starts an animation partway through, so each
+/// replacement node *resumes* where its predecessor was instead of restarting. Once the
+/// run is over the animation is switched off outright, which also settles the markup
+/// string so ./inspector's guard can go back to skipping repaints.
+function ioInfoAnim(): string {
+  const el = Date.now() - ioInfoAt;
+  return el >= IO_INFO_MS ? ` style="animation:none"` : ` style="animation-delay:-${el}ms"`;
+}
 export function resHtml(): string {
   const r = ioAll;
+  const info = ioInfoAt > 0;
   // Before the second sample there is no window to average over, so the rate is unknown
   // rather than zero — say so instead of showing a confident "0 B/s".
   const rd = r.primed ? fmtRate(r.readBps) : "—";
@@ -297,14 +322,14 @@ export function resHtml(): string {
   // indistinguishable from a broken one unless the row says why.
   const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
   return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
-    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span><button class="rinfob${ioInfo ? " on" : ""}" data-ioinfo="1" aria-expanded="${ioInfo}" title="${ioInfo ? "Hide" : "Why these figures look the way they do"}">i</button></div>
+    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span><button class="rinfob${info ? " on" : ""}" data-ioinfo="1" aria-expanded="${info}" title="${info ? "Hide" : "Why these figures look the way they do"}">i</button></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
     <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
     ${note ? `<p class="rnote">${esc(note)}</p>` : ""}
-    ${ioInfo ? `<div class="rinfo"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched — not their logical reads and writes.</p>${
+    ${info ? `<div class="rinfo"${ioInfoAnim()}><div class="rinfo-in"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched — not their logical reads and writes.</p>${
       IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
-    }</div>` : ""}</div>`;
+    }</div></div>` : ""}</div>`;
 }
 /// Spelled out per scope rather than one generic hint, because the difference between
 /// them is the whole point and two of the three have a caveat worth one sentence.

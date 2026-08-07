@@ -934,11 +934,25 @@ html.win .wctl { display: flex; }
 .res .rinfob:hover { opacity: 1; color: var(--fg); border-color: var(--muted-2); }
 .res .rinfob.on { opacity: 1; color: var(--fg); border-color: var(--muted-2); background: var(--surface-2); }
 /* Hairline-separated from the meters for the same reason `.rall` is: this is prose about
-   the box, not another row in it. */
-.res .rinfo { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--hair); display: flex; flex-direction: column; gap: 6px; }
+   the box, not another row in it.
+
+   The two-element nesting is the height-agnostic expander the sidebar's `.pfbody` uses:
+   the outer is a grid animated `0fr → 1fr`, the inner clips. It costs a wrapper and buys
+   an animation that needs no hardcoded height — which matters here, where the panel's
+   height depends on how the prose wraps in the inspector's current width. */
+.res .rinfo { display: grid; grid-template-rows: 1fr; }
+.res .rinfo-in { overflow: hidden; min-height: 0; margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--hair); display: flex; flex-direction: column; gap: 6px; }
 .res .rinfo p { margin: 0; font: 9.5px/1.4 var(--font-ui); color: var(--muted-2); }
 .res .rinfo b { display: block; font-weight: 600; color: var(--muted); }
 .res .rinfo .rinfo-lead { opacity: .8; }
+/* Opening only — closing removes the node, so there is nothing left to animate out, and
+   the panel is reference text rather than something you dismiss in a hurry. The timing
+   is duplicated in ./inspectorview (`IO_INFO_MS`), which decides when the run is over;
+   `ioInfoAnim` there explains why this is an animation and not a transition. */
+@media (prefers-reduced-motion: no-preference) {
+  .res .rinfo { animation: rinfo-open .22s cubic-bezier(.32,.72,0,1) both; }
+  @keyframes rinfo-open { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+}
 
 /* --- risk badge on the pending-permission block --- */
 .attn-h { justify-content: flex-start; }

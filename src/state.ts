@@ -298,9 +298,14 @@ export let ioScope: IoScope =
     ? localStorage.getItem("cc-io-scope") as IoScope : "today";
 export function setIoScope(s: IoScope) { ioScope = s; }
 
-// Whether the I/O box's explanation panel is open. Deliberately NOT persisted and not a
-// `cc-` key: the figures in that box are startling on first sight (a day of agents reads
-// as a gigabyte written) and the panel exists to say why once, not to be a preference
-// somebody carries between runs. Reset by a restart is the right lifetime for it.
-export let ioInfo = false;
-export function setIoInfo(v: boolean) { ioInfo = v; }
+// Whether the I/O box's explanation panel is open — and, when it is, the `Date.now()` it
+// opened at. Deliberately NOT persisted and not a `cc-` key: the figures in that box are
+// startling on first sight (a day of agents reads as a gigabyte written) and the panel
+// exists to say why once, not to be a preference somebody carries between runs. Reset by
+// a restart is the right lifetime for it.
+//
+// One number rather than a flag beside it, because the two would have to agree: the open
+// time IS the open state (0 = closed), so there is no pair to drift. The timestamp is
+// what lets the expander survive a repaint — see `resHtml` in ./inspectorview.
+export let ioInfoAt = 0;
+export function setIoInfoAt(t: number) { ioInfoAt = t; }
