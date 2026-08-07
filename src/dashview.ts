@@ -16,6 +16,9 @@ import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { WtHead } from "./types";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import type { GhThread, Holder, KeptIssue } from "./ghwork";
+import {
+  localStanding, orderCands, standing, type CleanCand, type MergedPrs, type SweepResult,
+} from "./branches";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -386,6 +389,7 @@ export function dashInspector(
       ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
       <div class="ip-sep"></div>
       ${repo ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
+      ${repo ? act("cleanup", "⌥", "Branches…", "clean up merged and orphaned ones") : ""}
       ${act("history", "◷", "History…", "reopen a session you closed")}
       ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
       ${act("copypath", "⧉", "Copy path", "the full path, to the clipboard")}
@@ -419,6 +423,7 @@ export function dashStrip(
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>
     ${repo ? b("graph", "⑂", "Commit graph…") : ""}
+    ${repo ? b("cleanup", "⌥", "Branches…") : ""}
     ${b("history", "◷", "History…")}
     ${b("folder", "⌂", "Open project folder")}
     ${b("copypath", "⧉", "Copy path")}`;
@@ -456,6 +461,127 @@ export function checkoutsOverlay(
   return overlayHtml("Checkouts", `${heads.length} · ${heads.filter((w) => liveFor(w.path)).length} with sessions`,
     `<div class="dbwt-hd"><span></span><span>Branch</span><span>Folder</span><span>State</span><span class="r">Actions</span></div>${rows}`,
     `Creating a worktree, pruning a stale one and every warning about a locked or detached checkout stay in the <b>⑃ dialog</b>, which already does all of that. This is a status board.`);
+}
+
+/// Branches, enlarged: the full-screen cleanup that used to be squeezed into the ⑃
+/// dialog's detail column beside a second list. A table, one row per branch, checkboxes
+/// down the side — the shape the decision actually has, which the dialog could not give
+/// it. The rules are ./branches (pure, tested); this only draws them.
+///
+/// Two blocks in one view rather than two views, because they are one question asked in
+/// two places — and they are NOT interchangeable: the local half deletes refs on this
+/// machine, the remote half changes what everyone else sees, so each keeps its own count,
+/// its own selection and its own button.
+export function branchesOverlay(o: {
+  local: CleanCand[]; remote: CleanCand[];
+  picked: ReadonlySet<string>; rpicked: ReadonlySet<string>;
+  trunk: string; remoteName: string;
+  prs: MergedPrs | null; prsLoading: boolean;
+  busy: boolean; loading: boolean;
+  result: { swept: SweepResult; wts: { label: string; ok: boolean; note: string }[]; remote?: string } | null;
+}): string {
+  if (o.result) return overlayHtml("Cleaned up", esc(o.result.swept.summary),
+    cleanResultHtml(o.result), "");
+  if (o.loading) {
+    return overlayHtml("Branches", "reading the repo…",
+      `<div class="dbbr-hd"><span></span><span>Branch</span><span>Why it's here</span><span>Standing</span><span>Author</span><span class="r">Last commit</span></div>`
+      + [72, 54, 63, 48].map((w) => `<div class="dbbr sk"><span></span><span>${sk(`${w}%`, 9)}</span>`
+        + `<span>${sk("70%", 8)}</span><span>${sk("50%", 8)}</span><span>${sk("60%", 8)}</span><span>${sk("40%", 8)}</span></div>`).join(""),
+      "");
+  }
+
+  const gh = o.prsLoading ? `<div class="dbbr-note">Reading merged pull requests…</div>`
+    : o.prs && !o.prs.available
+      ? `<div class="dbbr-note warn">No pull-request data — ${esc(o.prs.reason || "gh unavailable")}. `
+        + `A squash-merged branch is contained in nothing, so without this it can't be identified and isn't offered.</div>`
+      : "";
+
+  // `half` rides in the attribute rather than being inferred from where the row sits:
+  // the two halves run different commands, and a click must never arm the other side.
+  const row = (c: CleanCand, on: boolean, half: string) => {
+    const b = c.br;
+    const tag = c.pr ? `<span class="tag ok" title="${esc(c.pr.title)}">#${c.pr.number} merged</span>`
+      : b.gone ? `<span class="tag">gone</span>`
+      : `<span class="tag ok">merged</span>`;
+    return `<div class="dbbr${c.block ? " off" : ""}${on ? " on" : ""}" data-dashbr="${esc(b.name)}">
+      <span class="ck"><button class="brck${on ? " on" : ""}" type="button" role="checkbox"
+        aria-checked="${on}"${c.block ? " disabled" : ""} data-dashbrpick="${esc(half)}:${esc(b.name)}"
+        title="${esc(c.block || c.why)}"></button></span>
+      <span class="bn mono">${esc(b.name)}</span>
+      <span class="why">${c.block ? `<span class="warn">${esc(c.block)}</span>` : tag}
+        ${c.wt && !c.block ? `<span class="tag" title="Its checkout at ${esc(c.wt.path)} is removed with it">⑃ ${esc(basename(c.wt.path))}/</span>` : ""}
+        ${c.force && !c.block ? `<span class="tag warn" title="Its pull request merged, so a squash is why -d refuses">forced</span>` : ""}</span>
+      <span class="st mono">${esc(half === "remote" ? standing(b) : localStanding(b))}</span>
+      <span class="au mono">${esc(b.author)}</span>
+      <span class="ag mono r">${esc(b.rel)}</span>
+    </div>`;
+  };
+
+  const block = (
+    title: string, sub: string, cands: CleanCand[], picked: ReadonlySet<string>,
+    act: string, label: (n: number) => string, empty: string, warn = "", extra = "",
+  ) => {
+    const pickable = cands.filter((c) => !c.block);
+    const n = pickable.filter((c) => picked.has(c.br.name)).length;
+    return `<div class="bk">
+      <div class="bk-h"><span class="t">${esc(title)}</span><span class="n">${esc(sub)}</span>
+        ${extra}
+        ${pickable.length ? `<span class="bk-sel">${n} of ${pickable.length} selected</span>
+          <button class="act" data-dashbrall="${esc(act)}">All</button>
+          <button class="act" data-dashbrnone="${esc(act)}">None</button>` : ""}</div>
+      ${warn}
+      ${cands.length
+        ? `<div class="dbbr-hd"><span></span><span>Branch</span><span>Why it's here</span>`
+          + `<span>${act === "remote" ? "Versus the trunk" : "Its remote"}</span>`
+          + `<span>Author</span><span class="r">Last commit</span></div>`
+          + orderCands(cands).map((c) => row(c, !c.block && picked.has(c.br.name), act)).join("")
+          + `<div class="dbbr-act"><button class="brgo" data-dashbrrun="${esc(act)}"${n && !o.busy ? "" : " disabled"}>`
+          + `${o.busy ? "Working…" : esc(label(n))}</button></div>`
+        : `<div class="ac-empty">${esc(empty)}</div>`}
+    </div>`;
+  };
+
+  const localWarn = `<div class="dbbr-note">Local refs only — nothing on any remote is touched. `
+    + `Episko runs git's safe <b>delete</b>, and what it refuses is kept and listed with git's own words.</div>`;
+  const remoteWarn = `<div class="dbbr-note warn"><b>git push ${esc(o.remoteName)} --delete</b> removes the branch for everyone, not just here. `
+    + `Only branches already contained in ${esc(o.trunk || "the trunk")} — or whose pull request merged — can be picked, and each deleted branch's sha comes back so it can be restored.</div>`;
+
+  const body = gh
+    + block("On this machine", `${o.local.length} cleanable`, o.local, o.picked,
+      "local", (n) => (n ? `Delete ${n}` : "Delete"), "Nothing here is merged, and nothing has lost its remote.", localWarn)
+    + block(`On ${o.remoteName}`, `${o.remote.length} branch${o.remote.length === 1 ? "" : "es"}`, o.remote, o.rpicked,
+      "remote", (n) => (n ? `Delete ${n} on ${o.remoteName}` : `Delete on ${o.remoteName}`),
+      "No remote-only branches to clean up.", remoteWarn,
+      // The trunk sits with the numbers it decides, in the header of the half whose whole
+      // Standing column is measured against it — not in a footer under two tables.
+      `<button class="bk-cmp" data-dashbrtrunk title="Every branch here is measured against this&#10;Click to compare against another">vs ${esc(o.trunk || "nothing")}</button>`);
+
+  // No footer: what it used to say (the trunk) is a control now, and it lives with the
+  // column it governs.
+  return overlayHtml("Branches", `${o.local.length} local · ${o.remote.length} remote`, body, "");
+}
+
+function cleanResultHtml(r: {
+  swept: SweepResult; wts: { label: string; ok: boolean; note: string }[]; remote?: string;
+}): string {
+  const line = (n: string, right: string, title = "") =>
+    `<div class="dbbr res"${title ? ` title="${esc(title)}"` : ""}><span class="bn mono">${esc(n)}</span>`
+    + `<span class="rr mono">${right}</span></div>`;
+  return `${r.wts.length ? `<div class="bk"><div class="bk-h"><span class="t">Checkouts</span></div>`
+      + r.wts.map((w) => line(`${w.label}/`, w.ok ? `<span class="ok">removed</span>` : `<span class="warn">${esc(w.note)}</span>`)).join("")
+      + `</div>` : ""}
+    ${r.swept.deleted.length ? `<div class="bk"><div class="bk-h"><span class="t">Deleted</span>
+        <span class="n">${r.remote
+          ? `git push ${esc(r.remote)} &lt;sha&gt;:refs/heads/&lt;name&gt; restores one`
+          : `git branch &lt;name&gt; &lt;sha&gt; puts one back`}</span></div>`
+      + r.swept.deleted.map((d) => line(d.branch, `<span class="sha">${esc(d.sha)}</span>${d.forced ? ` <span class="warn">forced</span>` : ""}`)).join("")
+      + `</div>` : ""}
+    ${r.swept.kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept</span></div>`
+      + r.swept.kept.map((k) => line(k.branch, `<span class="warn">${esc(k.reason)}</span>`, `${k.branch} — ${k.reason}`)).join("")
+      + `</div>` : ""}
+    <div class="dbbr-act">
+      ${r.swept.suggest ? `<button class="act" data-dashbrterm>Open a terminal with <b>-D</b> ready</button>` : ""}
+      <button class="brgo" data-dashbrdone>Done</button></div>`;
 }
 
 export function notesOverlay(

@@ -22,6 +22,15 @@
 export interface PeekPrefs {
   /// Off means the checkouts simply stay hidden; the ⑃ dialog is still the way in.
   enabled: boolean;
+  /// Exempt the projects you are already working in: one with a session running keeps
+  /// its idle checkouts listed instead of collapsing them. **Off by default**, and the
+  /// default is the point — peek exists because four rows saying "no session" are worth
+  /// *reaching*, and this is the narrow case where they are worth *showing*: in a
+  /// project you have a pane open in, the sibling checkout is the next thing you reach
+  /// for, and paying the hover delay for it every time is a toll rather than a
+  /// tidy-up. Idle projects still collapse, so the rail's length still tracks what you
+  /// are doing rather than how many worktrees exist.
+  pinLive: boolean;
   /// How long the pointer must rest on a project before it expands.
   openMs: number;
   /// How long an expanded group survives after the pointer leaves it. Generous on
@@ -31,7 +40,7 @@ export interface PeekPrefs {
   closeMs: number;
 }
 
-export const PEEK_DEFAULTS: PeekPrefs = { enabled: true, openMs: 1000, closeMs: 3000 };
+export const PEEK_DEFAULTS: PeekPrefs = { enabled: true, pinLive: false, openMs: 1000, closeMs: 3000 };
 
 /// Bounds for the two timings. Not taste — these are the values either side of which
 /// the feature stops working: below ~150ms it fires while you are travelling past,
@@ -47,9 +56,34 @@ const clamp = (n: number, lo: number, hi: number, dflt: number) =>
 export function clampPeekPrefs(p: Partial<PeekPrefs> | null | undefined): PeekPrefs {
   return {
     enabled: p?.enabled !== false,
+    // The mirror image of `enabled` above, and for the same reason each way round: a
+    // key that isn't there yet must land on the shipped default. Peek is on unless
+    // switched off; this one is off unless switched on, so it reads `=== true` rather
+    // than `!== false` and every pre-existing cc-peek blob keeps behaving as it did.
+    pinLive: p?.pinLive === true,
     openMs: clamp(Number(p?.openMs), PEEK_OPEN_RANGE.min, PEEK_OPEN_RANGE.max, PEEK_DEFAULTS.openMs),
     closeMs: clamp(Number(p?.closeMs), PEEK_CLOSE_RANGE.min, PEEK_CLOSE_RANGE.max, PEEK_DEFAULTS.closeMs),
   };
+}
+
+/**
+ * Does a project's idle-checkout body render already open, instead of waiting for the
+ * pointer? Two ways that happens and they are different reasons, which is why one
+ * predicate answers for both: peek switched **off** keeps every checkout listed (the
+ * feature's off state was never "hide them for good"), and `pinLive` keeps them listed
+ * for the projects with something running in them.
+ *
+ * `live` is "does anything at all run in this project" — an Episko pane or an external
+ * session in any of its checkouts (./grouping's `clusterIsLive`, over every cluster).
+ * Dormant sessions are deliberately not it: a project you finished with yesterday is
+ * exactly the one peek was built to fold away.
+ *
+ * Pure and here rather than in ./sidebarview because the "off" half of it was already a
+ * rule two surfaces had to agree on — the sidebar and the Settings preview — and a
+ * second reason to be open is a second chance for them to drift apart.
+ */
+export function peekStaysOpen(p: PeekPrefs, live: boolean): boolean {
+  return !p.enabled || (p.pinLive && live);
 }
 
 /// Exactly one group is ever expanded. `open` is a project path (`.pgroup`'s

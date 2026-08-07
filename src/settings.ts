@@ -22,7 +22,7 @@ import {
 } from "./state";
 import {
   PEEK_CLOSE_RANGE, PEEK_DEFAULTS, PEEK_IDLE, PEEK_OPEN_RANGE, peekEnter, peekLeave,
-  peekLeaveAll, peekNextDeadline, peekTick, type PeekPrefs, type PeekState,
+  peekLeaveAll, peekNextDeadline, peekStaysOpen, peekTick, type PeekPrefs, type PeekState,
 } from "./peek";
 import {
   ALL_PROVIDERS, clearStopRule, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
@@ -264,6 +264,12 @@ function renderWtPreview(active: string): string {
 // driven by the REAL ./peek reducer, so it cannot drift from the sidebar it is
 // previewing — a mock of a timing is worth nothing, because the timing is the thing
 // being judged. The only thing that is fake is the sessions.
+//
+// **The third project has no sessions, and that is the exemption switch's whole
+// preview.** With it on, the two busy projects render open and only `docs-site` still
+// peeks — which is also what keeps the steppers demonstrable in that state: a preview
+// where every group was already open would be previewing nothing while you set the two
+// timings directly above it.
 const PEEK_DEMO = [
   { path: "demo:episko", name: "episko", hue: "#818cf8", rows: [
       { title: "Fix telemetry routing", st: "work" as const, ctx: 12 },
@@ -272,23 +278,36 @@ const PEEK_DEMO = [
   { path: "demo:redactor", name: "pii-redactor", hue: "#2dd4bf", rows: [
       { title: "Regex fallback pass", st: "done" as const, ctx: 18 },
     ], idle: [{ g: "⌂", b: "main" }, { g: "⑃", b: "spike/onnx" }] },
+  { path: "demo:site", name: "docs-site", hue: "#f472b6", rows: [],
+    idle: [{ g: "⌂", b: "main" }, { g: "⑃", b: "chore/deps" }] },
 ];
 function peekDemoHtml(): string {
-  const groups = PEEK_DEMO.map((p) =>
-    `<div class="pgroup" data-peekdemo="${esc(p.path)}">`
-    + `<div class="p-phead"><span class="p-pdot" style="background:${p.hue}"></span>`
-    + `<span class="p-pname">${esc(p.name)}</span><span class="p-pcount">${p.rows.length}</span>`
-    // The same `.parm` the sidebar uses, wearing the same rules — the arming hairline is
-    // a *timing*, so it is exactly the kind of thing this preview exists to let you feel.
-    + `<span class="parm"></span></div>`
-    + `<div class="p-rows">${p.rows.map((r) =>
-        `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
-        + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>`
-    + `<div class="pgpeek"><div class="pgpeek-in">${p.idle.map((w) =>
-        `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${w.g}</span>`
-        + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">＋</span></div>`).join("")}</div></div>`
-    + `</div>`).join("");
-  return `<div class="p-mini peekdemo" id="peekDemo">${groups}</div>`;
+  const groups = PEEK_DEMO.map((p) => {
+    // The same question ./sidebarview asks, asked of the same function — a preview that
+    // decided for itself when a group stays open would agree with the sidebar exactly
+    // until one of the two changed. A demo project is "live" when it has a session row,
+    // which is what its clusters mean here.
+    const open = peekStaysOpen(peekPrefs, p.rows.length > 0);
+    // `idle` rather than a 0: the count pill is the reason this group still collapses
+    // while its neighbours don't, so it should say what it is rather than show a zero.
+    const count = p.rows.length ? String(p.rows.length) : "idle";
+    return `<div class="pgroup" data-peekdemo="${esc(p.path)}">`
+      + `<div class="p-phead"><span class="p-pdot" style="background:${p.hue}"></span>`
+      + `<span class="p-pname">${esc(p.name)}</span><span class="p-pcount">${count}</span>`
+      // The same `.parm` the sidebar uses, wearing the same rules — the arming hairline is
+      // a *timing*, so it is exactly the kind of thing this preview exists to let you feel.
+      + `<span class="parm"></span></div>`
+      + (p.rows.length ? `<div class="p-rows">${p.rows.map((r) =>
+          `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
+          + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>` : "")
+      + `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">${p.idle.map((w) =>
+          `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${w.g}</span>`
+          + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">＋</span></div>`).join("")}</div></div>`
+      + `</div>`;
+  }).join("");
+  // `pinned` only sizes the box: with two groups held open it needs more room, and a
+  // preview that resized as you hovered would be the most distracting thing on the page.
+  return `<div class="p-mini peekdemo${peekPrefs.enabled && peekPrefs.pinLive ? " pinned" : ""}" id="peekDemo">${groups}</div>`;
 }
 function stepper(which: "open" | "close", value: number, step: number, range: { min: number; max: number }): string {
   return `<div class="set-font peekstep">
@@ -301,16 +320,34 @@ function stepper(which: "open" | "close", value: number, step: number, range: { 
 function renderPeekControl(): string {
   const on = peekPrefs.enabled;
   const dflt = peekPrefs.openMs === PEEK_DEFAULTS.openMs && peekPrefs.closeMs === PEEK_DEFAULTS.closeMs;
+  // Named from the demo rather than typed out again: the preview is directly below this
+  // sentence, so it has to be talking about the projects actually on screen.
+  const busy = PEEK_DEMO.filter((p) => p.rows.length).map((p) => p.name);
+  const quiet = PEEK_DEMO.find((p) => !p.rows.length)?.name ?? "the idle project";
+  const pin = peekPrefs.pinLive;
+  const pinHint = on
+    ? "A project you have a session open in keeps its other checkouts on screen — that is the moment the sibling worktree is the next thing you start something in. Projects with nothing running still collapse."
+    : "Nothing to exempt while peek is off: every checkout is listed already.";
   return `<div class="peekbox${on ? "" : " off"}">
     <div class="peekrow">
       ${stepper("open", peekPrefs.openMs, 100, PEEK_OPEN_RANGE)}
       ${stepper("close", peekPrefs.closeMs, 250, PEEK_CLOSE_RANGE)}
       <button class="set-freset" data-setpeek="reset" ${dflt ? "disabled" : ""}>Reset</button>
     </div>
+    <div class="peeksub set-inline">
+      <div class="set-itxt">
+        <div class="set-glabel">Keep them listed in projects with a session</div>
+        <div class="set-hint">${esc(pinHint)}</div>
+      </div>
+      <button class="sw${pin ? " on" : ""}" data-setpeek="live" role="switch"
+        aria-checked="${pin}" ${on ? "" : "disabled"}></button>
+    </div>
     ${peekDemoHtml()}
-    <div class="peekhint">${on
-      ? "Rest on a project above. Moving straight to the other one opens it at once — the delay is there to ignore a pointer passing over, and you are already inside."
-      : "Peek is off, so idle checkouts stay listed all the time. The preview shows them open."}</div>
+    <div class="peekhint">${esc(!on
+      ? "Peek is off, so idle checkouts stay listed all the time. The preview shows them open."
+      : pin
+        ? `${busy.join(" and ")} have a session, so their checkouts stay listed. ${quiet} has none — rest on it to feel the delay.`
+        : "Rest on a project above. Moving straight to the other one opens it at once — the delay is there to ignore a pointer passing over, and you are already inside.")}</div>
   </div>`;
 }
 
@@ -385,7 +422,15 @@ function applySetting(set: string, val: string) {
 // clamping setter, so a value that would break the feature can't be reached by
 // holding − : the button disables at the bound and the clamp catches the rest.
 function applyPeekSetting(cmd: string) {
-  if (cmd === "reset") { host.setPeekPrefs({ ...peekPrefs, ...PEEK_DEFAULTS, enabled: peekPrefs.enabled }); return; }
+  // Names the two fields it restores rather than spreading PEEK_DEFAULTS over the
+  // switches: this button sits in the stepper row, is enabled by the timings alone, and
+  // says Reset next to two numbers — so it must not quietly flip a switch elsewhere in
+  // the group back to its default (the exemption below did exactly that when this
+  // spread the whole defaults object).
+  if (cmd === "reset") {
+    host.setPeekPrefs({ ...peekPrefs, openMs: PEEK_DEFAULTS.openMs, closeMs: PEEK_DEFAULTS.closeMs });
+    return;
+  }
   if (cmd === "toggle") {
     const enabled = !peekPrefs.enabled;
     host.setPeekPrefs({ ...peekPrefs, enabled });
@@ -393,6 +438,9 @@ function applyPeekSetting(cmd: string) {
     peekDemoReset();
     return;
   }
+  // Same reason as the switch above: this changes which demo groups render open, so a
+  // hover still counting down against the old markup has nothing left to open.
+  if (cmd === "live") { host.setPeekPrefs({ ...peekPrefs, pinLive: !peekPrefs.pinLive }); peekDemoReset(); return; }
   const [which, delta] = cmd.split(":");
   if (which === "open") host.setPeekPrefs({ ...peekPrefs, openMs: peekPrefs.openMs + +delta });
   else if (which === "close") host.setPeekPrefs({ ...peekPrefs, closeMs: peekPrefs.closeMs + +delta });

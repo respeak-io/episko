@@ -26,6 +26,7 @@ import {
   setFavorites, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
+  cmpBase, setCmpBase as setCmpBaseState,
   type SortMode, type WtGroup,
 } from "./state";
 import {
@@ -103,6 +104,14 @@ export function setWtGroup(m: WtGroup) {
 }
 // Dev affordance until the settings window ships: episkoWtGroup("chip") in the console.
 (window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
+
+// The trunk a project's branches are measured against. Same shape, minus the repaint:
+// the only surface that reads it is the ⑃ dialog, which re-reads git itself after this
+// (the numbers come from `git_branch_list`, so a repaint alone would show the old ones).
+export function setCmpBase(repoDir: string, ref: string) {
+  setCmpBaseState(repoDir, ref);
+  localStorage.setItem("cc-cmp-base", JSON.stringify(cmpBase));
+}
 
 // The same shape again for the sidebar's peek timings. `renderSidebar` rather than
 // `renderAll`: switching peek off has to drop the collapsed rows *and* clear whatever

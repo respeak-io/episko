@@ -8,7 +8,10 @@
 //   probe — a German git says "existiert bereits", not "already exists".
 // - **Never destroy a checkout something is using.** `remove_worktree` and
 //   `switch_branch` consult `AppState.sessions` by `same_path`, so a worktree with
-//   a live embedded session in it is refused rather than deleted.
+//   a live embedded session in it is refused rather than deleted. The two ask
+//   different questions of that map, because they cost different things: removal
+//   deletes the folder, so *any* pane there stops it; a switch only moves HEAD under
+//   panes that survive it, so only work in flight does (`blocks_switch`).
 //
 // `git_cmd`/`git_run` are git-only and live here; they call down into
 // `platform::{sys_command, augmented_path}`, which is why platform.rs had to move
@@ -640,6 +643,41 @@ pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
     })
 }
 
+/// Whether a live pane of this `Session::kind` alone forbids switching its folder's
+/// branch. The kind is all the backend has — the phase that decides it for a claude
+/// pane never leaves the frontend — so this answers only where the kind is enough:
+///
+/// - `task` — yes, unconditionally. It is running (an exited one is no longer in the
+///   map), and a build that starts on one branch and finishes on another is worthless.
+/// - `shell` — no. It is the user's own prompt; refusing `git switch` on behalf of the
+///   pane that exists to accept it is the app arguing with itself.
+/// - `claude` — no *here*. Mid-turn is a real blocker and the frontend refuses it
+///   (`midFlight` in src/types.ts); idle is not, and this layer cannot tell them apart.
+fn blocks_switch(kind: &str) -> bool {
+    kind == "task"
+}
+
+/// The `git switch` invocation for a target, paired with the terminal handoff for it.
+///
+/// One function because they are one decision and they must not disagree: a dirty tree
+/// hands `suggest` over verbatim, and for a remote-only target `git switch <branch>`
+/// resolves to something else entirely — or to nothing. `track` is `Some(remote_ref)`
+/// only when the branch has no local ref *and* that remote ref is real, which is what
+/// makes `base` safe for the caller to pass unconditionally.
+fn switch_args<'a>(branch: &'a str, track: Option<&'a str>) -> (Vec<&'a str>, String) {
+    match track {
+        // `--track` outright rather than leaning on git's DWIM: the guess only happens
+        // while `checkout.guess` and `branch.autoSetupMerge` are at their defaults, and a
+        // user who turned either off would get a branch with no upstream — after which
+        // push/pull need arguments and the picker's ahead/behind reads empty forever.
+        Some(b) => (
+            vec!["switch", "--track", "-c", branch, b],
+            format!("git switch --track -c \"{branch}\" \"{b}\""),
+        ),
+        None => (vec!["switch", branch], format!("git switch \"{branch}\"")),
+    }
+}
+
 /// Move the repo's main working tree to another branch.
 ///
 /// Episko's whole model is "don't switch, branch out" — worktrees exist so two pieces
@@ -648,20 +686,50 @@ pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
 /// problem, and a terminal was the only way out. This is that lever, with the guards
 /// that make it safe to expose:
 ///
-/// - Refused while Episko sessions run in the root: switching moves the ground under a
-///   live agent's cwd mid-edit.
+/// - Refused while a **task** pane runs in the root — see `blocks_switch` above.
 /// - Refused when the target is checked out in another worktree (git refuses too, but
 ///   this says which one).
 /// - Refused on a dirty tree. `git switch` would silently CARRY uncommitted changes to
 ///   the new branch — not destructive, but a state change the UI never explained, which
 ///   is the same rule `git_action` and `remove_worktree` follow. Handed to a terminal.
+///
+/// `base` is the remote-tracking ref a **remote-only** target should be cut from
+/// ("origin/foo"), and it is the same parameter `create_worktree` takes, with the same
+/// meaning and the same `--track` detection. A colleague's branch is a destination you'd
+/// want the root to move to as readily as a worktree, and the alternative was a terminal
+/// and two commands. Ignored when the branch already exists locally.
+///
+/// The first guard used to be "any session at all", and that made the lever unreachable
+/// in the one situation it exists for: a root folder you keep an agent parked in. What
+/// actually must not move is a tree with *work in flight* on it, which is a question
+/// about a pane's state — and a claude pane's phase lives only in the frontend, so
+/// `midFlight` owns that half and `blocks_switch` owns the half the backend can see.
+/// Two things keep the split honest rather than merely trusting: a task's whole life is
+/// visible here (the reaper drops a session from the map the moment its PTY exits, so a
+/// `task` in the map IS a running one), and the dirty-tree refusal below independently
+/// catches any agent that has written a byte, whatever the frontend believed.
 #[tauri::command(async)]
-pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: String) -> Result<GitActionResult, String> {
+pub(crate) fn switch_branch(
+    state: State<AppState>,
+    repo_dir: String,
+    branch: String,
+    base: Option<String>,
+) -> Result<GitActionResult, String> {
     if branch.trim().is_empty() {
         return Err("no branch given".into());
     }
-    if state.sessions.lock().unwrap().values().any(|s| same_path(&s.workdir, &repo_dir)) {
-        return Err("sessions are running in this folder — close them first".into());
+    let blocked = state
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|s| same_path(&s.workdir, &repo_dir) && blocks_switch(s.kind))
+        .count();
+    if blocked > 0 {
+        return Err(format!(
+            "{blocked} task{} running in this folder — a run that changes branch mid-flight has verified nothing",
+            if blocked == 1 { " is" } else { "s are" }
+        ));
     }
     if list_worktrees(repo_dir.clone()).iter()
         .any(|w| !same_path(&w.path, &repo_dir) && w.branch == branch)
@@ -669,22 +737,48 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         return Err(format!("{branch} is already checked out in another worktree"));
     }
 
+    // Cutting a local branch from a remote-tracking ref, the same detection
+    // `create_worktree` makes and for the same reason: without `--track`, `git push` and
+    // `git pull` in the switched-to folder need arguments and the picker's ahead/behind
+    // reads empty forever. Git's own DWIM would usually do this, but only while
+    // `checkout.guess` and `branch.autoSetupMerge` are at their defaults — a user who
+    // turned either off would get a silently untracked branch, so it is said outright.
+    //
+    // Conditioned on the branch NOT existing locally, which is what makes `base` safe to
+    // pass unconditionally: the switch target may have grown a local ref since the list
+    // was read (a colleague's branch you fetched in a terminal), and the answer to that
+    // is to switch to the branch, not to fail on `-c`.
+    let ref_exists = |r: String| {
+        git_run(git_cmd(&repo_dir, &["rev-parse", "--verify", "--quiet", &r]), 10)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let track = if ref_exists(format!("refs/heads/{branch}")) {
+        None
+    } else {
+        base.as_deref().filter(|b| ref_exists(format!("refs/remotes/{b}")))
+    };
+    let (args, suggest) = switch_args(&branch, track);
+
     let status = git_run(git_cmd(&repo_dir, &["--no-optional-locks", "status", "--porcelain"]), 20)?;
     if status.status.success() && !status.stdout.is_empty() {
         return Ok(GitActionResult {
             ok: false,
             summary: "uncommitted changes — switching would carry them across".into(),
             output: String::new(),
-            suggest: Some(format!("git switch \"{branch}\"")),
+            suggest: Some(suggest.clone()),
             ..Default::default()
         });
     }
 
-    let out = git_run(git_cmd(&repo_dir, &["switch", &branch]), 30)?;
+    let out = git_run(git_cmd(&repo_dir, &args), 30)?;
     if out.status.success() {
         return Ok(GitActionResult {
             ok: true,
-            summary: format!("Switched to {branch}"),
+            summary: match track {
+                Some(b) => format!("Switched to {branch}, tracking {b}"),
+                None => format!("Switched to {branch}"),
+            },
             ..Default::default()
         });
     }
@@ -697,7 +791,7 @@ pub(crate) fn switch_branch(state: State<AppState>, repo_dir: String, branch: St
         ok: false,
         summary: first,
         output: combined,
-        suggest: Some(format!("git switch \"{branch}\"")),
+        suggest: Some(suggest),
         ..Default::default()
     })
 }
@@ -746,6 +840,213 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
     })
 }
 
+/// How many branches the picker will ever deal with at once: `git_branch_list` caps its
+/// list here (a repo with hundreds of refs can't blow the dialog up) and the sweep caps
+/// what it will act on to match, so the button can never be asked to do more than the
+/// list it lives in can show.
+const BRANCH_LIST_CAP: usize = 80;
+
+/// One branch the picker asks the sweep to delete.
+///
+/// Two claims travel with the name, and the difference between them is the whole safety
+/// model of this command:
+///
+/// - **`gone`** is a claim about the world that this command can and does re-check. The
+///   dialog's list is a reading from up to a minute old (it refreshes on window focus and
+///   after a fetch, no more often), so a branch pushed again from a terminal since then is
+///   no longer the branch anyone asked to delete. Claim it and git disagrees → skipped.
+/// - **`force`** is a claim about *evidence*, and nothing local can check it. It exists
+///   for the one case the safe delete gets wrong in both directions: a **squash**-merged
+///   pull request. Its commits never became ancestors of the main branch, so `git branch
+///   -d` refuses a branch whose work is demonstrably shipped — and the only thing that
+///   knows it shipped is the merged PR the deep-clean pane read from `gh`. So `-D` is
+///   available, but only ever per-branch, only when the caller showed that evidence on
+///   the row, and never as a blanket setting.
+#[derive(serde::Deserialize, Debug)]
+pub(crate) struct SweepPick {
+    branch: String,
+    /// The caller saw this branch's upstream as deleted; re-derived here before acting.
+    #[serde(default)]
+    gone: bool,
+    /// Escalate to `git branch -D` if the safe delete refuses. See above.
+    #[serde(default)]
+    force: bool,
+}
+
+/// One branch the sweep deleted. The sha is git's own "(was 1a2b3c4)" — kept because a
+/// forced delete is the one action here with no undo button, and `git branch <name> <sha>`
+/// is one: naming the sha in the result turns "recoverable in principle, via a reflog
+/// nobody reads" into a line the user can act on.
+#[derive(serde::Serialize, Debug)]
+pub(crate) struct DeletedBranch {
+    branch: String,
+    sha: String,
+    /// It took `-D` — the safe delete had refused it.
+    forced: bool,
+}
+
+/// One branch the sweep did not delete, and why — git's own first line when it
+/// refused, our words when we never asked it. `forceable` splits those two: a `-D`
+/// is an answer to "not fully merged" and no answer at all to "some worktree holds
+/// it" (git refuses that with or without the force), so only the first kind goes
+/// into the handoff command.
+#[derive(serde::Serialize, Debug)]
+pub(crate) struct KeptBranch {
+    branch: String,
+    reason: String,
+    forceable: bool,
+}
+
+/// What one sweep did. `deleted` and `kept` together account for every name the
+/// caller passed — a sweep that quietly did less than it was asked is the failure
+/// mode this shape exists to prevent.
+#[derive(serde::Serialize, Debug)]
+pub(crate) struct SweepResult {
+    deleted: Vec<DeletedBranch>,
+    kept: Vec<KeptBranch>,
+    /// A single `git branch -D` over everything git's safe delete refused and that no
+    /// evidence justified forcing, for the same terminal handoff `delete_branch` offers.
+    /// `None` when nothing refused.
+    suggest: Option<String>,
+    /// One line for the toast.
+    summary: String,
+}
+
+/// Delete a batch of local branches — the picker's broom, and the engine under its
+/// deep-clean pane.
+///
+/// The bulk counterpart to `delete_branch`, and it keeps that command's shape: `git
+/// branch -d` decides, and what it refuses comes back as a `-D` command for a terminal
+/// rather than being run. What is safe one branch at a time is not automatically safe
+/// times ten, so the one exception — a per-branch `force` backed by a merged pull request
+/// — is spelled out on `SweepPick` and never inferred here.
+///
+/// Two things this never touches, whatever it is asked: a branch some worktree holds (git
+/// refuses that with or without a force, and the checkout is a separate decision with its
+/// own flow), and a branch whose `gone` claim git no longer agrees with. Both come back in
+/// `kept` with their reason rather than vanishing from the count.
+#[tauri::command(async)]
+pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<SweepResult, String> {
+    let mut want: Vec<SweepPick> = Vec::new();
+    for p in picks {
+        let branch = p.branch.trim().to_string();
+        if !branch.is_empty() && !want.iter().any(|q| q.branch == branch) {
+            want.push(SweepPick { branch, ..p });
+        }
+    }
+    if want.is_empty() {
+        return Err("no branches given".into());
+    }
+    want.truncate(BRANCH_LIST_CAP);   // the picker's own list can't be longer; a caller's might
+
+    // The same read `git_branch_list` derives its `gone` flag from, and the only
+    // authority on it. Gated on refs/remotes for the same reason: `branch.autoSetupMerge`
+    // can make one LOCAL branch another's upstream, and deleting because a local upstream
+    // went away is a different rule than the one the button offers.
+    let out = git_run(git_cmd(&repo_dir, &[
+        "for-each-ref",
+        "--format=%(refname:short)\t%(upstream)\t%(upstream:track,nobracket)",
+        "refs/heads",
+    ]), 15)?;
+    if !out.status.success() {
+        return Err(format!("git: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let gone: std::collections::HashSet<&str> = text
+        .lines()
+        .filter_map(|l| {
+            let mut p = l.split('\t');
+            let name = p.next().filter(|n| !n.is_empty())?;
+            let upstream = p.next().unwrap_or("");
+            let track = p.next().unwrap_or("").trim();
+            (upstream.starts_with("refs/remotes/") && track == "gone").then_some(name)
+        })
+        .collect();
+
+    // Same guard as `delete_branch`, read the cheap way: one porcelain listing rather
+    // than `list_worktrees` (a status probe per checkout) once per branch.
+    let taken: std::collections::HashSet<String> =
+        match git_run(git_cmd(&repo_dir, &["worktree", "list", "--porcelain"]), 15) {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| l.strip_prefix("branch "))
+                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string())
+                .collect(),
+            // Unreadable means "assume nothing is held" — git still refuses a held
+            // branch itself, and that refusal lands in `kept` like any other.
+            _ => Default::default(),
+        };
+
+    // "Deleted branch foo (was 1a2b3c4)." — git's own line, in English because `git_cmd`
+    // pins LC_ALL=C. Parsed rather than asked for with an extra `rev-parse` per branch;
+    // an unparseable line just means no recovery hint, never a wrong one.
+    let was_sha = |s: &str| -> String {
+        s.split_once("(was ")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(sha, _)| sha.trim().to_string())
+            .unwrap_or_default()
+    };
+
+    let mut deleted: Vec<DeletedBranch> = Vec::new();
+    let mut kept: Vec<KeptBranch> = Vec::new();
+    for p in want {
+        let b = p.branch;
+        if p.gone && !gone.contains(b.as_str()) {
+            kept.push(KeptBranch { branch: b, reason: "not gone any more — it has a remote branch again".into(), forceable: false });
+            continue;
+        }
+        if taken.contains(&b) {
+            kept.push(KeptBranch { branch: b, reason: "checked out in a worktree".into(), forceable: false });
+            continue;
+        }
+        // A spawn failure or a timeout stops this branch, never the sweep: the branches
+        // already deleted have to be reported whatever happens to the ones after them.
+        let run = |flag: &str| git_run(git_cmd(&repo_dir, &["branch", flag, &b]), 15);
+        let out = match run("-d") {
+            Ok(o) => o,
+            Err(e) => { kept.push(KeptBranch { branch: b, reason: e, forceable: false }); continue; }
+        };
+        if out.status.success() {
+            let sha = was_sha(&String::from_utf8_lossy(&out.stdout));
+            deleted.push(DeletedBranch { branch: b, sha, forced: false });
+            continue;
+        }
+        if p.force {
+            match run("-D") {
+                Ok(o) if o.status.success() => {
+                    let sha = was_sha(&String::from_utf8_lossy(&o.stdout));
+                    deleted.push(DeletedBranch { branch: b, sha, forced: true });
+                    continue;
+                }
+                // Fall through to reporting the SAFE delete's refusal: `-D` failing after
+                // `-d` failed means something structural (a bad ref, a locked ref), and
+                // git's first message is the one that names it.
+                _ => {}
+            }
+        }
+        let combined = [
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+        let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
+        kept.push(KeptBranch { branch: b, reason: first, forceable: true });
+    }
+
+    let force: Vec<String> = kept.iter().filter(|k| k.forceable).map(|k| format!("\"{}\"", k.branch)).collect();
+    let plural = |n: usize| if n == 1 { "" } else { "es" };
+    let summary = match (deleted.len(), kept.len()) {
+        (0, k) => format!("Deleted nothing — kept {k} branch{}", plural(k)),
+        (n, 0) => format!("Deleted {n} branch{}", plural(n)),
+        (n, k) => format!("Deleted {n} branch{}, kept {k}", plural(n)),
+    };
+    Ok(SweepResult {
+        deleted,
+        kept,
+        suggest: (!force.is_empty()).then(|| format!("git branch -D {}", force.join(" "))),
+        summary,
+    })
+}
+
 /// One local branch, with enough context for the worktree picker to tell whether
 /// it's worth starting on. `current` is the branch the repo's HEAD is on (the repo
 /// row, not the pick list). `checked_out` means some worktree already holds it — git
@@ -773,16 +1074,176 @@ pub(crate) struct BranchInfo {
     /// An upstream is configured but no longer exists on the remote (branch deleted
     /// after a merge, typically). `upstream` still names it.
     gone: bool,
+    /// Every commit on this branch is already an ancestor of the repo's checked-out
+    /// branch — the same measure `Worktree.merged` uses, and for the same reason: it is
+    /// what makes a branch safe to delete. Note what it is NOT: a **squash**-merged
+    /// branch is false here, because its commits never became ancestors of anything.
+    /// That gap is exactly what the deep-clean pane's pull-request lookup fills.
+    merged: bool,
     /// This row is a remote-tracking ref with no local branch of the same name —
     /// someone else pushed it and nothing here points at it yet. The fields are then
     /// read one level over: `name` is the local branch a checkout would CREATE and
     /// `upstream` the ref it would track, which is exactly the pair the row will hold
-    /// a second after it is picked. `current`/`checked_out` are always false (there is
-    /// no local ref to be either) and so are `ahead`/`behind`/`gone` — the branch has
-    /// nothing to be ahead of yet.
+    /// a second after it is picked. `current`/`checked_out`/`gone` are always false —
+    /// there is no local ref to be any of them — while `ahead`/`behind` swap their
+    /// meaning to "versus the remote's default branch" (`base`), which is the only
+    /// comparison a branch nobody has checked out can meaningfully have.
     remote: bool,
+    /// What `ahead`/`behind` were measured against, for a REMOTE row: its remote's
+    /// default branch ("origin/main"), which is the comparison GitHub's branches view
+    /// shows. Empty on a local row (whose comparison is its own `upstream`, already
+    /// named there) and on a row from a remote we have no default for — in which case
+    /// the counts are zero and mean "not measured", not "in sync".
+    base: String,
+    /// Who wrote the tip commit. Not "who created the branch" — git does not record that
+    /// — but it is what GitHub's branches view shows and the question it answers ("is
+    /// this mine?") is the same one.
+    author: String,
+    /// The tip this row was read at. Carried so a remote delete can be refused when the
+    /// ref has moved since (`RemotePick`), and so a deletion can be undone by sha.
+    sha: String,
     rel: String,
     unix: i64,
+}
+
+/// One remote branch the picker asks to delete, with the sha it was showing.
+///
+/// The sha is not decoration: `git push --delete` is a public, shared-state write, and
+/// the list it was chosen from is as old as the last fetch. If someone pushed to that
+/// branch in between, the row you clicked no longer describes what is on the remote —
+/// so the delete is refused rather than performed on a stale reading.
+#[derive(serde::Deserialize, Debug)]
+pub(crate) struct RemotePick {
+    branch: String,
+    sha: String,
+}
+
+/// Delete branches on a remote — the cleanup behind the picker's Remote branches header.
+///
+/// **The one write in this app that changes state for other people**, so it is bounded
+/// harder than its local counterpart rather than more conveniently:
+///
+/// - The remote's **default branch is refused unconditionally**, whatever it is asked.
+/// - A branch whose remote-tracking ref has **moved since the caller read it** is refused
+///   (see `RemotePick`) — as is one that no longer exists, which usually means somebody
+///   else already cleaned it up.
+/// - There is **no force and no fallback**: `git push` either deletes the ref or it does
+///   not, and a protected branch's refusal is the server's answer, not ours to work
+///   around. What was refused comes back with git's own words.
+/// - Every deleted branch is reported **with the sha it pointed at**, because a remote
+///   branch is restorable — `git push <remote> <sha>:refs/heads/<branch>` — for exactly
+///   as long as somebody still has the objects.
+///
+/// Whether a branch is *worth* deleting (merged into the default branch, or its pull
+/// request merged) is the caller's judgement, for the same reason as the local sweep's
+/// force: a squash-merged branch is contained in nothing, and only GitHub knows it landed.
+#[tauri::command(async)]
+pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Vec<RemotePick>) -> Result<SweepResult, String> {
+    let remote = remote.trim().to_string();
+    if remote.is_empty() {
+        return Err("no remote given".into());
+    }
+    let mut want: Vec<RemotePick> = Vec::new();
+    for p in picks {
+        let branch = p.branch.trim().to_string();
+        if !branch.is_empty() && !want.iter().any(|q| q.branch == branch) {
+            want.push(RemotePick { branch, sha: p.sha.trim().to_string() });
+        }
+    }
+    if want.is_empty() {
+        return Err("no branches given".into());
+    }
+    want.truncate(BRANCH_LIST_CAP);
+
+    // "origin/main" → "main". The default branch is refused here rather than filtered in
+    // the UI, because this is the one mistake with no cheap undo for anyone else.
+    let default = remote_default(&repo_dir, &remote)
+        .and_then(|d| d.strip_prefix(&format!("{remote}/")).map(str::to_string));
+
+    let mut deleted: Vec<DeletedBranch> = Vec::new();
+    let mut kept: Vec<KeptBranch> = Vec::new();
+    let mut go: Vec<(String, String)> = Vec::new();   // (branch, sha as it stands now)
+    for p in want {
+        if default.as_deref() == Some(p.branch.as_str()) {
+            kept.push(KeptBranch { branch: p.branch, reason: format!("it is {remote}'s default branch"), forceable: false });
+            continue;
+        }
+        let full = format!("refs/remotes/{remote}/{}", p.branch);
+        let now = git_run(git_cmd(&repo_dir, &["rev-parse", "--verify", "--quiet", &full]), 15)
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        match now {
+            None => kept.push(KeptBranch { branch: p.branch, reason: format!("not on {remote} any more — someone deleted it already"), forceable: false }),
+            Some(sha) if !p.sha.is_empty() && sha != p.sha =>
+                kept.push(KeptBranch { branch: p.branch, reason: "it moved since this list was read — someone pushed to it".into(), forceable: false }),
+            Some(sha) => go.push((p.branch, sha)),
+        }
+    }
+    if go.is_empty() {
+        return Ok(finish_remote_sweep(deleted, kept, &remote));
+    }
+
+    // One push for the whole batch: each delete is a network round trip, and a cleanup of
+    // eight branches should not be eight of them. On failure the batch says nothing about
+    // WHICH ref the remote rejected, so a small batch is retried one at a time to find
+    // out; a large one reports git's message against every branch rather than spending
+    // eighty round trips to phrase it per row.
+    const ATTRIBUTE_MAX: usize = 12;
+    let mut args: Vec<&str> = vec!["push", &remote, "--delete"];
+    for (b, _) in &go {
+        args.push(b);
+    }
+    let batch = git_run(git_cmd(&repo_dir, &args), 90);
+    let ok = matches!(&batch, Ok(o) if o.status.success());
+    if ok {
+        for (branch, sha) in go {
+            deleted.push(DeletedBranch { branch, sha, forced: false });
+        }
+        return Ok(finish_remote_sweep(deleted, kept, &remote));
+    }
+    let why = match &batch {
+        Ok(o) => first_line(o),
+        Err(e) => e.clone(),
+    };
+    if go.len() > ATTRIBUTE_MAX {
+        for (branch, _) in go {
+            kept.push(KeptBranch { branch, reason: why.clone(), forceable: false });
+        }
+        return Ok(finish_remote_sweep(deleted, kept, &remote));
+    }
+    for (branch, sha) in go {
+        match git_run(git_cmd(&repo_dir, &["push", &remote, "--delete", &branch]), 90) {
+            Ok(o) if o.status.success() => deleted.push(DeletedBranch { branch, sha, forced: false }),
+            Ok(o) => kept.push(KeptBranch { branch, reason: first_line(&o), forceable: false }),
+            Err(e) => kept.push(KeptBranch { branch, reason: e, forceable: false }),
+        }
+    }
+    Ok(finish_remote_sweep(deleted, kept, &remote))
+}
+
+/// git's first meaningful line, from whichever stream carried it — `push` writes its
+/// progress and its refusals to stderr, and its "everything up-to-date" to stdout.
+fn first_line(o: &std::process::Output) -> String {
+    let combined = [
+        String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+    combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git push refused").to_string()
+}
+
+fn finish_remote_sweep(deleted: Vec<DeletedBranch>, kept: Vec<KeptBranch>, remote: &str) -> SweepResult {
+    let plural = |n: usize| if n == 1 { "" } else { "es" };
+    let summary = match (deleted.len(), kept.len()) {
+        (0, k) => format!("Deleted nothing on {remote} — kept {k} branch{}", plural(k)),
+        (n, 0) => format!("Deleted {n} branch{} on {remote}", plural(n)),
+        (n, k) => format!("Deleted {n} branch{} on {remote}, kept {k}", plural(n)),
+    };
+    // No `-D` handoff here, deliberately: the local sweep's refusals have a safe manual
+    // answer, and a remote refusal (protected branch, no permission, the ref moved) does
+    // not — the fix is a conversation, not a flag.
+    SweepResult { deleted, kept, suggest: None, summary }
 }
 
 /// Branches for the worktree picker, most-recently-committed first, each with
@@ -799,11 +1260,31 @@ pub(crate) struct BranchInfo {
 /// made a *new, unrelated* branch off HEAD under the same name. Remote rows are capped
 /// separately so a fork with hundreds of them can't crowd out the local list.
 #[tauri::command(async)]
-pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
-    const BRANCH_LIST_CAP: usize = 80;
+pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<BranchInfo> {
     // LC_ALL=C for the same reason as create_worktree: never depend on localized
     // output — and here it also pins `%(upstream:track)` to English "ahead"/"behind".
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
+
+    // The trunk everything is measured against: the caller's choice when it named one and
+    // git can still resolve it, else the primary remote's default branch. Resolved once,
+    // here, because both halves of this listing depend on it — a remote row's ahead/behind
+    // AND whether a local branch counts as merged. Those used to disagree: `merged` was
+    // measured against whatever HEAD happened to be on, so a repo parked on a feature
+    // branch called half its history "merged" and the cleanup pane offered it.
+    let asked = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    let trunk = asked
+        .filter(|b| {
+            git(&["-C", &repo_dir, "rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
+                .is_ok_and(|o| o.status.success())
+        })
+        .or_else(|| {
+            let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                    .lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+                _ => Vec::new(),
+            };
+            (!remotes.is_empty()).then(|| remote_default(&repo_dir, primary_remote(&remotes))).flatten()
+        });
 
     let taken: std::collections::HashSet<String> =
         match git(&["-C", &repo_dir, "worktree", "list", "--porcelain"]) {
@@ -822,13 +1303,32 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
 
+    // Which branches are fully contained in the trunk. One `--merged` listing rather than
+    // a `merge-base --is-ancestor` per branch (which is what `list_worktrees` pays, over a
+    // handful of checkouts rather than every ref in the repo). Falls back to the checked-out
+    // branch when there is no trunk at all (no remote, nothing named) — and to nothing when
+    // HEAD is detached too, which is right: no base means no claim that anything is merged.
+    let merged_base = trunk.clone().or_else(|| current.clone());
+    let merged: std::collections::HashSet<String> = match &merged_base {
+        Some(c) => match git(&["-C", &repo_dir, "branch", "--format=%(refname:short)", "--merged", c]) {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            _ => Default::default(),
+        },
+        None => Default::default(),
+    };
+
     // Tab-separated so neither the branch name nor the relative date can collide with
     // the delimiter (a relative date is "3 days ago" — spaces, never tabs).
     let out = match git(&[
         "-C", &repo_dir,
         "for-each-ref",
         "--sort=-committerdate",
-        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(upstream)\t%(upstream:short)\t%(upstream:track,nobracket)",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(upstream)\t%(upstream:short)\t%(upstream:track,nobracket)\t%(authorname)\t%(objectname)",
         "refs/heads",
     ]) {
         Ok(o) if o.status.success() => o,
@@ -873,12 +1373,25 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
                 .unwrap_or(0)
         };
         let (ahead, behind) = if gone { (0, 0) } else { (field("ahead "), field("behind ")) };
+        let author = parts.next().unwrap_or("").trim().to_string();
+        let sha = parts.next().unwrap_or("").trim().to_string();
 
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
             current: current.as_deref() == Some(name.as_str()),
+            // Two branches are contained in the trunk and must still never be called
+            // "merged, safe to delete": the checked-out one (which git refuses to delete
+            // at all), and the trunk itself — a local `main` is by definition contained
+            // in `origin/main`, and offering to delete it because of that would be the
+            // worst suggestion in the app. Matched with and without the remote prefix.
+            merged: merged.contains(&name)
+                && current.as_deref() != Some(name.as_str())
+                && !merged_base.as_deref().is_some_and(|b| b == name || b.ends_with(&format!("/{name}"))),
             remote: false,
-            name, upstream, ahead, behind, gone, rel, unix,
+            // What `merged` was decided against. A local row's ahead/behind is still
+            // against its OWN upstream (which `upstream` names) — see the field's doc.
+            base: merged_base.clone().unwrap_or_default(),
+            name, upstream, ahead, behind, gone, rel, unix, author, sha,
         });
     }
 
@@ -898,15 +1411,39 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
     if remotes.is_empty() {
         return res;
     }
-    let rout = match git(&[
-        "-C", &repo_dir,
-        "for-each-ref",
-        "--sort=-committerdate",
-        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)",
-        "refs/remotes",
-    ]) {
-        Ok(o) if o.status.success() => o,
-        _ => return res,
+    // A remote-only row is measured against the same trunk everything else is — by
+    // default its remote's default branch, which is the comparison GitHub's own branches
+    // view shows. There is no other sensible base: a branch nothing here has checked out
+    // is not "behind" your HEAD in any way you'd act on, and `%(upstream:track)` says
+    // nothing at all about a remote ref.
+    //
+    // ONE base, and rows from another remote are left uncompared rather than compared
+    // against the wrong trunk — which is also exactly right for cleanup, since you cannot
+    // delete on a remote you only fetch.
+    let primary = primary_remote(&remotes);
+    let base = trunk;
+    let rfmt = |with_base: Option<&str>| match with_base {
+        Some(b) => format!("--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(authorname)\t%(objectname)\t%(ahead-behind:{b})"),
+        None => "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(authorname)\t%(objectname)".to_string(),
+    };
+    // `%(ahead-behind:)` is git 2.41+. An older git fails the WHOLE listing on an unknown
+    // field name, so the retry is not belt-and-braces: without it every remote row would
+    // vanish on a machine with, say, Debian stable's git.
+    let mut rout = match git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", &rfmt(base.as_deref()), "refs/remotes"]) {
+        Ok(o) if o.status.success() => Some(o),
+        _ => None,
+    };
+    let mut have_ab = base.is_some();
+    if rout.is_none() {
+        have_ab = false;
+        rout = match git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", &rfmt(None), "refs/remotes"]) {
+            Ok(o) if o.status.success() => Some(o),
+            _ => None,
+        };
+    }
+    let rout = match rout {
+        Some(o) => o,
+        None => return res,
     };
     let rtext = String::from_utf8_lossy(&rout.stdout);
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -943,20 +1480,71 @@ pub(crate) fn git_branch_list(repo_dir: String) -> Vec<BranchInfo> {
         }
         let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
         let rel = parts.next().unwrap_or("").to_string();
+        let author = parts.next().unwrap_or("").trim().to_string();
+        let sha = parts.next().unwrap_or("").trim().to_string();
+        // "<ahead> <behind>" — ahead first, both relative to `base`. Only the primary
+        // remote's own refs are comparable to it; another remote's rows keep the zeros,
+        // and `base: ""` is what tells the UI not to draw a comparison it can't make.
+        let ab = parts.next().unwrap_or("").trim();
+        let mine = have_ab && short.strip_prefix(primary).is_some_and(|s| s.starts_with('/'));
+        let (ahead, behind) = if mine {
+            let mut n = ab.split_whitespace().filter_map(|v| v.parse::<u32>().ok());
+            (n.next().unwrap_or(0), n.next().unwrap_or(0))
+        } else { (0, 0) };
         res.push(BranchInfo {
             name: local.to_string(),
             current: false,
             checked_out: false,
             upstream: short.to_string(),
-            ahead: 0,
-            behind: 0,
+            ahead,
+            behind,
             gone: false,
+            // For a remote row this is the same claim as for a local one — every commit
+            // is already in the branch it is measured against — and it is the whole basis
+            // on which a remote branch may be offered for deletion. `ahead == 0` is that,
+            // exactly; a base we could not compute leaves it false and offers nothing.
+            merged: mine && ahead == 0 && base.is_some(),
             remote: true,
+            base: if mine { base.clone().unwrap_or_default() } else { String::new() },
             rel,
             unix,
+            author,
+            sha,
         });
     }
     res
+}
+
+/// The remote a cleanup would push to: `origin` when it exists, else the first one
+/// configured. Named rather than assumed because everything downstream — the base for
+/// ahead/behind, and which rows may be deleted at all — hangs off this one choice.
+fn primary_remote(remotes: &[String]) -> &str {
+    remotes.iter().find(|r| *r == "origin").unwrap_or(&remotes[0])
+}
+
+/// A remote's default branch as a short ref ("origin/main"), or None when nothing says.
+///
+/// `refs/remotes/<remote>/HEAD` is the honest answer but it only exists if the repo was
+/// cloned (or `git remote set-head` was run), so the fallbacks matter more than they look
+/// — a repo whose remote was added by hand has no HEAD ref at all. Never guesses past
+/// main/master: a wrong default would make every branch look unmerged, or worse, merged.
+fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
+    let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
+    if let Ok(o) = git(&["-C", repo_dir, "symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
+        if o.status.success() {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    ["main", "master"].into_iter().find_map(|c| {
+        let short = format!("{remote}/{c}");
+        git(&["-C", repo_dir, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{short}")])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|_| short)
+    })
 }
 
 /// Current git branch for a working directory (None if not a repo / detached).
@@ -2050,6 +2638,40 @@ mod tests {
     /// asserting the alias lookup was **not** needed to reach the answer.
     fn no_aliases(_: &str) -> Option<String> { None }
 
+    /// `switch_branch` itself needs a real `AppState`, whose `Session` holds a live PTY —
+    /// nothing a unit test can build. Its rule is extracted precisely so the half the
+    /// backend owns can still be pinned, because the other half (`midFlight`, in
+    /// src/types.ts) is written to agree with it and the two drift silently: a
+    /// disagreement shows up as the frontend offering a switch the backend then refuses,
+    /// which reads as a bug in git.
+    #[test]
+    fn only_a_running_task_blocks_a_branch_switch_from_the_backend_side() {
+        assert!(blocks_switch("task"));
+        // A shell is the user's own prompt, and an agent's phase is not visible here —
+        // an idle claude pane must not be mistaken for a working one.
+        assert!(!blocks_switch("shell"));
+        assert!(!blocks_switch("claude"));
+        // An unknown kind is not a blocker: `Session::kind` is set by our own spawners,
+        // so a new one is a pane we added, not an unexplained hazard to refuse on.
+        assert!(!blocks_switch(""));
+    }
+
+    /// The pair that must never disagree. The failure is silent and one-sided: the switch
+    /// runs the right command, and only the *dirty tree* path — the one nobody exercises
+    /// on purpose — hands a terminal a command that does something else.
+    #[test]
+    fn a_remote_only_switch_tracks_and_hands_over_the_same_command() {
+        let (args, suggest) = switch_args("feat/x", Some("origin/feat/x"));
+        assert_eq!(args, ["switch", "--track", "-c", "feat/x", "origin/feat/x"]);
+        assert_eq!(suggest, "git switch --track -c \"feat/x\" \"origin/feat/x\"");
+        // A branch that is already here is moved to, never cut again — `-c` on an
+        // existing branch is a hard git error, and this is reached whenever the local ref
+        // appeared between the list being read and the click.
+        let (args, suggest) = switch_args("dev", None);
+        assert_eq!(args, ["switch", "dev"]);
+        assert_eq!(suggest, "git switch \"dev\"");
+    }
+
     #[test]
     fn parse_remote_reads_every_spelling_git_accepts() {
         let p = |u| parse_remote_with(u, no_aliases);
@@ -2892,7 +3514,7 @@ canonicalizehostname false
         let wt = dir.join("wt-claimed");
         git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "claimed"]);
 
-        let bs = git_branch_list(dir.to_str().unwrap().to_string());
+        let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
         let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
 
         // dev is `current`; it's also `checked_out` because the main working tree holds
@@ -2949,14 +3571,19 @@ canonicalizehostname false
         git(&dir, &["fetch", "-q", "origin"]);
         git(&dir, &["remote", "set-head", "origin", "dev"]);   // creates origin/HEAD
 
-        let bs = git_branch_list(dir.to_str().unwrap().to_string());
+        let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
         let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
 
         let f = by("their-feature");
         assert!(f.remote, "their-feature exists only on the remote: {bs:?}");
         assert_eq!(f.upstream, "origin/their-feature", "name is the local branch to create, upstream the ref it tracks: {bs:?}");
         assert!(!f.current && !f.checked_out, "a remote-only branch has no local checkout: {bs:?}");
-        assert!(!f.gone && (f.ahead, f.behind) == (0, 0), "nothing to be ahead of yet: {bs:?}");
+        // ahead/behind on a remote row are against the REMOTE's default branch, not
+        // against a local upstream it doesn't have: one commit dev hasn't got, nothing
+        // it is missing. `gone` stays false — there is no local ref to be orphaned.
+        assert!(!f.gone, "a remote row has no upstream to lose: {bs:?}");
+        assert_eq!((f.ahead, f.behind), (1, 0), "one commit ahead of origin/dev: {bs:?}");
+        assert_eq!(f.base, "origin/dev", "and it says what it was measured against: {bs:?}");
 
         // The short ref has to be split back into remote + branch, and a branch name
         // containing a slash must not be split at the first one it happens to hold.
@@ -2983,7 +3610,7 @@ canonicalizehostname false
             "it must hold THEIR commit, not a fresh branch off our HEAD");
 
         // And having become local, it must stop being offered as remote-only.
-        let bs2 = git_branch_list(dir.to_str().unwrap().to_string());
+        let bs2 = git_branch_list(dir.to_str().unwrap().to_string(), None);
         let f2 = bs2.iter().find(|b| b.name == "their-feature").expect("still listed");
         assert!(!f2.remote && f2.checked_out, "it is a local, checked-out branch now: {bs2:?}");
 
@@ -3069,6 +3696,285 @@ canonicalizehostname false
         assert!(e.contains("checked out"), "the message should name the reason: {e}");
 
         let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The broom. Two halves matter and the second is the one with teeth: it deletes the
+    /// merged-and-gone branches in one pass, and it refuses to take the caller's word for
+    /// which those are — a name that is no longer `gone`, or that a worktree holds, must
+    /// survive a sweep that was explicitly asked to delete it.
+    #[test]
+    fn sweep_branches_deletes_only_what_git_still_calls_gone() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "dev"]);
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "dev"]);
+
+        // Push a branch, then delete it on the remote — the state the broom exists for.
+        let orphan = |name: &str, extra: bool| {
+            git(&dir, &["checkout", "-q", "-b", name]);
+            git(&dir, &["push", "-q", "-u", "origin", name]);
+            if extra { commit(&dir, "unpushed"); }
+            git(&dir, &["push", "-q", "origin", "--delete", name]);
+            git(&dir, &["checkout", "-q", "dev"]);
+        };
+        orphan("gone-merged", false);    // merged into dev: -d takes it
+        orphan("gone-ahead", true);      // has a commit dev doesn't: -d refuses
+        orphan("gone-held", false);      // gone, but a worktree holds it
+        orphan("gone-alive", false);
+        git(&dir, &["push", "-q", "-u", "origin", "gone-alive"]);   // …pushed again since
+        git(&dir, &["fetch", "-q", "--prune", "origin"]);
+        git(&dir, &["branch", "never-pushed"]);                     // no upstream at all
+        let wt = dir.join("wt-held");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "gone-held"]);
+
+        let repo = dir.to_str().unwrap().to_string();
+        let asked = ["gone-merged", "gone-ahead", "gone-held", "gone-alive", "never-pushed"];
+        // The broom's own call: every pick claims `gone`, none may force.
+        let pick = |n: &str| SweepPick { branch: n.into(), gone: true, force: false };
+        let r = sweep_branches(repo.clone(), asked.iter().map(|n| pick(n)).collect()).expect("sweep runs");
+
+        assert_eq!(r.deleted.iter().map(|d| d.branch.as_str()).collect::<Vec<_>>(), ["gone-merged"],
+            "only the merged-and-gone branch goes: {r:?}");
+        assert!(!r.deleted[0].forced, "the safe delete took it — nothing was forced: {r:?}");
+        assert!(r.deleted[0].sha.len() >= 7, "git's (was <sha>) is the recovery hint: {r:?}");
+        // Every name is accounted for — nothing may silently fall out of the count.
+        assert_eq!(r.deleted.len() + r.kept.len(), asked.len(), "all five reported: {r:?}");
+        let why = |n: &str| r.kept.iter().find(|k| k.branch == n).unwrap_or_else(|| panic!("{n} missing from {r:?}"));
+        assert!(why("gone-ahead").forceable, "git's refusal is what -D answers: {r:?}");
+        assert!(why("gone-ahead").reason.contains("not fully merged"), "git's own words: {r:?}");
+        assert!(!why("gone-held").forceable && why("gone-held").reason.contains("worktree"),
+            "a held branch is refused with or without -D: {r:?}");
+        assert!(!why("gone-alive").forceable, "re-pushed since the caller looked: {r:?}");
+        assert!(!why("never-pushed").forceable, "never had an upstream to lose: {r:?}");
+        // The force handoff covers exactly the branches a -D would actually help.
+        let s = r.suggest.as_deref().unwrap_or("");
+        assert!(s.contains("branch -D") && s.contains("\"gone-ahead\""), "force handed off: {r:?}");
+        assert!(!s.contains("gone-held") && !s.contains("gone-alive"), "and only where it applies: {r:?}");
+
+        let live = String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["branch", "--format=%(refname:short)"]).output().unwrap().stdout).to_string();
+        assert!(!live.contains("gone-merged"), "gone-merged should be deleted: {live}");
+        for n in ["gone-ahead", "gone-held", "gone-alive", "never-pushed", "dev"] {
+            assert!(live.contains(n), "{n} must survive the sweep: {live}");
+        }
+
+        // An empty ask is a caller bug, not a licence to sweep everything it can find.
+        assert!(sweep_branches(repo, vec![]).is_err(), "an empty list is refused");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The deep-clean pane's two extra powers, which the broom deliberately lacks: a
+    /// branch picked without a `gone` claim (merged, remote still live) still deletes,
+    /// and a `force` picked per-branch escalates to `-D` — but a worktree's claim beats
+    /// a force, because git refuses that with or without one.
+    #[test]
+    fn sweep_branches_forces_only_where_the_caller_asked_and_never_over_a_worktree() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        let repo = dir.to_str().unwrap().to_string();
+
+        git(&dir, &["branch", "plain-merged"]);          // merged into dev, no remote at all
+        git(&dir, &["checkout", "-q", "-b", "squashed"]); // stands in for a squash-merged PR
+        commit(&dir, "work that landed under another sha");
+        git(&dir, &["checkout", "-q", "-b", "kept-back"]);
+        commit(&dir, "unmerged, and nobody vouched for it");
+        git(&dir, &["checkout", "-q", "dev"]);
+        git(&dir, &["branch", "held"]);
+        let wt = dir.join("wt-held");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "held"]);
+
+        let r = sweep_branches(repo, vec![
+            SweepPick { branch: "plain-merged".into(), gone: false, force: false },
+            SweepPick { branch: "squashed".into(), gone: false, force: true },
+            SweepPick { branch: "kept-back".into(), gone: false, force: false },
+            SweepPick { branch: "held".into(), gone: false, force: true },
+        ]).expect("sweep runs");
+
+        let got = |n: &str| r.deleted.iter().find(|d| d.branch == n);
+        assert!(got("plain-merged").is_some_and(|d| !d.forced),
+            "a merged branch needs no gone claim and no force: {r:?}");
+        assert!(got("squashed").is_some_and(|d| d.forced && !d.sha.is_empty()),
+            "the force applies where it was asked, with a sha to undo it: {r:?}");
+        let why = |n: &str| r.kept.iter().find(|k| k.branch == n).unwrap_or_else(|| panic!("{n} missing from {r:?}"));
+        assert!(why("kept-back").forceable, "unmerged and unvouched-for: kept, -D offered: {r:?}");
+        assert!(why("held").reason.contains("worktree"), "a force never overrides a checkout: {r:?}");
+
+        let live = String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["branch", "--format=%(refname:short)"]).output().unwrap().stdout).to_string();
+        assert!(live.contains("kept-back") && live.contains("held"), "both survive: {live}");
+        assert!(!live.contains("squashed"), "the forced one is gone: {live}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remote rows carry what GitHub's branches view shows — how far each branch is
+    /// from the default branch, and whose commit is on the end of it. Both are read
+    /// against the REMOTE's default, never against local HEAD: a branch nothing here has
+    /// checked out is not behind your working branch in any sense you'd act on.
+    #[test]
+    fn git_branch_list_measures_remote_branches_against_the_remotes_default() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        let theirs = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let commit = |dir: &Path, who: &str, msg: &str| git(dir, &[
+            "-c", &format!("user.email={who}@example.com"), "-c", &format!("user.name={who}"),
+            "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg,
+        ]);
+        commit(&dir, "Us", "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+
+        git(&theirs, &["clone", "-q", remote.to_str().unwrap(), "."]);
+        // Merged into main and pushed: main moves on, so this ends up 0 ahead / 1 behind.
+        git(&theirs, &["checkout", "-q", "-b", "theirs-landed"]);
+        commit(&theirs, "Ada", "landed work");
+        git(&theirs, &["push", "-q", "-u", "origin", "theirs-landed"]);
+        git(&theirs, &["checkout", "-q", "main"]);
+        git(&theirs, &["merge", "-q", "--ff-only", "theirs-landed"]);
+        commit(&theirs, "Ada", "one more on main");
+        git(&theirs, &["push", "-q", "origin", "main"]);
+        // Still in flight: 2 commits main doesn't have.
+        git(&theirs, &["checkout", "-q", "-b", "theirs-wip"]);
+        commit(&theirs, "Grace", "wip 1");
+        commit(&theirs, "Grace", "wip 2");
+        git(&theirs, &["push", "-q", "-u", "origin", "theirs-wip"]);
+
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "main"]);
+
+        let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+
+        let landed = by("theirs-landed");
+        assert!(landed.remote && landed.base == "origin/main", "measured against the remote's default: {bs:?}");
+        assert_eq!((landed.ahead, landed.behind), (0, 1), "contained in main, and main has moved on: {bs:?}");
+        assert!(landed.merged, "nothing on it that main lacks — that is what makes it deletable: {bs:?}");
+        assert_eq!(landed.author, "Ada", "the tip commit's author is who the row is about: {bs:?}");
+
+        let wip = by("theirs-wip");
+        assert_eq!((wip.ahead, wip.behind), (2, 0), "two commits main doesn't have: {bs:?}");
+        assert!(!wip.merged, "unmerged work is never offered for deletion: {bs:?}");
+        assert_eq!(wip.author, "Grace", "{bs:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&theirs);
+    }
+
+    /// Deleting on a remote is the one write here that changes things for other people,
+    /// so the guards are the test: the default branch is untouchable, a ref that moved
+    /// since the list was read is refused, and every delete comes back with the sha that
+    /// restores it.
+    #[test]
+    fn delete_remote_branches_guards_the_default_and_refuses_a_stale_reading() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        let theirs = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+        for b in ["landed", "moved", "vanished"] {
+            git(&dir, &["push", "-q", "origin", &format!("main:refs/heads/{b}")]);
+        }
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "main"]);
+
+        let sha = |b: &str| String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["rev-parse", &format!("refs/remotes/origin/{b}")]).output().unwrap().stdout).trim().to_string();
+        let landed_sha = sha("landed");
+        let stale = sha("moved");
+
+        // Someone else pushes to `moved` and deletes `vanished` after our list was read.
+        git(&theirs, &["clone", "-q", remote.to_str().unwrap(), "."]);
+        git(&theirs, &["checkout", "-q", "-b", "moved", "origin/moved"]);
+        commit(&theirs, "their new commit");
+        git(&theirs, &["push", "-q", "origin", "moved"]);
+        git(&theirs, &["push", "-q", "origin", "--delete", "vanished"]);
+        git(&dir, &["fetch", "-q", "--prune", "origin"]);
+
+        let repo = dir.to_str().unwrap().to_string();
+        let pick = |b: &str, s: &str| RemotePick { branch: b.into(), sha: s.into() };
+        let r = delete_remote_branches(repo.clone(), "origin".into(), vec![
+            pick("landed", &landed_sha),
+            pick("moved", &stale),
+            pick("vanished", &landed_sha),
+            pick("main", &landed_sha),
+        ]).expect("call returns");
+
+        assert_eq!(r.deleted.iter().map(|d| d.branch.as_str()).collect::<Vec<_>>(), ["landed"],
+            "only the branch that still matched its reading goes: {r:?}");
+        assert_eq!(r.deleted[0].sha, landed_sha, "the sha that restores it comes back: {r:?}");
+        let why = |n: &str| r.kept.iter().find(|k| k.branch == n).unwrap_or_else(|| panic!("{n} missing from {r:?}"));
+        assert!(why("moved").reason.contains("moved since"), "a ref that moved is refused: {r:?}");
+        assert!(why("vanished").reason.contains("deleted it already"), "{r:?}");
+        assert!(why("main").reason.contains("default branch"), "the default is refused whatever we're asked: {r:?}");
+        assert!(r.suggest.is_none(), "a remote refusal has no flag that fixes it: {r:?}");
+
+        let left = String::from_utf8_lossy(&Command::new("git").current_dir(&remote)
+            .args(["branch", "--format=%(refname:short)"]).output().unwrap().stdout).to_string();
+        assert!(!left.contains("landed"), "landed should be gone from the remote: {left}");
+        assert!(left.contains("main") && left.contains("moved"), "both survive: {left}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&theirs);
+    }
+
+    /// `merged` is what the deep-clean pane offers a branch on, so it has to mean exactly
+    /// "already contained in the checked-out branch" — never the current branch itself
+    /// (which `git branch --merged` does list), and never a squash-merge (which is why
+    /// the pane needs GitHub at all).
+    #[test]
+    fn git_branch_list_marks_branches_contained_in_head() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |dir: &Path, msg: &str| git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit(&dir, "base");
+        git(&dir, &["branch", "contained"]);
+        git(&dir, &["checkout", "-q", "-b", "ahead-of-dev"]);
+        commit(&dir, "not in dev");
+        git(&dir, &["checkout", "-q", "dev"]);
+
+        let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+        assert!(by("contained").merged, "every commit is already in dev: {bs:?}");
+        assert!(!by("ahead-of-dev").merged, "it has a commit dev doesn't: {bs:?}");
+        assert!(!by("dev").merged, "the current branch is not a cleanup candidate: {bs:?}");
+        assert_eq!(by("contained").base, "dev", "with no remote, the trunk is the checkout: {bs:?}");
+
+        // A named base moves the whole question. This is the case it exists for: a repo
+        // parked on a feature branch, where "merged into HEAD" answers nothing useful.
+        let named = git_branch_list(dir.to_str().unwrap().to_string(), Some("ahead-of-dev".into()));
+        let by2 = |n: &str| named.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {named:?}"));
+        assert!(by2("contained").merged, "still contained, now measured against the named base: {named:?}");
+        assert_eq!(by2("contained").base, "ahead-of-dev", "the row says what it was measured against: {named:?}");
+        // The trunk is contained in itself and the checkout can't be deleted at all —
+        // neither may come back as a cleanup candidate.
+        assert!(!by2("ahead-of-dev").merged, "the base is never a candidate for deletion: {named:?}");
+        assert!(!by2("dev").merged, "nor is the checked-out branch: {named:?}");
+
+        // A base git can't resolve is ignored rather than obeyed into nonsense — every
+        // branch would otherwise come back unmerged, which reads as "nothing to clean".
+        let bogus = git_branch_list(dir.to_str().unwrap().to_string(), Some("no-such-ref".into()));
+        assert_eq!(bogus.iter().find(|b| b.name == "contained").map(|b| b.base.as_str()), Some("dev"),
+            "falls back to the real trunk: {bogus:?}");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
