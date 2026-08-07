@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The disk-I/O box explains itself.** A day of agents reads as a gigabyte written, which
+  looks like a bug and isn't, so the `i` on the box now opens the three reasons the
+  figures look the way they do. Claude Code appends to its transcript and fsyncs after
+  every message, and each flush commits whole blocks — measured here at **~32× the
+  transcript's own growth**. That is Claude Code's own journalling; Episko only reports
+  the counters, and there is nothing here it can batch away. The panel also says why
+  *reads* look small (a page-cache hit never reaches the disk) and why child processes
+  are absent — a child that wrote 120 MiB moved its parent's counter by exactly zero, so
+  the `git`, `ripgrep` and `node` work under an agent is invisible no matter how the
+  process tree is walked.
+
 ! **The usage-limit forecast stops crying wolf.** It read the last half-hour as your
   pace for the rest of the window, so a burst of work got extrapolated across hours
   that never happened. Measured against the windows the app has actually logged, every
@@ -35,6 +46,28 @@ Markers: `+` new · `~` changed · `!` fixed
   an idle window is right for no reason, and those flattered the average), notes when a
   window's close was spotted long after the fact, and no longer logs the same rotation
   twice when a second session reports it late.
+
+! **The I/O figures were labelled in the wrong units.** Every one of them divides by
+  1024, so they were always KiB, MiB and GiB — calling them KB, MB and GB understated
+  what you were reading by 2.4%, 4.9% and 7.4% respectively. The labels now match the
+  arithmetic, in the resource box and in History's transcript sizes. The rate column
+  grew to fit and can no longer wrap: at its old width the longer string silently
+  reflowed onto a second line instead of overflowing where anyone would see it.
+
+! **A password typed into a pane on Windows arrives whole.** Windows' ConPTY does not
+  hand a terminal's bytes to the program — it re-synthesizes them as console key
+  events, and for a great many characters (`§ ° ± ¿ – — ' ' " " ✓`, and the no-break
+  space a passphrase copied out of a document carries) it does that as an Alt+numpad
+  sequence, where the character rides on the key-*up* record. Every hidden-prompt
+  reader built on the Windows CRT — `getpass` in Python, and so any script that asks
+  you for a key — takes characters from key-*down* records only, so those characters
+  were silently missing from the secret: 54 of 86 sampled non-ASCII characters never
+  arrived. Nothing said so. gpg reported `Bad session key`, which is also what it says
+  for a genuinely wrong passphrase, so the hunt started in the secret store rather
+  than in the terminal. Episko now answers ConPTY the way Windows Terminal does — with
+  key records instead of text — for exactly those characters, which is why the same
+  key worked there and not here. ASCII, `^C`, arrows, pastes and Claude Code's own
+  keys go down the pipe byte for byte as before, and nothing changes on macOS.
 
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does
@@ -75,21 +108,6 @@ the routine half of git — and its slowest read — without making you wait for
   early. The GitHub half also gets a skeleton of its own during the wait: one generic
   placeholder used to stand in for up to four cards, which read as nothing being there
   rather than as something being on its way.
-
-! **A password typed into a pane on Windows arrives whole.** Windows' ConPTY does not
-  hand a terminal's bytes to the program — it re-synthesizes them as console key
-  events, and for a great many characters (`§ ° ± ¿ – — ' ' " " ✓`, and the no-break
-  space a passphrase copied out of a document carries) it does that as an Alt+numpad
-  sequence, where the character rides on the key-*up* record. Every hidden-prompt
-  reader built on the Windows CRT — `getpass` in Python, and so any script that asks
-  you for a key — takes characters from key-*down* records only, so those characters
-  were silently missing from the secret: 54 of 86 sampled non-ASCII characters never
-  arrived. Nothing said so. gpg reported `Bad session key`, which is also what it says
-  for a genuinely wrong passphrase, so the hunt started in the secret store rather
-  than in the terminal. Episko now answers ConPTY the way Windows Terminal does — with
-  key records instead of text — for exactly those characters, which is why the same
-  key worked there and not here. ASCII, `^C`, arrows, pastes and Claude Code's own
-  keys go down the pipe byte for byte as before, and nothing changes on macOS.
 
 ## 0.16.0 — 2026-08-07
 The branches nobody will touch again get a broom, switching branch waits only for

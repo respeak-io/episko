@@ -297,3 +297,10 @@ export let ioScope: IoScope =
   (IO_SCOPES as string[]).includes(localStorage.getItem("cc-io-scope") || "")
     ? localStorage.getItem("cc-io-scope") as IoScope : "today";
 export function setIoScope(s: IoScope) { ioScope = s; }
+
+// Whether the I/O box's explanation panel is open. Deliberately NOT persisted and not a
+// `cc-` key: the figures in that box are startling on first sight (a day of agents reads
+// as a gigabyte written) and the panel exists to say why once, not to be a preference
+// somebody carries between runs. Reset by a restart is the right lifetime for it.
+export let ioInfo = false;
+export function setIoInfo(v: boolean) { ioInfo = v; }

@@ -15,7 +15,7 @@
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { ioAll, ioScope, sessions, type IoScope } from "./state";
+import { ioAll, ioInfo, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
@@ -218,8 +218,8 @@ export function timelineHtml(s: Sess): string {
 // your tree and writes files — and a runaway agent shows up as sustained throughput
 // long before it shows up as CPU.
 //
-// The bar is log-scaled against a 32 MB/s reference rather than linear: real rates span
-// idle-KB/s to burst-MB/s, and a linear bar would sit at zero for everything short of a
+// The bar is log-scaled against a 32 MiB/s reference rather than linear: real rates span
+// idle-KiB/s to burst-MiB/s, and a linear bar would sit at zero for everything short of a
 // pathological write storm, which is precisely the case it needs to show.
 const IO_REF_BPS = 32 * 1024 * 1024;
 function ioPct(bps: number): number {
@@ -246,6 +246,35 @@ function ioText(scope: IoScope): string {
   const f = ioFigures(scope);
   return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
 }
+/// Why the figures in this box look the way they do.
+///
+/// Every number here is **physical** disk I/O — what the kernel's per-process counters
+/// (`proc_pid_rusage` on macOS, and its equivalents elsewhere, via sysinfo) actually
+/// charged the claude processes Episko spawned. Three things about that surprise people
+/// enough to be worth a panel, and all three were measured on this machine rather than
+/// reasoned about:
+///
+/// - Writes ran ~32× the transcript's own growth (3.11 MiB of physical writes against
+///   0.10 MiB of transcript in 90s). Claude Code appends and fsyncs after every message,
+///   and a flush commits whole blocks; that is its journalling, not Episko's overhead
+///   and not something Episko can batch away.
+/// - Reads ran far *below* what the agents obviously read, because a page-cache hit
+///   never reaches the disk — a hot repo re-read costs nothing here.
+/// - Children are absent, and not by omission: a child that wrote 120 MiB moved its
+///   parent's counter by exactly 0.00 MiB. The OS never adds an exited child's bytes to
+///   its parent, so walking the process tree would still miss every sub-second `rg` or
+///   `git` that lives and dies between two four-second polls.
+///
+/// Kept as data rather than one blob of markup so the shape stays obvious and the strings
+/// stay greppable.
+const IO_INFO: Array<[string, string]> = [
+  ["Writes run far above the conversation",
+    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks — measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
+  ["Reads look small",
+    "Anything already in the page cache never reaches the disk, so re-reading a warm repo costs nothing on this meter."],
+  ["Child processes are not counted",
+    "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
+];
 export function resHtml(): string {
   const r = ioAll;
   // Before the second sample there is no window to average over, so the rate is unknown
@@ -268,11 +297,14 @@ export function resHtml(): string {
   // indistinguishable from a broken one unless the row says why.
   const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
   return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
-    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
+    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span><button class="rinfob${ioInfo ? " on" : ""}" data-ioinfo="1" aria-expanded="${ioInfo}" title="${ioInfo ? "Hide" : "Why these figures look the way they do"}">i</button></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
     <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
-    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}</div>`;
+    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}
+    ${ioInfo ? `<div class="rinfo"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched — not their logical reads and writes.</p>${
+      IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
+    }</div>` : ""}</div>`;
 }
 /// Spelled out per scope rather than one generic hint, because the difference between
 /// them is the whole point and two of the three have a caveat worth one sentence.

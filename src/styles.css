@@ -892,7 +892,13 @@ html.win .wctl { display: flex; }
 .res .rbar { flex: 1; height: 4px; border-radius: 2px; background: var(--hair-strong); overflow: hidden; }
 .res .rbar > i { display: block; height: 100%; border-radius: 2px; background: var(--st-done); }
 .res .rbar.warn > i { background: var(--st-working); } .res .rbar.hot > i { background: var(--st-error); }
-.res .rv { font: 11px var(--font-mono); width: 62px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+/* 74px and `nowrap`, both load-bearing. The column is fixed-width and the rate strings
+   are as long as "999.9 MiB/s" — at 62px that wrapped to a second line, silently doubling
+   the row's height rather than overflowing where anyone would notice. `nowrap` is the
+   part that keeps this from coming back: it makes a too-long unit overflow visibly
+   instead of reflowing the box. (The binary-unit relabel added a character to every
+   rate; the wrap was already reachable before it at "999.9 MB/s".) */
+.res .rv { font: 11px var(--font-mono); width: 74px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; white-space: nowrap; }
 /* Totals: context for the rates above, so it reads as a footnote not a third gauge.
    A button, because the window it covers cycles on click (today → this run → recorded)
    — reset to look exactly like the row it replaced. */
@@ -917,6 +923,22 @@ html.win .wctl { display: flex; }
 .res .rall { padding-bottom: 8px; border-bottom: 1px solid var(--hair); }
 .res .rall .rk { width: auto; flex: 1; color: var(--muted); }
 .res .rvall { font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+/* The `i` disc opens the explanation below. It sits ON the heading row rather than
+   beside the total, because what it explains is every figure in the box, not the one
+   window the total happens to be showing. Round, hairline and muted at rest: this box is
+   reference, and an info affordance that competes with the meters defeats the point. */
+.res .rinfob { flex: none; margin-left: 7px; width: 13px; height: 13px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--hair-strong); background: transparent; cursor: pointer;
+  font: italic 600 9px/1 var(--font-ui); color: var(--muted-2); opacity: .7;
+  display: flex; align-items: center; justify-content: center; transition: opacity .15s ease, color .15s ease, border-color .15s ease; }
+.res .rinfob:hover { opacity: 1; color: var(--fg); border-color: var(--muted-2); }
+.res .rinfob.on { opacity: 1; color: var(--fg); border-color: var(--muted-2); background: var(--surface-2); }
+/* Hairline-separated from the meters for the same reason `.rall` is: this is prose about
+   the box, not another row in it. */
+.res .rinfo { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--hair); display: flex; flex-direction: column; gap: 6px; }
+.res .rinfo p { margin: 0; font: 9.5px/1.4 var(--font-ui); color: var(--muted-2); }
+.res .rinfo b { display: block; font-weight: 600; color: var(--muted); }
+.res .rinfo .rinfo-lead { opacity: .8; }
 
 /* --- risk badge on the pending-permission block --- */
 .attn-h { justify-content: flex-start; }
