@@ -103,20 +103,33 @@ describe("fmtLatency — the Pre→Post tool gap", () => {
 });
 
 describe("fmtRate / fmtMb — the inspector's disk-I/O readout", () => {
-  it("picks the unit the number is readable in, and keeps a decimal only for MB/s", () => {
+  it("picks the unit the number is readable in, and keeps a decimal only for MiB/s", () => {
     expect(fmtRate(0)).toBe("0 B/s");
     expect(fmtRate(512)).toBe("512 B/s");
     expect(fmtRate(1023)).toBe("1023 B/s");
-    expect(fmtRate(1024)).toBe("1 KB/s");        // whole KB — a fractional one is noise
-    expect(fmtRate(1024 * 1023)).toBe("1023 KB/s");
-    expect(fmtRate(1024 * 1024)).toBe("1.0 MB/s"); // …but MB/s keeps one, 1.2 vs 4.8 matters
-    expect(fmtRate(1024 * 1024 * 32.45)).toBe("32.5 MB/s");
+    expect(fmtRate(1024)).toBe("1 KiB/s");        // whole KiB — a fractional one is noise
+    expect(fmtRate(1024 * 1023)).toBe("1023 KiB/s");
+    expect(fmtRate(1024 * 1024)).toBe("1.0 MiB/s"); // …but MiB/s keeps one, 1.2 vs 4.8 matters
+    expect(fmtRate(1024 * 1024 * 32.45)).toBe("32.5 MiB/s");
   });
-  it("promotes a total to GB only once it stops reading as MB", () => {
-    expect(fmtMb(0)).toBe("0 MB");
-    expect(fmtMb(1023.4)).toBe("1023 MB");
-    expect(fmtMb(1024)).toBe("1.0 GB");
-    expect(fmtMb(3891.2)).toBe("3.8 GB");
+  it("promotes a total to GiB only once it stops reading as MiB", () => {
+    expect(fmtMb(0)).toBe("0 MiB");
+    expect(fmtMb(1023.4)).toBe("1023 MiB");
+    expect(fmtMb(1024)).toBe("1.0 GiB");
+    expect(fmtMb(3891.2)).toBe("3.8 GiB");
+  });
+  /// The units are BINARY, and the labels have to say so — these divide by 1024, so a
+  /// "MB" label understated every figure by 4.9% and a "GB" one by 7.4%. Asserted on the
+  /// boundary values because that is where a future edit would most plausibly "tidy" the
+  /// suffix back to the decimal spelling without touching the arithmetic under it.
+  it("labels the binary units it actually computes", () => {
+    expect(fmtRate(1024)).toContain("KiB");
+    expect(fmtRate(1024 * 1024)).toContain("MiB");
+    expect(fmtMb(1)).toContain("MiB");
+    expect(fmtMb(1024)).toContain("GiB");
+    for (const s of [fmtRate(1024), fmtRate(1024 * 1024), fmtMb(1), fmtMb(1024)]) {
+      expect(s).not.toMatch(/(?<!i)[KMG]B/);
+    }
   });
 });
 

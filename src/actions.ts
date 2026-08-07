@@ -20,10 +20,10 @@ import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  dashMirror, FAVORITES, IO_SCOPES, ioScope, markWorkdirStale, peekPrefs, permMode,
+  dashMirror, FAVORITES, IO_SCOPES, ioInfo, ioScope, markWorkdirStale, peekPrefs, permMode,
   permModeDef, projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
-  setFavorites, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  setFavorites, setIoInfo, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -215,6 +215,8 @@ export function cycleIoScope() {
   localStorage.setItem("cc-io-scope", ioScope);
   renderAll();
 }
+/// Open/close the I/O box's explanation. Nothing is persisted — see `ioInfo` in state.ts.
+export function toggleIoInfo() { setIoInfo(!ioInfo); renderAll(); }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is
 // unreachable from that header. **On the dashboard it collapses to a 44px icon rail

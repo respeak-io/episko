@@ -13,6 +13,24 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The disk-I/O box explains itself.** A day of agents reads as a gigabyte written, which
+  looks like a bug and isn't, so the `i` on the box now opens the three reasons the
+  figures look the way they do. Claude Code appends to its transcript and fsyncs after
+  every message, and each flush commits whole blocks — measured here at **~32× the
+  transcript's own growth**. That is Claude Code's own journalling; Episko only reports
+  the counters, and there is nothing here it can batch away. The panel also says why
+  *reads* look small (a page-cache hit never reaches the disk) and why child processes
+  are absent — a child that wrote 120 MiB moved its parent's counter by exactly zero, so
+  the `git`, `ripgrep` and `node` work under an agent is invisible no matter how the
+  process tree is walked.
+
+! **The I/O figures were labelled in the wrong units.** Every one of them divides by
+  1024, so they were always KiB, MiB and GiB — calling them KB, MB and GB understated
+  what you were reading by 2.4%, 4.9% and 7.4% respectively. The labels now match the
+  arithmetic, in the resource box and in History's transcript sizes. The rate column
+  grew to fit and can no longer wrap: at its old width the longer string silently
+  reflowed onto a second line instead of overflowing where anyone would see it.
+
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does
 the routine half of git — and its slowest read — without making you wait for it.
