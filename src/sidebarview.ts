@@ -23,6 +23,7 @@ import {
   checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
+import { peekStaysOpen } from "./peek";
 import type { GroupDef } from "./projgroups";
 
 // ---------- the header of a user-defined project group ----------
@@ -235,6 +236,12 @@ export function groupBody(p: ProjGroup): string {
 //
 // Peek switched off keeps the old behaviour rather than hiding these for good: the
 // wrapper renders already-open, so nothing that used to be reachable stops being so.
+// `pinLive` is the same class for a narrower reason — this project has a session in it,
+// so its other checkouts are worth showing rather than merely reaching (./peek's
+// `peekStaysOpen` owns both halves of that question, and the Settings preview asks it
+// too). Whether the project counts as live is asked of the CLUSTERS, not of
+// `p.sessions`: a session's pane and the checkout it runs in are the same fact here,
+// and `cl` has already resolved every session and external onto one.
 export function peekBody(p: ProjGroup): string {
   // Only the two modes that showed idle checkouts before. `toplevel` gives each
   // worktree its own group (there is nothing nested to reveal) and `off` is the
@@ -244,7 +251,8 @@ export function peekBody(p: ProjGroup): string {
   if (cl.length < 2) return "";
   const vacant = cl.filter((c) => !clusterIsLive(c));
   if (!vacant.length) return "";
-  return `<div class="pgpeek${peekPrefs.enabled ? "" : " open"}"><div class="pgpeek-in">`
+  const open = peekStaysOpen(peekPrefs, vacant.length < cl.length);
+  return `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">`
     + vacant.map((c) => peekRow(p, c)).join("")
     + `</div></div>`;
 }
