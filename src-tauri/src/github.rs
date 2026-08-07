@@ -444,6 +444,96 @@ pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
     .unwrap_or_default()
 }
 
+/// A merged pull request, reduced to the one thing branch cleanup needs: which local
+/// branch it merged *from*, and the receipt to show for it.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct MergedPr {
+    pub number: i64,
+    /// The PR's head branch — the join to a local ref of the same name.
+    pub branch: String,
+    pub title: String,
+    pub url: String,
+    pub merged_at: String,
+}
+
+/// Merged pull requests, and whether we could ask at all.
+///
+/// `available: false` is not the same answer as an empty list and the difference is the
+/// whole point of the struct: "no PR ever merged from these branches" invites deleting
+/// nothing, while "gh isn't logged in" must not be allowed to *look* like that — a
+/// squash-merged branch is unidentifiable without this data, and silently offering less
+/// cleanup is how a user ends up force-deleting by hand instead.
+#[derive(serde::Serialize, Clone, Debug, Default)]
+pub(crate) struct MergedPrs {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub prs: Vec<MergedPr>,
+}
+
+pub(crate) fn parse_merged_prs(json: &str) -> Vec<MergedPr> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = v.as_array() else { return vec![] };
+    arr.iter()
+        .filter_map(|o| {
+            let number = o.get("number")?.as_i64()?;
+            // A PR with no head branch name is no use here — the join is the branch.
+            let branch = o.get("headRefName").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
+            // `mergedAt` is null for a PR that was closed unmerged; `--state merged`
+            // should never return one, but "closed" and "merged" are one field away in
+            // gh's model and the difference is a branch's whole history.
+            let merged_at = o.get("mergedAt").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
+            Some(MergedPr {
+                number,
+                branch: branch.to_string(),
+                title: o.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                url: o.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                merged_at: merged_at.to_string(),
+            })
+        })
+        .collect()
+}
+
+struct CachedMerged { at: Instant, result: MergedPrs }
+static MERGED_CACHE: Mutex<Option<HashMap<String, CachedMerged>>> = Mutex::new(None);
+
+/// Which branches in this repo had their pull request merged.
+///
+/// The evidence behind the deep-clean pane's one force-delete: a **squash**-merged PR
+/// leaves a branch whose commits are ancestors of nothing, so `git branch -d` refuses a
+/// branch whose work demonstrably shipped, and no local read can tell that apart from
+/// work that never shipped at all. GitHub can, and this is the only place that asks.
+///
+/// One call, cached for the same TTL as the board — the pane is opened deliberately, but
+/// it re-reads on every repaint of its list and that must not become a request each time.
+#[tauri::command]
+pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !force {
+            if let Ok(guard) = MERGED_CACHE.lock() {
+                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&root)) {
+                    if hit.at.elapsed() < TTL {
+                        return hit.result.clone();
+                    }
+                }
+            }
+        }
+        let result = match gh(&root, &[
+            "pr", "list", "--state", "merged", "--limit", "100",
+            "--json", "number,title,url,headRefName,mergedAt",
+        ]) {
+            Err(e) => MergedPrs { available: false, reason: Some(classify(&e)), prs: vec![] },
+            Ok(j) => MergedPrs { available: true, reason: None, prs: parse_merged_prs(&j) },
+        };
+        if let Ok(mut guard) = MERGED_CACHE.lock() {
+            guard.get_or_insert_with(HashMap::new)
+                .insert(root.clone(), CachedMerged { at: Instant::now(), result: result.clone() });
+        }
+        result
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Close an issue, with a comment saying why.
 ///
 /// **The only destructive write Episko makes to GitHub**, and the reason the UI never
@@ -735,6 +825,25 @@ mod tests {
         assert_eq!(t[0].branch.as_deref(), Some("feat/worktree-quick-launch"));
         assert_eq!(t[0].author.as_deref(), Some("FAbrahamDev"));
         assert!(!t[0].draft);
+    }
+
+    #[test]
+    fn parses_merged_prs_and_drops_the_ones_that_never_merged() {
+        // `--state merged` should never return an unmerged PR, but "closed" and "merged"
+        // are one null field apart in gh's model — and the deep-clean pane force-deletes
+        // on this evidence, so a closed-unmerged PR leaking in would delete real work.
+        let m = parse_merged_prs(r#"[
+          {"number":74,"title":"a merged one","url":"u1","headRefName":"feat/one","mergedAt":"2026-08-01T10:00:00Z"},
+          {"number":75,"title":"closed unmerged","url":"u2","headRefName":"feat/two","mergedAt":null},
+          {"number":76,"title":"no head branch","url":"u3","mergedAt":"2026-08-02T10:00:00Z"}
+        ]"#);
+        assert_eq!(m.len(), 1, "only the genuinely merged PR with a branch survives: {m:?}");
+        assert_eq!(m[0].branch, "feat/one");
+        assert_eq!(m[0].number, 74);
+
+        for bad in ["", "not json", "{}", "null", "<html>"] {
+            assert!(parse_merged_prs(bad).is_empty(), "should be empty for {bad:?}");
+        }
     }
 
     #[test]

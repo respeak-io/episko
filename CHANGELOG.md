@@ -13,6 +13,23 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A Branches view, and the cleanup that goes with it.** A project's dashboard now
+  opens a full-screen table of every branch worth deleting — merged into the trunk,
+  orphaned by a deleted remote branch, or shipped in a pull request — with the checkout
+  each one holds, who wrote its last commit, and where it stands. Tick what should go
+  and it goes; a branch whose worktree is dirty, locked or has a session running is
+  shown with the reason rather than quietly missing. Episko runs git's *safe* delete,
+  and the one exception is spelled out on the row: a squash-merged branch is contained
+  in nothing, so only its merged pull request can vouch for it. Every deleted branch
+  comes back with the sha that restores it.
++ **Branches on the remote can be cleaned up too**, under the same roof and a narrower
+  rule: only what is provably in the trunk or provably merged, never a force, never the
+  default branch, and never a ref that moved since the list was read.
+~ **The new-session dialog says more about a branch and asks less of you.** A
+  remote-only branch shows how far it is from the trunk and whose commit is on the end
+  of it, for the row you are on. Which branch counts as "the trunk" is now a per-project
+  choice rather than always whatever HEAD happens to sit on — so a repo parked on a
+  feature branch stops calling half its history merged.
 ! ⌘⇧B / ⌘⇧T prefill a task's inputs like every other run surface — the dialog opens only for an input that has no answer anywhere
 ! The footer's usage, spend and attention popovers no longer swallow a click when telemetry repaints them mid-press
 
