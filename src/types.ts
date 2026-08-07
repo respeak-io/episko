@@ -104,6 +104,26 @@ export const isAgent = (s: Sess) => s.kind === "claude";
 // task: its exit sets done/error, the same phases a live claude turn cycles through,
 // so the run's exit code is the discriminant there.
 export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != null : s.phase === "ended");
+// Whether work is in flight in this pane — the question to ask before moving the
+// ground under it, which today means switching the branch of the folder it lives in.
+// Deliberately narrower than "a pane exists here", which is what the branch switch
+// used to refuse on: one idle agent made a folder unswitchable, and the only way out
+// was to close a conversation you wanted to keep.
+//
+// The three kinds answer it differently because they hold the tree differently:
+//   shell  — never. It is your prompt, and `git switch` is a thing people run in a
+//            terminal on purpose; a shell pane blocking one is the app arguing with
+//            the command the pane exists to accept.
+//   task   — while it runs. A run is a claim about a tree, and a build that starts on
+//            one branch and finishes on another has verified nothing.
+//   claude — only mid-turn: thinking, working, or holding a permission whose tool call
+//            fires the instant you allow it. Idle, done and error are all "the agent is
+//            waiting on you" — it is not touching the tree, and its next turn reads
+//            HEAD fresh rather than from the conversation.
+export const midFlight = (s: Sess) =>
+  s.kind === "shell" ? false
+    : s.kind === "task" ? !isExited(s)
+      : !!s.attention || s.phase === "working" || s.phase === "thinking";
 // Which glyph/CSS bucket a pane falls into: a blocking permission outranks the
 // phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
 // inspector pill, so it lives here rather than in any one of them.

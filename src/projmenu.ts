@@ -21,7 +21,8 @@ import {
   renameProjectGroup, setProjectGroup, toggleProjGroup,
 } from "./actions";
 import { groupById, groupOf, groupPaths } from "./projgroups";
-import { isAgent } from "./types";
+import { extWorking } from "./sidebarview";
+import { isAgent, isExited, midFlight } from "./types";
 import {
   accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, projGroups,
   sessions, termEngine,
@@ -228,6 +229,36 @@ function removeRow(t: WtTarget): CtxRow {
   return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub, cls: "mp-danger" };
 }
 
+// Moving the root folder to another branch, from the header that names it.
+//
+// **The main checkout's row only** — a worktree exists precisely so its branch doesn't
+// move, so the verb has nothing to offer there and a greyed row would be answering a
+// question nobody asked. That is the opposite call from *Remove worktree…* below, which
+// IS greyed on the main checkout, and the difference is whether the row reads as a gap:
+// removal is what you go to a checkout's menu for, so its absence would look like a bug;
+// switching a worktree's branch is a thing the model deliberately doesn't do.
+//
+// What it does say, when it is shown, is what the click will cost — `midFlight` for our
+// own panes and `extWorking` for a terminal we can only see from the outside. Same
+// bargain `removeRow` makes: a greyed row with a reason beats a click into a wall. This
+// block is *transient* where removal's is permanent, so it names what to wait for rather
+// than implying the verb is unavailable, and *All worktrees…* one row up still reaches
+// the card that lists the offending sessions and jumps to them.
+function switchRow(t: WtTarget): CtxRow {
+  const busy = [...sessions.values()].filter((s) => s.workdir === t.dir && midFlight(s)).length
+    + externals.filter((e) => e.cwd === t.dir && extWorking(e)).length;
+  if (busy) {
+    return { act: "", ic: "⇄", label: "Switch branch…", sub: `waiting — ${busy} session${busy > 1 ? "s" : ""} still working here`, cls: "dis" };
+  }
+  const idle = [...sessions.values()].filter((s) => s.workdir === t.dir && !isExited(s)).length;
+  return {
+    act: "wtswitch", ic: "⇄", label: "Switch branch…",
+    sub: idle
+      ? `${idle} idle session${idle > 1 ? "s" : ""} here stay${idle > 1 ? "" : "s"} open`
+      : "moves this folder — every worktree keeps its own",
+  };
+}
+
 function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
   ctxKey = null; // one #ctxMenu, one target — see the module header
@@ -241,6 +272,9 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
     { act: "wtcopy", ic: "⧉", label: "Copy path" },
     null,
     { act: "wtdialog", ic: "⑃", label: "All worktrees…", sub: "create, switch, prune" },
+    // Spread, not a `null` — in this list a null IS a separator, so a row that should be
+    // absent has to be an empty array rather than a falsy entry.
+    ...(t.isMain ? [switchRow(t)] : []),
     null,
     // The main checkout is not removable and never will be — git refuses it. Saying so
     // beats dropping the row, which would read as "Episko forgot how to prune this one".
@@ -271,6 +305,11 @@ $("ctxMenu").addEventListener("click", (e) => {
     // and focused at this checkout: reached from a cluster header it is the worktree
     // list, not the launcher, and every difference between the two is in `openWt`.
     case "wtdialog": openWt(t.project, t.root, null, { manage: true, focusDir: t.dir }); break;
+    // Same dialog, opened on the answer rather than on the list: `armSwitch` selects the
+    // repo row and paints its switch card, so the branch picker is the next click. The
+    // header we were opened from IS the root here (the row is main-only), so `t.branch`
+    // is the branch being left — seed it, or the card reads "—" until the git call lands.
+    case "wtswitch": openWt(t.project, t.root, t.branch, { manage: true, armSwitch: true }); break;
     case "wtremove": void removeWorktreeAt(t.project, t.root, t.dir, t.branch); break;
   }
 });
