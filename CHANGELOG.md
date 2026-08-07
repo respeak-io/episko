@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.16.0 — 2026-08-07
+The branches nobody will touch again get a broom, switching branch waits only for
+work actually in flight, and the projects you are working in keep their checkouts
+on screen.
+
 + **A Branches view, and the cleanup that goes with it.** A project's dashboard now
   opens a full-screen table of every branch worth deleting — merged into the trunk,
   orphaned by a deleted remote branch, or shipped in a pull request — with the checkout
