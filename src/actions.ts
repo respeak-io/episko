@@ -20,10 +20,11 @@ import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  dashMirror, FAVORITES, IO_SCOPES, ioInfoAt, ioScope, markWorkdirStale, peekPrefs, permMode,
+  dashMirror, FAVORITES, IO_SCOPES, ioInfoAt, ioScope, keyPrefs, markWorkdirStale, peekPrefs, permMode,
   permModeDef, projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
-  setFavorites, setIoInfoAt, setIoScope, setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  setFavorites, setIoInfoAt, setIoScope, setKeyPrefs as setKeyPrefsState,
+  setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -34,6 +35,7 @@ import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
   renameGroup, setCollapsed, type GroupStore,
 } from "./projgroups";
+import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
 import type { PermMode } from "./types";
@@ -139,6 +141,26 @@ export function setSoundPrefs(p: SoundPrefs) {
   renderSettings();
 }
 
+// And once more for the keyboard shortcuts. This one DOES take the full `renderAll`,
+// unlike the two above: a chord is written into the sidebar's and mini-rail's button
+// titles as well as the footer's popover and the palette's hints, so every surface
+// that spells one has to be repainted or half the app would go on advertising the
+// chord you just replaced. Rebinding is a rare, deliberate press, and renderAll is
+// coalesced to one frame anyway.
+//
+// Only the *overrides* are persisted, so a default improved in a later release still
+// reaches an install that never touched that row — and a picker reset back to the
+// shipped chords drops the key rather than freezing today's defaults into it.
+export function setKeyPrefs(p: KeyPrefs) {
+  setKeyPrefsState(p);
+  // Nothing stored while everything is standard AND switched on, so a fresh install
+  // and one that has been reset back are the same install.
+  if (isDefaultKeyPrefs(keyPrefs)) localStorage.removeItem("cc-keys");
+  else localStorage.setItem("cc-keys", JSON.stringify(serializeKeyPrefs(keyPrefs)));
+  renderAll();
+  renderSettings();
+}
+
 // ---------- the user's named groups of projects ----------
 // The same shape as everything else here (./projgroups computes, this persists and
 // repaints), with one addition worth keeping: every mutator in ./projgroups returns the
@@ -173,7 +195,7 @@ export function deleteProjectGroup(gid: string) {
   const g = groupById(projGroups, gid);
   if (!g) return;
   commitProjGroups(deleteGroup(projGroups, gid));
-  toast(`Ungrouped ${g.name} — the projects stay`);
+  toast(`Ungrouped ${g.name}. The projects stay`);
 }
 export function toggleProjGroup(gid: string) {
   const g = groupById(projGroups, gid);

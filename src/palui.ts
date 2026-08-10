@@ -11,7 +11,7 @@
 // setters, exactly as settings.ts does (PLAN: "a control panel may take one host
 // object instead of N setters").
 
-import { $, chord, FILE_MANAGER, MOD } from "./dom";
+import { $, chord, FILE_MANAGER, IS_MAC } from "./dom";
 import { esc, tilde } from "./format";
 import { iconFor } from "./icons";
 import { setEngine } from "./footer";
@@ -29,8 +29,9 @@ import {
 } from "./taskui";
 import { discoverTasks, execCmd } from "./tasks";
 import {
-  accentFor, availEngines, engineDef, sessions, termEngine,
+  accentFor, availEngines, engineDef, keyPrefs, sessions, termEngine,
 } from "./state";
+import { activeBind, comboKeys, type KeyAction } from "./keys";
 
 // Everything a palette row can do that this module does not own. Twelve callees is
 // past the point where per-callee setters read as anything but noise, so this follows
@@ -89,8 +90,8 @@ function sessionActions(s: Sess): PalItem[] {
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
   // Not gated on isAgent — every pane kind has a real directory behind it (a task's
-  // run cwd, a shell's launch dir), and unlike ⌘⏎ this names *this* session's
-  // folder rather than whichever one holds the stage.
+  // run cwd, a shell's launch dir), and unlike the `reveal` shortcut this names
+  // *this* session's folder rather than whichever one holds the stage.
   a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
     a.push(mk("New session here…", "⑃", () => openWt(s.project, s.colorKey)));
     // Only when this session lives in a worktree (not the repo's main checkout):
@@ -100,19 +101,37 @@ function sessionActions(s: Sess): PalItem[] {
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));
   return a;
 }
-const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; sc?: string[] }[] = [
+// A row names the ACTION its chord belongs to rather than spelling the chord out:
+// the shortcuts are rebindable (Settings › Keys), and this table is built once at
+// module load, so a literal here would keep advertising the default forever. The
+// glyphs are resolved per refresh in `refreshPal` below.
+const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; act?: KeyAction }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: host.addProject },
-  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: host.openPlainTerminal, sc: [MOD, "T"] },
-  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, sc: [MOD, "⏎"] },
-  { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, sc: [MOD, "⇧", "R"] },
+  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: host.openPlainTerminal, act: "terminal" },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, act: "reveal" },
+  { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, act: "runTask" },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
-  { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, sc: [MOD, "⇧", "H"] },
-  { key: "cmd:histall", label: "Session history — every project…", glyph: "◷", run: () => { void openHistory(false); } },
+  { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, act: "history" },
+  { key: "cmd:histall", label: "Session history · every project…", glyph: "◷", run: () => { void openHistory(false); } },
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
-  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, sc: [MOD, "I"] },
-  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, sc: [MOD, "B"] },
+  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, act: "inspector" },
+  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, act: "sidebar" },
   { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: host.toggleTheme },
 ];
+/// A command row's chord as it stands right now, or nothing if the user cleared it —
+/// a hint that named a shortcut which no longer fires is worse than no hint.
+function palShortcut(act?: KeyAction): string[] | undefined {
+  const keys = act ? comboKeys(activeBind(keyPrefs, act), IS_MAC) : [];
+  return keys.length ? keys : undefined;
+}
+/// The switcher is one binding over nine digits, so its row swaps the "1–9" glyph for
+/// the digit this particular session actually answers to.
+function palDigitShortcut(n: number): string[] | undefined {
+  const keys = comboKeys(activeBind(keyPrefs, "sessionSwitch"), IS_MAC);
+  if (!keys.length) return undefined;
+  keys[keys.length - 1] = String(n);
+  return keys;
+}
 function buildPalGroups(raw: string): PalGroup[] {
   // action panel page — one group of the target session's actions, fuzzy-filtered
   if (palPage === "actions" && palActionSess) {
@@ -135,7 +154,7 @@ function buildPalGroups(raw: string): PalGroup[] {
     const sub = s.kind === "shell" ? "shell"
       : s.kind === "task" ? `task · ${taskStateText(s)}`
       : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
-    return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? [MOD, String(i + 1)] : undefined, session: s, run: () => host.setActive(s.id) };
+    return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? palDigitShortcut(i + 1) : undefined, session: s, run: () => host.setActive(s.id) };
   });
   // Tasks for the active project. Discovery is async, so this reads a cache the
   // palette warms on open — an empty first frame is corrected in place.
@@ -153,7 +172,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   // session is just as launchable as a favourite, and hiding it here made "+ Session"
   // with nothing selected look like it was picking projects at random.
   const launchCands: PalItem[] = allProjects().map((p) => ({ kind: "launch", key: "launch:" + p.path, label: `Launch ${p.name}`, labelHtml: esc(`Launch ${p.name}`), sub: tilde(p.path), sw: accentFor(p.path), icon: iconFor(p.path) || undefined, run: () => host.requestLaunch(p.name, p.path) }));
-  const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: c.sc, run: c.run }));
+  const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: palShortcut(c.act), run: c.run }));
   for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`, labelHtml: esc(`New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`), sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
 
   const score = (arr: PalItem[]) => arr.map((it) => scoreItem(it, searchTerm)).filter(Boolean) as PalItem[];

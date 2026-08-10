@@ -1626,6 +1626,50 @@ select.in-ctl { cursor: pointer; }
 /* Indented to the row's text, so an open strip visibly belongs to its event. */
 .sndtones { margin: 8px 0 3px 24px; }
 
+/* ---- Settings › Keys: the shortcut picker ---- */
+.kbbox { display: flex; flex-direction: column; gap: 13px; margin-top: 11px; }
+/* Dimmed, not disabled: the rows stay settable while the switch is off, same as the
+   sound panel's rows stay auditionable. */
+.kbbox.off { opacity: .55; }
+.kbbox .set-freset[disabled] { opacity: .35; cursor: default; }
+.kbbox .set-freset[disabled]:hover { color: var(--muted); border-color: var(--hair); }
+/* The summary line names the changed rows, which can be several — let it wrap
+   rather than pushing Reset all off the end. */
+.kb-top { align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.kb-top .peekstep-l { flex: 1; min-width: 0; text-transform: none; letter-spacing: 0; font-size: 10.5px; font-weight: 600; line-height: 1.5; }
+.kbgroup { display: flex; flex-direction: column; }
+.kb-gh { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; margin: 4px 0 5px 2px; }
+.kbrow { display: flex; align-items: center; gap: 8px; border-radius: 9px; border: 1px solid transparent; padding: 6px 9px; transition: background .14s, border-color .14s; }
+.kbrow:hover { background: var(--surface); border-color: var(--hair); }
+.kbrow.rec { background: var(--accent-wash); border-color: var(--accent-line); }
+.kb-t { flex: 1; min-width: 0; }
+.kb-l { font-size: 12px; font-weight: 650; }
+.kb-s { font-size: 10.5px; color: var(--muted-2); line-height: 1.4; margin-top: 1px; max-width: 46ch; }
+/* Fixed width so the chords line up down the column and a rebind doesn't shuffle
+   the row under the pointer — the same reason the sidebar guards its innerHTML. */
+.kb-chord { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 104px; height: 26px; padding: 0 9px; border-radius: 7px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--hair-strong); }
+.kb-chord:hover { border-color: var(--accent-line); }
+.kb-chord.rec { background: var(--accent-wash); border-color: var(--accent-line); }
+.kb-chord kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 17px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--text); }
+.kb-none { font: 600 10.5px var(--font-ui); color: var(--muted-2); }
+/* A switched-off row, legible without reading it: the label fades and its chord cell
+   goes dashed-and-empty, so "which of these will not fire" is answerable by scanning
+   the column rather than by reading fourteen chords. */
+.kbrow.off .kb-t { opacity: .5; }
+.kbrow.off .kb-chord { border-style: dashed; background: transparent; }
+.kb-rec { font: 600 10.5px var(--font-ui); color: var(--accent-ink); }
+/* "esc" rides in the recording cell rather than in the hint above: it is only true
+   while a row is armed, and that is the only moment it is worth reading. */
+.kb-rec i { font-style: normal; margin-left: 6px; opacity: .6; font-size: 9.5px; }
+.kb-x { flex: none; width: 24px; height: 24px; border-radius: 7px; cursor: pointer; display: grid; place-items: center;
+  font-size: 10px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.kb-x:hover { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.kb-x[disabled] { opacity: .3; cursor: default; }
+.kb-x[disabled]:hover { color: var(--muted); border-color: var(--hair); background: var(--surface); }
+/* The note the ⌘ Shortcuts popover shows in place of its rows when they are all off. */
+.shortpop .sc-off { padding: 5px 8px 7px; font-size: 10.5px; line-height: 1.5; color: var(--muted-2); max-width: 34ch; }
+
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
