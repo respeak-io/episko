@@ -164,8 +164,8 @@ function wtName(name: string) {
  *  question you'd actually ask here. A branch in sync with its upstream shows nothing;
  *  silence is the clean state. */
 function wtSyncMeta(b: BranchInfo): string {
-  if (b.gone) return `<span class="wt-tag gone" title="${esc(b.upstream)} no longer exists on the remote — this branch is local-only now">gone</span>`;
-  if (!b.upstream) return `<span class="wt-tag det" title="No remote branch tracks this — it has never been pushed">local</span>`;
+  if (b.gone) return `<span class="wt-tag gone" title="${esc(b.upstream)} no longer exists on the remote, so this branch is local-only now">gone</span>`;
+  if (!b.upstream) return `<span class="wt-tag det" title="No remote branch tracks this. It has never been pushed">local</span>`;
   return (b.ahead ? `<span class="wt-ab wt-ahead" title="${b.ahead} commit(s) not yet pushed to ${esc(b.upstream)}">↑${b.ahead}</span>` : "")
     + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) on ${esc(b.upstream)} not pulled yet">↓${b.behind}</span>` : "");
 }
@@ -175,7 +175,7 @@ function wtSyncMeta(b: BranchInfo): string {
  *  a second remote, or a git too old for `%(ahead-behind:)`); silence is then honest,
  *  where `↑0 ↓0` would read as "in sync". */
 function wtBaseMeta(b: BranchInfo): string {
-  if (!b.base) return `<span class="wt-tag rem" title="Only on ${esc(b.upstream)} — no local branch yet">${esc(wtRemoteOf(b))}</span>`;
+  if (!b.base) return `<span class="wt-tag rem" title="Only on ${esc(b.upstream)}, no local branch yet">${esc(wtRemoteOf(b))}</span>`;
   if (!b.ahead && !b.behind) return `<span class="wt-tag merged" title="Identical to ${esc(b.base)}">even</span>`;
   return (b.ahead ? `<span class="wt-ab wt-ahead" title="${b.ahead} commit(s) ${esc(b.base)} doesn't have">↑${b.ahead}</span>` : "")
     + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) on ${esc(b.base)} that this branch doesn't have">↓${b.behind}</span>` : "");
@@ -183,8 +183,8 @@ function wtBaseMeta(b: BranchInfo): string {
 
 /** The same fact as wtSyncMeta, spelled out for the detail pane. */
 function wtUpstreamHtml(b: BranchInfo): string {
-  if (b.gone) return `<span class="em">${esc(b.upstream)}</span> — deleted on the remote; local-only now`;
-  if (!b.upstream) return `<span class="dim">none — never pushed</span>`;
+  if (b.gone) return `<span class="em">${esc(b.upstream)}</span>: deleted on the remote, local-only now`;
+  if (!b.upstream) return `<span class="dim">none, never pushed</span>`;
   if (!b.ahead && !b.behind) return `<span class="em">${esc(b.upstream)}</span> <span class="good">· in sync</span>`;
   return `<span class="em">${esc(b.upstream)}</span>`
     + (b.ahead ? ` · <span class="warn">↑${b.ahead} unpushed</span>` : "")
@@ -250,7 +250,7 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   const modeEl = $("wtMode") as HTMLElement;
   modeEl.hidden = manage || permMode === "default";
   modeEl.textContent = `${pm.glyph} ${pm.label}`;
-  modeEl.title = `Starts in ${pm.label} mode — ${pm.sub} (Settings › Sessions)`;
+  modeEl.title = `Starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)`;
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
@@ -373,7 +373,7 @@ function wtBuild(): Dest[] {
       kind: "create", group: "", ic: "＋", label: raw.trim(),
       sub: clash ? `folder ${basename(clash.path)}/ is already taken` : `new worktree off ${wtBase || wtRepoBranch || "HEAD"}`,
       dir: wtTargetDir(repoDir, raw), branch: raw.trim(), tags: [], meta: "", stale: false, clash,
-      verb: clash ? "blocked — that folder exists" : "create worktree & start session",
+      verb: clash ? "blocked: that folder exists" : "create worktree & start session",
     });
   }
 
@@ -384,7 +384,7 @@ function wtBuild(): Dest[] {
       label: wtRepoBranch || basename(repoDir), sub: repoDir,
       dir: repoDir, branch: wtRepoBranch,
       tags: repoSess ? [["open", `${repoSess} open`]] : [], meta: "", stale: false,
-      verb: "start session in the repo — no worktree",
+      verb: "start session in the repo, no worktree",
     });
   }
 
@@ -412,7 +412,7 @@ function wtBuild(): Dest[] {
       sub: st === "diverged" ? `in ${basename(w.path)}/` : st === "foreign" ? w.path : "",
       dir: w.path, branch: w.branch === "(detached)" ? "" : w.branch,
       tags, meta: "", stale: false,
-      verb: !w.exists ? "folder is gone — remove it instead"
+      verb: !w.exists ? "folder is gone, remove it instead"
         : open ? "start another session in this worktree"
         : "start session in this worktree",
     });
@@ -436,7 +436,7 @@ function wtBuild(): Dest[] {
       label: b.name, sub: "", dir: wtTargetDir(repoDir, b.name), branch: b.name,
       tags: [], stale: b.unix > 0 && now - b.unix > STALE,
       meta: wtSyncMeta(b) + `<span class="wt-when">${esc(b.rel || "")}</span>`,
-      verb: clash ? "blocked — that folder exists" : "create a worktree on this branch & start",
+      verb: clash ? "blocked: that folder exists" : "create a worktree on this branch & start",
     });
   }
 
@@ -459,7 +459,7 @@ function wtBuild(): Dest[] {
       meta: `<span class="wt-rmeta">${wtBaseMeta(b)}`
         + (b.author ? `<span class="wt-who" title="${esc(b.author)} wrote the last commit on this branch">${esc(b.author)}</span>` : "")
         + `</span><span class="wt-when">${esc(b.rel || "")}</span>`,
-      verb: clash ? "blocked — that folder exists" : `check ${b.upstream} out into a worktree & start`,
+      verb: clash ? "blocked: that folder exists" : `check ${b.upstream} out into a worktree & start`,
     });
   }
   return out;
@@ -604,18 +604,18 @@ function wtDetailHtml(d: Dest | undefined): string {
     let warn = "";
     if (!w.exists) {
       warn = `<div class="wt-warn err"><span class="t">Folder is gone</span>`
-        + `Nothing is left at this path — only git's record of it. Removing prunes that record; there's nothing to launch into.</div>`;
+        + `Nothing is left at this path except git's record of it. Removing prunes that record; there's nothing to launch into.</div>`;
     } else if (st === "diverged") {
       // Deliberately does NOT name the branch this folder was created for: wtSlug is
       // lossy (both "/" and every odd character become "-"), so the folder can't be
       // turned back into a branch name. Name the folder, which is what exists.
       warn = `<div class="wt-warn"><span class="t">Folder and branch disagree</span>`
         + `This checkout lives in <b>${esc(basename(w.path))}/</b>, a folder named after the branch it was created for. `
-        + `Its HEAD is now <b>${esc(w.branch)}</b> — something switched inside it. `
+        + `Its HEAD is now <b>${esc(w.branch)}</b>. Something switched inside it. `
         + `Removing it deletes the folder; the branch is a separate decision.</div>`;
     } else if (st === "detached") {
       warn = `<div class="wt-warn"><span class="t">No branch checked out</span>`
-        + `HEAD is detached here, so commits made in this checkout belong to no branch — Episko can't tell you whether they're merged, and won't offer to delete anything.</div>`;
+        + `HEAD is detached here, so commits made in this checkout belong to no branch, so Episko can't tell you whether they're merged, and won't offer to delete anything.</div>`;
     } else if (st === "foreign") {
       warn = `<div class="wt-warn"><span class="t">Outside .cc-worktrees</span>`
         + `Episko didn't create this checkout, so it doesn't own the path. Removal still works; the folder just isn't where new worktrees go.</div>`;
@@ -659,10 +659,10 @@ function wtDetailHtml(d: Dest | undefined): string {
     // want. Say what will happen instead of leaving the red `gone` chip to imply doom.
     const noRemote = (b.gone || !b.upstream) && !clash
       ? `<div class="wt-warn note"><span class="t">No remote branch right now</span>`
-        + `${b.gone ? `<b>${esc(b.upstream)}</b> was deleted` : "This branch has never been pushed"} — starting a worktree here is fine. `
+        + `${b.gone ? `<b>${esc(b.upstream)}</b> was deleted` : "This branch has never been pushed"}, so starting a worktree here is fine. `
         + `The first <b>git push -u</b> from it creates <b>origin/${esc(b.name)}</b> again.</div>`
       : "";
-    return `<div class="wt-dhead"><span class="wt-dkind">Branch — no checkout yet</span><span class="wt-dname">${esc(b.name)}</span></div>`
+    return `<div class="wt-dhead"><span class="wt-dkind">Branch · no checkout yet</span><span class="wt-dname">${esc(b.name)}</span></div>`
       + clashWarn + noRemote
       + wtFacts([
         ["Last commit", wtCommitHtml(d)],
@@ -679,7 +679,7 @@ function wtDetailHtml(d: Dest | undefined): string {
   // ref yet — so the pane is entirely about what picking it would bring into existence.
   if (d.kind === "remote") {
     const b = d.br!;
-    return `<div class="wt-dhead"><span class="wt-dkind">Remote branch — no local copy</span><span class="wt-dname">${esc(b.upstream)}</span></div>`
+    return `<div class="wt-dhead"><span class="wt-dkind">Remote branch · no local copy</span><span class="wt-dname">${esc(b.upstream)}</span></div>`
       + clashWarn
       + (clash ? "" : `<div class="wt-warn note"><span class="t">Not checked out anywhere yet</span>`
         + `This exists on <b>${esc(wtRemoteOf(b))}</b> and nowhere in this repo. Starting here cuts <b>${esc(b.name)}</b> `
@@ -692,7 +692,7 @@ function wtDetailHtml(d: Dest | undefined): string {
           : `${b.ahead ? `<span class="em">↑${b.ahead}</span> ahead` : ""}${b.ahead && b.behind ? " · " : ""}`
             + `${b.behind ? `<span class="em">↓${b.behind}</span> behind` : ""} <span class="dim">${esc(b.base)}</span>`] as [string, string]] : []),
         ["Will track", `<span class="em">${esc(b.upstream)}</span>`],
-        ["Local branch", `<span class="em">${esc(b.name)}</span> <span class="dim">— created now</span>`],
+        ["Local branch", `<span class="em">${esc(b.name)}</span> <span class="dim">created now</span>`],
         [clash ? "Would be" : "Will create", wtPathHtml(d.dir)],
       ])
       + `<div class="wt-acts"><button class="wt-go" type="button" data-wtact="go"${clash ? " disabled" : ""}>Create worktree &amp; start</button>`
@@ -725,7 +725,7 @@ function wtConfirmHtml(d: Dest): string {
   }
   if (w.dirty) {
     return `<div class="wt-danger"><span class="q">Remove ${folder}?</span>`
-      + `<span class="w"><span class="em">Uncommitted changes</span> live only in this checkout — nothing else has them. `
+      + `<span class="w"><span class="em">Uncommitted changes</span> live only in this checkout. Nothing else has them. `
       + `Episko won't force it; it'll open a terminal in the repo root with the command ready.</span>`
       + `<span class="row"><button class="wt-cbtn" type="button" data-wtact="rm0">Open a terminal there</button>`
       + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
@@ -734,7 +734,7 @@ function wtConfirmHtml(d: Dest): string {
   const branchLine = !hasBranch
     ? " It has no branch checked out, so only the folder goes."
     : w.merged
-      ? ` Its branch <b>${esc(w.branch)}</b> is merged into ${esc(wtRepoBranch || "the main branch")} — deleting it loses nothing.`
+      ? ` Its branch <b>${esc(w.branch)}</b> is merged into ${esc(wtRepoBranch || "the main branch")}, so deleting it loses nothing.`
       : ` Its branch <b>${esc(w.branch)}</b> has commits ${esc(wtRepoBranch || "the main branch")} doesn't, so it's kept.`;
   return `<div class="wt-danger"><span class="q">Remove ${folder}?</span>`
     + `<span class="w">The checkout is clean.${branchLine}</span>`
@@ -753,19 +753,19 @@ function wtBranchConfirmHtml(d: Dest): string {
   const name = `<b>${esc(b.name)}</b>`;
   let why: string;
   if (b.gone) {
-    why = `<b>${esc(b.upstream)}</b> was deleted on the remote, so this branch is local-only now — often after its pull request merged, `
+    why = `<b>${esc(b.upstream)}</b> was deleted on the remote, so this branch is local-only now, often after its pull request merged, `
       + `but not always. If you still want the work, cancel and start a worktree on it instead; a push from there recreates the remote branch.`;
   } else if (!b.upstream) {
-    why = `<span class="em">It has never been pushed.</span> Its commits exist here and nowhere else — once it's gone, they're only reachable by sha.`;
+    why = `<span class="em">It has never been pushed.</span> Its commits exist here and nowhere else. Once it's gone, they're only reachable by sha.`;
   } else if (b.ahead) {
-    why = `<span class="em">${b.ahead} commit${b.ahead === 1 ? "" : "s"} are not on <b>${esc(b.upstream)}</b></span> — deleting the branch leaves them only reachable by sha. The remote branch itself stays.`;
+    why = `<span class="em">${b.ahead} commit${b.ahead === 1 ? "" : "s"} are not on <b>${esc(b.upstream)}</b></span>. Deleting the branch leaves them only reachable by sha. The remote branch itself stays.`;
   } else {
-    why = `It's in sync with <b>${esc(b.upstream)}</b>, which is not touched — the remote branch stays and this can be re-fetched.`;
+    why = `It's in sync with <b>${esc(b.upstream)}</b>, which is not touched, so the remote branch stays and this can be re-fetched.`;
   }
   return `<div class="wt-danger"><span class="q">Delete ${name}?</span>`
     + `<span class="w">${why}</span>`
     + `<span class="w">Episko only runs the safe <b>git branch -d</b>, so git refuses anything it can't see as merged`
-    + `${b.gone ? " — which includes a squash-merged branch" : ""}. If it does, you get a terminal with <b>-D</b> ready.</span>`
+    + `${b.gone ? ", which includes a squash-merged branch" : ""}. If it does, you get a terminal with <b>-D</b> ready.</span>`
     + `<span class="row"><button class="wt-cbtn danger" type="button" data-wtact="delbranch">Delete branch</button>`
     + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
 }
@@ -838,7 +838,7 @@ function wtSwitchHtml(): string {
     if (extBusy.length) what.push(`${extBusy.length} session${extBusy.length === 1 ? " is" : "s are"} working outside Episko`);
     return `<div class="wt-danger"><span class="q">Switch this folder's branch?</span>`
       + `<span class="w"><span class="em">${what.join(", ")}.</span> `
-      + `Switching would move the ground under that work mid-edit, so Episko won't — but only while it lasts. `
+      + `Switching would move the ground under that work mid-edit, so Episko won't, though only while it lasts. `
       + `Simply having a session open here doesn't block it: wait for this to land, or stop it.</span>`
       + (busy.length ? wtSessHtml(busy) : "")
       + `<span class="row"><button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
@@ -855,7 +855,7 @@ function wtSwitchHtml(): string {
   const from = pick.find((o) => o.name === sel)?.base;
   const cut = from
     ? `<span class="w"><b>${esc(sel)}</b> exists only on <b>${esc(from)}</b>. Switching cuts a local branch from it, `
-      + `set to track it — so <b>git push</b> and <b>git pull</b> here take no arguments afterwards.</span>`
+      + `set to track it, so <b>git push</b> and <b>git pull</b> here take no arguments afterwards.</span>`
     : "";
   // Whatever is still open here has no work in flight, or the wall above would have
   // caught it — so say what the switch means for it rather than letting the card imply
@@ -868,11 +868,11 @@ function wtSwitchHtml(): string {
     ? `<div class="wt-warn note"><span class="t">${stay} session${stay === 1 ? "" : "s"} stay${stay === 1 ? "s" : ""} open</span>`
       + `Nothing here is mid-turn, so no work is cut off. But this folder is where `
       + `${stay === 1 ? "it lives" : "they live"}, so the next thing that happens in `
-      + `${stay === 1 ? "it" : "them"} — your next prompt, the next command you type — happens on `
+      + `${stay === 1 ? "it" : "them"} (your next prompt, the next command you type) happens on `
       + `<b>${esc(sel)}</b>, however the conversation reads.</div>`
     : "";
   return `<div class="wt-danger"><span class="q">Switch <b>${esc(basename(repoDir))}</b> to another branch?</span>`
-    + `<span class="w">The repo's own folder moves — every worktree keeps its own branch, untouched. `
+    + `<span class="w">The repo's own folder moves. Every worktree keeps its own branch, untouched. `
     + `This also changes what new worktrees branch from by default.</span>`
     + `<span class="row">${wtPickBtn("switch", sel)}</span>`
     + cut
@@ -903,7 +903,7 @@ function wtSwitchOptions(): BranchPick[] {
   // bring a name into the repo rather than moving between names it already has.
   const remote = wtRemotes.map((b) => ({
     name: b.name, ic: "⇣", base: b.upstream,
-    note: `only on ${wtRemoteOf(b)} — creates a local branch tracking it`,
+    note: `only on ${wtRemoteOf(b)}; creates a local branch tracking it`,
   }));
   return [...local, ...remote];
 }
@@ -1056,7 +1056,7 @@ function wtRun(d: Dest | undefined) {
   if (d.kind === "repo") { closeWt(); launch(project, repoDir, { colorKey: repoDir, branch: wtRepoBranch }); return; }
   if (d.kind === "wt") {
     const w = d.wt!;
-    if (!w.exists) { toast(`${basename(w.path)} is gone — remove it instead`); return; }
+    if (!w.exists) { toast(`${basename(w.path)} is gone, remove it instead`); return; }
     closeWt();
     // Always a NEW session: a second agent on one branch is a normal thing to want.
     // The session chips in the pane are what jump to a running one.
@@ -1135,22 +1135,22 @@ async function strandedFlow(s: Stranded, label: string) {
   }
   const foreign = cur.holders.filter((h) => !h.ours);
   if (!foreign.length) {
-    toast(`${label} removed — its folder wouldn't delete: ${cur.reason}`);
+    toast(`${label} removed, but its folder wouldn't delete: ${cur.reason}`);
     return;
   }
   const one = foreign.length === 1;
   const who = foreign
-    .map((h) => `  • ${h.name} (${h.pid}) — ${h.why === "cwd" ? "sitting in this folder" : "has a file open"}`)
+    .map((h) => `  • ${h.name} (${h.pid}): ${h.why === "cwd" ? "sitting in this folder" : "has a file open"}`)
     .join("\n");
   const ok = await ask(
     `${label} is removed, but its folder is still on disk:\n${cur.path}\n\nHeld by:\n${who}\n\n`
     + `Terminating ${one ? "it" : "them"} ends whatever ${one ? "it is" : "they are"} doing`
-    + ` — an editor loses unsaved work, a build stops.`,
+    + `. An editor loses unsaved work, a build stops.`,
     { title: "Folder still in use", kind: "warning", okLabel: "Terminate & retry", cancelLabel: "Leave it" },
   );
-  if (!ok) { toast(`Folder left at ${basename(cur.path)}/ — nothing else of the worktree remains`); return; }
+  if (!ok) { toast(`Folder left at ${basename(cur.path)}/; nothing else of the worktree remains`); return; }
   const r = await purge(foreign.map((h) => h.pid));
-  toast(r?.gone ? `Removed ${label}` : `${basename(cur.path)}/ still wouldn't delete — ${r?.stranded?.reason ?? "unknown"}`);
+  toast(r?.gone ? `Removed ${label}` : `${basename(cur.path)}/ still wouldn't delete: ${r?.stranded?.reason ?? "unknown"}`);
 }
 
 // The backend never forces: a dirty tree is refused and its --force command handed to
@@ -1205,7 +1205,7 @@ export function removeWorktreeSession(s: Sess) {
 export async function removeWorktreeAt(project: string, repoDir: string, path: string, branch: string) {
   const label = branch || basename(path);
   if (externals.some((e) => e.cwd === path)) {
-    toast(`${label}: a session outside Episko is running there — close it first`);
+    toast(`${label}: a session outside Episko is running there. Close it first`);
     return;
   }
   const live = wtSessionsIn(path);
@@ -1224,7 +1224,7 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
   const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => w.path === path);
   const gone = known ? !known.exists : false;
   if (gone) {
-    if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone — this only clears git's record of it. Nothing is lost.`,
+    if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone, so this only clears git's record of it. Nothing is lost.`,
       { title: "Prune worktree", kind: "info", okLabel: "Prune", cancelLabel: "Cancel" })) return;
   } else {
     // Never close a session that still has a dirty tree — hand the decision (and a
@@ -1232,7 +1232,7 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     // enough to try", since the backend still refuses (without forcing) if it's wrong.
     const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
     if (ds && ds.dirty > 0) {
-      toast(`${label}: uncommitted changes — commit or discard first`);
+      toast(`${label}: uncommitted changes; commit or discard first`);
       await handToTerminal(project, path, "git status", { colorKey: repoDir, worktree: branch, branch });
       return;
     }

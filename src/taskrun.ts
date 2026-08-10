@@ -61,13 +61,13 @@ export async function maybeRunOnStop(s: Sess) {
   // A chain still starting (deps running, rule pane not created yet) wins — the pane
   // scan below can't see it, so this covers the window the floor can't.
   if (stopInFlight.has(s.colorKey)) {
-    dlog("info", `run-on-stop ${rule.id} skipped — a chain is already starting`);
+    dlog("info", `run-on-stop ${rule.id} skipped: a chain is already starting`);
     return;
   }
   // A run of this rule still in flight wins. Restarting the suite from the top
   // mid-flight tells you nothing and doubles the load on the machine.
   if ([...sessions.values()].some((x) => x.kind === "task" && x.colorKey === s.colorKey && x.run?.id === rule.id && x.run.exitCode == null)) {
-    dlog("info", `run-on-stop ${rule.id} skipped — still running`);
+    dlog("info", `run-on-stop ${rule.id} skipped: still running`);
     return;
   }
   stopRunAt.set(s.colorKey, Date.now());
@@ -105,7 +105,7 @@ export async function maybeRunOnStop(s: Sess) {
 export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
   const spec = lastRunnableById.get(r.id);
-  if (!spec) { toast("Task definition is gone — rescan"); return; }
+  if (!spec) { toast("Task definition is gone. Rescan"); return; }
   // Re-running means "the same thing again", so the values it already ran with are
   // reused silently; ⋯ Parameters is the button for changing them.
   const ready = resolveRunInputs(spec, s.project, withParams);
@@ -126,7 +126,7 @@ export function sendOutputToSession(task: Sess, targetId: string) {
   const msg = `\`${r.cmd}\` failed with exit ${r.exitCode}:\n\n${tail}\n\nPlease fix it.`;
   setActive(targetId);
   invoke("write_pty", { sessionId: targetId, data: msg.replace(/\n/g, "\r") })
-    .then(() => toast("Pasted into the session — press Enter to send"))
+    .then(() => toast("Pasted into the session. Press Enter to send"))
     .catch((e) => toast("send failed: " + e));
 }
 

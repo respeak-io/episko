@@ -176,7 +176,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     // *permanence*, not presence — say so, or "add" reads as a lie about a project
     // that's plainly already listed.
     fav
-      ? { act: "removeproj", ic: "✕", label: "Remove project", sub: "unpins it — sessions keep running", cls: "mp-danger" }
+      ? { act: "removeproj", ic: "✕", label: "Remove project", sub: "unpins it; sessions keep running", cls: "mp-danger" }
       : { act: "addproj", ic: "☆", label: "Pin to sidebar", sub: "keeps it listed with no session running" },
   ];
   const menu = $("ctxMenu");
@@ -221,7 +221,7 @@ let wtTarget: WtTarget | null = null;
 // delete the folder out from under it), so that row is disabled rather than offered.
 function removeRow(t: WtTarget): CtxRow {
   const ext = externals.filter((e) => e.cwd === t.dir).length;
-  if (ext) return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub: `blocked — ${ext} session${ext > 1 ? "s" : ""} running outside Episko`, cls: "dis" };
+  if (ext) return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub: `blocked: ${ext} session${ext > 1 ? "s" : ""} running outside Episko`, cls: "dis" };
   const live = [...sessions.values()].filter((s) => s.workdir === t.dir).length;
   const sub = live
     ? `closes ${live} session${live > 1 ? "s" : ""}, then deletes the folder`
@@ -248,14 +248,14 @@ function switchRow(t: WtTarget): CtxRow {
   const busy = [...sessions.values()].filter((s) => s.workdir === t.dir && midFlight(s)).length
     + externals.filter((e) => e.cwd === t.dir && extWorking(e)).length;
   if (busy) {
-    return { act: "", ic: "⇄", label: "Switch branch…", sub: `waiting — ${busy} session${busy > 1 ? "s" : ""} still working here`, cls: "dis" };
+    return { act: "", ic: "⇄", label: "Switch branch…", sub: `waiting: ${busy} session${busy > 1 ? "s" : ""} still working here`, cls: "dis" };
   }
   const idle = [...sessions.values()].filter((s) => s.workdir === t.dir && !isExited(s)).length;
   return {
     act: "wtswitch", ic: "⇄", label: "Switch branch…",
     sub: idle
       ? `${idle} idle session${idle > 1 ? "s" : ""} here stay${idle > 1 ? "" : "s"} open`
-      : "moves this folder — every worktree keeps its own",
+      : "moves this folder; every worktree keeps its own",
   };
 }
 

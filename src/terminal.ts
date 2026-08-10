@@ -63,7 +63,7 @@ export function attachWebgl(s: Sess) {
     w.onContextLoss(() => {
       // dispose() is the documented recovery for a lost context; detach also clears
       // `s.gl`, which is what lets the next setActive re-attach a fresh one.
-      dlog("warn", `webgl context lost · ${s.id.slice(0, 8)} — DOM renderer until reactivated`);
+      dlog("warn", `webgl context lost · ${s.id.slice(0, 8)} · DOM renderer until reactivated`);
       detachWebgl(s);
     });
     s.term.loadAddon(w);
@@ -82,7 +82,7 @@ export function attachWebgl(s: Sess) {
     // the honest fallback. Warn once per run, not once per pane switch — the retry
     // itself stays, since a crashed GPU process can come back.
     try { w?.dispose(); } catch { /* half-activated addon */ }
-    if (!webglWarned) { webglWarned = true; dlog("warn", `webgl unavailable — terminals use the DOM renderer (${e})`); }
+    if (!webglWarned) { webglWarned = true; dlog("warn", `webgl unavailable, so terminals use the DOM renderer (${e})`); }
   }
 }
 let webglWarned = false;
@@ -151,7 +151,7 @@ async function copySelection(term: Terminal) {
   const sel = term.getSelection();
   if (!sel) return; // nothing selected — a no-op, as in every other terminal
   try { await writeText(sel); toast("Copied"); }
-  catch (e) { dlog("error", `clipboard write failed: ${e}`); toast("Couldn't copy — clipboard unavailable"); }
+  catch (e) { dlog("error", `clipboard write failed: ${e}`); toast("Couldn't copy: clipboard unavailable"); }
 }
 
 // `term.paste` rather than a direct `write_pty`: it is xterm's own paste path, so the
@@ -163,7 +163,7 @@ async function copySelection(term: Terminal) {
 async function pasteClipboard(term: Terminal) {
   let text = "";
   try { text = await readText(); }
-  catch (e) { dlog("error", `clipboard read failed: ${e}`); toast("Nothing to paste — no text on the clipboard"); return; }
+  catch (e) { dlog("error", `clipboard read failed: ${e}`); toast("Nothing to paste: no text on the clipboard"); return; }
   if (text) term.paste(text);
 }
 
@@ -217,7 +217,7 @@ export function claudeInput(id: string): (d: string) => void {
         // One toast per burst — key repeat would otherwise fire it continuously.
         if (!warned) {
           warned = true;
-          toast("Ctrl+C interrupts — use ✕ or /exit to end the session");
+          toast("Ctrl+C interrupts. Use ✕ or /exit to end the session");
           dlog("info", `guarded repeat ^C · ${id.slice(0, 8)}`);
         }
         return;

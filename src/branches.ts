@@ -197,7 +197,7 @@ export function trunkOf(branches: BranchInfo[]): string {
 /// `origin/<something>`, and a local one drifts the moment you stop pulling it.
 export function trunkOptions(branches: BranchInfo[]): { name: string; note: string }[] {
   const seen = new Set<string>();
-  const out = [{ name: "", note: "automatic — whatever the remote's default is" }];
+  const out = [{ name: "", note: "automatic: whatever the remote's default is" }];
   // The trunk in force, first and always: it is usually `origin/main`, which nothing in
   // the repo need *track*, so a list built from upstreams alone was missing the one ref
   // every number on screen is measured against.

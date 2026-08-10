@@ -53,7 +53,7 @@ export function foldHead(g: GroupDef, sum: GroupSummary, n: number): string {
   const count = sum.count
     ? `<span class="pfcount live" title="${esc(plural(sum.count, "session"))}">${sum.count}</span>`
     : `<span class="pfcount">${n}</span>`;
-  const tip = `${g.name} — ${plural(n, "project")}${sum.count ? `, ${plural(sum.count, "session")}` : ""}`
+  const tip = `${g.name} · ${plural(n, "project")}${sum.count ? `, ${plural(sum.count, "session")}` : ""}`
     + ` · click to ${g.collapsed ? "expand" : "collapse"}`;
   return `<div class="pfhead" data-gtoggle="${esc(g.id)}" data-gid="${esc(g.id)}" title="${esc(tip)}">`
     + `<span class="pfchev"></span><span class="pfname">${esc(g.name)}</span>${hidden}${count}</div>`;
@@ -85,7 +85,7 @@ const branchHue = (c: WtCluster) => accentFor(c.isMain ? c.key : (c.branch || c.
 // four worktrees. ⌂ is the glyph the ⑃ dialog's Repo row and the project menu's "Open
 // project folder" already use for exactly this folder.
 const clusterGlyph = (c: WtCluster) => (c.isMain ? "⌂" : "⑃");
-const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} — the project folder itself` : c.branch);
+const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project folder itself` : c.branch);
 // The branch chip a row wears in chip mode, colour-coded and hover-expanded.
 const clusterChip = (c: WtCluster) =>
   `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
@@ -112,8 +112,8 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.
   const tip = s.phase === "error" && s.apiErr
-    ? `${label} — ${apiErrText(s.apiErr)}`
-    : s.drift ? `${label} — writing to ${s.drift.branch}, not ${s.branch || "this checkout"}` : label;
+    ? `${label} · ${apiErrText(s.apiErr)}`
+    : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
   // The row stays under the checkout the session was *launched* in — that is its
   // identity, and where `--resume` goes. This is what says the agent's writes have
   // moved elsewhere, without moving the row out from under you.
@@ -154,7 +154,7 @@ function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster):
     ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
   const head = `<div class="rgrow${tiled ? " on" : ""}" data-rungroup="${esc(it.id)}"
-      title="${esc(it.label)} · ${it.members.length} steps — open them side by side">
+      title="${esc(it.label)} · ${it.members.length} steps · open them side by side">
     <span class="rgtwist${open ? " open" : ""}" data-rgtoggle="${esc(it.id)}" title="${open ? "Collapse" : "Expand"} the steps">▸</span>
     <span class="sglyph ${gcls}">${GLYPH[it.phase] || GLYPH.idle}</span>
     <span class="rgname" title="${esc(it.label)}">${esc(it.label)}</span>${chipHtml}
@@ -269,7 +269,7 @@ function peekRow(p: ProjGroup, c: WtCluster): string {
   const dirty = folderDirty(c.key)
     ? `<span class="pkdirty" title="Uncommitted changes in this checkout"></span>` : "";
   return `<div class="pkrow" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)}`
-    + ` title="${esc(`Start a session in ${c.branch} — ${tilde(c.key)}`)}">`
+    + ` title="${esc(`Start a session in ${c.branch} · ${tilde(c.key)}`)}">`
     + `<span class="pkglyph" style="color:${col}">${clusterGlyph(c)}</span>`
     + `<span class="pkname">${esc(c.branch)}</span>${dirty}`
     + `<span class="pkgo">＋</span></div>`;
@@ -291,13 +291,13 @@ function dormantRow(d: Restorable): string {
   const label = d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
   const when = relTime(d.lastActivity);
   const tip = busy
-    ? "This session is running somewhere else right now — resuming it would interleave both transcripts"
+    ? "This session is running somewhere else right now, so resuming it would interleave both transcripts"
     : `Restore this session · last active ${when}`;
   return `<div class="srow pastrow${busy ? " busy" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
     <span class="sglyph g-ended">·</span>
     <span class="sbranch">${esc(label)}</span>
     <span class="past-tag">${busy ? "busy" : when}</span>
-    <span class="sclose" data-forget="${d.id}" title="Remove from list — the conversation stays on disk">✕</span></div>`;
+    <span class="sclose" data-forget="${d.id}" title="Remove from list; the conversation stays on disk">✕</span></div>`;
 }
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);

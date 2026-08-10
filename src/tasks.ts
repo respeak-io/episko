@@ -183,9 +183,9 @@ export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
   const out: Runnable[] = [];
   for (const label of r.dependsOn) {
     const dep = findDep(label, r.source);
-    if (!dep) { taskToast(`${r.label}: no task named “${label}” — not running it`); return null; }
+    if (!dep) { taskToast(`${r.label}: no task named “${label}”, so it will not run`); return null; }
     // A cycle would otherwise recurse until the stack gives out.
-    if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}” — not running it`); return null; }
+    if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}”, so it will not run`); return null; }
     out.push(dep);
   }
   return out;
@@ -272,7 +272,7 @@ export async function launchWithDeps(
   if (!seen.size) {
     const cyc = findDepCycle(r);
     if (cyc) {
-      taskToast(`${r.label}: dependency cycle — ${cyc.join(" → ")}`);
+      taskToast(`${r.label}: dependency cycle · ${cyc.join(" → ")}`);
       taskLog("warn", `task ${r.id} skipped: cycle ${cyc.join(" -> ")}`);
       return FAILED;
     }
@@ -338,7 +338,7 @@ export async function launchWithDeps(
     : (await Promise.all(deps.map(runDep))).every(Boolean);
 
   if (!ok) {
-    taskToast(`${r.label}: a dependency failed — not running it`);
+    taskToast(`${r.label}: a dependency failed, so it will not run`);
     taskLog("warn", `task ${r.id} skipped: dependency failed`);
     return FAILED;
   }

@@ -260,7 +260,7 @@ export function lineTip(row: GraphRow): string {
       ? row.label.from === "ref"
         ? `On the line leading up to ${row.label.name}`
         : `On the branch merged in as ${row.label.name} (from the merge's subject)`
-      : "No branch or tag above this commit on its line — usually a branch deleted after merging",
+      : "No branch or tag above this commit on its line, usually a branch deleted after merging",
   ];
   if (row.merged.length) parts.push(`merges ${row.merged.join(", ")}`);
   return parts.join(" · ");

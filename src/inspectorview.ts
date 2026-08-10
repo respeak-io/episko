@@ -134,7 +134,7 @@ export function driftHtml(s: Sess): string {
   const here = esc(s.branch || basename(s.workdir));
   const cwdMove = d.via === "cwd";
   const note = cwdMove
-    ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span> — following it costs nothing and interrupts nothing.`
+    ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span>; following it costs nothing and interrupts nothing.`
     : `The session is still running in <span class="b">${here}</span>, so its branch, working set and git buttons read that checkout. Moving it takes the conversation along.`;
   return `<div class="drift">
     <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
@@ -157,7 +157,7 @@ export function wsetHtml(s: Sess): string {
       <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div></div>`
     : "";
   const sync = g.upstream
-    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} — as of the last fetch">${
+    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
@@ -178,11 +178,11 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
   const up = !!g.upstream;
   const btn = (op: string, label: string, off: string, hint: string) =>
     `<button class="gitb" data-git="${op}" data-gitsid="${s.id}"${busy || off ? " disabled" : ""} title="${esc(off || hint)}">${label}</button>`;
-  const pullHint = !up ? "No upstream — opens a terminal to set one"
-    : g.ahead && g.behind ? `Diverged — opens a terminal to rebase`
+  const pullHint = !up ? "No upstream; opens a terminal to set one"
+    : g.ahead && g.behind ? `Diverged; opens a terminal to rebase`
     : `git pull --ff-only (${g.behind} behind)`;
-  const pushHint = !up ? "No upstream — opens a terminal to publish the branch"
-    : g.behind ? "Behind — opens a terminal to pull first"
+  const pushHint = !up ? "No upstream; opens a terminal to publish the branch"
+    : g.behind ? "Behind; opens a terminal to pull first"
     : `git push (${g.ahead} ahead)`;
   return `<div class="gitrow${busy ? " busy" : ""}">
     ${btn("fetch", "fetch", "", "git fetch --prune")}
@@ -272,7 +272,7 @@ function ioText(scope: IoScope): string {
 /// interesting part — see `ioInfoAnim`.
 const IO_INFO: Array<[string, string]> = [
   ["Writes run far above the conversation",
-    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks — measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
+    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks, measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
   ["Reads look small",
     "Anything already in the page cache never reaches the disk, so re-reading a warm repo costs nothing on this meter."],
   ["Child processes are not counted",
@@ -327,14 +327,14 @@ export function resHtml(): string {
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
     <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
     ${note ? `<p class="rnote">${esc(note)}</p>` : ""}
-    ${info ? `<div class="rinfo"${ioInfoAnim()}><div class="rinfo-in"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched — not their logical reads and writes.</p>${
+    ${info ? `<div class="rinfo"${ioInfoAnim()}><div class="rinfo-in"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched, rather than their logical reads and writes.</p>${
       IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
     }</div></div>` : ""}</div>`;
 }
 /// Spelled out per scope rather than one generic hint, because the difference between
 /// them is the whole point and two of the three have a caveat worth one sentence.
 const IO_SCOPE_TITLE: Record<IoScope, string> = {
-  today: "Disk I/O by Episko's claude sessions today — click for this run",
-  run: "Disk I/O since Episko started — the processes' own counters, which reset with the app. Click for everything recorded",
-  all: "Disk I/O across every day Episko has recorded one. Not a lifetime figure — it starts when this rollup shipped. Click for today",
+  today: "Disk I/O by Episko's claude sessions today. Click for this run",
+  run: "Disk I/O since Episko started: the processes' own counters, which reset with the app. Click for everything recorded",
+  all: "Disk I/O across every day Episko has recorded one. It starts when this rollup shipped, so it is not a lifetime figure. Click for today",
 };

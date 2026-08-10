@@ -243,7 +243,7 @@ export function deterministicHeadline(d: TrailDay): string {
   const projects = new Set(d.sessions.map((s) => s.project));
   if (d.sessions.length) {
     parts.push(dom
-      ? `Mostly ${dom} — ${plural(d.sessions.length, "session")}`
+      ? `Mostly ${dom} · ${plural(d.sessions.length, "session")}`
       : `${plural(d.sessions.length, "session")} across ${plural(projects.size, "project")}`);
   }
   if (d.commits.length) parts.push(plural(d.commits.length, "commit"));

@@ -58,7 +58,7 @@ async function checkForUpdates(manual: boolean) {
       return;
     }
     dlog("error", `update check failed: ${msg}`);
-    if (manual) toast("Update check failed — see debug console");
+    if (manual) toast("Update check failed. See debug console");
   }
 }
 
@@ -85,7 +85,7 @@ async function runUpdate() {
   } catch (e) {
     updateBusy = false;
     dlog("error", `update install failed: ${String(e)}`);
-    toast("Update failed — see debug console");
+    toast("Update failed. See debug console");
   }
 }
 

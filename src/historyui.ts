@@ -163,18 +163,18 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ["session", `${esc(h.session_id.slice(0, 8))} <span class="dim">· ${esc(size)} transcript</span>`],
   ]);
   const action = busy
-    ? `<div class="ext-note warn">This session is running right now — in Episko or another terminal. Claude doesn't lock a transcript, so resuming it a second time would interleave both conversations into one file.</div>`
+    ? `<div class="ext-note warn">This session is running right now, in Episko or another terminal. Claude doesn't lock a transcript, so resuming it a second time would interleave both conversations into one file.</div>`
     : !h.exists
     ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Claude refuses to resume a session outside the directory it ran in, so this one can only be read.</div>`
     : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
-       <div class="ext-note">Reopens the conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. Claude may offer to compact the context first — normal for a long session.</div>`;
+       <div class="ext-note">Reopens the conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. Claude may offer to compact the context first, which is normal for a long session.</div>`;
   const preview = histPreview?.id === h.session_id
     ? (histPreview.msgs.length
         ? `<div class="hist-tv">${histPreview.msgs.map((m) => {
             const user = m.role === "user";
             return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(abbr(m.text, 420))}</div></div>`;
           }).join("")}</div>`
-        : `<div class="hist-tv tv-empty">No prose in this transcript — it's tool traffic only.</div>`)
+        : `<div class="hist-tv tv-empty">No prose in this transcript; it's tool traffic only.</div>`)
     : `<div class="hist-tv tv-empty">Reading the transcript…</div>`;
   return `
     <div class="wt-dhead">

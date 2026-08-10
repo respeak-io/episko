@@ -37,7 +37,7 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode">▾</button>
           </div>
-          <button class="ibtn" id="histBtn" title="Session history — every past conversation, all projects" aria-label="Session history">◷</button>
+          <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history">◷</button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
         </div>
@@ -83,10 +83,10 @@
           <span class="path" id="hPath"></span>
         </div>
         <div class="st-actions">
-          <button class="act" id="btnHist" title="Reopen a past session in this project — including ones you closed (⌘⇧H)">◷ History</button>
+          <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)">◷ History</button>
           <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
           <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
-          <button class="act primary" id="btnNew" title="Start a session — pick the repo, a worktree, or a branch">＋ Session</button>
+          <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch">＋ Session</button>
           <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
           <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
         </div>
@@ -135,7 +135,7 @@
       </aside>
 
       <footer class="foot">
-        <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko — open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
+        <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko · open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
         <!-- Release notes sit to the RIGHT of the version number and hug it: the glyph
              explains that number, and at the footer's own 15px gap it would read as one
              more independent segment. Inline SVG rather than a character — no document
@@ -154,9 +154,9 @@
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv"></span>
-        <span class="fseg fclick" id="fCostSeg" title="Today's spend — click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
+        <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
         <span class="fdiv"></span>
-        <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast — click for detail">
+        <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast · click for detail">
           <span class="flabel">limits</span>
           <b id="fRl">–</b><span class="fsub">5h</span><span class="freset" id="fRlReset"></span>
           <span class="fmid">·</span>
@@ -167,7 +167,7 @@
         <span class="fseg fclick" id="fEngineSeg" title="Choose where new sessions open">new in <b id="fEngine">embedded</b> <span class="fcaret">▴</span></span>
         <span class="spacer"></span>
         <span class="fseg fclick" id="fShortSeg" title="Keyboard shortcuts"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>
-        <button class="dbg-btn" id="dbgBtn" title="Debug console — live events & app state"><span class="dbg-ic">🐞</span><span class="dbg-badge" id="dbgBadge" hidden>0</span></button>
+        <button class="dbg-btn" id="dbgBtn" title="Debug console · live events &amp; app state"><span class="dbg-ic">🐞</span><span class="dbg-badge" id="dbgBadge" hidden>0</span></button>
       </footer>
     </div>
 
@@ -261,7 +261,7 @@
       <div class="wt-head">
         <div class="wt-title"><b>History</b><span class="wt-proj" id="histCount"></span></div>
         <div class="wt-headrow">
-          <span class="wt-path">Every Claude Code conversation on this machine — pick one up where it left off.</span>
+          <span class="wt-path">Every Claude Code conversation on this machine. Pick one up where it left off.</span>
           <button class="wt-chip" id="histScope" type="button" title="Limit the list to the project on screen">
             <span class="ic">◧</span><span id="histScopeTxt">all projects</span>
           </button>
@@ -330,7 +330,7 @@
     <div class="dbg-panel" id="dbgPanel" hidden>
       <div class="dbg-head">
         <b>Debug console</b>
-        <span class="dbg-path" id="dbgPath" title="Live snapshot file — readable by external tools / agents"></span>
+        <span class="dbg-path" id="dbgPath" title="Live snapshot file · readable by external tools / agents"></span>
         <span class="dbg-hspacer"></span>
         <button class="dbg-x" id="dbgCopy" title="Copy full snapshot to clipboard">copy</button>
         <button class="dbg-x" id="dbgClear" title="Clear the event log">clear</button>
@@ -364,7 +364,7 @@
       <div class="cl-main" id="clMain"></div>
     </div>
     <div class="cl-foot">
-      <span>Shipped with this build — no network needed.</span>
+      <span>Shipped with this build, so no network is needed.</span>
       <span class="rt"><button class="act" id="clGh">↗ On GitHub</button></span>
     </div>
   </div>

@@ -250,7 +250,7 @@ function sessionRow(s: TrailSession): string {
     + `<span class="db-r">${clock(s.when)}</span></div>`;
 }
 function commitRow(c: TrailCommit): string {
-  return `<div class="db-item" data-dashsha="${esc(c.sha)}" title="${esc(`${c.subject} — ${c.author}`)}">`
+  return `<div class="db-item" data-dashsha="${esc(c.sha)}" title="${esc(`${c.subject} · ${c.author}`)}">`
     + `<span class="db-kind">commit</span>`
     + `<span class="db-t">${esc(c.subject)}</span>`
     + `<span class="db-r">${clock(c.when * 1000)}</span></div>`;
@@ -331,7 +331,7 @@ export function workLogOffer(n: number): string {
   return `<div class="miss db-share"><span class="t">Not written down anywhere</span>
     <p>Episko has read ${n === 1 ? "one day" : `${n} days`} of this project's history and can keep the
        result in <code>.episko/digest.md</code>. Committed, everyone who pulls gets the same account of
-       what the project did — instead of re-deriving, and paying for, their own.</p>
+       what the project did, instead of re-deriving, and paying for, their own.</p>
     <p>Only the commits and pull requests go in. Your own sessions and spend stay on this machine.</p>
     <button class="act" data-dashworklog>↑ Start the work log</button></div>`;
 }
@@ -343,13 +343,13 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
   if (tier === "git") {
     const where = f?.host ? `<code>${esc(f.host)}</code>` : "no remote at all";
     return `<div class="miss"><span class="t">Not on GitHub</span>
-      <p>Issues, pull requests and claims need a GitHub remote — this project's origin is ${where}.
+      <p>Issues, pull requests and claims need a GitHub remote. This project's origin is ${where}.
          Those cards are absent rather than empty.</p>
       <p><b>Sharing still works.</b> <code>.episko/</code> is committed like any other file, so the
          work log reaches whoever pulls. GitHub was never what made it shared.</p></div>`;
   }
   return `<div class="miss"><span class="t">Not a repository</span>
-    <p>The timeline is still real — sessions and spend come from Claude's own transcripts, which never
+    <p>The timeline is still real: sessions and spend come from Claude's own transcripts, which never
        needed git. What's missing is the commit half: no checkouts, no contributors, no work log.</p>
     <p>Notes stay on this machine: there is nothing to commit <code>.episko/</code> into.</p></div>`;
 }
@@ -381,7 +381,7 @@ function pullSub(p: DashPull): string {
   const b = p.branch || "the main checkout";
   switch (pullState(g)) {
     case "no-upstream": return `${b} tracks no upstream`;
-    case "diverged": return `diverged — ${g!.ahead} ahead, ${g!.behind} behind`;
+    case "diverged": return `diverged · ${g!.ahead} ahead, ${g!.behind} behind`;
     case "behind": return `${g!.behind} behind ${g!.upstream} at the last fetch`;
     case "level": return `level with ${g!.upstream} at the last fetch`;
     default: return `fetch, then fast-forward ${b}`;
@@ -457,7 +457,7 @@ export function dashStrip(
     ${b("terminal", "❯", "Open terminal here")}
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>
-    ${repo && pull ? b("pull", "⇣", `Pull — ${pullSub(pull)}`, "", pull.busy) : ""}
+    ${repo && pull ? b("pull", "⇣", `Pull · ${pullSub(pull)}`, "", pull.busy) : ""}
     ${repo ? b("graph", "⑂", "Commit graph…") : ""}
     ${repo ? b("cleanup", "⌥", "Branches…") : ""}
     ${b("history", "◷", "History…")}
@@ -528,7 +528,7 @@ export function branchesOverlay(o: {
 
   const gh = o.prsLoading ? `<div class="dbbr-note">Reading merged pull requests…</div>`
     : o.prs && !o.prs.available
-      ? `<div class="dbbr-note warn">No pull-request data — ${esc(o.prs.reason || "gh unavailable")}. `
+      ? `<div class="dbbr-note warn">No pull-request data: ${esc(o.prs.reason || "gh unavailable")}. `
         + `A squash-merged branch is contained in nothing, so without this it can't be identified and isn't offered.</div>`
       : "";
 
@@ -577,10 +577,10 @@ export function branchesOverlay(o: {
     </div>`;
   };
 
-  const localWarn = `<div class="dbbr-note">Local refs only — nothing on any remote is touched. `
+  const localWarn = `<div class="dbbr-note">Local refs only. Nothing on any remote is touched. `
     + `Episko runs git's safe <b>delete</b>, and what it refuses is kept and listed with git's own words.</div>`;
   const remoteWarn = `<div class="dbbr-note warn"><b>git push ${esc(o.remoteName)} --delete</b> removes the branch for everyone, not just here. `
-    + `Only branches already contained in ${esc(o.trunk || "the trunk")} — or whose pull request merged — can be picked, and each deleted branch's sha comes back so it can be restored.</div>`;
+    + `Only branches already contained in ${esc(o.trunk || "the trunk")}, or whose pull request merged, can be picked, and each deleted branch's sha comes back so it can be restored.</div>`;
 
   const body = gh
     + block("On this machine", `${o.local.length} cleanable`, o.local, o.picked,
@@ -613,7 +613,7 @@ function cleanResultHtml(r: {
       + r.swept.deleted.map((d) => line(d.branch, `<span class="sha">${esc(d.sha)}</span>${d.forced ? ` <span class="warn">forced</span>` : ""}`)).join("")
       + `</div>` : ""}
     ${r.swept.kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept</span></div>`
-      + r.swept.kept.map((k) => line(k.branch, `<span class="warn">${esc(k.reason)}</span>`, `${k.branch} — ${k.reason}`)).join("")
+      + r.swept.kept.map((k) => line(k.branch, `<span class="warn">${esc(k.reason)}</span>`, `${k.branch}: ${k.reason}`)).join("")
       + `</div>` : ""}
     <div class="dbbr-act">
       ${r.swept.suggest ? `<button class="act" data-dashbrterm>Open a terminal with <b>-D</b> ready</button>` : ""}
@@ -646,8 +646,8 @@ export function notesOverlay(
   const body = `<div class="bk"><div class="bk-h"><span class="t">Yours</span><span class="n">${notes.length}</span></div>${mine}</div>${theirs}`;
   return overlayHtml("Notes", `${notes.length} yours · ${shared.length} from the repo`, body,
     canShare
-      ? `A note is yours alone until you flip <b>shared</b>, which writes it to <code>.episko/notes.toml</code> — committable, and readable by a colleague who never opens Episko. Flipping it back removes it from the file.`
-      : `Notes stay on this machine — there is no repository to commit them into.`);
+      ? `A note is yours alone until you flip <b>shared</b>, which writes it to <code>.episko/notes.toml</code>: committable, and readable by a colleague who never opens Episko. Flipping it back removes it from the file.`
+      : `Notes stay on this machine. There is no repository to commit them into.`);
 }
 
 // ---------- the GitHub half ----------
@@ -663,7 +663,7 @@ const KIND = (t: GhThread) => (t.kind === "pr" ? "pr" : "iss");
 function workRow(t: GhThread, h: Holder | null): string {
   const act = h
     ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
-        title="${esc(`${h.who}${h.mine ? " (you)" : ""} — ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
+        title="${esc(`${h.who}${h.mine ? " (you)" : ""} ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
     : `<button class="go" data-dashwork="${t.number}" title="Start an agent on this">▶</button>`;
   return `<div class="cr${h ? " claimed" : ""}" data-dashurl="${esc(t.url)}" title="${esc(t.title)}">
     <span class="k ${KIND(t)}">${KIND(t)}</span>
@@ -738,7 +738,7 @@ export function workOverlay(
         <div class="bk-h"><span class="t">${esc(BUCKET_LABEL[g.bucket] ?? g.bucket)}</span><span class="n">${g.rows.length}</span></div>
         ${g.rows.map((t) => workBigRow(t, holder(t))).join("")}</div>`).join("");
   return overlayHtml("Open work", `${esc(slug)} · ${total} open`, body,
-    `<b>◍</b> is a claim — somebody dispatched an agent at it. A hint, never a lock: you can always start anyway, and a claim older than 30 minutes reads as stale.`);
+    `<b>◍</b> is a claim: somebody dispatched an agent at it. It is a hint rather than a lock, so you can always start anyway, and a claim older than 30 minutes reads as stale.`);
 }
 
 // ---------- triage ----------
@@ -750,7 +750,7 @@ export function triageCard(rows: { t: GhThread; why: string }[], total: number):
       <span class="sub">#${t.number} · ${esc(why)}</span></span>
     <span class="tr-b">
       <button class="tb yes" data-dashclose="${t.number}" title="Close it on GitHub, with a comment">✓</button>
-      <button class="tb no" data-dashkeep="${t.number}" title="Keep it — nobody on the team is asked again">✕</button>
+      <button class="tb no" data-dashkeep="${t.number}" title="Keep it, so nobody on the team is asked again">✕</button>
     </span></div>`).join("");
   return `<div class="ac"><div class="ac-h"><span class="t">Still needed?</span>
       <span class="n">${rows.length} of ${total}</span>
@@ -772,7 +772,7 @@ export function triageOverlay(
     + `</div>`
     // The keep list is committed, so it has to be reviewable: a decision nobody can
     // see is worse than no decision.
-    + (kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept — never suggested again</span>
+    + (kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept · never suggested again</span>
         <span class="n">${kept.length}</span></div>`
       + kept.map((k) => `<div class="kept"><span class="num">${k.number}</span>
           <span class="ti">kept by ${esc(k.who || "someone")}</span>
@@ -806,8 +806,8 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
   return `<h4>Start an agent on #${t.number}</h4>
     <div class="body">
       <p class="sheet-ti">${esc(t.title)}</p>
-      ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago — probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is a hint, not a lock.</p>` : ""}
-      <p>A session in this project, and <b>the prompt is sent</b> — the agent starts working without waiting for you.</p>
+      ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago, probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is only ever a hint.</p>` : ""}
+      <p>A session in this project, and <b>the prompt is sent</b>, so the agent starts working without waiting for you.</p>
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
         ${sw("comment", p.comment, allow.comment, "comment that my agent is on it")}

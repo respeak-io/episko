@@ -295,7 +295,7 @@ async function loadDash(): Promise<void> {
     const wantGit = tier !== "none";
     const [hist, commits, wt, digest, sn] = await Promise.all([
       invoke<HistEntry[]>("list_session_history", { limit: 400 }).catch((e) => {
-        dlog("warn", `dash: history scan failed — ${e}`);
+        dlog("warn", `dash: history scan failed: ${e}`);
         return [] as HistEntry[];
       }),
       wantGit ? invoke<TrailCommit[]>("git_log_days", { roots: [r], days: dashRange }).catch(() => [] as TrailCommit[])
@@ -430,7 +430,7 @@ async function pullMain(): Promise<void> {
     // the same reload a range change does, and the pane has no other way to be right.
     if (root() === r) { reloading = true; void loadDash(); }
   } catch (e) {
-    dlog("error", `dash pull failed — ${e}`);
+    dlog("error", `dash pull failed: ${e}`);
     toast(`git pull: ${e}`);
   } finally {
     pulling = null;
@@ -571,7 +571,7 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
   } catch (e) {
     // No summary is a fine state — the deterministic headline already reads correctly —
     // so a failure is logged and the loop moves on.
-    dlog("warn", `dash: ${scope} summary for ${d.key} failed — ${e}`);
+    dlog("warn", `dash: ${scope} summary for ${d.key} failed: ${e}`);
   } finally {
     // Cleared and repainted however the call went, so a failed or empty one doesn't
     // leave its row claiming to still be writing. Safe to null unconditionally: the
@@ -664,7 +664,7 @@ export function renderDash(): void {
     spine = spineSkeleton();
   } else if (!days.length) {
     spine = `<div class="db-empty">Nothing in the last ${dashRange} days.
-      Sessions, commits and spend appear here on their own — there is nothing to fill in.</div>`;
+      Sessions, commits and spend appear here on their own. There is nothing to fill in.</div>`;
   } else {
     // The offer counts closed days with commits — what a work log *would* carry, not
     // what has already been generated. The two differ on purpose: the project's line for
@@ -1087,7 +1087,7 @@ async function runLocalClean(): Promise<void> {
         dlog(res.ok ? "info" : "warn", `branches · worktree ${label} · ${res.summary}`);
         // A stranded removal is `ok: true` — the worktree really is unregistered and only
         // its folder is left, so the branch below it is now deletable.
-        wts.push({ label, ok: res.ok, note: res.stranded ? "removed — folder still on disk" : res.summary });
+        wts.push({ label, ok: res.ok, note: res.stranded ? "removed; folder still on disk" : res.summary });
       } catch (e) {
         wts.push({ label, ok: false, note: String(e) });
       }
@@ -1162,7 +1162,7 @@ async function dispatchNote(id: string): Promise<void> {
   setTimeout(() => {
     void invoke("write_pty", { sessionId: sid, data: n.text.replace(/\n/g, " ") }).catch(() => {});
   }, 1400);
-  toast("Dispatched — prefilled, press Enter to send");
+  toast("Dispatched and prefilled. Press Enter to send");
 }
 
 /// One switch in the dispatch sheet. The project's ceiling wins: a switch the project
@@ -1205,7 +1205,7 @@ async function setKept(number: number, keep: boolean): Promise<void> {
   try {
     await invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create: true });
     kept = await invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => kept);
-    toast(keep ? `#${number} kept — nobody on the team is asked again` : `#${number} back in triage`);
+    toast(keep ? `#${number} kept. Nobody on the team is asked again` : `#${number} back in triage`);
     renderDash();
   } catch (e) {
     toast(`Could not write .episko/episko.toml: ${e}`);
@@ -1248,13 +1248,13 @@ async function doDispatch(): Promise<void> {
         kind, sessionId: sid, at: Date.now(),
         wrote: { assigned: out.assigned, label: out.labeled ? eff.label.value : "" } });
       if (out.problems.length) {
-        dlog("warn", `claim #${t.number} partial — ${out.problems.join("; ")}`);
-        toast(`Started on #${t.number} — but the claim didn't fully land: ${out.problems.join("; ")}`);
+        dlog("warn", `claim #${t.number} partial: ${out.problems.join("; ")}`);
+        toast(`Started on #${t.number}, but the claim didn't fully land: ${out.problems.join("; ")}`);
       }
       void loadGh(r, true);
     }).catch((e) => {
-      dlog("warn", `claim #${t.number} failed — ${e}`);
-      toast(`Started on #${t.number} — but nothing could be written to it: ${e}`);
+      dlog("warn", `claim #${t.number} failed: ${e}`);
+      toast(`Started on #${t.number}, but nothing could be written to it: ${e}`);
     });
   }
 
@@ -1293,8 +1293,8 @@ export function releaseClaimFor(sessionId: string): void {
     label: rec.wrote?.label ?? "",
     body: releaseComment(gh.viewer || "", Date.now()),
   }).then((out) => {
-    if (out.problems.length) dlog("warn", `release #${rec.number} partial — ${out.problems.join("; ")}`);
-  }).catch((e) => { dlog("warn", `release #${rec.number} failed — ${e}`); });
+    if (out.problems.length) dlog("warn", `release #${rec.number} partial: ${out.problems.join("; ")}`);
+  }).catch((e) => { dlog("warn", `release #${rec.number} failed: ${e}`); });
 }
 
 /// Promote a note into the project, or take it back out. Sharing needs *git*, not
@@ -1311,7 +1311,7 @@ async function toggleShare(id: string): Promise<void> {
       at: isoDay(Date.now()), share: !on, create: true,
     });
     shared = await invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => shared);
-    toast(on ? "Note is yours again" : "Shared — commit .episko/notes.toml to send it");
+    toast(on ? "Note is yours again" : "Shared. Commit .episko/notes.toml to send it");
     renderDash();
   } catch (e) {
     toast(`Could not write .episko/notes.toml: ${e}`);
@@ -1326,7 +1326,7 @@ async function dispatchText(text: string): Promise<void> {
   setTimeout(() => {
     void invoke("write_pty", { sessionId: sid, data: text.replace(/\n/g, " ") }).catch(() => {});
   }, 1400);
-  toast("Dispatched — prefilled, press Enter to send");
+  toast("Dispatched and prefilled. Press Enter to send");
 }
 
 /**
@@ -1352,7 +1352,7 @@ export async function enableDigest(): Promise<void> {
   // Consent with nothing written yet is still consent: the re-run below buys and writes
   // each remaining day, so this is a state to explain rather than a failure.
   if (!done.length) {
-    toast("Work log on — .episko/digest.md is written as each day is summarised");
+    toast("Work log on. .episko/digest.md is written as each day is summarised");
     host.renderAll();
     void runSummaryQueue();
     return;
@@ -1369,7 +1369,7 @@ export async function enableDigest(): Promise<void> {
   // setting it after a failed create would assert a file that isn't there.
   if (!wrote) { toast("Could not write .episko/digest.md"); return; }
   hasDigest = true;
-  toast("Work log written to .episko/digest.md — commit it to share");
+  toast("Work log written to .episko/digest.md. Commit it to share");
   host.renderAll();
   // The days this project never bought a shared line for — the solo ones — now have a
   // file to go in. The queue writes each as it lands rather than blocking the toast on

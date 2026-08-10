@@ -192,7 +192,7 @@ function logWindowClose(win: RlWin, finalPct: number | null, prevReset: number |
   localStorage.setItem("cc-forecast-log", JSON.stringify(fcLog));
   rlLog("info", `forecast · ${win} window closed at ${Math.round(finalPct)}%` +
     (snap ? ` (predicted ~${Math.round(snap.proj)}%, err ${e.err! >= 0 ? "+" : ""}${Math.round(e.err!)})` : "") +
-    (e.late && e.late > 1800 ? ` — noticed ${Math.round(e.late / 60)}min late` : ""));
+    (e.late && e.late > 1800 ? `, noticed ${Math.round(e.late / 60)}min late` : ""));
 }
 // Called after each merge with the pre/post reset so we can spot a window rotation
 // (a genuinely later resets_at). On rotation the old window closed: log how it went,
