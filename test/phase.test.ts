@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { apiErrText, phaseText, type Sess } from "../src/types";
+import {
+  apiErrText, bgWaiting, FANOUT_GRACE_MS, fanoutTally, phaseText, statusKey, type Sess,
+} from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
-  abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, permCmd,
-  pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
+  abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
+  permCmd, pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
 } from "../src/phase";
 
 // clearPending releases a still-held blocking permission request through the
@@ -27,7 +29,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [],
@@ -297,6 +299,175 @@ describe("applyHook — the lifecycle state machine", () => {
       const s = sess({ phase: "done" });
       hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
       expect(s.phase).toBe("done");
+    });
+  });
+
+  // A background fan-out is the one case where the turn ending says nothing about the
+  // work ending: the Workflow tool returns a run id in about two seconds and `Stop`
+  // fires, while its fleet runs for another twenty minutes. Everything the cockpit shows
+  // for that is assembled here, from hooks alone — see the Fanout doc comment in types.
+  describe("background fan-outs", () => {
+    const WF = `export const meta = {
+  name: 'legal-launch-audit',
+  description: 'Audit every German-law surface before the lawyer meeting',
+  phases: [
+    { title: 'Repo-Audit', detail: 'read every legal surface in the codebase' },
+    { title: 'Verifikation', detail: 'adversarial verify' },
+  ],
+}
+const DIMENSIONS = [{ key: 'agb', prompt: 'you are named Bob and your title is auditor' }]
+await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d.key}\` })))
+`;
+
+    describe("parseWorkflowMeta", () => {
+      it("lifts the name, the description and the phase titles out of the script", () => {
+        expect(parseWorkflowMeta(WF)).toEqual({
+          name: "legal-launch-audit",
+          detail: "Audit every German-law surface before the lawyer meeting",
+          phases: ["Repo-Audit", "Verifikation"],
+        });
+      });
+      it("stops at the meta literal, so an agent prompt can't supply a name or a phase", () => {
+        // The script below the literal is arbitrary JavaScript full of the same words —
+        // `name:` and `title:` occur throughout real prompts. An unbounded match would
+        // pick "Bob" out of a prompt and label the whole run with it.
+        const m = parseWorkflowMeta(WF);
+        expect(m.name).not.toBe("Bob");
+        expect(m.phases).not.toContain("auditor");
+      });
+      it("survives a script with no meta at all", () => {
+        // Never throws and never blocks the fan-out: the counts come from the hooks, and
+        // an unnamed fleet is still worth showing.
+        expect(parseWorkflowMeta("await agent('go')")).toEqual({ name: "", detail: "", phases: [] });
+        expect(parseWorkflowMeta("")).toEqual({ name: "", detail: "", phases: [] });
+      });
+      it("takes double quotes, backticks and escaped quotes", () => {
+        const m = parseWorkflowMeta(`export const meta = {\n  name: "it's-fine",\n  description: \`a \\\`quoted\\\` run\`,\n  phases: [{ title: "One" }],\n}\n`);
+        expect(m.name).toBe("it's-fine");
+        expect(m.phases).toEqual(["One"]);
+      });
+      it("bounds what it stores, so a 4kB description can't reach a tooltip", () => {
+        const m = parseWorkflowMeta(`export const meta = {\n  name: '${"n".repeat(400)}',\n  description: '${"d".repeat(4000)}',\n}\n`);
+        expect(m.name.length).toBeLessThanOrEqual(56);
+        expect(m.detail.length).toBeLessThanOrEqual(120);
+      });
+    });
+
+    it("names the fleet from the Workflow call, before a single agent has started", () => {
+      // The whole point of reading the hook rather than Claude Code's own run-state
+      // file: that file is written when the run FINISHES. This lands 2s in.
+      const s = sess({ phase: "working" });
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+      expect(s.fanout).toMatchObject({ name: "legal-launch-audit", started: 0, done: 0 });
+      expect(s.fanout!.phases).toEqual(["Repo-Audit", "Verifikation"]);
+    });
+    it("counts cumulatively while `subagents` stays the live count", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+      for (let i = 0; i < 3; i++) hook(s, "SubagentStart");
+      hook(s, "SubagentStop");
+      expect(s.subagents).toBe(2);
+      expect(s.fanout).toMatchObject({ started: 3, done: 1 });
+    });
+    it("mints an unnamed fleet for a plain Task burst", () => {
+      // No Workflow call, so nothing names it — but the counts and the elapsed are
+      // exactly as useful, and the sidebar reads them the same way.
+      const s = sess();
+      hook(s, "SubagentStart"); hook(s, "SubagentStart");
+      expect(s.fanout).toMatchObject({ name: "", started: 2, done: 0 });
+    });
+    it("never books a completion it has no start for", () => {
+      const s = sess();
+      hook(s, "SubagentStop"); hook(s, "SubagentStop");
+      expect(s.fanout).toBeNull();      // a Stop alone is not a fan-out
+      expect(s.subagents).toBe(0);
+      hook(s, "SubagentStart"); hook(s, "SubagentStop"); hook(s, "SubagentStop");
+      expect(s.fanout).toMatchObject({ started: 1, done: 1 }); // done never passes started
+    });
+    it("clears the fleet on SessionStart and SessionEnd", () => {
+      // /clear, /compact and a resume all mint a new Claude session, and a SubagentStop
+      // we will now never see would otherwise pin the count above zero forever — a fleet
+      // that never finishes, on a session that has nothing running at all.
+      for (const ev of ["SessionStart", "SessionEnd"]) {
+        const s = sess();
+        hook(s, "SubagentStart"); hook(s, "SubagentStart");
+        hook(s, ev);
+        expect({ ev, n: s.subagents, f: s.fanout }).toEqual({ ev, n: 0, f: null });
+      }
+    });
+    it("keeps the fleet across a prompt typed while it runs", () => {
+      // You are allowed to talk to a session whose workflow is still going. Clearing on
+      // UserPromptSubmit would drop the run's name mid-flight and leave `subagents`
+      // counting agents nothing could account for.
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+      hook(s, "SubagentStart");
+      hook(s, "UserPromptSubmit");
+      expect(s.fanout).toMatchObject({ name: "legal-launch-audit", started: 1 });
+      expect(s.subagents).toBe(1);
+    });
+
+    describe("what the cockpit reads off it", () => {
+      /// A session in exactly the state the screenshot showed: the turn is over, the
+      /// fleet is not.
+      const fleet = (o: Partial<Sess> = {}) => {
+        const s = sess({ phase: "done", ...o });
+        hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+        for (let i = 0; i < 13; i++) hook(s, "SubagentStart");
+        for (let i = 0; i < 12; i++) hook(s, "SubagentStop");
+        setPhase(s, "done");
+        return s;
+      };
+      it("stops calling it your turn", () => {
+        const s = fleet();
+        expect(statusKey(s)).toBe("background");
+        expect(phaseText(s)).toBe("1 agent working");
+        expect(bgWaiting(s)).toBe(true);
+      });
+      it("hands the sidebar a done/total the bar and the row agree on", () => {
+        expect(fanoutTally(fleet())).toEqual({ done: 12, total: 13 });
+      });
+      it("counts a second workflow's agents rather than showing 14 of 2", () => {
+        // Launching another fan-out restarts the counters while the first fleet is still
+        // up, so `started` alone would be behind the live count — a bar past its own end.
+        const s = fleet();
+        hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+        setPhase(s, "done");
+        expect(fanoutTally(s)).toEqual({ done: 0, total: 1 });
+      });
+      it("yields to a permission and to a broken turn", () => {
+        // Both outrank it: one is Claude blocked on you right now, the other is a turn
+        // that died and will not come back on its own.
+        expect(statusKey(fleet({ attention: "permission: Bash" }))).toBe("attention");
+        const err = fleet();
+        hook(err, "StopFailure", { error: "overloaded" });
+        expect(statusKey(err)).toBe("error");
+      });
+      it("stands down once the fleet has been quiet for the grace window", () => {
+        // The window exists for the lulls BETWEEN a workflow's stages, where the live
+        // count is legitimately 0 and the run is very much alive. Long enough that a
+        // barrier can't flip the sidebar back to a green ✓ and out again.
+        const s = fleet();
+        hook(s, "SubagentStop");                 // the last one lands
+        expect(bgWaiting(s)).toBe(true);
+        vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS - 1000);
+        expect(bgWaiting(s)).toBe(true);
+        vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS + 1000);
+        expect(bgWaiting(s)).toBe(false);
+        expect(phaseText(s)).toBe("your turn");  // and it really is, now
+      });
+      it("keeps a long-running agent alive past the window", () => {
+        // A workflow agent can run eighteen minutes without the parent seeing one event.
+        // A rule that needed recent activity would drop the biggest runs first.
+        const s = fleet();
+        vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS * 10);
+        expect(bgWaiting(s)).toBe(true);
+      });
+      it("says nothing about a session that never fanned out", () => {
+        const s = sess({ phase: "done" });
+        expect(statusKey(s)).toBe("done");
+        expect(fanoutTally(s)).toBeNull();
+      });
     });
   });
 

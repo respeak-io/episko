@@ -88,6 +88,6 @@ export function resetCustomIcon(key: string) {
 export function projGlyph(key: string, accent: string): string {
   const ic = iconFor(key);
   return ic
-    ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} — right-click for project actions" />`
+    ? `<img class="picon" src="${ic}" alt="" title="${esc(basename(key))} · right-click for project actions" />`
     : `<span class="pdot" title="Click to recolor · right-click for project actions" style="background:${accent};color:${accent}"></span>`;
 }

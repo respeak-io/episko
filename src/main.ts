@@ -22,9 +22,9 @@ import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
-  copyPath, openTerminalIn, setActionsRenderAll, setPeekPrefs, setPermMode, setSort,
-  setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
-  toggleRail, toggleTheme,
+  copyPath, openTerminalIn, setActionsRenderAll, setKeyPrefs, setPeekPrefs, setPermMode,
+  setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
+  toggleIoInfo, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
@@ -79,7 +79,8 @@ import {
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
-  closeSettings, openSettings, renderSettings, setSettingsHost, setTab, settingsOpen,
+  closeSettings, keyRecording, openSettings, renderSettings, setSettingsHost, setTab,
+  settingsOpen,
 } from "./settings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
@@ -88,9 +89,10 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
+  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
   setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
+import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import {
@@ -225,7 +227,7 @@ setMirrorRenderAll(renderAll);
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs,
+  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs,
 });
 // "Why was there no noise?" is otherwise unanswerable from outside the player.
 setSoundLogger(dlog);
@@ -498,12 +500,12 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     s.run!.endedAt = Date.now();
     setPhase(s, code === 0 ? "done" : "error");
     s.term?.writeln(code === 0
-      ? `\r\n\x1b[32m✓ ${s.run!.label} — exit 0\x1b[0m`
-      : `\r\n\x1b[31m✕ ${s.run!.label} — exit ${code}\x1b[0m`);
+      ? `\r\n\x1b[32m✓ ${s.run!.label} · exit 0\x1b[0m`
+      : `\r\n\x1b[31m✕ ${s.run!.label} · exit ${code}\x1b[0m`);
     if (code === 0) scheduleDismiss(s);
     // Nobody clicked this one and its pane isn't on screen, so the badge alone
     // would be the only sign it went red.
-    else if (s.run!.forSession) toast(`${s.run!.label} failed after that turn — exit ${code}`);
+    else if (s.run!.forSession) toast(`${s.run!.label} failed after that turn · exit ${code}`);
     dlog(code === 0 ? "info" : "warn", `task ${s.run!.id} exit ${code}`);
   } else {
     s.phase = "ended";
@@ -525,7 +527,7 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   telem.rx++;
   const sid: string | undefined = data.session_id?.toLowerCase?.();
   const s = sid ? sessions.get(sid) : undefined;
-  if (!s) { telem.dropped++; dlog("warn", `${kind} telemetry for unrouted session ${sid ? sid.slice(0, 8) : "?"} — dropped`); return; }
+  if (!s) { telem.dropped++; dlog("warn", `${kind} telemetry for unrouted session ${sid ? sid.slice(0, 8) : "?"}: dropped`); return; }
   telem.routed++;
   // Claude's own id, preserved by the telemetry server before it forced ours on.
   // It rotates on /clear, /compact and /resume — and each rotation opens a fresh
@@ -559,7 +561,7 @@ listen<{ id: string; data: any }>("permission", (e) => {
   const { id, data } = e.payload; if (!data) return;
   const sid: string | undefined = data.session_id?.toLowerCase?.();
   const s = sid ? sessions.get(sid) : undefined;
-  if (!s) { dlog("warn", `permission for unrouted session ${sid ? sid.slice(0, 8) : "?"} — auto-deferred to terminal`); invoke("resolve_permission", { id, behavior: "terminal" }).catch(() => {}); return; }
+  if (!s) { dlog("warn", `permission for unrouted session ${sid ? sid.slice(0, 8) : "?"}: auto-deferred to terminal`); invoke("resolve_permission", { id, behavior: "terminal" }).catch(() => {}); return; }
   s.attention = `permission: ${data.tool_name || ""}`;
   s.pendingCmd = permCmd(data);
   s.pendingPermId = id;
@@ -597,7 +599,7 @@ document.addEventListener("click", (e) => {
   // for free — but only if its attribute is in this list. A data- attribute the
   // selector doesn't name resolves to the enclosing row instead, silently doing the
   // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -642,6 +644,7 @@ document.addEventListener("click", (e) => {
   // because there are three values and no sub-choices — a menu would be one more click
   // to reach a number that is already on screen.
   else if (el.dataset.ioscope) cycleIoScope();
+  else if (el.dataset.ioinfo) toggleIoInfo();
   else if (el.dataset.toast) toast(el.dataset.toast);
 });
 
@@ -716,25 +719,43 @@ $("btnClose").addEventListener("click", () => {
 });
 
 $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); });
+// What each bindable action does. The chords themselves are NOT here — they live in
+// `keyPrefs` (./state, from ./keys) so the user can change or switch them off in
+// Settings › Keys — and this map is only the verb each one runs. One entry per
+// KeyAction; `tsc` checks the two halves agree, so an action added to the table
+// without a body here is a compile error rather than a shortcut that silently does
+// nothing.
+//
+// The whole if-chain this replaced carried a warning that ⌘⇧B had to be written above
+// ⌘B or it would never fire (the unshifted branches didn't test `!e.shiftKey`).
+// `matchAction` is exact, so that trap is gone with the chain.
+const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
+  palette: () => { $("palette").classList.contains("show") ? closePalette() : openPalette(); },
+  sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
+  terminal: openPlainTerminal,
+  history: () => { histOpen() ? closeHistory() : void openHistory(true); },
+  reveal: revealActiveFolder,
+  buildTask: () => { void runDefaultTask("build"); },
+  testTask: () => { void runDefaultTask("test"); },
+  runTask: () => { void openRunPicker(); },
+  sidebar: toggleRail,
+  inspector: toggleInsp,
+  settings: () => { settingsOpen() ? closeSettings() : openSettings(); },
+  fontUp: () => bumpFont(0.5),
+  fontDown: () => bumpFont(-0.5),
+  fontReset: () => { setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); },
+};
 window.addEventListener("keydown", (e) => {
-  const meta = e.metaKey || e.ctrlKey;
-  if (meta && e.key.toLowerCase() === "k") { e.preventDefault(); $("palette").classList.contains("show") ? closePalette() : openPalette(); }
-  // ⌘⇧B / ⌘⇧T must be tested BEFORE plain ⌘B / ⌘T, which deliberately don't check
-  // `!e.shiftKey` — so whichever branch comes first wins the shifted chord too. Put a
-  // new shifted binding above its unshifted twin, or it silently never fires.
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); void runDefaultTask("build"); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); void runDefaultTask("test"); }
-  else if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); toggleRail(); }
-  else if (meta && e.key.toLowerCase() === "i") { e.preventDefault(); toggleInsp(); }
-  else if (meta && e.key.toLowerCase() === "t") { e.preventDefault(); openPlainTerminal(); }
-  else if (meta && e.key >= "1" && e.key <= "9") { e.preventDefault(); const list = orderedSessions(); const s = list[+e.key - 1]; if (s) setActive(s.id); }
-  else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); bumpFont(0.5); }
-  else if (meta && e.key === "-") { e.preventDefault(); bumpFont(-0.5); }
-  else if (meta && e.key === "0") { e.preventDefault(); setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); }
-  else if (meta && e.key === ",") { e.preventDefault(); settingsOpen() ? closeSettings() : openSettings(); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); void openRunPicker(); }
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); histOpen() ? closeHistory() : void openHistory(true); }
-  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  // A row in Settings › Keys is waiting for a chord. The recorder is a `window`
+  // *capture* listener, so it already ran and swallowed anything it could bind — but
+  // it deliberately lets some presses through (a bare modifier, a key this layer
+  // refuses to bind), and those must not fire a shortcut either while a row is armed.
+  if (keyRecording()) return;
+  // `reveal` is deliberately absent from this dispatch: it needs to be asked ahead of
+  // every dialog's own Enter, so it keeps its own capture-phase listener below.
+  const act = matchAction(keyPrefs, e);
+  if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
+  if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   // graphEscape, not closeGraph: the panel can have a commit open over it, and Esc has to
@@ -747,14 +768,19 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
 });
-// ⌘⏎ — reveal the current selection's folder. Deliberately a *second* listener, in the
-// CAPTURE phase, rather than another branch in the handler above: ⏎ is the one key
+// ⌘⇧⏎ — reveal the current selection's folder. Deliberately a *second* listener, in
+// the CAPTURE phase, rather than another branch in the handler above: ⏎ is the one key
 // every dialog already owns, and the palette's Enter runs the selected item and closes
 // itself, dropping the scrim *before* a bubble-phase listener would run — so "is a
 // dialog up?" has to be asked ahead of their handlers, not after. It stands down
-// rather than consuming the key, which leaves ⌘⏎ free for the run picker's pin.
+// rather than consuming the key, which leaves plain ⌘⏎ free for the run picker's pin.
+//
+// The chord is `activeBind(keyPrefs, "reveal")`, not a literal: it is rebindable — and
+// switchable off — like every other shortcut, and the `reveal` case is skipped by the
+// dispatcher above so exactly one of the two listeners can ever answer for it.
 window.addEventListener("keydown", (e) => {
-  if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter") return;
+  if (keyRecording()) return;
+  if (!comboMatches(activeBind(keyPrefs, "reveal"), e)) return;
   if ($("scrim").classList.contains("show")) return;
   // Not every Enter-bound field sits behind the scrim — the colour popover's hex box
   // doesn't — so also stand down while a real text field has focus. xterm's own
@@ -816,7 +842,7 @@ listen("quit-requested", async () => {
   if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
   if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
   if (runs) parts.push(`${runs} ${runs === 1 ? "task" : "tasks"}`);
-  const ok = await ask(`${listPhrase(parts)} still running — quitting ends ${total === 1 ? "it" : "them"}.`, {
+  const ok = await ask(`${listPhrase(parts)} still running. Quitting ends ${total === 1 ? "it" : "them"}.`, {
     title: "Quit Episko?",
     kind: "warning",
     okLabel: "Quit",

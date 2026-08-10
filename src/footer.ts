@@ -21,8 +21,9 @@ import { closeCafPop } from "./caffeinate";
 import { renderSettings, setTab, settingsOpen } from "./settings";
 import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
+import { keyActionDef, shortcutRows } from "./keys";
 import {
-  availEngines, engineDef, sessions, setTermEngine, termEngine,
+  availEngines, engineDef, keyPrefs, sessions, setTermEngine, termEngine,
 } from "./state";
 import {
   daySpend, setTokenDays, todayKey, tokenDays, tokenScanAt, usage, usageDetail,
@@ -140,38 +141,42 @@ export function closeFootMenus(keep?: string) {
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }
-// Keyboard shortcuts, listed in the footer's ⌘ Shortcuts popover. Keep in sync with
-// the global keydown handler (the sole source of truth for what these actually do) —
-// bar the last row, which belongs to a terminal pane and lives in `clipboardKeys`.
-// That one is spelled per-platform because it genuinely differs: ⌘C/⌘V reach the
-// WebView's native copy/paste on macOS, while everywhere else Ctrl+C is the interrupt
-// and Ctrl+V a dead key, so only the shifted pair is left.
-const SHORTCUTS: { label: string; chords: string[][] }[] = [
-  { label: "Command palette", chords: [["⌘", "K"]] },
-  { label: "Switch to session 1–9", chords: [["⌘", "1–9"]] },
-  { label: "Open a terminal here", chords: [["⌘", "T"]] },
-  { label: "Run the default build task", chords: [["⌘", "⇧", "B"]] },
-  { label: "Run the default test task", chords: [["⌘", "⇧", "T"]] },
-  { label: "Run a task…", chords: [["⌘", "⇧", "R"]] },
-  { label: "Session history", chords: [["⌘", "⇧", "H"]] },
-  { label: `Reveal this folder in ${FILE_MANAGER}`, chords: [["⌘", "⏎"]] },
-  { label: "Toggle sidebar", chords: [["⌘", "B"]] },
-  { label: "Toggle inspector", chords: [["⌘", "I"]] },
-  { label: "Settings", chords: [["⌘", ","]] },
-  { label: "Terminal font size", chords: [["⌘", "+"], ["⌘", "−"], ["⌘", "0"]] },
-  {
-    label: "Copy / paste in a terminal",
-    chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "⇧", "C"], ["Ctrl", "⇧", "V"]],
-  },
-];
+// Keyboard shortcuts, listed in the footer's ⌘ Shortcuts popover. Every row bar the
+// last is derived from the SAME `keyPrefs` the global keydown handler dispatches on
+// (`shortcutRows` in ./keys), so a rebind in Settings › Keys is reflected here with
+// no second table to keep in sync — this popover used to be that second table, and a
+// cheat sheet that has drifted is worse than no cheat sheet.
+//
+// The last row belongs to a terminal pane and lives in `clipboardKeys`, below this
+// layer and not rebindable, so it stays spelled out. It is per-platform because it
+// genuinely differs: ⌘C/⌘V reach the WebView's native copy/paste on macOS, while
+// everywhere else Ctrl+C is the interrupt and Ctrl+V a dead key, so only the shifted
+// pair is left.
+const CLIPBOARD_ROW: { label: string; chords: string[][] } = {
+  label: "Copy / paste in a terminal",
+  chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "⇧", "C"], ["Ctrl", "⇧", "V"]],
+};
+function shortcutList(): { label: string; chords: string[][] }[] {
+  return [
+    // `Reveal this folder` is the one label worth completing here: ./keys is a pure
+    // module and cannot read which file manager this OS has.
+    ...shortcutRows(keyPrefs, IS_MAC).map((r) =>
+      r.label === keyActionDef("reveal").label ? { ...r, label: `${r.label} in ${FILE_MANAGER}` } : r),
+    CLIPBOARD_ROW,
+  ];
+}
 function renderShortPop() {
-  const rows = SHORTCUTS.map((s) => {
+  const rows = shortcutList().map((s) => {
     const keys = s.chords
       .map((c) => `<span class="sc-chord">${c.map((k) => `<kbd>${esc(k)}</kbd>`).join("")}</span>`)
       .join(`<span class="sc-or">/</span>`);
     return `<div class="sc-row"><span class="sc-desc">${esc(s.label)}</span><span class="sc-keys">${keys}</span></div>`;
   }).join("");
-  $("shortPop").innerHTML = `<div class="sc-h">Keyboard shortcuts</div>${rows}`;
+  // With the master switch off there are no rows but the clipboard one, so say why
+  // rather than showing a near-empty box that reads like a bug.
+  const off = keyPrefs.enabled ? "" :
+    `<div class="sc-off">Switched off in Settings › Keys. Esc still closes what is open, and a terminal keeps its own copy/paste.</div>`;
+  $("shortPop").innerHTML = `<div class="sc-h">Keyboard shortcuts</div>${off}${rows}`;
 }
 function openShortPop() {
   const r = $("fShortSeg").getBoundingClientRect();

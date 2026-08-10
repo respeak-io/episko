@@ -13,7 +13,8 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import type { ExtSession, LiveSess, Phase, Restorable, Sess } from "./types";
+import { checkoutDir } from "./gitwatch";
+import { bgWaiting, type ExtSession, type LiveSess, type Phase, type Restorable, type Sess } from "./types";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
   accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
@@ -43,9 +44,20 @@ export interface WtCluster { key: string; branch: string; isMain: boolean; sessi
 /// branch — and, because the run-group fold happens *within* a cluster, stopped the
 /// members of a single launch from ever folding into one row.
 ///
-/// `run.root` is the directory discovery ran in, which is exactly the checkout.
+/// `run.root` is the directory discovery ran in, which is exactly the checkout — but it
+/// only rescues panes that *have* a run. The same subfolder reaches a **shell**: `❯
+/// Terminal` opens one in `activeCwd()`, the raw workdir of whatever owns the stage, so
+/// a shell opened while a finished task pane is on stage is born in that task's cwd and
+/// carries no `run` to unwrap. It split off its own header, labelled with the branch it
+/// had inherited — two identical branch names, one session each.
+///
+/// So the last word belongs to the worktree roster: any directory *inside* a known
+/// checkout resolves to that checkout, whatever put the pane there. `checkoutDir` owns
+/// that rule (./gitwatch already resolved paths this way for drift) including its
+/// fail-closed half — an unplaceable folder stays its own key, exactly as before.
 export function checkoutOf(s: Sess, fallback: string): string {
-  return (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  const dir = (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  return checkoutDir(dir, worktreesByRepo.get(s.colorKey) ?? []);
 }
 
 // `withEmpty` folds in the roster's session-less checkouts, so a worktree an agent just
@@ -341,6 +353,10 @@ export function urgencyRank(s: Sess): number {
   if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
+  // A fleet still running ranks with the work it is: the turn ended, but nothing is
+  // expected of you until its agents report back. Ahead of `done` it would push a
+  // session that wants nothing to the top of the attention sort.
+  if (bgWaiting(s)) return 3;
   if (s.phase === "done") return 2;  // your turn
   if (s.phase === "working" || s.phase === "thinking") return 3;
   if (s.phase === "idle") return 4;
@@ -388,7 +404,12 @@ export function nextAfterClose(s: Sess): Sess | null {
 export function needsYou(s: Sess): boolean {
   if (s.kind === "shell") return false;
   if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
-  return !!s.attention || s.phase === "done" || s.phase === "error";
+  if (s.attention) return true;
+  // A background fan-out ends the turn without ending the work, so `done` alone stopped
+  // being enough: a workflow's twenty minutes used to sit in the reactor badge and the
+  // tray title as one more session waiting on a human who had nothing to answer.
+  if (bgWaiting(s)) return false;
+  return s.phase === "done" || s.phase === "error";
 }
 export function needsYouSessions(): Sess[] {
   return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);

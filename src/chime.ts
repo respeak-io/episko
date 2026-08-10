@@ -55,7 +55,7 @@ function audio(): AudioContext | null {
   const Ctor: typeof AudioContext | undefined =
     typeof window === "undefined" ? undefined
       : window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctor) { dead = true; log("warn", "sound: no Web Audio in this webview — alerts are silent"); return null; }
+  if (!Ctor) { dead = true; log("warn", "sound: no Web Audio in this webview, so alerts are silent"); return null; }
   try {
     ctx = new Ctor();
     master = ctx.createGain();

@@ -13,7 +13,7 @@
 // decide between a skeleton and a "no data" line.
 
 import { esc, fmtClock, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
-import { burnRate, D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
+import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
 import { accentFor } from "./state";
 import {
   tokenDays, U_MONTHS, uBuckets, uDkey, uModels, usage, usageRange, usageWindow,
@@ -25,7 +25,7 @@ export function foreText(f: Forecast): string {
   if (f.used == null) return "no reading yet";
   if (!f.hasRate) return f.secLeft == null ? "no active window" : "gathering pace…";
   if (f.runsOut && f.etaSec != null && f.secLeft != null)
-    return `on pace to hit 100% in ${fmtSpan(f.etaSec)} — ${fmtSpan(f.secLeft - f.etaSec)} before reset`;
+    return `on pace to hit 100% in ${fmtSpan(f.etaSec)}, ${fmtSpan(f.secLeft - f.etaSec)} before reset`;
   return `at this pace → ~${Math.round(f.proj!)}% by reset`;
 }
 // The colour-coded verdict chip (empty until we have a trustworthy rate).
@@ -91,9 +91,9 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
   const note = !d.total && !d.projects.length
     ? "Nothing recorded today yet. A session's spend appears here as soon as one reports it."
     : !d.projects.length && !d.sessions.length
-      ? "No breakdown for this day — it predates the record."
+      ? "No breakdown for this day: it predates the record."
       : !d.sessions.length
-        ? "No per-session split for this day — it predates the record."
+        ? "No per-session split for this day: it predates the record."
         : "";
   return `<div class="up-h">Today's spend</div>
     <div class="cp-tot">${uUsd2(d.total)}</div>
@@ -183,7 +183,7 @@ function uHeatmap(): string {
   if (maxKey) { const d = new Date(maxKey + "T00:00:00"); busiest = `${U_MONTHS[d.getMonth()]} ${d.getDate()} · ${uUsd2(maxCost)}`; }
   return `<section class="u-card">
     <div class="u-cardh"><div><div class="label">Daily spend</div><h3 class="u-h">Last 12 months</h3>
-      <p class="u-hint">Each square is a day — darker means a heavier bill.</p></div>
+      <p class="u-hint">Each square is a day; darker means a heavier bill.</p></div>
       <div class="u-scale">less<i style="background:var(--u-g0)"></i><i style="background:var(--u-g1)"></i><i style="background:var(--u-g2)"></i><i style="background:var(--u-g3)"></i><i style="background:var(--u-g4)"></i>more</div></div>
     <div class="u-calwrap"><div class="u-wd"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>
       <div><div class="u-months">${months}</div><div class="u-grid">${cells}</div></div></div>
@@ -252,7 +252,7 @@ function uTokenMix(): string {
   const leg = ([["Cache read", cr, "--u-t4"], ["Input", inp, "--u-t2"], ["Output", out, "--u-t1"], ["Cache write", cw, "--u-t3"]] as [string, number, string][])
     .map(([nm, v, c]) => `<div><i style="background:var(${c})"></i>${nm}<b>${Math.round(v / total * 100)}%</b></div>`).join("");
   return `<div class="label" style="margin-top:15px">Token composition</div><div class="u-mix">${bar}</div><div class="u-mixleg">${leg}</div>
-    <div class="u-insight"><b>~${Math.round(cr / total * 100)}% of tokens are cache reads</b> — most context is reused, not re-billed. Big token counts, cheap dollars.</div>`;
+    <div class="u-insight"><b>~${Math.round(cr / total * 100)}% of tokens are cache reads</b>. Most context is reused rather than re-billed, so the token counts are big and the dollars small.</div>`;
 }
 
 function uProjects(): string {
@@ -290,12 +290,12 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
   const projTxt = f.proj == null ? "—" : `~${Math.round(f.proj)}%`;
   const resetInTxt = f.resetTs != null ? fmtUntil(f.resetTs) : "—";
   let rec: string;
-  if (f.used == null) rec = `<span class="fc-recic">·</span><div>No reading yet — appears once a running session reports a statusLine.</div>`;
-  else if (f.used >= 100) rec = `<span class="fc-recic">✕</span><div><b>At the cap</b> — new work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
-  else if (!f.hasRate) rec = `<span class="fc-recic">·</span><div>Gathering pace — the forecast sharpens after a few statusLine ticks. Showing level only for now.</div>`;
+  if (f.used == null) rec = `<span class="fc-recic">·</span><div>No reading yet. It appears once a running session reports a statusLine.</div>`;
+  else if (f.used >= 100) rec = `<span class="fc-recic">✕</span><div><b>At the cap.</b> New work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
+  else if (!f.hasRate) rec = `<span class="fc-recic">·</span><div>Gathering pace. The forecast sharpens after a few statusLine ticks; for now this is the level only.</div>`;
   else if (f.status === "bad") rec = `<span class="fc-recic">✕</span><div>On this pace you'll be <b>locked out ~${fmtSpan(f.secLeft! - f.etaSec!)} before reset</b>. Ease off, or move work to the other window.</div>`;
-  else if (f.status === "warn") rec = `<span class="fc-recic">!</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset — you can keep going, but there isn't much slack.</div>`;
-  else rec = `<span class="fc-recic">✓</span><div>Comfortable — projected <b>~${Math.round(f.proj!)}%</b> at reset. Nothing to manage here.</div>`;
+  else if (f.status === "warn") rec = `<span class="fc-recic">!</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset. You can keep going, but there isn't much slack.</div>`;
+  else rec = `<span class="fc-recic">✓</span><div>Comfortable: projected <b>~${Math.round(f.proj!)}%</b> at reset. Nothing to manage here.</div>`;
   return `<div class="fc-win">
     <div class="fc-head"><span class="fc-name">${name}</span><span class="fc-wsub">${sub}</span></div>
     <div class="fc-big"><span class="fc-num ${cls}">${pctTxt}</span><span class="fc-of">used</span>${verdict}</div>
@@ -315,12 +315,14 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
   </div>`;
 }
 function forecastBlockHtml(): string {
-  const b7 = burnRate("d7");
+  // Both cards read the rate the forecast ran on (`f.rate`), not the raw recent
+  // slope, so "Burn rate" and "Projected @ reset" always agree with each other.
+  const f5 = forecast5h(), f7 = forecast7d();
   return `<div class="fc-block">
     <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?</span></div>
     <div class="fc-grid">
-      ${fcWinHtml("Session", "5-hour window", forecast5h(), burnRate("h5"), H5_LEN, "%/hr")}
-      ${fcWinHtml("Weekly", "7-day window", forecast7d(), b7 == null ? null : b7 * 24, D7_LEN, "%/day")}
+      ${fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr")}
+      ${fcWinHtml("Weekly", "7-day window", f7, f7.rate == null ? null : f7.rate * 24, D7_LEN, "%/day")}
     </div>
   </div>`;
 }

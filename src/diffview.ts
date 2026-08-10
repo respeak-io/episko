@@ -62,13 +62,13 @@ function renderDiffBody(files: DiffFile[], truncated: boolean) {
     const counts = f.binary ? `<span class="d-bin">binary</span>`
       : `<span class="add">+${f.added}</span> <span class="del">−${f.removed}</span>`;
     const body = f.binary
-      ? `<div class="d-binbody">Binary file — no textual diff.</div>`
+      ? `<div class="d-binbody">Binary file, no textual diff.</div>`
       : f.hunks.map(hunkHtml).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
     return `<div class="dfile" data-fi="${i}">
       <div class="dfhead" data-dtoggle="${i}"><span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${name}</span><span class="dcount">${counts}</span></div>
       <div class="dfbody">${body}</div></div>`;
   }).join("");
-  const note = truncated ? `<div class="diff-trunc">Diff truncated — too large to show in full. Open a terminal for the complete diff.</div>` : "";
+  const note = truncated ? `<div class="diff-trunc">Diff truncated: too large to show in full. Open a terminal for the complete diff.</div>` : "";
   $("diffBody").innerHTML = sections + note;
 }
 

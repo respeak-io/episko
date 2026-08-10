@@ -100,11 +100,11 @@ export const SOUND_EVENTS: SoundEventDef[] = [
   { id: "permission", glyph: "◆", label: "Permission asked", priority: 3, tone: "alert", on: true,
     hint: "Claude is blocked and doing nothing until you answer." },
   { id: "question", glyph: "◇", label: "Notification", priority: 2, tone: "ping", on: true,
-    hint: "Anything else the session raises — a question, a nudge, a plan to accept." },
+    hint: "Anything else the session raises: a question, a nudge, a plan to accept." },
   { id: "done", glyph: "●", label: "Your turn", priority: 2, tone: "chime", on: true,
     hint: "An agent finished its turn and is waiting on you." },
   { id: "error", glyph: "✕", label: "Turn failed", priority: 2, tone: "buzz", on: true,
-    hint: "The API killed the turn — overloaded, rate limited, auth. Not the same as a tool that failed." },
+    hint: "The API killed the turn: overloaded, rate limited, auth. A tool that failed is a different event." },
   { id: "taskFail", glyph: "▶", label: "Run failed", priority: 2, tone: "buzz", on: true,
     hint: "A task exited non-zero. Includes the ones that run by themselves after a turn." },
   { id: "limit", glyph: "▦", label: "Usage limit", priority: 2, tone: "bell", on: true,
@@ -116,7 +116,7 @@ export const SOUND_EVENTS: SoundEventDef[] = [
   { id: "ended", glyph: "·", label: "Session ended", priority: 0, tone: "drop", on: false,
     hint: "A session or terminal's process exited." },
   { id: "launched", glyph: "+", label: "Session launched", priority: 0, tone: "knock", on: false,
-    hint: "You started a session. Off by default — you were there." },
+    hint: "You started a session. Off by default, since you were there." },
 ];
 const EVENT_IDS = SOUND_EVENTS.map((e) => e.id);
 export function soundEventDef(id: SoundEvent): SoundEventDef {

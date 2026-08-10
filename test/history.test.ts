@@ -21,7 +21,7 @@ const sess = (o: Partial<Sess> = {}): Sess => ({
   id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
   resumeId: "sid", branch: "main", worktree: null, title: "",
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-  pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+  pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
   git: null, res: null, lastEvent: "", activity: [],

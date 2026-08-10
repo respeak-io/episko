@@ -401,7 +401,7 @@ export function ioSameNote(today: string, run: string, all: string, days: number
       ? "All three windows are the same so far: today is the only day recorded, and all of it is this run."
       : "All three windows happen to read the same right now.";
   }
-  if (today === run) return "Today is all this run — nothing was recorded earlier today.";
+  if (today === run) return "Today is all this run; nothing was recorded earlier today.";
   if (today === all) return "Today is everything recorded so far.";
   return null;
 }

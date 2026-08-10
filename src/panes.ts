@@ -97,7 +97,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
   if (external) {
-    pane.innerHTML = `<div class="ext-pane"><div class="ext-logo"></div><h2>Running in ${esc(eng.label)}</h2><p>${esc(project)}${opts.worktree ? " · " + esc(opts.worktree) : ""} — the terminal is in your ${esc(eng.label)} window.<br>Episko still tracks its status, cost &amp; context here.</p></div>`;
+    pane.innerHTML = `<div class="ext-pane"><div class="ext-logo"></div><h2>Running in ${esc(eng.label)}</h2><p>${esc(project)}${opts.worktree ? " · " + esc(opts.worktree) : ""}. The terminal is in your ${esc(eng.label)} window.<br>Episko still tracks its status, cost &amp; context here.</p></div>`;
   } else {
     ({ term, fit } = newClaudeTerm(id, pane));
   }
@@ -105,7 +105,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
@@ -241,7 +241,7 @@ async function adoptSession(o: { id: string; workdir: string; meta: Restorable |
     resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
     title: m?.title ?? "",
     phase: "idle", phaseSince: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
-    attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0,
+    attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null,
     apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
@@ -305,7 +305,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
@@ -369,7 +369,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null, drift: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
@@ -765,7 +765,7 @@ function announceWtDelta(root: string, prev: WtHead[], next: WtHead[]) {
   else if (added.length > 1) parts.push(`⑃ ${added.length} worktrees added`);
   if (gone.length === 1) parts.push(`⑃ ${gone[0].branch} removed`);
   else if (gone.length > 1) parts.push(`⑃ ${gone.length} worktrees removed`);
-  if (parts.length) toast(`${parts.join(" · ")} — ${basename(root)}`);
+  if (parts.length) toast(`${parts.join(" · ")} · ${basename(root)}`);
 }
 
 // The single place every git-derived label is re-read and repainted. Both the poll and
@@ -905,12 +905,12 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
     const id = await launchShell(project, workdir, opts);
     // The login shell needs a moment before its prompt will accept input.
     setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
-    toast("Prefilled in a shell — press Enter to run");
+    toast("Prefilled in a shell. Press Enter to run");
     return;
   }
   try { await navigator.clipboard.writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
   invoke("open_terminal_here", { workdir, engine: termEngine })
-    .then(() => toast("Terminal opened — command copied: " + cmd))
+    .then(() => toast("Terminal opened, command copied: " + cmd))
     .catch((e) => toast("terminal: " + e));
 }
 
@@ -921,7 +921,7 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
 // ⌘⇧R and ⌘T bypass the button entirely.
 export function syncStageButtons() {
   const wd = activeCwd();
-  const set = (id: string, enabled: string, disabled = "Start a session first — this runs in the active project") => {
+  const set = (id: string, enabled: string, disabled = "Start a session first; this runs in the active project") => {
     const b = $(id) as HTMLButtonElement;
     b.disabled = !wd;
     b.title = wd ? enabled : disabled;
@@ -932,8 +932,8 @@ export function syncStageButtons() {
   // Its disabled reason is different in kind, though: the whole-machine view is
   // always one click away in the top bar, so say where it went rather than
   // "start a session".
-  set("btnHist", "Reopen a past session in this project — including ones you closed (⌘⇧H)",
-      "No project selected — the ◷ button up top opens history for every project");
+  set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
+      "No project selected. The ◷ button up top opens history for every project");
 }
 
 // Which session (if any) has a git action in flight — the buttons grey out while

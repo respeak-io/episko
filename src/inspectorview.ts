@@ -14,8 +14,11 @@
 
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
-import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
-import { ioAll, ioScope, sessions, type IoScope } from "./state";
+import {
+  apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  type DiffStat, type Risk, type Sess,
+} from "./types";
+import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
@@ -45,6 +48,8 @@ function toolClass(tool: string): string {
 }
 export const RISK_LABEL: Record<Risk, string> = { low: "low risk", med: "review", high: "high risk" };
 export function verbFor(s: Sess): string {
+  // Ahead of the phase, because the phase is `done` and saying so is the bug.
+  if (bgWaiting(s)) return fanoutText(s);
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
   if (s.phase === "done") return "Your turn";
@@ -55,6 +60,12 @@ export function verbFor(s: Sess): string {
 // Live text under the state name — recomputed each second by tickTimers().
 export function dwellText(s: Sess): string {
   if (s.phase === "ended") return "session ended";
+  // The fan-out's clock, not the phase's: `phaseSince` was stamped when the turn ended,
+  // which is the moment the fleet *started* and therefore says nothing about the wait.
+  // It is also the only live clock the fan-out has — the card below carries no time, so
+  // that the inspector's innerHTML guard keeps biting (see paintInspector).
+  const f = bgWaiting(s) ? liveFanout(s) : null;
+  if (f) return `${fmtDwell(Date.now() - f.since)} in background`;
   const d = fmtDwell(Date.now() - s.phaseSince);
   if (s.phase === "done") return `waiting ${d}`;
   if (s.phase === "idle") return `idle ${d}`;
@@ -63,8 +74,11 @@ export function dwellText(s: Sess): string {
 }
 // True when this is the "your turn" session that's been blocked longest — the one
 // to jump to first. Only meaningful when several are waiting.
+// A session whose fleet is still running is not in the queue at all — it is not blocked
+// on you, so crowning it "longest waiting" would point you at the one row with nothing
+// to answer.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention);
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
@@ -77,18 +91,50 @@ function compactWarn(pct: number | null): { txt: string; cls: string } | null {
 // ---- inspector: per-module HTML builders (act → track → reference) ----
 export function vitalHtml(s: Sess): string {
   const sk = statusKey(s);
-  const live = (s.phase === "working" || s.phase === "thinking") && !s.attention;
+  const fan = fanoutTally(s);
+  // The heartbeat is "something is happening here", not "the model is talking" — a fleet
+  // of thirteen agents is the busiest this app ever gets, and a still heart over it read
+  // as an idle session.
+  const live = (s.phase === "working" || s.phase === "thinking" || bgWaiting(s)) && !s.attention;
   const verb = s.attention ? "Needs you" : verbFor(s);
   const tcls = (!s.attention && s.phase === "working") ? toolClass(s.curTool) : "";
   const doing = (!s.attention && s.phase === "working" && s.curTool)
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
-  const chips = [s.model ? esc(s.model) : "", s.subagents ? `${s.subagents} subagent${s.subagents > 1 ? "s" : ""}` : ""]
+  // While a fleet is up, the split of it — done vs still running — says more than the
+  // bare "N subagents" chip this replaces, which only ever showed the live half.
+  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${s.subagents} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
-  const longest = s.phase === "done" && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
+  const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
     <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
     ${doing}${meta}</div>`;
+}
+/// The background fleet: what it is, how much of it has landed, and what it set out to
+/// do. Sits directly under the vital, because while it is up it *is* the state of the
+/// session — the gauges below it describe a conversation that stopped talking.
+///
+/// **No clock in this markup.** The elapsed lives in `#iDwell`, which main.ts patches by
+/// `textContent` once a second; a time in here would make the string differ on every
+/// repaint and permanently defeat `paintInspector`'s guard, on the surface that guard
+/// exists to protect (see its comment — a lost *Allow* is how that was learned).
+///
+/// The phases are listed, never ticked off. No hook says which phase a workflow has
+/// reached, and a progress bar drawn over the agent counts is the only claim the
+/// telemetry actually supports.
+export function fanoutHtml(s: Sess): string {
+  const f = liveFanout(s), t = fanoutTally(s);
+  if (!f || !t) return "";
+  const pct = t.total ? Math.round((t.done / t.total) * 100) : 0;
+  const name = f.name || "Background agents";
+  const detail = f.detail ? `<div class="fo-detail">${esc(f.detail)}</div>` : "";
+  const phases = f.phases.length
+    ? `<div class="fo-phases">${f.phases.map((p) => `<span class="fo-ph">${esc(p)}</span>`).join("")}</div>` : "";
+  return `<div class="fanout">
+    <div class="fo-h"><span class="fo-g">◐</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
+    ${detail}
+    <div class="fo-bar"><i style="width:${pct}%"></i></div>
+    ${phases}</div>`;
 }
 export function gaugesHtml(s: Sess): string {
   const ctx = s.ctxPct;
@@ -134,7 +180,7 @@ export function driftHtml(s: Sess): string {
   const here = esc(s.branch || basename(s.workdir));
   const cwdMove = d.via === "cwd";
   const note = cwdMove
-    ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span> — following it costs nothing and interrupts nothing.`
+    ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span>; following it costs nothing and interrupts nothing.`
     : `The session is still running in <span class="b">${here}</span>, so its branch, working set and git buttons read that checkout. Moving it takes the conversation along.`;
   return `<div class="drift">
     <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
@@ -157,7 +203,7 @@ export function wsetHtml(s: Sess): string {
       <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div></div>`
     : "";
   const sync = g.upstream
-    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} — as of the last fetch">${
+    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
@@ -178,11 +224,11 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
   const up = !!g.upstream;
   const btn = (op: string, label: string, off: string, hint: string) =>
     `<button class="gitb" data-git="${op}" data-gitsid="${s.id}"${busy || off ? " disabled" : ""} title="${esc(off || hint)}">${label}</button>`;
-  const pullHint = !up ? "No upstream — opens a terminal to set one"
-    : g.ahead && g.behind ? `Diverged — opens a terminal to rebase`
+  const pullHint = !up ? "No upstream; opens a terminal to set one"
+    : g.ahead && g.behind ? `Diverged; opens a terminal to rebase`
     : `git pull --ff-only (${g.behind} behind)`;
-  const pushHint = !up ? "No upstream — opens a terminal to publish the branch"
-    : g.behind ? "Behind — opens a terminal to pull first"
+  const pushHint = !up ? "No upstream; opens a terminal to publish the branch"
+    : g.behind ? "Behind; opens a terminal to pull first"
     : `git push (${g.ahead} ahead)`;
   return `<div class="gitrow${busy ? " busy" : ""}">
     ${btn("fetch", "fetch", "", "git fetch --prune")}
@@ -218,8 +264,8 @@ export function timelineHtml(s: Sess): string {
 // your tree and writes files — and a runaway agent shows up as sustained throughput
 // long before it shows up as CPU.
 //
-// The bar is log-scaled against a 32 MB/s reference rather than linear: real rates span
-// idle-KB/s to burst-MB/s, and a linear bar would sit at zero for everything short of a
+// The bar is log-scaled against a 32 MiB/s reference rather than linear: real rates span
+// idle-KiB/s to burst-MiB/s, and a linear bar would sit at zero for everything short of a
 // pathological write storm, which is precisely the case it needs to show.
 const IO_REF_BPS = 32 * 1024 * 1024;
 function ioPct(bps: number): number {
@@ -246,8 +292,62 @@ function ioText(scope: IoScope): string {
   const f = ioFigures(scope);
   return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
 }
+/// Why the figures in this box look the way they do.
+///
+/// Every number here is **physical** disk I/O — what the kernel's per-process counters
+/// (`proc_pid_rusage` on macOS, and its equivalents elsewhere, via sysinfo) actually
+/// charged the claude processes Episko spawned. Three things about that surprise people
+/// enough to be worth a panel, and all three were measured on this machine rather than
+/// reasoned about:
+///
+/// - Writes ran ~32× the transcript's own growth (3.11 MiB of physical writes against
+///   0.10 MiB of transcript in 90s). Claude Code appends and fsyncs after every message,
+///   and a flush commits whole blocks; that is its journalling, not Episko's overhead
+///   and not something Episko can batch away.
+/// - Reads ran far *below* what the agents obviously read, because a page-cache hit
+///   never reaches the disk — a hot repo re-read costs nothing here.
+/// - Children are absent, and not by omission: a child that wrote 120 MiB moved its
+///   parent's counter by exactly 0.00 MiB. The OS never adds an exited child's bytes to
+///   its parent, so walking the process tree would still miss every sub-second `rg` or
+///   `git` that lives and dies between two four-second polls.
+///
+/// Kept as data rather than one blob of markup so the shape stays obvious and the strings
+/// stay greppable.
+///
+/// The panel expands rather than appearing, and getting that to happen at all is the
+/// interesting part — see `ioInfoAnim`.
+const IO_INFO: Array<[string, string]> = [
+  ["Writes run far above the conversation",
+    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks, measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
+  ["Reads look small",
+    "Anything already in the page cache never reaches the disk, so re-reading a warm repo costs nothing on this meter."],
+  ["Child processes are not counted",
+    "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
+];
+/// How long the expander takes. Mirrored in styles.css (`rinfo-open`) — the two have to
+/// agree, because this file decides when the animation is *over*.
+const IO_INFO_MS = 220;
+/// The inline `style` that makes the expander survive this app's render model.
+///
+/// A CSS **transition** is useless here: `#inspector` is rebuilt by `innerHTML` on every
+/// pass, so the node that would transition is a brand-new one already in its final state
+/// — which is why `.pfbody`'s transition in the sidebar never actually plays either. A
+/// keyframes **animation** does run on a freshly-inserted node, so that is what this uses.
+///
+/// But that trades one bug for another: the inspector repaints on telemetry, so a repaint
+/// landing 80ms into the animation would insert *another* fresh node and play the whole
+/// expansion again — the panel would visibly collapse and re-open under a busy fleet.
+/// A negative `animation-delay` fixes it: it starts an animation partway through, so each
+/// replacement node *resumes* where its predecessor was instead of restarting. Once the
+/// run is over the animation is switched off outright, which also settles the markup
+/// string so ./inspector's guard can go back to skipping repaints.
+function ioInfoAnim(): string {
+  const el = Date.now() - ioInfoAt;
+  return el >= IO_INFO_MS ? ` style="animation:none"` : ` style="animation-delay:-${el}ms"`;
+}
 export function resHtml(): string {
   const r = ioAll;
+  const info = ioInfoAt > 0;
   // Before the second sample there is no window to average over, so the rate is unknown
   // rather than zero — say so instead of showing a confident "0 B/s".
   const rd = r.primed ? fmtRate(r.readBps) : "—";
@@ -268,16 +368,19 @@ export function resHtml(): string {
   // indistinguishable from a broken one unless the row says why.
   const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
   return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
-    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span></div>
+    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span><button class="rinfob${info ? " on" : ""}" data-ioinfo="1" aria-expanded="${info}" title="${info ? "Hide" : "Why these figures look the way they do"}">i</button></div>
     <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
     <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
     <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
-    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}</div>`;
+    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}
+    ${info ? `<div class="rinfo"${ioInfoAnim()}><div class="rinfo-in"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched, rather than their logical reads and writes.</p>${
+      IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
+    }</div></div>` : ""}</div>`;
 }
 /// Spelled out per scope rather than one generic hint, because the difference between
 /// them is the whole point and two of the three have a caveat worth one sentence.
 const IO_SCOPE_TITLE: Record<IoScope, string> = {
-  today: "Disk I/O by Episko's claude sessions today — click for this run",
-  run: "Disk I/O since Episko started — the processes' own counters, which reset with the app. Click for everything recorded",
-  all: "Disk I/O across every day Episko has recorded one. Not a lifetime figure — it starts when this rollup shipped. Click for today",
+  today: "Disk I/O by Episko's claude sessions today. Click for this run",
+  run: "Disk I/O since Episko started: the processes' own counters, which reset with the app. Click for everything recorded",
+  all: "Disk I/O across every day Episko has recorded one. It starts when this rollup shipped, so it is not a lifetime figure. Click for today",
 };

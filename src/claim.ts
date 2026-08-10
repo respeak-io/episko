@@ -128,7 +128,7 @@ export function claimIsStale(claimedAt: number, now = Date.now()): boolean {
 export function claimText(who: string, claimedAt: number, now = Date.now()): string {
   const mins = Math.max(0, Math.round((now - claimedAt) / 60_000));
   const ago = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
-  return claimIsStale(claimedAt, now) ? `${who} claimed this ${ago} — probably stale` : `${who} is on this · ${ago}`;
+  return claimIsStale(claimedAt, now) ? `${who} claimed this ${ago}, probably stale` : `${who} is on this · ${ago}`;
 }
 
 // ---------- the local ledger ----------

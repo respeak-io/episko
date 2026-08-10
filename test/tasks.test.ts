@@ -286,10 +286,13 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
     expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set())).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
   });
-  it("says the task is not running, not merely that the label is unknown", () => {
+  // The consequence has to be in the toast: "no task named x" alone reads as a
+  // lookup failure somebody might shrug at, when the whole chain has just stopped.
+  it("says the chain will not run, as well as naming the unknown label", () => {
     seed(run({ id: "npm:a", label: "a" }));
     resolveDeps(run({ label: "test", dependsOn: ["ghost"] }), new Set());
-    expect(toasts[0]).toMatch(/not running it/);
+    expect(toasts[0]).toMatch(/will not run/);
+    expect(toasts[0]).toContain("ghost");
   });
   it("refuses a cycle rather than recursing until the stack gives out", () => {
     seed(run({ id: "npm:a", label: "a" }));

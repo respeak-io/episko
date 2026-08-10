@@ -160,7 +160,7 @@ export function holderOf(
 /// user sends it, so it has to read as something a person would write, and it has to
 /// say what would make closing it wrong.
 export function closeComment(t: GhThread, now: number): string {
-  return `Closing as stale — ${quietFor(t.updated_at, now)}, and nothing seems to be waiting on it. `
+  return `Closing as stale after ${quietFor(t.updated_at, now)}, with nothing that seems to be waiting on it. `
     + `Reopen if that's wrong.`;
 }
 
@@ -172,7 +172,7 @@ export function closeComment(t: GhThread, now: number): string {
 /// a team switch claiming off.
 export function claimComment(who: string, now: number): string {
   return `🤖 An agent${who ? ` from @${who}` : ""} started work on this on ${isoDay(now)}.\n\n`
-    + `This is a hint, not a lock — pick it up anyway if you want to, and say so here.`;
+    + `This is only a hint. Pick it up anyway if you want to, and say so here.`;
 }
 
 /// The same comment once the agent has stopped. The comment is *edited*, never deleted:

@@ -120,9 +120,9 @@ function renderCaf() {
   $("caf").classList.toggle("on", cafArmed);
   $("caf").classList.toggle("asserting", cafAssertKey !== "");
   $("cafMain").title = !cafArmed ? `Keep this ${CAF_HOST} awake · ${p.label}`
-    : p.kind === "agents" ? (cafAssertKey ? "Awake — agents are working" : "Armed — sleeps until agents work")
-    : p.kind === "timer" ? `Awake · ${cafDurLabel(cafTimerSec)} timer — click to stop`
-    : `Awake · ${p.label} — click to stop`;
+    : p.kind === "agents" ? (cafAssertKey ? "Awake · agents are working" : "Armed · sleeps until agents work")
+    : p.kind === "timer" ? `Awake · ${cafDurLabel(cafTimerSec)} timer · click to stop`
+    : `Awake · ${p.label} · click to stop`;
 }
 const cafDurLabel = (sec: number) => (CAF_DURATIONS.find((d) => d.sec === sec) || { label: sec + "s" }).label;
 

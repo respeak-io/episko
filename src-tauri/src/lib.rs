@@ -55,6 +55,13 @@ pub(crate) struct Session {
     /// reader thread. What lets a pane rebuilt after a webview reload start with
     /// its scrollback instead of blank.
     scrollback: std::sync::Arc<Mutex<pty::ScrollBuf>>,
+    /// Whether ConPTY has asked this PTY's terminal to send **win32 input records**
+    /// rather than plain VT text — it announces that with `ESC[?9001h` in its first
+    /// output chunk, and the reader thread latches it here. `write_pty` reads it to
+    /// decide how to encode a keystroke; see `pty::win32_input_encode` for why a
+    /// character that goes in as VT text can come out of the child a character short.
+    /// Never set off Windows: a real tty passes bytes through and asks for nothing.
+    win32_input: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) struct AppState {

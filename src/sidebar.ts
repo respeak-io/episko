@@ -10,7 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { $, chord, toast } from "./dom";
+import { $, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, tilde } from "./format";
 import { iconFor, projGlyph } from "./icons";
@@ -22,9 +22,11 @@ import {
 import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
 import { dormantRows, foldEmpty, foldHead, groupBody, peekBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, peekPrefs, projGroups, saveProjGroups,
-  saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode, type SortMode,
+  activeId, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs, projGroups,
+  saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
+  type SortMode,
 } from "./state";
+import { activeBind, comboText, type KeyAction } from "./keys";
 
 // Two things a finished reorder needs that this module does not own: the sort mode
 // is an app-level preference (validate → persist → announce) and the repaint is the
@@ -447,11 +449,18 @@ function shellEscapePath(p: string): string {
 // stationary pointer, and loses a click outright when the node is replaced between
 // mousedown and mouseup. What the rail shows (a glyph, an accent, an attention dot)
 // changes far more rarely than the events that repaint it.
+/// A button's chord as a title suffix — empty when the action is unbound or the
+/// master switch is off, so the tooltip reads "New session" rather than trailing an
+/// empty pair of brackets around a shortcut that no longer exists.
+function hint(id: KeyAction): string {
+  const t = comboText(activeBind(keyPrefs, id), IS_MAC);
+  return t ? ` (${t})` : "";
+}
 let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
   const html =
-    `<button class="rm-btn" data-rail="1" title="Expand sidebar (${chord("B")})">»</button>` +
+    `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">»</button>` +
     projectList().map((p) => {
       const first = p.sessions[0];
       const firstExt = p.externals[0];
@@ -465,7 +474,7 @@ export function renderMini() {
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
-    `<button class="rm-btn rm-add" data-pal="1" title="New session (${chord("K")})">＋</button>`;
+    `<button class="rm-btn rm-add" data-pal="1" title="New session${hint("palette")}">＋</button>`;
   if (html === lastMiniHtml) return;
   lastMiniHtml = html;
   $("railmini").innerHTML = html;

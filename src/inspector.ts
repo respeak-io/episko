@@ -22,8 +22,8 @@ import { sessions } from "./state";
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  driftHtml, dwellText, gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml,
-  vitalHtml, wsetHtml,
+  driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml, resHtml, RISK_LABEL,
+  timelineHtml, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 export function renderInspector(s: Sess | null) {
@@ -49,13 +49,14 @@ export function renderInspector(s: Sess | null) {
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
     const note = creds
       ? "Claude Code can't reach the API with these credentials. Fix them in the terminal, then send the prompt again."
-      : "The turn ended early — the conversation is intact. Send the prompt again to pick it back up.";
+      : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.";
     html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
   }
   // Above the vital, and above the working set it contradicts: everything below reads
   // the folder the session was launched in, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));                                        // state, dwell, current tool
+  html.push(fanoutHtml(s));                                       // the fleet it launched, if any
   html.push(gaugesHtml(s));                                       // TRACK — context + cost
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
   // What's changed on disk, and how the branch sits against its upstream. Shown
@@ -116,7 +117,7 @@ function renderShellInspector(s: Sess) {
       <div class="ext-hl">❯ Plain shell</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-note">A regular login shell running inside Episko — no Claude, no telemetry. Handy for commands you don't want to run inside a session.</div>
+      <div class="ext-note">A regular login shell running inside Episko, with no Claude and no telemetry. Handy for commands you don't want to run inside a session.</div>
     </div>`);
 }
 

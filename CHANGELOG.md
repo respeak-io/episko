@@ -6,12 +6,93 @@ into the GitHub release, and CI refuses a `dev → main` pull request whose `Unr
 section is empty.
 
 `pnpm changelog` drafts `Unreleased` from the commits since the last tag. It writes a
-draft and stops — nothing here is generated at release time, so what ships is what
+draft and stops. Nothing here is generated at release time, so what ships is what
 somebody read.
 
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
++ **Every keyboard shortcut can be changed.** Settings › Keys lists the fourteen the app
+  dispatches, each recording the chord you actually press rather than asking you to
+  assemble one from a modifier menu. Taking a chord somebody else had works, and the row it
+  came from says so and reads *Off*. ⊘ switches any single shortcut off on its own,
+  with ⟲ beside it to put it back. Binding a single digit carves it out of ⌘1–9 and
+  leaves the other eight. Only
+  what you changed is stored, so a default improved in a later release still reaches you.
+  The footer's ⌘ Shortcuts sheet, the palette's hints and the sidebar's button labels all
+  read the same table now, so none of them can go on advertising a chord you replaced.
+
++ **…or switched off, one at a time or all at once.** ⊘ on a row turns that shortcut off
+  and leaves every other alone; the switch at the top of the tab hands the whole keyboard
+  back to the agents in your panes, for the sessions where ⌘K, ⌘B and ⌘T are theirs and
+  turning off fourteen rows one at a time is a chore rather than a setting. A row that is
+  off reads *Off* in a dashed cell and is named in the line above the list, so which
+  shortcuts will not fire is answerable by scanning rather than by reading fourteen
+  chords. Nothing is
+  lost, since every chord is kept and comes back exactly as it was, and nothing you need to
+  undo it is behind a shortcut: Esc still backs out of whatever is open, a terminal keeps
+  its own copy/paste, and every shortcut is a button somewhere. The cheat sheet says it is
+  off rather than going quietly empty.
+
+~ **Reveal this folder moved to ⌘⇧⏎.** Plain ⌘⏎ is the run picker's pin, and the two were
+  a keypress apart on the same key. Rebind it if you preferred it where it was.
+
+! **A shifted shortcut no longer depends on where it was written.** ⌘⇧B and ⌘B were told
+  apart only by ⌘⇧B's branch sitting higher up the handler; a shifted chord added below
+  its unshifted twin would silently never have fired. Matching is exact now.
+
++ **A session whose agents are still working no longer says "your turn".** The `Workflow`
+  tool hands back a run id in about two seconds, so the turn ends while its fleet runs on,
+  and for the twenty minutes that followed, the sidebar showed a green ✓, the header
+  counted the session among the ones waiting on you, and the only trace of thirteen live
+  agents was a `1 subagent` chip. Such a session now reads `◐ 13 agents working`, carries
+  a `12/13` tally on its row and its own glyph in the tray, drops out of the *your turn*
+  count, and gets a card in the inspector naming the run, what it is for and the phases it
+  declared. None of that costs a byte of disk or a poll: the name comes out of the
+  `Workflow` call itself, the counts off the subagent hooks Episko already receives. A
+  session started outside Episko is unchanged, since it runs without the instrumentation,
+  so nothing reports its agents either way.
+
++ **The disk-I/O box explains itself.** A day of agents reads as a gigabyte written, which
+  looks like a bug and isn't, so the `i` on the box now says why: Claude Code fsyncs its
+  transcript after every message and each flush commits whole blocks (~32× the
+  transcript's own growth), page-cache hits never reach the disk, and an exited child's
+  bytes are never added to its parent, so the `git` and `ripgrep` work under an agent is
+  invisible here no matter how the process tree is walked.
+
+! **The usage-limit forecast stops crying wolf.** It read the last half-hour as your pace
+  for the rest of the window, so a burst got extrapolated across hours that never
+  happened, once projecting 127% on a window that finished at 47%. It is now capped at
+  the pace the window has actually sustained: across the windows the app has logged, the
+  typical miss drops by a third and the worst overshoot by more than half, and no window's
+  forecast got worse. A steady burn is untouched, so one genuinely heading for the cap
+  still goes red as early as it ever did. *Burn rate* on the Usage card now shows the pace
+  the projection is built on.
+
+! **The I/O figures were labelled in the wrong units.** They all divide by 1024, so they
+  were always KiB, MiB and GiB, so the old labels understated what you were reading by up to
+  7.4%. Fixed in the resource box and in History's transcript sizes; the rate column grew
+  to fit and can no longer wrap.
+
+! **A password typed into a pane on Windows arrives whole.** ConPTY re-synthesizes typed
+  bytes as console key events, and for many characters (`§ ° ± – — " ✓`, and the no-break
+  space a passphrase copied out of a document carries) it uses an Alt+numpad sequence,
+  where the character rides on the key-*up* record, which `getpass`, and every other CRT
+  hidden-prompt reader, ignores. 54 of 86 sampled non-ASCII characters never reached the
+  secret and nothing said so: gpg reported `Bad session key`, which is also what it says
+  for a genuinely wrong passphrase. Episko now answers ConPTY with key records, as Windows
+  Terminal does. ASCII, `^C`, arrows and pastes go down the pipe byte for byte as before,
+  and nothing changes on macOS.
+
+! **One checkout, one worktree row.** `❯ Terminal` opens a shell wherever the pane on
+  stage is running, so opening one while a task pane held the stage started it in that
+  task's own folder, and a VS Code task routinely declares one (`00_scripts/clone_db`). The
+  sidebar grouped panes by the folder they run in, so that shell became a checkout of its
+  own: two headers, the same branch on both, a session each. Any folder inside a checkout
+  Episko knows about now groups with that checkout, whatever put the pane there, so the
+  shell sits under the branch it is actually on, and a run group whose steps declare
+  different folders can no longer be split across headers either.
 
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does

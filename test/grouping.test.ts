@@ -24,13 +24,20 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [],
     kind: "claude", external: false, ...o,
   } as Sess;
 }
+/// The `Sess` fields of a session with a background fan-out up — `total` agents
+/// launched, `done` of them landed. Spelled out rather than driven through applyHook,
+/// which lives in a module this suite deliberately does not import.
+const fleet = (total: number, done: number): Partial<Sess> => ({
+  subagents: total - done,
+  fanout: { name: "wf", detail: "", phases: [], since: 0, started: total, done, lastAt: Date.now() },
+});
 // Sessions reach grouping through the state map, in insertion order.
 function open(...list: Sess[]): Sess[] { for (const s of list) sessions.set(s.id, s); return list; }
 const ext = (o: Partial<ExtSession> = {}): ExtSession =>
@@ -93,6 +100,46 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
   it("falls back to a task pane's workdir when it has no discovery root", () => {
     const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
     expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
+  });
+  /// The same bug through a different door, which `run.root` could not close: a task's
+  /// cwd reaches a **shell** too. `❯ Terminal` opens one in `activeCwd()` — the raw
+  /// workdir of whatever owns the stage — so a shell opened while a finished task pane
+  /// is on stage starts in that task's subfolder, and a shell has no `run` to unwrap.
+  /// The roster places it. Spelled as it really arrived on Windows: the checkout in
+  /// backslashes (the folder the user picked), the declared cwd's own forward slashes
+  /// pasted on by `${workspaceFolder}` substitution.
+  it("clusters a shell started in a subfolder by its checkout", () => {
+    const repo = "E:\\w\\epi", wt = "E:\\w\\wt-feat";
+    worktreesByRepo.set(repo, [
+      { path: repo, branch: "main", is_main: true, exists: true },
+      { path: wt, branch: "feat", is_main: false, exists: true },
+    ]);
+    const p = grp({ path: repo, sessions: [
+      sess({ id: "agent", workdir: wt, colorKey: repo, branch: "feat" }),
+      sess({ id: "sh", kind: "shell", colorKey: repo, branch: "feat",
+             workdir: wt + "/00_scripts/clone_db_locally" }),
+    ] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(ids(cl[0].sessions)).toEqual(["agent", "sh"]);
+  });
+  /// The roster's spelling must not escape into a cluster key for a checkout the group
+  /// already names: `isMain` compares that key against the project path, and the roster
+  /// side has been through `norm_path` in Rust while the project side is however the
+  /// folder was picked. Only a path genuinely *inside* a checkout is rewritten.
+  it("keeps the group's own spelling of a checkout the roster spells differently", () => {
+    const repo = "E:\\w\\epi";
+    worktreesByRepo.set(repo, [{ path: "E:/w/epi", branch: "main", is_main: true, exists: true }]);
+    const p = grp({ path: repo, sessions: [sess({ id: "a", workdir: repo, colorKey: repo })] });
+    expect(clusterByWorktree(p)[0]).toMatchObject({ key: repo, isMain: true });
+  });
+  it("leaves a folder the roster cannot place as its own cluster", () => {
+    worktreesByRepo.set("/w/epi", [{ path: "/w/epi", branch: "main", is_main: true, exists: true }]);
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi" }),
+      sess({ id: "b", kind: "shell", workdir: "/tmp/scratch" }),
+    ] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi", "/tmp/scratch"]);
   });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
@@ -770,6 +817,20 @@ describe("needsYou — is this pane waiting on the human", () => {
     taskPrefs.attention = false;
     expect(needsYou(sess({ kind: "task", phase: "error" }))).toBe(false);
     expect(needsYou(sess({ phase: "error" }))).toBe(true); // an agent is not the switch's business
+  });
+  it("does not count a session whose background fleet is still running", () => {
+    // The Workflow tool ends the parent's turn in about two seconds and its agents run
+    // for another twenty minutes. Counting that as "your turn" put a workflow in the
+    // reactor badge and the tray title as one more session waiting on a human who had
+    // nothing to answer — for the whole run.
+    expect(needsYou(sess({ phase: "done", ...fleet(13, 12) }))).toBe(false);
+    expect(urgencyRank(sess({ phase: "done", ...fleet(13, 12) }))).toBe(3); // ranks with the work it is
+  });
+  it("still counts one that hit a permission or died mid-fleet", () => {
+    // Both outrank the fan-out: Claude is blocked on you now, or the turn is not coming
+    // back on its own. Neither resolves itself when the agents land.
+    expect(needsYou(sess({ phase: "done", attention: "Bash", ...fleet(13, 12) }))).toBe(true);
+    expect(needsYou(sess({ phase: "error", ...fleet(13, 12) }))).toBe(true);
   });
 });
 

@@ -12,14 +12,19 @@
 // tooltip — that last one is parented to <body> rather than #setBody on purpose,
 // so a renderSettings() rebuild never drops it mid-hover.
 
-import { $, dropScrim, toast } from "./dom";
+import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import type { Engine, PermMode } from "./types";
 import {
-  ALL_PERM_MODES, availEngines, engineDef, peekPrefs, permMode, setTermFontSize,
+  ALL_PERM_MODES, availEngines, engineDef, keyPrefs, peekPrefs, permMode, setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import {
+  bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
+  isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
+  type KeyAction, type KeyPrefs,
+} from "./keys";
 import {
   isDefaultSoundPrefs, SOUND_EVENTS, soundDefaults, toneDef, TONES, VOLUME_RANGE,
   VOLUME_STEP, type SoundEvent, type SoundEventDef, type SoundPrefs, type SoundWhen,
@@ -59,11 +64,15 @@ export interface SettingsHost {
   setPeekPrefs: (p: PeekPrefs) => void;
   // Ditto again — ./actions clamps through ./sound, persists and repaints this window.
   setSoundPrefs: (p: SoundPrefs) => void;
+  // And again for the shortcuts — ./actions clamps through ./keys, persists the
+  // switch plus only the overrides, and repaints every surface that spells a chord.
+  setKeyPrefs: (p: KeyPrefs) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
+  setKeyPrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -86,6 +95,8 @@ type SetControl =
   // One control rather than a `render` tab for the same reason `peek` is one — they
   // are one decision, and a `render` tab also widens the dialog (see renderSettings).
   | { kind: "sound"; label: string; hint?: string }
+  // The shortcut picker: a row per bindable action, each recording a real keypress.
+  | { kind: "keys"; label: string; hint?: string }
   // A single on/off switch.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
@@ -123,7 +134,7 @@ const SET_TABS: SetTab[] = [
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
       { kind: "seg", set: "permmode", label: "Permission mode",
-        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there — this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
+        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there; this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
         active: () => permMode,
         segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
@@ -132,10 +143,20 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
+    id: "keys", label: "Keys", glyph: "⌨",
+    controls: () => [
+      // One line. It names the two unlabelled glyphs and nothing else — the rule that a
+      // chord needs a modifier is said by the toast at the moment you press one without,
+      // which is the only moment anybody wants to read it.
+      { kind: "keys", label: "Keyboard shortcuts",
+        hint: "Click a chord and press the one you want. ⊘ turns one off, ⟲ puts it back. The switch turns off the lot." },
+    ],
+  },
+  {
     id: "sounds", label: "Sounds", glyph: "♪",
     controls: () => [
       { kind: "sound", label: "Sound alerts",
-        hint: "Episko is built for a fleet you are deliberately not watching, and every other signal it has — the glyph, the badge, the tray — needs the window in front of you. Click a row's sound name to change it; every button here plays what it does." },
+        hint: "Episko is built for a fleet you are deliberately not watching, and every other signal it has (the glyph, the badge, the tray) needs the window in front of you. Click a row's sound name to change it; every button here plays what it does." },
     ],
   },
   {
@@ -152,7 +173,7 @@ const SET_TABS: SetTab[] = [
         hint: "Click to revoke. Your project folders are trusted because you added them; anything else asks once.",
         on: () => explicitlyTrusted(),
         segs: () => explicitlyTrusted().map((p) => ({ value: p, label: basename(p), sub: tilde(p) })),
-        empty: "Nothing trusted by hand yet — your project folders already are." },
+        empty: "Nothing trusted by hand yet. Your project folders already are." },
       { kind: "seg", set: "taskcwd", label: "Working directory",
         hint: "With several worktrees open, “run tests” is otherwise ambiguous. A task that declares its own directory always keeps it.",
         active: () => taskPrefs.cwd,
@@ -174,10 +195,10 @@ const SET_TABS: SetTab[] = [
       // Set where the tasks are (the project's task panel); reviewed and revoked
       // here, the same shape as the trust list above.
       { kind: "multi", set: "unstop", label: "Run after a session stops",
-        hint: "When an agent finishes a turn in one of these projects, its task runs — unfocused, so it never takes the stage. A failure keeps its pane and offers the output back to that session. Click to remove.",
+        hint: "When an agent finishes a turn in one of these projects, its task runs unfocused, so it never takes the stage. A failure keeps its pane and offers the output back to that session. Click to remove.",
         on: () => Object.keys(stopRules),
         segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
-        empty: "No rules yet — set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
+        empty: "No rules yet. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
     ],
   },
   {
@@ -201,6 +222,9 @@ export let setTab = "appearance";
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); renderSettings(); }
 export function closeSettings() {
+  // Disarm first: the recorder's listener is on `window`, so a row left armed would
+  // go on swallowing every chord in the app with nothing on screen to say why.
+  stopKeyRec();
   $("setDlg").classList.remove("show");
   dropScrim();
 }
@@ -345,7 +369,7 @@ function renderPeekControl(): string {
   const quiet = PEEK_DEMO.find((p) => !p.rows.length)?.name ?? "the idle project";
   const pin = peekPrefs.pinLive;
   const pinHint = on
-    ? "A project you have a session open in keeps its other checkouts on screen — that is the moment the sibling worktree is the next thing you start something in. Projects with nothing running still collapse."
+    ? "A project you have a session open in keeps its other checkouts on screen, which is the moment the sibling worktree is the next thing you start something in. Projects with nothing running still collapse."
     : "Nothing to exempt while peek is off: every checkout is listed already.";
   return `<div class="peekbox${on ? "" : " off"}">
     <div class="peekrow">
@@ -365,8 +389,8 @@ function renderPeekControl(): string {
     <div class="peekhint">${esc(!on
       ? "Peek is off, so idle checkouts stay listed all the time. The preview shows them open."
       : pin
-        ? `${busy.join(" and ")} have a session, so their checkouts stay listed. ${quiet} has none — rest on it to feel the delay.`
-        : "Rest on a project above. Moving straight to the other one opens it at once — the delay is there to ignore a pointer passing over, and you are already inside.")}</div>
+        ? `${busy.join(" and ")} have a session, so their checkouts stay listed. ${quiet} has none, so rest on it to feel the delay.`
+        : "Rest on a project above. Moving straight to the other one opens it at once, since the delay is there to ignore a pointer passing over and you are already inside.")}</div>
   </div>`;
 }
 
@@ -427,9 +451,160 @@ function renderSoundControl(): string {
     </div>
     <div class="sndlist">${SOUND_EVENTS.map(soundRow).join("")}</div>
     <div class="peekhint">${p.enabled
-      ? "The last three start switched off: they fire on routine activity, or on something you did yourself. Turning everything on is exactly how a set of alerts becomes background noise you stop hearing — which costs you the permission chime too."
-      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and ▶ still plays — auditioning is how you decide whether to switch them back on."}</div>
+      ? "The last three start switched off: they fire on routine activity, or on something you did yourself. Turning everything on is exactly how a set of alerts becomes background noise you stop hearing, which costs you the permission chime too."
+      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and ▶ still plays, since auditioning is how you decide whether to switch them back on."}</div>
   </div>`;
+}
+
+// ---------- the shortcut picker: a row per action, recording a real keypress ----------
+// The recorder listens for the CHORD ITSELF rather than offering a modifier checkbox
+// and a key dropdown, because the question a user actually has is "is this one free
+// and does my keyboard even produce it" — and the only honest answer is the keypress.
+// It goes through ./keys' `comboOf`, the same normalisation the global handler
+// matches with, so what you press and what fires can't disagree.
+//
+// Module state like `setTab` and `soundPick`, and not persisted for the same reason:
+// it is where you are looking, not something you chose.
+let keyRec: KeyAction | null = null;
+/**
+ * Whether a recording is armed. Both of main.ts's global keydown handlers read this
+ * and stand down, for two different reasons:
+ *
+ *  • The `reveal` one is a `window` capture listener too, and it was registered at
+ *    module load while ours is added on the click that armed the row — same target,
+ *    same phase, so registration order decides and **it runs first**. Without the
+ *    guard, recording ⌘⇧⏎ would reveal a folder instead of binding the chord.
+ *  • The main dispatcher bubbles, so ours already ran and stopped the chord — but a
+ *    press this recorder deliberately lets through (a bare modifier, an unbindable
+ *    named key) would still reach it, and firing a shortcut mid-recording is wrong.
+ */
+export function keyRecording() { return keyRec !== null; }
+
+/**
+ * The chord cell. Reads `keyPrefs.binds` directly rather than through `activeBind` —
+ * the deliberate exception to that rule, and the only one: this window edits the
+ * stored chords, so with the master switch off it must still show what you set. That
+ * IS the "your chords are kept" promise; resolving through `activeBind` here would
+ * blank all fourteen rows the moment the switch went off and make the promise a lie.
+ */
+function keyChordHtml(id: KeyAction): string {
+  const keys = comboKeys(keyPrefs.binds[id], IS_MAC);
+  if (!keys.length) return `<span class="kb-none">Off</span>`;
+  return keys.map((k) => `<kbd>${esc(k)}</kbd>`).join("");
+}
+function keyRow(id: KeyAction): string {
+  const d = keyActionDef(id);
+  const rec = keyRec === id;
+  const dflt = isDefaultBind(keyPrefs.binds, id);
+  const bound = !!keyPrefs.binds[id];
+  // The file manager's name can only be filled in here: ./keys is pure and cannot
+  // read the platform. Same completion the footer's popover does.
+  const label = id === "reveal" ? `${d.label} in ${FILE_MANAGER}` : d.label;
+  // ⊘ rather than ✕, and "turn off" rather than "clear", because this is a *state* and
+  // not a deletion: nothing is lost, ⟲ next to it puts the chord straight back. The
+  // same glyph the Sessions tab already uses for the never/refuse permission mode.
+  return `<div class="kbrow${rec ? " rec" : ""}${bound ? "" : " off"}">
+    <div class="kb-t"><div class="kb-l">${esc(label)}</div>${d.hint ? `<div class="kb-s">${esc(d.hint)}</div>` : ""}</div>
+    <button class="kb-chord${rec ? " rec" : ""}" data-setkey="rec:${id}" aria-label="Change the shortcut for ${esc(d.label)}">${
+      rec ? `<span class="kb-rec">Press a chord<i>esc</i></span>` : keyChordHtml(id)}</button>
+    <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; ⟲ puts it back"
+      aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>⊘</button>
+    <button class="kb-x" data-setkey="reset:${id}" title="Back to ${esc(comboText(defaultKeyBinds()[id], IS_MAC))}"
+      aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>⟲</button>
+  </div>`;
+}
+function renderKeysControl(): string {
+  const groups = KEY_GROUPS.map((g) =>
+    `<div class="kbgroup"><div class="kb-gh">${esc(g.label)}</div>${g.actions.map(keyRow).join("")}</div>`
+  ).join("");
+  // Named rather than counted ("2 changed"): the one thing you want from this line is
+  // which rows are no longer standard, and there are only ever a handful. Switched-off
+  // rows are called out SEPARATELY from rebound ones — lumping them together as
+  // "changed" is what hid per-row disabling in the first place, since the one state a
+  // user wants confirmed at a glance is which shortcuts are not going to fire.
+  const touched = KEY_GROUPS.flatMap((g) => g.actions).filter((id) => !isDefaultBind(keyPrefs.binds, id));
+  const names = (l: KeyAction[]) => l.map((id) => keyActionDef(id).label).join(", ");
+  const offRows = touched.filter((id) => !keyPrefs.binds[id]);
+  const rebound = touched.filter((id) => keyPrefs.binds[id]);
+  const on = keyPrefs.enabled;
+  // What the top line says depends on which question is live. With the master switch
+  // off, the only thing worth saying is that the chords below are kept — otherwise the
+  // greyed rows read as if switching back on would cost you the ones you set.
+  const summary = !on
+    ? "Switched off. Nothing below fires, and your chords are kept."
+    : [offRows.length ? `Off: ${names(offRows)}` : "", rebound.length ? `Changed: ${names(rebound)}` : ""]
+        .filter(Boolean).join(" · ") || "Every shortcut is at its default";
+  return `<div class="kbbox${on ? "" : " off"}">
+    <div class="peekrow kb-top">
+      <span class="peekstep-l">${esc(summary)}</span>
+      <button class="set-freset" data-setkey="resetall" ${isDefaultKeyPrefs(keyPrefs) ? "disabled" : ""}>Reset all</button>
+    </div>
+    ${groups}
+    <div class="peekhint">${on
+      ? "Esc and a terminal's copy/paste aren't listed; they belong to whatever is open."
+      : "Esc and a terminal's copy/paste still work. Rows can still be set; they just won't fire."}</div>
+  </div>`;
+}
+
+/** A press in the shortcut picker. Recording is armed here and captured below. */
+function applyKeySetting(cmd: string) {
+  if (cmd === "resetall") { stopKeyRec(); host.setKeyPrefs(defaultKeyPrefs()); return; }
+  if (cmd === "toggle") {
+    // Disarm first: a row left recording while the switch flips would bind into a
+    // layer that is no longer listening, which reads as the recording being ignored.
+    stopKeyRec();
+    const enabled = !keyPrefs.enabled;
+    host.setKeyPrefs({ ...keyPrefs, enabled });
+    toast(enabled ? "Shortcuts on" : "Shortcuts off. Your chords are kept");
+    return;
+  }
+  const [verb, id] = cmd.split(":") as [string, KeyAction];
+  if (verb === "rec") {
+    // Clicking the armed row again disarms it, so the recorder is never a trap.
+    if (keyRec === id) { stopKeyRec(); renderSettings(); return; }
+    keyRec = id;
+    window.addEventListener("keydown", recordKey, true);
+    renderSettings();
+    return;
+  }
+  stopKeyRec();
+  if (verb === "clear") host.setKeyPrefs({ ...keyPrefs, binds: unbindKey(keyPrefs.binds, id) });
+  else if (verb === "reset") host.setKeyPrefs({ ...keyPrefs, binds: resetKey(keyPrefs.binds, id) });
+}
+function stopKeyRec() {
+  if (keyRec === null) return;
+  keyRec = null;
+  window.removeEventListener("keydown", recordKey, true);
+}
+/**
+ * The armed row's next real keypress. Swallows everything while armed — a chord that
+ * reached the app as well as this listener would fire the shortcut it is replacing —
+ * except a bare modifier, which is the user still assembling the chord.
+ */
+function recordKey(e: KeyboardEvent) {
+  const id = keyRec;
+  if (id === null) return;
+  // Esc before the normalisation, not after: ./keys refuses to *bind* a named key, so
+  // `comboOf` returns null for it and an Esc checked below would look like a modifier
+  // still being held — leaving the only way out of a recording armed forever.
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); stopKeyRec(); renderSettings(); return; }
+  const c = comboOf(e, { digits: id === "sessionSwitch" });
+  if (!c) return; // a lone ⌘/⇧/⌥ held down, or a key this layer won't bind: keep waiting
+  e.preventDefault();
+  e.stopPropagation();
+  if (!bindableCombo(c)) {
+    // Refused rather than stored: see the `bindableCombo` note in ./keys — a bare
+    // letter bound app-wide cannot be undone, because it also breaks typing it back out.
+    toast(`${comboText(c, IS_MAC)} needs ${IS_MAC ? "⌘ or ⌥" : "Ctrl or Alt"}`);
+    return;
+  }
+  stopKeyRec();
+  const { binds, took } = bindKey(keyPrefs.binds, id, c);
+  host.setKeyPrefs({ ...keyPrefs, binds });
+  // Say who lost it out loud. The displaced row now reads "Off" on screen, which
+  // is the honest state, but nobody watches a row they weren't looking at.
+  if (took.length) toast(`${comboText(c, IS_MAC)} taken from ${took.map((t) => keyActionDef(t).label).join(", ")}`);
+  else toast(`${keyActionDef(id).label} → ${comboText(c, IS_MAC)}`);
 }
 
 function renderSetControl(c: SetControl): string {
@@ -450,6 +625,13 @@ function renderSetControl(c: SetControl): string {
     return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
       + `<button class="sw${soundPrefs.enabled ? " on" : ""}" data-setsound="toggle" role="switch"`
       + ` aria-checked="${soundPrefs.enabled}"></button></div>${renderSoundControl()}</div>`;
+  }
+  if (c.kind === "keys") {
+    // Same shape as `peek` and `sound` above: the master switch rides the label row,
+    // the picker it governs sits under it, because they are one decision.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${keyPrefs.enabled ? " on" : ""}" data-setkey="toggle" role="switch"`
+      + ` aria-checked="${keyPrefs.enabled}"></button></div>${renderKeysControl()}</div>`;
   }
   if (c.kind === "font") {
     return `<div class="set-group">${head}<div class="set-font">
@@ -649,6 +831,8 @@ $("setBody").addEventListener("click", (e) => {
   if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
+  const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");
+  if (kb) { applyKeySetting(kb.dataset.setkey!); return; }
   const r = (e.target as HTMLElement).closest<HTMLElement>("[data-urange]");
   if (r) { setUsageRange(+r.dataset.urange!); renderSettings(); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");

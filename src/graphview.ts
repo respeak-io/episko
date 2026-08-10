@@ -222,7 +222,7 @@ function sizeLeftColumn() {
 function footHtml(): string {
   if (loading) return `<div class="gmore"><span class="g-dim">Reading history…</span></div>`;
   if (err) return `<div class="gmore"><span class="g-err">${esc(err)}</span></div>`;
-  if (!more) return `<div class="gmore"><span class="g-dim">— the beginning of history —</span></div>`;
+  if (!more) return `<div class="gmore"><span class="g-dim">· the beginning of history ·</span></div>`;
   // Deliberately both: the scroll prefetch is the everyday path, the button is what
   // makes it obvious that the panel is holding a page and not the whole repo.
   return `<div class="gmore"><button class="gmore-b" data-gmore="1">Load ${PAGE} more</button></div>`;
@@ -230,7 +230,7 @@ function footHtml(): string {
 
 function detailHtml(): string {
   const c = commits.find((x) => x.sha === sel);
-  if (!c) return `<span class="g-dim">Pick a commit to see its branch, author and parents — ⏎ opens the whole message.</span>`;
+  if (!c) return `<span class="g-dim">Pick a commit to see its branch, author and parents. ⏎ opens the whole message.</span>`;
   const when = c.unix > 0 ? new Date(c.unix * 1000).toLocaleString() : "";
   const parents = c.parents.length
     ? c.parents.map((p) => {
@@ -239,7 +239,7 @@ function detailHtml(): string {
       // say so on the chip rather than offering a click that does nothing.
       return known
         ? `<button class="gp" data-gsha="${p}" title="Jump to this parent">${esc(p.slice(0, 7))}</button>`
-        : `<span class="gp gp-off" title="Not loaded yet — load more to reach it">${esc(p.slice(0, 7))}</span>`;
+        : `<span class="gp gp-off" title="Not loaded yet; load more to reach it">${esc(p.slice(0, 7))}</span>`;
     }).join("")
     : `<span class="g-dim">root</span>`;
   const row = layout.rows.find((r) => r.c.sha === c.sha);
@@ -289,7 +289,7 @@ function renderCommit() {
       const known = commits.some((x) => x.sha === p);
       return known
         ? `<button class="gp" data-gsha="${p}" data-gjump="1" title="Jump to this parent">${esc(p.slice(0, 12))}</button>`
-        : `<span class="gp gp-off" title="Not loaded yet — load more to reach it">${esc(p.slice(0, 12))}</span>`;
+        : `<span class="gp gp-off" title="Not loaded yet; load more to reach it">${esc(p.slice(0, 12))}</span>`;
     }).join("")
     : `<span class="g-dim">none (root commit)</span>`;
   el.hidden = false;
@@ -306,7 +306,7 @@ function renderCommit() {
       ? `<div class="gco-nobody">Reading the message…</div>`
       : body
         ? `<pre class="gco-msg">${esc(body)}</pre>`
-        : `<div class="gco-nobody">No message body — the subject is the whole commit message.</div>`)
+        : `<div class="gco-nobody">No message body; the subject is the whole commit message.</div>`)
     + `</div>`
     + `<div class="gco-meta">`
     + `<span><b>${esc(c.author)}</b></span><span class="g-dim">${esc(when)}</span>`
@@ -336,7 +336,7 @@ async function loadMessage(sha: string) {
   } catch (e) {
     // Store the failure where the body would have been, and cache it: a broken object
     // store must not be re-asked on every ↑/↓.
-    msgs.set(sha, `${commits.find((c) => c.sha === sha)?.subject ?? ""}\n\ncouldn't read this message — ${String(e)}`);
+    msgs.set(sha, `${commits.find((c) => c.sha === sha)?.subject ?? ""}\n\ncouldn't read this message: ${String(e)}`);
   }
   if (open1 === sha) renderCommit();
 }

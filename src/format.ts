@@ -89,17 +89,23 @@ export function fmtDwell(ms: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}:${String(ss).padStart(2, "0")}`;
 }
 export function fmtLatency(ms: number): string { return ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : Math.round(ms) + "ms"; }
-/// A disk-I/O rate, in the unit a human reads it in. Whole bytes and whole KB — a
-/// fractional B/s is noise — but MB/s keeps one decimal, because that is the range
+/// A disk-I/O rate, in the unit a human reads it in. Whole bytes and whole KiB — a
+/// fractional B/s is noise — but MiB/s keeps one decimal, because that is the range
 /// where the difference between 1.2 and 4.8 is the thing you are looking at.
+///
+/// **Binary units, and labelled as such.** These divide by 1024, so they were always
+/// KiB and MiB; calling them KB/MB understated every figure by 2.4% and 4.9%. The
+/// source is a byte counter, so the binary unit is the honest one — the label moved to
+/// meet the arithmetic rather than the other way round.
 export function fmtRate(bps: number): string {
   if (bps < 1024) return `${Math.round(bps)} B/s`;
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
-  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KiB/s`;
+  return `${(bps / (1024 * 1024)).toFixed(1)} MiB/s`;
 }
-/// A size already in MiB, promoted to GB once it stops being readable as MB.
+/// A size already in MiB, promoted to GiB once it stops being readable as MiB. Same
+/// binary-unit reasoning as `fmtRate` above — at GiB the mislabel was worth 7.4%.
 export function fmtMb(mb: number): string {
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(0)} MB`;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb.toFixed(0)} MiB`;
 }
 export function fmtShort(ms: number): string {
   const s = Math.round(ms / 1000);

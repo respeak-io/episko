@@ -21,6 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
+import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
@@ -63,7 +64,7 @@ export function setSortMode(m: SortMode) { sortMode = m; }
 // Each sort mode's rail glyph and one-line description — shared by the rail button
 // and the settings segment, so the two can never drift apart.
 export const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
-  manual:    { glyph: "≡", label: "Manual order — drag to arrange" },
+  manual:    { glyph: "≡", label: "Manual order · drag to arrange" },
   active:    { glyph: "◷", label: "Latest activity first" },
   attention: { glyph: "◆", label: "Needs you first" },
 };
@@ -119,6 +120,22 @@ export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
 // this only holds the value.
 export let soundPrefs: SoundPrefs = clampSoundPrefs(safeParse(localStorage.getItem("cc-sound")));
 export function setSoundPrefs(p: SoundPrefs) { soundPrefs = clampSoundPrefs(p); }
+
+// --- keyboard shortcuts ----------------------------------------------------------
+// The master switch and what each bindable action is bound to *now* — the full
+// resolved map, not the overrides: the global keydown handler runs against this on
+// every keystroke in the app, so it must not be re-derived per press. One JSON blob
+// under cc-keys for the same reason as cc-peek and cc-sound (the switch and the
+// chords are only ever read together), and the chords stored as overrides only, so a
+// default improved in a later release reaches every install that hadn't changed that
+// particular row. The table, the parsing, the collision rules and what "off" means
+// are ./keys, which is pure and tested; this only holds the value.
+//
+// **Read a chord through `activeBind`, never `keyPrefs.binds[id]`** — that is the one
+// place the master switch is applied, and a display site that skips it would go on
+// advertising a chord the app has stopped answering.
+export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")));
+export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p)); }
 // Shared by every preference stored as a JSON blob (peek above, the project groups
 // higher up). A corrupt or hand-edited value must not take the app down during module
 // import, the same stance ./tasks and ./notes take with their own stores — and the
@@ -229,11 +246,11 @@ export function setTermEngine(e: Engine) { termEngine = e; }
 // never raises one looks identical to a pane nobody has asked anything.
 export interface PermModeDef { id: PermMode; label: string; sub: string; glyph: string }
 export const ALL_PERM_MODES: PermModeDef[] = [
-  { id: "default",           label: "Manual",       sub: "Asks before anything risky — Episko's permission cards", glyph: "◇" },
+  { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇" },
   { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙" },
   { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎" },
   { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈" },
-  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts — anything not pre-approved is denied",    glyph: "⊘" },
+  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts · anything not pre-approved is denied",    glyph: "⊘" },
   { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠" },
 ];
 export function permModeDef(id: PermMode): PermModeDef { return ALL_PERM_MODES.find((m) => m.id === id) || ALL_PERM_MODES[0]; }
@@ -297,3 +314,15 @@ export let ioScope: IoScope =
   (IO_SCOPES as string[]).includes(localStorage.getItem("cc-io-scope") || "")
     ? localStorage.getItem("cc-io-scope") as IoScope : "today";
 export function setIoScope(s: IoScope) { ioScope = s; }
+
+// Whether the I/O box's explanation panel is open — and, when it is, the `Date.now()` it
+// opened at. Deliberately NOT persisted and not a `cc-` key: the figures in that box are
+// startling on first sight (a day of agents reads as a gigabyte written) and the panel
+// exists to say why once, not to be a preference somebody carries between runs. Reset by
+// a restart is the right lifetime for it.
+//
+// One number rather than a flag beside it, because the two would have to agree: the open
+// time IS the open state (0 = closed), so there is no pair to drift. The timestamp is
+// what lets the expander survive a repaint — see `resHtml` in ./inspectorview.
+export let ioInfoAt = 0;
+export function setIoInfoAt(t: number) { ioInfoAt = t; }

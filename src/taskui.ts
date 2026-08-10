@@ -28,7 +28,8 @@ import { $, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
 import type { Runnable } from "./types";
-import { activeId, dashMirror, externals, extMirrorId, sessions } from "./state";
+import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
+import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, frecScore } from "./palette";
 import {
   applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
@@ -120,7 +121,7 @@ export function renderMgr() {
         const editBtn = own
           ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .episko/tasks.toml">✎</button>
              <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .episko/tasks.toml">✕</button>`
-          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit — writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
+          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit. Writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
         const revertBtn = (overridden || dangling)
           ? `<button class="mgr-b" data-revert="${esc(dangling ? r.id.slice("override:".length) : r.id)}" title="Revert to what ${esc(r.sourceFile)} declares">↺</button>`
           : "";
@@ -130,7 +131,7 @@ export function renderMgr() {
             <button class="mgr-b${pins.includes(r.id) ? " on" : ""}" data-pin="${esc(r.id)}" title="${pins.includes(r.id) ? "Unpin" : "Pin to the top of the picker"}">${pins.includes(r.id) ? "★" : "☆"}</button>
             <button class="mgr-b" data-hide="${esc(r.id)}" title="${hid.includes(r.id) ? "Show in the picker" : "Hide from the picker"}">${hid.includes(r.id) ? "◌" : "◎"}</button>
             <button class="mgr-b${onStop ? " on" : ""}${noStop ? " quiet" : ""}" ${noStop ? "disabled" : ""} data-onstop="${esc(r.id)}"
-              title="${noStop ? esc(`Can't run after a turn — ${noStop}`) : onStop ? "Stop running this after a turn" : "Run this whenever a session in this project finishes a turn"}">⟲</button>
+              title="${noStop ? esc(`Can't run after a turn: ${noStop}`) : onStop ? "Stop running this after a turn" : "Run this whenever a session in this project finishes a turn"}">⟲</button>
             ${revertBtn}${editable ? editBtn : ""}
           </span>
         </div>`;
@@ -139,7 +140,7 @@ export function renderMgr() {
   // npm scripts. Absent everywhere else, so it doesn't imply a knob that does nothing.
   const runnerStrip = mgrList.some((r) => r.source === "npm")
     ? `<div class="mgr-row mgr-runner">
-         <span class="txt"><b>Package runner</b><small>the lockfile picks this — override a repo that ships the wrong one</small></span>
+         <span class="txt"><b>Package runner</b><small>the lockfile picks this; override a repo that ships the wrong one</small></span>
          <span class="s-ctl">${RUNNERS.map((rn) =>
            `<button class="opt${runnerFor(colorKey) === rn ? " on" : ""}" data-runner="${rn}">${rn}</button>`).join("")}</span>
        </div>`
@@ -236,7 +237,7 @@ async function saveMgrTask() {
   const [path, exists] = await invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir });
   if (!exists) {
     const ok = await ask(
-      `Episko will create ${tilde(path)}.\n\nIt's a normal file in your repo — commit it and your team gets these tasks too, in any editor.`,
+      `Episko will create ${tilde(path)}.\n\nIt's a normal file in your repo. Commit it and your team gets these tasks too, in any editor.`,
       { title: "Create .episko/tasks.toml?", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
     if (!ok) return;
   }
@@ -514,7 +515,7 @@ export async function runDefaultTask(kind: "build" | "test") {
   const pick = marked[0] ?? (inGroup.length === 1 ? inGroup[0] : null);
   if (!pick) {
     toast(inGroup.length
-      ? `No default ${kind} task — ${inGroup.length} are in the ${kind} group`
+      ? `No default ${kind} task; ${inGroup.length} are in the ${kind} group`
       : `No ${kind} task in ${c.project}`);
     await openRunPicker();
     return;
@@ -564,8 +565,10 @@ $("runInput").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
   else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
   else if (e.key === "Enter") { e.preventDefault(); pickRun(meta ? "pin" : e.altKey ? "params" : "run"); }
-  // ⌘⇧R inside the picker is a *real* rescan: drop the cache, then re-discover.
-  else if (meta && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
+  // The chord that OPENED the picker is a *real* rescan once you are inside it: drop
+  // the cache, then re-discover. Read from the binding rather than spelled out, so it
+  // follows a rebind in Settings › Keys instead of stranding on the old ⌘⇧R.
+  else if (comboMatches(activeBind(keyPrefs, "runTask"), e)) { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
   else if (e.key === "Tab") { e.preventDefault(); cycleRunSource(e.shiftKey ? -1 : 1); }
   else if (e.key === "Escape") { e.preventDefault(); closeRunPicker(); }
 });

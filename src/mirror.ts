@@ -212,9 +212,9 @@ export function renderPastInspector(d: Restorable) {
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const action = busy
-    ? `<div class="ext-note warn">This session is running right now — in Episko or another terminal. Resuming it a second time would interleave both conversations into one transcript, so it can't be restored until the other one exits.</div>`
+    ? `<div class="ext-note warn">This session is running right now, in Episko or another terminal. Resuming it a second time would interleave both conversations into one transcript, so it can't be restored until the other one exits.</div>`
     : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
-       <div class="ext-note">Claude picks the conversation back up where it left off. It may offer to compact the context first — that's normal for a long session.</div>`;
+       <div class="ext-note">Claude picks the conversation back up where it left off. It may offer to compact the context first, which is normal for a long session.</div>`;
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">· From your last run</div>
@@ -225,7 +225,7 @@ export function renderPastInspector(d: Restorable) {
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Remove from list</button>
-      <div class="ext-note">Removing only clears this row from Episko. The conversation stays on disk — <span class="mono">/resume</span> inside any Claude session in this folder always lists them all.</div>
+      <div class="ext-note">Removing only clears this row from Episko. The conversation stays on disk: <span class="mono">/resume</span> inside any Claude session in this folder always lists them all.</div>
     </div>`;
 }
 export function resumeDormant(id: string) {
@@ -347,6 +347,6 @@ export function renderExtInspector(e: ExtSession) {
       <div class="ext-meta"><span class="label">Claude</span><span>${e.version ? "v" + esc(e.version) : "–"}</span></div>
       <div class="ext-meta"><span class="label">PID</span><span class="mono">${e.pid}</span></div>
       <button class="ext-jump-btn" data-jump="${e.pid}">↗ Jump to its terminal</button>
-      <div class="ext-note">Episko can't drive this session — it was launched in another terminal. The panel on the left is a live read-only mirror of its transcript.</div>
+      <div class="ext-note">Episko can't drive this session, because it was launched in another terminal. The panel on the left is a live read-only mirror of its transcript.</div>
     </div>${peek}`;
 }

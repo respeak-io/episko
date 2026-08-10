@@ -48,6 +48,40 @@ export interface WtHead { path: string; branch: string; is_main: boolean; exists
 //             moved. Nothing has re-homed anything, so following it means moving the
 //             transcript and relaunching.
 export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
+// A fleet of background agents the session launched and is no longer driving — the
+// `Workflow` tool's fan-out, or a plain burst of `Task` subagents.
+//
+// It exists because a background fan-out **ends the parent's turn**. The Workflow tool
+// returns a run id in about two seconds and the agent stops, so `Stop` fires, the phase
+// goes `done`, and every surface reads "your turn" — for the twenty-odd minutes its
+// agents keep working. That is the one state the cockpit got flatly wrong: the fleet is
+// busy and the app says the human is the bottleneck.
+//
+// Everything here rides telemetry Episko already receives, which is why there is no
+// backend half. `PreToolUse{Workflow}` carries the script, whose `meta` literal names
+// the run and its phases; `SubagentStart`/`SubagentStop` fire on the PARENT session for
+// every agent the fan-out spawns (53 of each for a 53-agent run). The run-state file
+// Claude Code writes under `~/.claude/projects/…/workflows/` is not an option: it is
+// created when the run *finishes*, so it knows nothing while it matters.
+//
+// `phases` is the titles only, in order, and nothing marks one as current — no hook
+// says which phase a workflow is in, so the card lists what the run will do rather than
+// claiming to know where it has got to.
+export interface Fanout {
+  /// `meta.name` — empty for a bare `Task` fan-out, which has no script to name it.
+  name: string;
+  /// `meta.description`.
+  detail: string;
+  /// `meta.phases[].title`, in order.
+  phases: string[];
+  since: number;
+  /// Cumulative, unlike `Sess.subagents` — which stays the *live* count and is the one
+  /// owner of that number. started − done is not it: an agent that never stopped would
+  /// make the two disagree, and the display asks both questions separately.
+  started: number; done: number;
+  /// The last `SubagentStart`/`Stop`. What the grace window in `liveFanout` measures.
+  lastAt: number;
+}
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
@@ -124,10 +158,64 @@ export const midFlight = (s: Sess) =>
   s.kind === "shell" ? false
     : s.kind === "task" ? !isExited(s)
       : !!s.attention || s.phase === "working" || s.phase === "thinking";
+// ---------- background fan-outs ----------
+// One rule, read by six surfaces (sidebar glyph, mini-rail, tray, inspector pill and
+// card, the "needs you" set): a session whose agents are still working is not waiting
+// on you. It lives here beside the other discriminants for the same reason they do.
+
+/// How long a fan-out keeps its state after the last agent stops.
+///
+/// Not cosmetic smoothing. A workflow script runs its stages between fan-outs — a
+/// barrier collects results, plain JS dedupes them, the next `parallel()` spawns — and
+/// through that gap the live count is genuinely 0 while the run is very much alive.
+/// Without a window the cockpit would flip to "your turn" and back on every stage
+/// boundary, which is worse than the bug this fixes. It is generous because the cost of
+/// being late is one stale minute, and the cost of being early is a lie.
+export const FANOUT_GRACE_MS = 90_000;
+/// The session's fan-out if it is still in flight, else null.
+///
+/// `subagents > 0` has to be sufficient on its own — a workflow agent can run eighteen
+/// minutes without the parent seeing a single `Subagent*` event in between, so a rule
+/// that only trusted recent activity would drop the longest runs first.
+export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
+  if (!isAgent(s) || !s.fanout) return null;
+  return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
+}
+/// Is the fan-out the whole story — i.e. the conversation itself has nothing in flight?
+///
+/// Deliberately narrow. A permission still outranks it (Claude is blocked on you *now*),
+/// and so does a failed turn; and while the agent is mid-turn its own `working` reading
+/// is the truer one, with the fleet showing as a tally beside it. This is the state that
+/// used to be a green ✓.
+export function bgWaiting(s: Sess, now = Date.now()): boolean {
+  return !s.attention && (s.phase === "done" || s.phase === "idle") && !!liveFanout(s, now);
+}
+/// `done / total` for a row or a card, or null when there is no fleet worth a number.
+///
+/// The total is `max(started, done + running)`, never `started` alone: launching a second
+/// workflow while the first still has agents up restarts the counters, and a bar that
+/// read 4/2 would be the visible half of that. One owner for the arithmetic, because the
+/// sidebar tally and the inspector's bar must never disagree.
+export function fanoutTally(s: Sess, now = Date.now()): { done: number; total: number } | null {
+  const f = liveFanout(s, now);
+  if (!f) return null;
+  const total = Math.max(f.started, f.done + s.subagents);
+  return total > 1 || bgWaiting(s, now) ? { done: Math.min(f.done, total), total } : null;
+}
+/// What a background fan-out is called in prose. The lull case says the run is alive
+/// without naming a count, because during a stage boundary there is no count to name.
+export function fanoutText(s: Sess): string {
+  const n = s.subagents;
+  if (n) return `${n} agent${n === 1 ? "" : "s"} working`;
+  return s.fanout?.name ? "workflow running" : "background work";
+}
+
 // Which glyph/CSS bucket a pane falls into: a blocking permission outranks the
-// phase it is blocking. Read by the sidebar rows, the mini-rail, the tray and the
-// inspector pill, so it lives here rather than in any one of them.
-export const statusKey = (s: Sess) => (s.attention ? "attention" : s.phase);
+// phase it is blocking, and a live fan-out outranks the `done` it left behind.
+// Read by the sidebar rows, the mini-rail, the tray and the inspector pill, so it
+// lives here rather than in any one of them.
+export const statusKey = (s: Sess, now = Date.now()) =>
+  s.attention ? "attention" : bgWaiting(s, now) ? "background" : s.phase;
 // What a phase is called in prose. Read by the inspector pill, the reactor dropdown
 // and the tray menu — same three-reader argument as statusKey above, so it lives
 // beside it rather than in whichever of them was extracted first.
@@ -146,7 +234,10 @@ export const apiErrText = (e: ApiErr) => API_ERR_TEXT[e.kind] ?? (e.kind.replace
 // The phase in prose, naming the API failure when there is one. Every surface that
 // labels a state reads this rather than PILL_TEXT directly: "error" tells you the
 // turn broke, "API overloaded" also tells you it wasn't your fault and to retry.
-export const phaseText = (s: Sess) => (s.phase === "error" && s.apiErr ? apiErrText(s.apiErr) : PILL_TEXT[s.phase]);
+export const phaseText = (s: Sess, now = Date.now()) =>
+  s.phase === "error" && s.apiErr ? apiErrText(s.apiErr)
+    : bgWaiting(s, now) ? fanoutText(s)
+      : PILL_TEXT[s.phase];
 
 /// How long a run has taken: wall-clock while it is going, and **frozen at its exit**
 /// once it is over.
@@ -215,7 +306,15 @@ export interface Sess {
   // Restoring `id` after a compaction would resurrect the pre-compaction thread.
   resumeId: string;
   branch: string; worktree: string | null; title: string;
-  phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null; subagents: number;
+  phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
+  /// Agents running in this session's name RIGHT NOW — `SubagentStart` minus
+  /// `SubagentStop`. The live count and nothing else; the cumulative tally, the run's
+  /// name and its phases live on `fanout` beside it.
+  subagents: number;
+  /// The background fleet this session launched, from the first `SubagentStart` (or the
+  /// `Workflow` call that named it) until the next turn clears it. Null for the great
+  /// majority of sessions, which never fan out. See `Fanout` for why it exists.
+  fanout: Fanout | null;
   // Set by StopFailure, cleared the moment the session starts a new turn. While it
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.

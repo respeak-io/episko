@@ -39,6 +39,7 @@ const SHAPE: Record<string, string> = {
   idle: "ring",         // ○
   error: "cross",       // ✕
   ended: "small",       // ·
+  background: "half",   // ◐ — the turn is over, its agents are not
 };
 
 // Resolve a status colour by asking the *stylesheet*, not by restating it here.
@@ -98,22 +99,22 @@ export function updateTray() {
       const desc = clip(s.title) || branch;
       const status = s.attention ? s.attention : phaseText(s);
       const { shape, cls } = rowIcon(s);
-      rows.push({ kind: "session", id: s.id, label: `${desc} — ${status}`, shape, rgb: classRgb(cls) });
+      rows.push({ kind: "session", id: s.id, label: `${desc} · ${status}`, shape, rgb: classRgb(cls) });
     }
   }
   const list = groups.flatMap((p) => p.sessions);
   const needy = needsYouSessions();
   const n = list.length;
-  let title = "", tooltip = "Episko — no active sessions";
+  let title = "", tooltip = "Episko · no active sessions";
   if (n > 0) {
     if (needy.length) {
       const dom = reactorState(needy[0]);
       const c = needy.filter((s) => reactorState(s) === dom).length;
       title = `${GLYPH[dom]} ${c}`;
-      tooltip = `Episko — ${n} session${n === 1 ? "" : "s"}, ${reactorLabel(dom, c)}`;
+      tooltip = `Episko · ${n} session${n === 1 ? "" : "s"}, ${reactorLabel(dom, c)}`;
     } else {
       title = `● ${n}`;
-      tooltip = `Episko — ${n} session${n === 1 ? "" : "s"}`;
+      tooltip = `Episko · ${n} session${n === 1 ? "" : "s"}`;
     }
   }
   // The icons are part of what is drawn, so shape and colour belong in the signature
