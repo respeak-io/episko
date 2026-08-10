@@ -94,6 +94,46 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
     expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
   });
+  /// The same bug through a different door, which `run.root` could not close: a task's
+  /// cwd reaches a **shell** too. `❯ Terminal` opens one in `activeCwd()` — the raw
+  /// workdir of whatever owns the stage — so a shell opened while a finished task pane
+  /// is on stage starts in that task's subfolder, and a shell has no `run` to unwrap.
+  /// The roster places it. Spelled as it really arrived on Windows: the checkout in
+  /// backslashes (the folder the user picked), the declared cwd's own forward slashes
+  /// pasted on by `${workspaceFolder}` substitution.
+  it("clusters a shell started in a subfolder by its checkout", () => {
+    const repo = "E:\\w\\epi", wt = "E:\\w\\wt-feat";
+    worktreesByRepo.set(repo, [
+      { path: repo, branch: "main", is_main: true, exists: true },
+      { path: wt, branch: "feat", is_main: false, exists: true },
+    ]);
+    const p = grp({ path: repo, sessions: [
+      sess({ id: "agent", workdir: wt, colorKey: repo, branch: "feat" }),
+      sess({ id: "sh", kind: "shell", colorKey: repo, branch: "feat",
+             workdir: wt + "/00_scripts/clone_db_locally" }),
+    ] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(ids(cl[0].sessions)).toEqual(["agent", "sh"]);
+  });
+  /// The roster's spelling must not escape into a cluster key for a checkout the group
+  /// already names: `isMain` compares that key against the project path, and the roster
+  /// side has been through `norm_path` in Rust while the project side is however the
+  /// folder was picked. Only a path genuinely *inside* a checkout is rewritten.
+  it("keeps the group's own spelling of a checkout the roster spells differently", () => {
+    const repo = "E:\\w\\epi";
+    worktreesByRepo.set(repo, [{ path: "E:/w/epi", branch: "main", is_main: true, exists: true }]);
+    const p = grp({ path: repo, sessions: [sess({ id: "a", workdir: repo, colorKey: repo })] });
+    expect(clusterByWorktree(p)[0]).toMatchObject({ key: repo, isMain: true });
+  });
+  it("leaves a folder the roster cannot place as its own cluster", () => {
+    worktreesByRepo.set("/w/epi", [{ path: "/w/epi", branch: "main", is_main: true, exists: true }]);
+    const p = grp({ sessions: [
+      sess({ id: "a", workdir: "/w/epi" }),
+      sess({ id: "b", kind: "shell", workdir: "/tmp/scratch" }),
+    ] });
+    expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi", "/tmp/scratch"]);
+  });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
     expect(clusterByWorktree(p).map((c) => c.isMain)).toEqual([true, false]);
