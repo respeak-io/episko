@@ -901,6 +901,57 @@ html.win .wctl { display: flex; }
    matches the detail strip's bottom line so the two buttons land on the same pixels. */
 .gco-x2 { margin-left: 12px; }
 
+/* --- context card (the files a session has been into) --- */
+/* Shared header, so flipping Files ⇄ Tools moves nothing but the body. */
+.fx-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; }
+.fx-sub { font-size: 10.5px; color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-seg { margin-left: auto; flex: none; display: flex; border: 1px solid var(--hair); border-radius: 6px; overflow: hidden; }
+.fx-seg button { border: 0; background: none; cursor: pointer; padding: 2px 8px; font: 600 10px var(--font-ui); color: var(--muted-2); }
+.fx-seg button:hover { color: var(--text); }
+.fx-seg button.on { background: var(--surface); color: var(--text); }
+
+.fx { display: flex; flex-direction: column; gap: 10px; }
+.fx-grp { display: flex; flex-direction: column; }
+/* One colour per group, set once here and inherited by the glyph, the count chip and
+   the row's hover wash — so a group reads as a group without a box around it. */
+.fx-grp.k-created { --kc: var(--st-done); }
+.fx-grp.k-edited  { --kc: var(--tool-edit); }
+.fx-grp.k-read    { --kc: var(--tool-read); }
+.fx-gh { display: flex; align-items: center; gap: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--hair); margin-bottom: 2px; }
+.fx-gg { color: var(--kc); font-size: 9px; line-height: 1; }
+.fx-gn { font: 700 9px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--kc); }
+.fx-gc { margin-left: auto; font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+
+/* The row is the click target, the ⌂ is a second one inside it. Both need a pointer
+   cursor and neither may reflow on hover — the inspector repaints on every telemetry
+   event, and a row that changes size under the pointer is a row you can miss. */
+.fx-row { display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; margin: 0 -5px; border-radius: 5px; cursor: pointer; min-width: 0; }
+.fx-row:hover { background: color-mix(in srgb, var(--kc) 11%, transparent); }
+.fx-f { font: 11.5px var(--font-mono); color: var(--text); white-space: nowrap; flex: none; max-width: 62%; overflow: hidden; text-overflow: ellipsis; }
+/* The folder gets the leftover room. Shortened in TS (`elidePath`) rather than here —
+   see fileRow for why `direction: rtl` is not the answer it looks like — so this
+   ellipsis is only ever the backstop for a narrow inspector. */
+.fx-p { flex: 1 1 auto; min-width: 0; font: 10px var(--font-mono); color: var(--muted-2); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-x { flex: none; font: 9.5px var(--font-mono); font-style: normal; color: var(--muted-2); opacity: .85; }
+/* Outside the session's own folder — a config in $HOME, a dependency, another checkout.
+   The one case where the path matters more than the filename, so it is the path that is
+   lit and the row carries a hairline to set it apart from its neighbours. */
+.fx-row.out { border-left: 2px solid color-mix(in srgb, var(--st-working) 55%, transparent); padding-left: 5px; margin-left: -7px; }
+.fx-row.out .fx-p { color: var(--st-working); opacity: .8; }
+/* Revealed on hover, but its box is always there: appearing from nothing would shove
+   the filename left the moment the pointer arrives. */
+.fx-r { flex: none; width: 18px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; color: transparent; font-size: 11px; line-height: 1; }
+.fx-row:hover .fx-r { color: var(--muted); }
+.fx-r:hover { background: var(--surface); color: var(--text) !important; }
+.fx-more { align-self: flex-start; margin-top: 3px; border: 0; background: none; cursor: pointer; padding: 1px 0; font: 600 10px var(--font-ui); color: var(--muted-2); }
+.fx-more:hover { color: var(--accent-ink); }
+
+/* Everything that moved no file, in one line. This IS the old timeline, summarised —
+   the whole reason the card can afford to spend its space on filenames. */
+.fx-foot { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hair); }
+.fx-t { font: 10px var(--font-mono); opacity: .85; }
+.fx-t i { font-style: normal; color: var(--muted-2); margin-left: 2px; }
+
 /* --- timeline (colour by tool, latency bar) --- */
 .tl2 { display: flex; flex-direction: column; }
 .tl2 .row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--hair); }

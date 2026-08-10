@@ -17,14 +17,37 @@ import { $, stageGen } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { sessions } from "./state";
+import { activeId, sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml, resHtml, RISK_LABEL,
-  timelineHtml, vitalHtml, wsetHtml,
+  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml,
+  resHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
+
+// ---- the Context card's view state ----
+//
+// Which of its groups are expanded, and whether it is showing files or the old tool
+// timeline. Ephemeral and app-wide rather than per-session: it is how *you* want the
+// card, not something about a conversation, so it survives switching panes and doesn't
+// need persisting. Held here, next to the element it repaints, on the same pattern as
+// ./panes' `collapsedRuns` — the module that owns the state calls the one renderer that
+// reads it, rather than reaching for a global `renderAll`.
+const openGroups = new Set<string>();
+let ctxMode: CtxMode = "files";
+function repaintActive() {
+  const s = activeId ? sessions.get(activeId) : null;
+  if (s) renderInspector(s);
+}
+export function toggleFileGroup(g: string) {
+  if (openGroups.has(g)) openGroups.delete(g); else openGroups.add(g);
+  repaintActive();
+}
+export function setCtxMode(m: string) {
+  ctxMode = m === "tools" ? "tools" : "files";
+  repaintActive();
+}
 
 export function renderInspector(s: Sess | null) {
   if (s?.kind === "shell") { renderShellInspector(s); return; }
@@ -63,7 +86,7 @@ export function renderInspector(s: Sess | null) {
   // for any repo session — a clean tree that's behind is exactly what you want to
   // see, and it's the only place the fetch/pull/push buttons live.
   if (s.git) html.push(wsetHtml(s));
-  html.push(timelineHtml(s));                                     // activity, by tool
+  html.push(contextHtml(s, openGroups, ctxMode));                 // the files it's been into
   html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
   paintInspector(html.join(""));
   // The dwell is patched, never rendered — see `paintInspector`. Do this after the

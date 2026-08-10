@@ -12,11 +12,13 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
+import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
+import { FILE_MANAGER } from "./dom";
+import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
   apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
-  type DiffStat, type Risk, type Sess,
+  type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
@@ -246,9 +248,96 @@ export function hunkHtml(h: DiffHunk): string {
   return `<div class="dhunk"><div class="dhh">⋯${ctx}</div>${rows}</div>`;
 }
 
+// ---------- context: what the session has been into ----------
+//
+// The card that replaced the activity timeline as the inspector's default. The timeline
+// is still here, one click away under `Tools`, because the two answer different
+// questions and only one of them is worth the space by default — see ./files for why
+// a set of files beats a log of tool calls, and `contextHtml` for the split.
+
+const KIND_META: Record<TouchKind, { label: string; glyph: string }> = {
+  created: { label: "Created", glyph: "✦" },
+  edited: { label: "Edited", glyph: "◆" },
+  read: { label: "Read", glyph: "○" },
+};
+/// Rows a group shows before it folds. Created and Edited are the answer to "what did
+/// this agent change", they are short in practice, and folding them would hide the
+/// point of the card; Read is routinely hundreds of files and gets the tight fold.
+const GROUP_SHOW: Record<TouchKind, number> = { created: 10, edited: 10, read: 6 };
+
+/// One file. The whole row is the open target and the ⌂ is a target inside it, which is
+/// why main.ts's if-chain has to test `freveal` **before** `fopen` — same inner-wins
+/// rule as the run group's twisty.
+function fileRow(f: FileTouch, workdir: string): string {
+  const { name, dir, outside } = fileLabel(f.path, workdir);
+  // An in-project folder is a couple of segments and shows whole. An outside one is a
+  // full absolute path, and it is shortened *here* rather than by CSS: `text-overflow`
+  // can only drop the tail, which is the half that identifies it — and the obvious
+  // fix (`direction: rtl`, so the ellipsis lands at the front) reorders the neutral
+  // separators at the string's edges, printing `/Users/Tim/.claude` as
+  // `Users/Tim/.claude/`. `elidePath` is the house answer to the same problem.
+  const where = outside ? elidePath(tilde(dir), 34) : dir;
+  const times = f.n > 1 ? `<i class="fx-x">×${f.n}</i>` : "";
+  const tip = `${tilde(f.path)}\nOpen it · ⌂ reveals it in ${FILE_MANAGER}`;
+  return `<div class="fx-row${outside ? " out" : ""}" data-fopen="${escAttr(f.path)}" title="${escAttr(tip)}">`
+    + `<span class="fx-f">${esc(name)}</span>`
+    + `<span class="fx-p">${esc(where)}</span>${times}`
+    + `<button class="fx-r" data-freveal="${escAttr(f.path)}" title="Reveal in ${FILE_MANAGER}">⌂</button></div>`;
+}
+
+function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: boolean): string {
+  if (!files.length) return "";
+  const m = KIND_META[kind];
+  const lim = GROUP_SHOW[kind];
+  const shown = open ? files : files.slice(0, lim);
+  const rest = files.length - shown.length;
+  // "Show fewer" only appears on a group that was folded in the first place — an
+  // expanded group of four would otherwise offer to collapse itself to four.
+  const more = rest > 0 ? `<button class="fx-more" data-fgroup="${kind}">+${rest} more</button>`
+    : open && files.length > lim ? `<button class="fx-more" data-fgroup="${kind}">Show fewer</button>` : "";
+  return `<div class="fx-grp k-${kind}">`
+    + `<div class="fx-gh"><span class="fx-gg">${m.glyph}</span><span class="fx-gn">${m.label}</span><span class="fx-gc">${files.length}</span></div>`
+    + shown.map((f) => fileRow(f, workdir)).join("") + more + `</div>`;
+}
+
+/// The card's two modes share one header, so the toggle sits still when you flip it.
+/// The Files mode carries no count line: every group already states its own, and the
+/// two together only competed for the width the toggle needs.
+function ctxHead(mode: CtxMode, sub: string): string {
+  const tab = (m: CtxMode, t: string) => `<button class="${m === mode ? "on" : ""}" data-fmode="${m}">${t}</button>`;
+  return `<div class="fx-head"><span class="label">Context</span><span class="fx-sub">${esc(sub)}</span>`
+    + `<span class="fx-seg">${tab("files", "Files")}${tab("tools", "Tools")}</span></div>`;
+}
+
+export type CtxMode = "files" | "tools";
+
+/// The inspector's Context card: every file the session has touched, grouped by what it
+/// did to them, plus a one-line tally of everything that touched no file.
+///
+/// `open` is the set of group names currently shown in full — ephemeral view state owned
+/// by ./inspector, passed in rather than read, so this stays a pure function of its
+/// arguments like every other card here.
+export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): string {
+  if (mode === "tools") return ctxHead(mode, "last 8 calls") + timelineHtml(s);
+
+  const g = groupTouches(s.files);
+  const others = otherTools(s.tally);
+  const foot = others.length
+    ? `<div class="fx-foot">${others.map((o) => `<span class="fx-t ${toolClass(o.tool)}">${esc(shortTool(o.tool))}<i>×${o.n}</i></span>`).join("")}</div>`
+    : "";
+  if (!s.files.length) {
+    // A session that has run tools but opened no file is a real and readable state
+    // (a long `Bash` sweep, a research turn) — say so, and still show what it did run.
+    const note = others.length ? "No files opened yet." : "Nothing touched yet.";
+    return ctxHead(mode, "") + `<div class="insp-empty" style="padding:14px 0">${note}</div>` + foot;
+  }
+  const body = GROUP_ORDER.map((k) => fileGroup(k, g[k], s.workdir, open.has(k))).join("");
+  return ctxHead(mode, "") + `<div class="fx">${body}</div>` + foot;
+}
+
 export function timelineHtml(s: Sess): string {
   const acts = s.activity.slice(0, 8);
-  if (!acts.length) return `<div><div class="lab" style="margin-bottom:6px">Activity</div><div class="insp-empty" style="padding:12px 0">No activity yet.</div></div>`;
+  if (!acts.length) return `<div class="insp-empty" style="padding:14px 0">No tool calls yet.</div>`;
   const maxDur = Math.max(1, ...acts.map((a) => a.durMs ?? 0));
   const rows = acts.map((a) => {
     const cls = toolClass(a.tool);
@@ -257,7 +346,7 @@ export function timelineHtml(s: Sess): string {
     const ms = running ? "···" : fmtLatency(a.durMs!);
     return `<div class="row"><span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span><span class="arg">${esc(a.arg)}</span><span class="lat"><span class="latbar ${running ? "run" : ""}" style="width:${w}%"></span><span class="ms">${ms}</span></span></div>`;
   }).join("");
-  return `<div><div class="lab" style="margin-bottom:6px">Activity · by tool</div><div class="tl2">${rows}</div></div>`;
+  return `<div class="tl2">${rows}</div>`;
 }
 // Disk I/O for the session's `claude` process. Replaced cpu/mem, which measured the one
 // thing a Claude session is never short of: this is an I/O-bound workload — it reads

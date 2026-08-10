@@ -62,6 +62,21 @@ export async function openProjectFolder(key: string) {
   catch (e) { toast(String(e)); }
 }
 
+// The inspector's Context rows: click a file to open it, ⌂ to show it in the file
+// manager. Both take an absolute path straight off a hook payload — which is exactly
+// why both surface the backend's error rather than swallowing it. An agent's file set
+// outlives the files in it: it reads a path in a worktree that is later removed, writes
+// a temp file it then deletes, and the row for either is still sitting in the card. A
+// silent no-op there reads as a broken button; "no such file" reads as the truth.
+export async function openTouchedFile(path: string) {
+  try { await invoke("open_file", { path }); }
+  catch (e) { toast(String(e)); }
+}
+export async function revealTouchedFile(path: string) {
+  try { await invoke("reveal_file", { path }); }
+  catch (e) { toast(String(e)); }
+}
+
 // The file-manager sibling of ⌘T (⌘⏎): show the current selection's folder. Keyed
 // off activeCwd(), so it lands on the same directory a terminal would — a worktree
 // session's own checkout rather than the repo it groups under, an external

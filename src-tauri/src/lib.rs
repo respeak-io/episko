@@ -581,6 +581,8 @@ pub fn run() {
             platform::read_legacy_localstorage,
             platform::open_folder,
             platform::reveal_path,
+            platform::open_file,
+            platform::reveal_file,
             write_debug_file,
             log_frontend,
             update_tray,

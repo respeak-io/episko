@@ -11,6 +11,13 @@ let HOME = "";
 export function setHome(h: string) { HOME = h; }
 
 export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+/// `esc` for a value going into a double-quoted **attribute**. `esc` is tuned for text
+/// nodes and leaves `"` alone, which is right everywhere it is used on visible content
+/// and wrong the moment the string is user data in an attribute: the inspector's file
+/// rows carry a path straight off a hook payload into `data-fopen="…"`, and a quote in
+/// a filename is legal on both mainstream filesystems. One would close the attribute
+/// early and swallow the rest of the row's markup.
+export const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
 export const tilde = (p: string) => (HOME ? p.replace(HOME, "~") : p);
 // Split on both separators so Windows paths (E:\proj\sub) collapse to the leaf,
 // not the whole string — otherwise the sidebar shows the full path as the name.

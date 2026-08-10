@@ -17,11 +17,12 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
-import { renderInspector, tickDwell } from "./inspector";
+import { renderInspector, setCtxMode, tickDwell, toggleFileGroup } from "./inspector";
 import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
-  followSessionDrift, removeFavorite, resolvePermission, revealActiveFolder,
+  followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
+  revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setKeyPrefs, setPeekPrefs, setPermMode,
   setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
   toggleIoInfo, toggleRail, toggleTheme,
@@ -599,7 +600,7 @@ document.addEventListener("click", (e) => {
   // for free — but only if its attribute is in this list. A data- attribute the
   // selector doesn't name resolves to the enclosing row instead, silently doing the
   // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -643,6 +644,14 @@ document.addEventListener("click", (e) => {
   // cycles: today → this run → everything recorded. A cycle rather than a popover
   // because there are three values and no sub-choices — a menu would be one more click
   // to reach a number that is already on screen.
+  // The inspector's Context card. `freveal` is tested BEFORE `fopen` for the same
+  // reason `rgtoggle` is tested before `rungroup`: the ⌂ button sits *inside* the file
+  // row, so `closest()` hands back the button and the inner target has to win — put
+  // `fopen` first and the ⌂ would open the file instead of showing it.
+  else if (el.dataset.freveal) void revealTouchedFile(el.dataset.freveal);
+  else if (el.dataset.fopen) void openTouchedFile(el.dataset.fopen);
+  else if (el.dataset.fgroup) toggleFileGroup(el.dataset.fgroup);
+  else if (el.dataset.fmode) setCtxMode(el.dataset.fmode);
   else if (el.dataset.ioscope) cycleIoScope();
   else if (el.dataset.ioinfo) toggleIoInfo();
   else if (el.dataset.toast) toast(el.dataset.toast);

@@ -24,7 +24,7 @@ const sess = (o: Partial<Sess> = {}): Sess => ({
   pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
-  git: null, res: null, lastEvent: "", activity: [],
+  git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
   kind: "claude", external: false, ...o,
 } as Sess);
 const dorm = (o: Partial<Restorable> = {}): Restorable =>
