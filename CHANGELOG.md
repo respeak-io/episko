@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.19.0 — 2026-08-10
+The inspector stops listing tool calls and starts listing files — what the agent
+created, edited and read, each one a click away from opening.
+
 + **The inspector tells you which files a session has been into, and opens them.** Where
   the activity panel listed the last eight tool calls — on a busy turn about forty seconds
   of history, most of it `Bash` — there is now a set of *files*, grouped by what the agent
