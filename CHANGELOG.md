@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.18.0 — 2026-08-10
+Every shortcut is yours to rebind or switch off, a session whose agents are still
+working stops claiming your turn, and the disk-I/O box explains its own gigabyte.
+
 + **Every keyboard shortcut can be changed.** Settings › Keys lists the fourteen the app
   dispatches, each recording the chord you actually press rather than asking you to
   assemble one from a modifier menu. Taking a chord somebody else had works, and the row it
