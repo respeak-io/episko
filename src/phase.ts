@@ -13,6 +13,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Fanout, Phase, Risk, Sess } from "./types";
+import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
@@ -226,6 +227,14 @@ export function applyHook(s: Sess, data: any) {
     case "PostToolUseFailure": {
       const tool = data.tool_name || "";
       closeActivity(s, data.tool_name);
+      // The Context card's two inputs. Both are fed from the *Post* hook rather than
+      // the Pre one the timeline opens on, and for opposite reasons: the file set needs
+      // `tool_response` (it is what says create vs. update), and the tally would
+      // double-count if it also ran on Pre. A failed call still counts in the tally —
+      // it ran — but contributes no file, because "the agent read this" should not
+      // appear on the strength of a Read that errored.
+      bumpTally(s.tally, tool);
+      if (ev === "PostToolUse") applyTouch(s.files, tool, data.tool_input, data.tool_response, Date.now());
       onSessionTouched(s, tool, data);
       if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
       break;

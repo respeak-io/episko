@@ -21,6 +21,17 @@ export interface ApiErr { kind: string; detail: string; at: number }
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
 export interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
+// What a session did to one file, accumulated over the whole conversation — the model
+// behind the inspector's Context card. One entry per path, never one per tool call:
+// the question it answers is "what has this agent been into?", and an agent that reads
+// the same file nine times has told you one thing nine times.
+//
+// `kind` only ever climbs (read → edited → created; see RANK in ./files), because it is
+// a claim about the file rather than a log of the last thing that happened to it: a
+// file the agent wrote and then re-read is still a file it wrote. `n` is every touch,
+// `at` the most recent one — together they order the list and size the "×3" badge.
+export type TouchKind = "created" | "edited" | "read";
+export interface FileTouch { path: string; kind: TouchKind; n: number; at: number }
 // A single item from a TodoWrite payload (the plan Claude keeps for itself).
 export interface Todo { content: string; status: string }
 // Uncommitted "working set" summary from the git_diffstat backend command, plus
@@ -331,6 +342,11 @@ export interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
+  /// Every file this session has read, edited or created, and how many tools it ran
+  /// that touched no file at all. Both accumulate from PostToolUse and are display-only
+  /// — nothing here is written to disk or read back, so a restart starts them empty.
+  /// See ./files for the rules and the inspector's Context card for what draws them.
+  files: FileTouch[]; tally: Record<string, number>;
   // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
   // attached on activation, released when the pool evicts it or the pane exits (see
   // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it

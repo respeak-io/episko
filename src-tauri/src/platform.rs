@@ -659,6 +659,104 @@ pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a file with whatever the OS has registered for it — the primary click on the
+/// inspector's Context rows.
+///
+/// The sibling of `reveal_path` and deliberately a *different* command rather than a
+/// flag on it, because the path comes from somewhere else and so has a different
+/// trust story. `reveal_path` takes `(project_root, relative)` and rejects anything
+/// that climbs out, because its `rel` arrives from task-discovery data. This one takes
+/// one absolute path, and the only thing that produces one is a `file_path` the running
+/// agent already read or wrote — a file the user could have opened from the pane
+/// itself. Constraining it to the project would break the case worth having: the config
+/// in `$HOME`, the dependency's source, the sibling checkout the agent drifted into.
+///
+/// On macOS it falls back to revealing the file when nothing is registered for the
+/// extension. That is not a rare corner — a stock machine has no handler for `.rs` or
+/// `.toml` — and `open` fails there with a dialog-free non-zero exit, so without the
+/// fallback the most ordinary click in the card would do nothing at all.
+#[tauri::command]
+pub(crate) fn open_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("no longer there: {path}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `.status()` rather than the `.spawn()` used elsewhere: the exit code is the
+        // only signal that no application claimed the file, and `open` returns it in
+        // milliseconds — it hands off to LaunchServices rather than waiting on the app.
+        let opened = std::process::Command::new("open")
+            .arg(&path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !opened {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("open Finder: {e}"))?;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Same backslash rule as `open_folder`: the shell parser silently opens
+        // Documents when handed forward slashes, and a `file_path` from a hook payload
+        // is exactly the kind of string that carries them.
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        std::process::Command::new(format!(r"{sysroot}\explorer.exe"))
+            .arg(path.replace('/', "\\"))
+            .spawn()
+            .map_err(|e| format!("open Explorer: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Show an absolute path in the file manager, selected — the ⌂ on a Context row. Same
+/// trust story as `open_file` above; the per-OS mechanics are `reveal_path`'s, minus
+/// the project-relative resolution it exists to do safely.
+#[tauri::command]
+pub(crate) fn reveal_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("no longer there: {path}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("open Finder: {e}"))?;
+    }
+    #[cfg(windows)]
+    {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        std::process::Command::new(format!(r"{sysroot}\explorer.exe"))
+            .arg(format!("/select,{}", path.replace('/', "\\")))
+            .spawn()
+            .map_err(|e| format!("open Explorer: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // No portable "select the file" across Linux file managers; open the folder.
+        let target = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+    }
+    Ok(())
+}
+
 /// A caffeinate flag we're willing to pass through: a short-option cluster over
 /// the sleep-assertion letters (`-d -i -m -s -u`, or combined like `-dimsu`),
 /// the `-t` timeout switch, or a bare decimal number (its seconds argument).

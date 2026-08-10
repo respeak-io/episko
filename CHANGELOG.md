@@ -13,6 +13,23 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The inspector tells you which files a session has been into, and opens them.** Where
+  the activity panel listed the last eight tool calls — on a busy turn about forty seconds
+  of history, most of it `Bash` — there is now a set of *files*, grouped by what the agent
+  did to each one: **Created**, **Edited**, **Read**. One row per file rather than one per
+  call, newest first, kept for the whole conversation instead of scrolling away, with a
+  `×3` when it has been back. **Click a row and the file opens; click its ⌂ and your file
+  manager shows it.** A file outside the session's own folder — a config in your home
+  directory, a dependency, another checkout — is marked and shows where it actually lives,
+  because that is the one case where the folder matters more than the filename. Reading
+  what an agent is doing to your tree no longer means reading the terminal.
+
+~ **Everything that touched no file is one line now.** `Bash ×47` says what forty-seven
+  `Bash` rows were telling you, and it is what buys the room the filenames needed. Nothing
+  is lost: the old timeline, latency bars and all, is a click away under the card's
+  `Tools` tab. What Bash itself did to the tree is left to the working-set card above,
+  which reads git and therefore knows.
+
 ## 0.18.0 — 2026-08-10
 Every shortcut is yours to rebind or switch off, a session whose agents are still
 working stops claiming your turn, and the disk-I/O box explains its own gigabyte.

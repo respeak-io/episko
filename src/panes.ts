@@ -108,7 +108,8 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
-    lastEvent: "", activity: [], kind: "claude", external, term, fit, pane,
+    lastEvent: "", activity: [],
+    files: [], tally: {}, kind: "claude", external, term, fit, pane,
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => {
@@ -245,7 +246,8 @@ async function adoptSession(o: { id: string; workdir: string; meta: Restorable |
     apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
-    lastEvent: "", activity: [], kind: "claude", external: false, term, fit, pane,
+    lastEvent: "", activity: [],
+    files: [], tally: {}, kind: "claude", external: false, term, fit, pane,
     adopt: { pending: [] },
   };
   // From this line the pty-output listener queues this session's chunks into
@@ -309,6 +311,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
+    files: [], tally: {},
     kind: "shell", external: false, term, fit, pane,
   };
   sessions.set(id, s);
@@ -373,6 +376,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
+    files: [], tally: {},
     resumeId: id, kind: "task", external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
   };
