@@ -101,6 +101,29 @@ function checkoutOf(path: string, roster: readonly Checkout[]): Checkout | null 
   return best;
 }
 
+/// Which checkout a pane's *directory* belongs to, as a path — the grouping answer,
+/// where everything below is the drift answer. Same resolution, different question, so
+/// it shares the longest-match rule rather than growing a second one in ./grouping.
+///
+/// A pane's own directory is not always its checkout. A task declares its own cwd (VS
+/// Code's `options.cwd`, routinely `01_frontend`), and a shell opened while that task
+/// pane is on stage inherits it — `❯ Terminal` starts in `activeCwd()`, the stage
+/// owner's raw workdir — so panes can sit several folders deep inside the checkout they
+/// belong to. The roster is the only thing that knows where the checkout actually ends.
+///
+/// **An exact match keeps the caller's spelling.** The roster side is resolved and
+/// normalised in Rust; the caller's side is however the user picked or typed it. Handing
+/// back the roster's spelling for the same directory would make a session's key stop
+/// matching the project path it is compared against, and that comparison is what decides
+/// whether a cluster is the repo's own (its ⌂ glyph, its label, its ＋ target). Only a
+/// path genuinely *inside* a checkout is rewritten — the one case with no spelling of
+/// its own worth keeping. An unplaceable folder (no roster yet, a scratch dir) is
+/// returned untouched: same fail-closed rule as drift.
+export function checkoutDir(path: string, roster: readonly Checkout[]): string {
+  const home = checkoutOf(path, roster);
+  return home && norm(home.path) !== norm(path) ? home.path : path;
+}
+
 /// Which checkout `path` belongs to, when that isn't the session's own.
 ///
 /// Deliberately narrow: the target must be a checkout of *this session's repo* that the

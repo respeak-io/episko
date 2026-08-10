@@ -73,6 +73,15 @@ Markers: `+` new · `~` changed · `!` fixed
   Terminal does. ASCII, `^C`, arrows and pastes go down the pipe byte for byte as before,
   and nothing changes on macOS.
 
+! **One checkout, one worktree row.** `❯ Terminal` opens a shell wherever the pane on
+  stage is running, so opening one while a task pane held the stage started it in that
+  task's own folder, and a VS Code task routinely declares one (`00_scripts/clone_db`). The
+  sidebar grouped panes by the folder they run in, so that shell became a checkout of its
+  own: two headers, the same branch on both, a session each. Any folder inside a checkout
+  Episko knows about now groups with that checkout, whatever put the pane there, so the
+  shell sits under the branch it is actually on, and a run group whose steps declare
+  different folders can no longer be split across headers either.
+
 ## 0.17.0 — 2026-08-07
 The fleet can finally reach you from another window, and a project's dashboard does
 the routine half of git — and its slowest read — without making you wait for it.

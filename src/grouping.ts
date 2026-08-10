@@ -13,6 +13,7 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
+import { checkoutDir } from "./gitwatch";
 import type { ExtSession, LiveSess, Phase, Restorable, Sess } from "./types";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
@@ -43,9 +44,20 @@ export interface WtCluster { key: string; branch: string; isMain: boolean; sessi
 /// branch — and, because the run-group fold happens *within* a cluster, stopped the
 /// members of a single launch from ever folding into one row.
 ///
-/// `run.root` is the directory discovery ran in, which is exactly the checkout.
+/// `run.root` is the directory discovery ran in, which is exactly the checkout — but it
+/// only rescues panes that *have* a run. The same subfolder reaches a **shell**: `❯
+/// Terminal` opens one in `activeCwd()`, the raw workdir of whatever owns the stage, so
+/// a shell opened while a finished task pane is on stage is born in that task's cwd and
+/// carries no `run` to unwrap. It split off its own header, labelled with the branch it
+/// had inherited — two identical branch names, one session each.
+///
+/// So the last word belongs to the worktree roster: any directory *inside* a known
+/// checkout resolves to that checkout, whatever put the pane there. `checkoutDir` owns
+/// that rule (./gitwatch already resolved paths this way for drift) including its
+/// fail-closed half — an unplaceable folder stays its own key, exactly as before.
 export function checkoutOf(s: Sess, fallback: string): string {
-  return (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  const dir = (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  return checkoutDir(dir, worktreesByRepo.get(s.colorKey) ?? []);
 }
 
 // `withEmpty` folds in the roster's session-less checkouts, so a worktree an agent just

@@ -15,7 +15,7 @@ Three rules constrain `tasks.rs`:
 A chain launches one pane per step (an exit code is a phase; one PTY cannot yield four). `launchWithDeps` mints `run.groupId` **per launch, never per task** (two runs of the same task are two rows to compare); every step inherits it, including the chain's own pane; nesting inherits via `opts.groupId ?? crypto.randomUUID()`, so outermost wins.
 
 - **The fold is presentational**: `foldRunGroups`/`groupPhase` are pure in `grouping.ts`; a group takes its first member's sorted position (re-sorting would silently overrule `projectList`).
-- **Worktree clustering keys on the checkout via `checkoutOf`, never `workdir`**: a task's cwd is routinely a subfolder, which is not another worktree; `launchWithDeps` passes `discoveredIn` down to dependencies for exactly this.
+- **Worktree clustering keys on the checkout via `checkoutOf`, never `workdir`**: a task's cwd is routinely a subfolder, which is not another worktree; `launchWithDeps` passes `discoveredIn` down to dependencies for exactly this. `run.root` only rescues panes that *have* a run, and a task's cwd outlives the task: the worktree roster is the backstop (docs/worktrees.md).
 - **A group of one renders as a plain row.**
 - **`groupPhase` is worst-of rather than last-of**: a failed build stops the chain, so last-of would report `done` on a broken one; `working` beats `done`, and `idle` counts as working (queued behind a sequential dep).
 - **The header is a block (`.rgroup`) rather than a `.srow`.** `.rgrow` must stay `position: relative` (its absolutely-positioned ✕ gone static claims a grid cell and doubles the header); background is `--surface`, never `--lift` (a white veil reads as nothing on a light theme).

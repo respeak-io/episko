@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
+import { checkoutDir, driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
 import type { Drift } from "../src/types";
 
 describe("gitMutates", () => {
@@ -281,5 +281,50 @@ describe("driftTarget", () => {
       expect(driftUpdate(byCwd, launched, "Bash", undefined, "/tmp/whatever", roster)).toEqual(byCwd);
       expect(driftUpdate(byCwd, launched, "Bash", undefined, undefined, roster)).toEqual(byCwd);
     });
+  });
+});
+
+// The same resolution read as a grouping answer: which checkout does this *directory*
+// belong to. ./grouping keys its worktree clusters on it, so a pane that starts below
+// its checkout (a task's declared cwd, or a shell that inherited one) still lands in
+// the row its branch is on.
+describe("checkoutDir", () => {
+  const REPO = "E:\\w\\epi";
+  const WT = "E:\\w\\wt-feat";
+  const roster = [
+    { path: REPO, branch: "main", exists: true, is_main: true },
+    { path: WT, branch: "feat", exists: true, is_main: false },
+  ];
+
+  it("resolves a subfolder to the checkout that contains it", () => {
+    expect(checkoutDir(`${WT}/00_scripts/clone_db_locally`, roster)).toBe(WT);
+    expect(checkoutDir(`${REPO}/src-tauri`, roster)).toBe(REPO);
+  });
+
+  it("keeps the caller's spelling for the checkout itself", () => {
+    // Both sides name one directory; the roster's has been through norm_path in Rust
+    // and the caller's has not. Handing back the roster's would break every comparison
+    // the caller makes against its own paths.
+    expect(checkoutDir(REPO, roster)).toBe(REPO);
+    expect(checkoutDir("E:/w/epi", roster)).toBe("E:/w/epi");
+    expect(checkoutDir(REPO + "\\", roster)).toBe(REPO + "\\");
+  });
+
+  it("returns a folder it cannot place untouched", () => {
+    // No roster yet, a scratch dir, another project entirely: fail closed, exactly as
+    // drift does — the alternative is a pane clustered under a repo it isn't in.
+    expect(checkoutDir(`${WT}/x`, [])).toBe(`${WT}/x`);
+    expect(checkoutDir("C:\\tmp\\scratch", roster)).toBe("C:\\tmp\\scratch");
+  });
+
+  it("prefers the innermost checkout when one nests inside another", () => {
+    const inner = REPO + "\\wt\\inner";
+    const nested = [...roster, { path: inner, branch: "inner", exists: true, is_main: false }];
+    expect(checkoutDir(`${REPO}/wt/inner/src/main.ts`, nested)).toBe(inner);
+  });
+
+  it("ignores a registered checkout whose folder is gone", () => {
+    const stale = [{ path: WT, branch: "feat", exists: false, is_main: false }];
+    expect(checkoutDir(`${WT}/00_scripts`, stale)).toBe(`${WT}/00_scripts`);
   });
 });
