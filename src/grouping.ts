@@ -13,7 +13,7 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import type { ExtSession, LiveSess, Phase, Restorable, Sess } from "./types";
+import { bgWaiting, type ExtSession, type LiveSess, type Phase, type Restorable, type Sess } from "./types";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
   accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
@@ -341,6 +341,10 @@ export function urgencyRank(s: Sess): number {
   if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
+  // A fleet still running ranks with the work it is: the turn ended, but nothing is
+  // expected of you until its agents report back. Ahead of `done` it would push a
+  // session that wants nothing to the top of the attention sort.
+  if (bgWaiting(s)) return 3;
   if (s.phase === "done") return 2;  // your turn
   if (s.phase === "working" || s.phase === "thinking") return 3;
   if (s.phase === "idle") return 4;
@@ -388,7 +392,12 @@ export function nextAfterClose(s: Sess): Sess | null {
 export function needsYou(s: Sess): boolean {
   if (s.kind === "shell") return false;
   if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
-  return !!s.attention || s.phase === "done" || s.phase === "error";
+  if (s.attention) return true;
+  // A background fan-out ends the turn without ending the work, so `done` alone stopped
+  // being enough: a workflow's twenty minutes used to sit in the reactor badge and the
+  // tray title as one more session waiting on a human who had nothing to answer.
+  if (bgWaiting(s)) return false;
+  return s.phase === "done" || s.phase === "error";
 }
 export function needsYouSessions(): Sess[] {
   return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);

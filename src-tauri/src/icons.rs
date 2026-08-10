@@ -206,6 +206,11 @@ fn shape_sdf(shape: &str, x: f32, y: f32) -> f32 {
         // `·` ended. Small rather than grey-and-full-size, so it stays quiet even
         // when the theme puts a light ground under it.
         "small" => len - 4.5,
+        // `◐` a background fan-out — the session's own turn is over, the agents it
+        // launched are still running. A ring with its left half filled: literally half
+        // done, and unmistakable against the disc even at 16 logical pixels. The union
+        // (`min`) of two SDFs — the outline, and a half-plane clipped to the inner disc.
+        "half" => ((len - 8.5).abs() - 1.3).min((len - 7.6).max(x)),
         // `●` working / thinking, and the fallback.
         _ => len - 9.0,
     }
@@ -269,7 +274,7 @@ mod tests {
     #[test]
     fn each_shape_draws_something_different() {
         let alpha = |s: &str| glyph_rgba(s, [255, 255, 255]).chunks(4).map(|p| p[3] as u32).sum::<u32>();
-        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small"];
+        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small", "half"];
         let mut seen: Vec<u32> = names.iter().map(|s| alpha(s)).collect();
         let before = seen.len();
         seen.sort_unstable();
@@ -280,6 +285,12 @@ mod tests {
         let centre = (16 * 32 + 16) * 4 + 3;
         assert_eq!(glyph_rgba("ring", [255, 255, 255])[centre], 0);
         assert_eq!(glyph_rgba("disc", [255, 255, 255])[centre], 255);
+        // `◐` is a half, and a half has a filled side and an empty one. Composed from
+        // two SDFs, so a sign slip would quietly turn it into a whole disc or a bare
+        // ring — both of which already mean something else in this menu.
+        let half = glyph_rgba("half", [255, 255, 255]);
+        assert_eq!(half[(16 * 32 + 11) * 4 + 3], 255, "the left half of ◐ is filled");
+        assert_eq!(half[(16 * 32 + 21) * 4 + 3], 0, "the right half of ◐ is not");
     }
 
     /// A status the frontend gains before this list does must still draw *a* glyph.

@@ -22,8 +22,8 @@ import { sessions } from "./state";
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  driftHtml, dwellText, gaugesHtml, planHtml, resHtml, RISK_LABEL, timelineHtml,
-  vitalHtml, wsetHtml,
+  driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml, resHtml, RISK_LABEL,
+  timelineHtml, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 export function renderInspector(s: Sess | null) {
@@ -56,6 +56,7 @@ export function renderInspector(s: Sess | null) {
   // the folder the session was launched in, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));                                        // state, dwell, current tool
+  html.push(fanoutHtml(s));                                       // the fleet it launched, if any
   html.push(gaugesHtml(s));                                       // TRACK — context + cost
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
   // What's changed on disk, and how the branch sits against its upstream. Shown

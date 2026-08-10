@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A session whose agents are still working no longer says "your turn".** The `Workflow`
+  tool hands back a run id in about two seconds, so the turn ends while its fleet runs on
+  — and for the twenty minutes that followed, the sidebar showed a green ✓, the header
+  counted the session among the ones waiting on you, and the only trace of thirteen live
+  agents was a `1 subagent` chip. Such a session now reads `◐ 13 agents working`, carries
+  a `12/13` tally on its row and its own glyph in the tray, drops out of the *your turn*
+  count, and gets a card in the inspector naming the run, what it is for and the phases it
+  declared. None of that costs a byte of disk or a poll: the name comes out of the
+  `Workflow` call itself, the counts off the subagent hooks Episko already receives. A
+  session started outside Episko is unchanged — it runs without the instrumentation, so
+  nothing reports its agents either way.
+
 + **The disk-I/O box explains itself.** A day of agents reads as a gigabyte written, which
   looks like a bug and isn't, so the `i` on the box now says why: Claude Code fsyncs its
   transcript after every message and each flush commits whole blocks (~32× the

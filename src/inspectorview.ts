@@ -14,7 +14,10 @@
 
 import { basename, esc, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
-import { apiErrText, isAgent, statusKey, type DiffStat, type Risk, type Sess } from "./types";
+import {
+  apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  type DiffStat, type Risk, type Sess,
+} from "./types";
 import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
 
@@ -45,6 +48,8 @@ function toolClass(tool: string): string {
 }
 export const RISK_LABEL: Record<Risk, string> = { low: "low risk", med: "review", high: "high risk" };
 export function verbFor(s: Sess): string {
+  // Ahead of the phase, because the phase is `done` and saying so is the bug.
+  if (bgWaiting(s)) return fanoutText(s);
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
   if (s.phase === "done") return "Your turn";
@@ -55,6 +60,12 @@ export function verbFor(s: Sess): string {
 // Live text under the state name — recomputed each second by tickTimers().
 export function dwellText(s: Sess): string {
   if (s.phase === "ended") return "session ended";
+  // The fan-out's clock, not the phase's: `phaseSince` was stamped when the turn ended,
+  // which is the moment the fleet *started* and therefore says nothing about the wait.
+  // It is also the only live clock the fan-out has — the card below carries no time, so
+  // that the inspector's innerHTML guard keeps biting (see paintInspector).
+  const f = bgWaiting(s) ? liveFanout(s) : null;
+  if (f) return `${fmtDwell(Date.now() - f.since)} in background`;
   const d = fmtDwell(Date.now() - s.phaseSince);
   if (s.phase === "done") return `waiting ${d}`;
   if (s.phase === "idle") return `idle ${d}`;
@@ -63,8 +74,11 @@ export function dwellText(s: Sess): string {
 }
 // True when this is the "your turn" session that's been blocked longest — the one
 // to jump to first. Only meaningful when several are waiting.
+// A session whose fleet is still running is not in the queue at all — it is not blocked
+// on you, so crowning it "longest waiting" would point you at the one row with nothing
+// to answer.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention);
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
@@ -77,18 +91,50 @@ function compactWarn(pct: number | null): { txt: string; cls: string } | null {
 // ---- inspector: per-module HTML builders (act → track → reference) ----
 export function vitalHtml(s: Sess): string {
   const sk = statusKey(s);
-  const live = (s.phase === "working" || s.phase === "thinking") && !s.attention;
+  const fan = fanoutTally(s);
+  // The heartbeat is "something is happening here", not "the model is talking" — a fleet
+  // of thirteen agents is the busiest this app ever gets, and a still heart over it read
+  // as an idle session.
+  const live = (s.phase === "working" || s.phase === "thinking" || bgWaiting(s)) && !s.attention;
   const verb = s.attention ? "Needs you" : verbFor(s);
   const tcls = (!s.attention && s.phase === "working") ? toolClass(s.curTool) : "";
   const doing = (!s.attention && s.phase === "working" && s.curTool)
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
-  const chips = [s.model ? esc(s.model) : "", s.subagents ? `${s.subagents} subagent${s.subagents > 1 ? "s" : ""}` : ""]
+  // While a fleet is up, the split of it — done vs still running — says more than the
+  // bare "N subagents" chip this replaces, which only ever showed the live half.
+  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${s.subagents} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
-  const longest = s.phase === "done" && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
+  const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
     <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
     ${doing}${meta}</div>`;
+}
+/// The background fleet: what it is, how much of it has landed, and what it set out to
+/// do. Sits directly under the vital, because while it is up it *is* the state of the
+/// session — the gauges below it describe a conversation that stopped talking.
+///
+/// **No clock in this markup.** The elapsed lives in `#iDwell`, which main.ts patches by
+/// `textContent` once a second; a time in here would make the string differ on every
+/// repaint and permanently defeat `paintInspector`'s guard, on the surface that guard
+/// exists to protect (see its comment — a lost *Allow* is how that was learned).
+///
+/// The phases are listed, never ticked off. No hook says which phase a workflow has
+/// reached, and a progress bar drawn over the agent counts is the only claim the
+/// telemetry actually supports.
+export function fanoutHtml(s: Sess): string {
+  const f = liveFanout(s), t = fanoutTally(s);
+  if (!f || !t) return "";
+  const pct = t.total ? Math.round((t.done / t.total) * 100) : 0;
+  const name = f.name || "Background agents";
+  const detail = f.detail ? `<div class="fo-detail">${esc(f.detail)}</div>` : "";
+  const phases = f.phases.length
+    ? `<div class="fo-phases">${f.phases.map((p) => `<span class="fo-ph">${esc(p)}</span>`).join("")}</div>` : "";
+  return `<div class="fanout">
+    <div class="fo-h"><span class="fo-g">◐</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
+    ${detail}
+    <div class="fo-bar"><i style="width:${pct}%"></i></div>
+    ${phases}</div>`;
 }
 export function gaugesHtml(s: Sess): string {
   const ctx = s.ctxPct;

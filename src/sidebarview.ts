@@ -13,7 +13,7 @@
 
 import { basename, esc, relTime, tilde } from "./format";
 import {
-  apiErrText, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
+  apiErrText, fanoutTally, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
   accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId,
@@ -65,8 +65,12 @@ export const foldEmpty = () => `<div class="pfempty">Drag a project here</div>`;
 
 // The status glyph vocabulary. Shared with the mini-rail, the tray and the
 // inspector pill, which is why it sits beside the rows rather than inside them.
-export const GLYPH: Record<string, string> = { attention: "◆", working: "●", thinking: "●", done: "✓", idle: "○", error: "✕", ended: "·" };
-export const GCLASS: Record<string, string> = { attention: "g-attn", working: "g-work", thinking: "g-work", done: "g-done", idle: "g-idle", error: "g-error", ended: "g-ended" };
+//
+// `background` is the fan-out state — the session's own turn is over but the agents it
+// launched are still running. Half-filled, because that is what it is: half of this row
+// is finished and half of it is still going.
+export const GLYPH: Record<string, string> = { attention: "◆", working: "●", thinking: "●", done: "✓", idle: "○", error: "✕", ended: "·", background: "◐" };
+export const GCLASS: Record<string, string> = { attention: "g-attn", working: "g-work", thinking: "g-work", done: "g-done", idle: "g-idle", error: "g-error", ended: "g-ended", background: "g-bg" };
 export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping", "done", ""].includes(e.status);
 
 // A stable colour per branch, from the same hash as project accents so the sidebar's
@@ -111,19 +115,25 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   const chipHtml = chip ? clusterChip(chip) : "";
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.
+  const fan = fanoutTally(s);
   const tip = s.phase === "error" && s.apiErr
     ? `${label} — ${apiErrText(s.apiErr)}`
-    : s.drift ? `${label} — writing to ${s.drift.branch}, not ${s.branch || "this checkout"}` : label;
+    : fan ? `${label} — ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${s.subagents} running`
+      : s.drift ? `${label} — writing to ${s.drift.branch}, not ${s.branch || "this checkout"}` : label;
   // The row stays under the checkout the session was *launched* in — that is its
   // identity, and where `--resume` goes. This is what says the agent's writes have
   // moved elsewhere, without moving the row out from under you.
   const drift = s.drift
     ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
     : "";
+  // The one number worth the width: how much of the fleet has landed. It replaces
+  // nothing — the ctx% column keeps its meaning — and it is the whole reason a row can
+  // now say "still going" instead of a ✓ that meant "finished twenty minutes ago".
+  const fanHtml = fan ? `<span class="sfan" title="${esc(`${fan.done} of ${fan.total} background agents done`)}">${fan.done}/${fan.total}</span>` : "";
   // Both tags share one grid cell. `.srow`'s column count is fixed by CSS (`.o3` adds
   // the fourth for a chip), so a second in-flow child would wrap the row instead of
   // sitting beside it — wrapping them keeps the existing grid math untouched.
-  const tags = drift + chipHtml;
+  const tags = drift + fanHtml + chipHtml;
   return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
     <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${tags ? `<span class="stags">${tags}</span>` : ""}

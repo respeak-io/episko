@@ -26,7 +26,10 @@
   --accent-line: color-mix(in srgb, var(--accent) 34%, transparent);
   --accent-glow: color-mix(in srgb, var(--accent) 24%, transparent);
   --accent-ink: color-mix(in srgb, var(--accent) 86%, white 14%);
-  --st-working:#e0a44a; --st-done:#37c98b; --st-attention:#fb6f92; --st-idle:#7b8496; --st-error:#f26d6d;
+  /* --st-bg is the background fan-out: a violet that is nobody else's, because it has
+     to be told apart from `working` amber (the session itself is busy) and `done` green
+     (it finished and wants you) at one glyph's worth of ink */
+  --st-working:#e0a44a; --st-done:#37c98b; --st-attention:#fb6f92; --st-idle:#7b8496; --st-error:#f26d6d; --st-bg:#9d84f5;
   /* per-tool accents for the vital header + activity timeline (tuned for the dark ground) */
   --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-bash:#e0a44a; --tool-task:#6ad0b0; --tool-web:#f0a6d0; --tool-mcp:#9aa0b4;
   /* usage analytics: model families (colourblind-validated categorical trio + neutrals),
@@ -58,6 +61,8 @@
      at 1.6px of stroke, which is the whole width a lane line has to work with */
   --gl-0:#2563eb; --gl-1:#dc2626; --gl-2:#15803d; --gl-3:#b45309;
   --gl-4:#7c3aed; --gl-5:#0e7490; --gl-6:#c2410c; --gl-7:#0f766e;
+  /* the dark set's violet washes out on the light ground at glyph weight */
+  --st-bg:#6d4fe0;
   color-scheme: light;
 }
 
@@ -318,8 +323,12 @@ html.win .wctl { display: flex; }
 .sbranch { min-width: 0; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
 .sctx { font: 10px var(--font-mono); color: var(--muted-2); }
-.g-work{color:var(--st-working);} .g-attn{color:var(--st-attention);} .g-done{color:var(--st-done);} .g-idle{color:var(--st-idle);} .g-error{color:var(--st-error);} .g-ended{color:var(--muted-2);}
-@media (prefers-reduced-motion: no-preference) { .g-work,.g-attn{ animation: pulse 1.5s ease-in-out infinite; } @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}} }
+.g-work{color:var(--st-working);} .g-attn{color:var(--st-attention);} .g-done{color:var(--st-done);} .g-idle{color:var(--st-idle);} .g-error{color:var(--st-error);} .g-ended{color:var(--muted-2);} .g-bg{color:var(--st-bg);}
+/* .g-bg pulses at half speed: work is happening, but not in this conversation, and a
+   row keeping time with the busy ones would compete for the same glance. */
+@media (prefers-reduced-motion: no-preference) { .g-work,.g-attn{ animation: pulse 1.5s ease-in-out infinite; } .g-bg{ animation: pulse 3s ease-in-out infinite; } @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}} }
+/* the fleet tally on a sidebar row — same grid cell as the drift/branch tags */
+.sfan { flex: none; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-bg); opacity: .9; }
 
 /* ---- worktree grouping ---- */
 /* subheader mode: a ⑃-branch cluster header, its sessions nested under a tinted rule */
@@ -558,7 +567,7 @@ html.win .wctl { display: flex; }
 .insp-head { padding: 10px 13px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 8px; }
 .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; background: color-mix(in srgb, var(--pc) 14%, transparent); color: var(--pc); border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); }
 .pill .pd { width: 5px; height: 5px; border-radius: 50%; background: var(--pc); }
-.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);}
+.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);}
 .insp-scroll { overflow-y: auto; padding: 12px 13px 16px; display: flex; flex-direction: column; gap: 13px; min-height: 0; flex: 1; }
 .insp-empty { color: var(--muted-2); font-size: 11.5px; text-align: center; padding: 30px 10px; }
 
@@ -603,6 +612,7 @@ html.win .wctl { display: flex; }
 .vital { display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
 .vital.st-working{--sc:var(--st-working);} .vital.st-thinking{--sc:var(--st-working);} .vital.st-done{--sc:var(--st-done);}
 .vital.st-attention{--sc:var(--st-attention);} .vital.st-error{--sc:var(--st-error);} .vital.st-idle{--sc:var(--st-idle);} .vital.st-ended{--sc:var(--muted-2);}
+.vital.st-background{--sc:var(--st-bg);}
 .vital .vtop { display: flex; align-items: center; gap: 8px; }
 .vital .heart { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--sc); }
 @media (prefers-reduced-motion: no-preference) { .vital .heart:not(.still) { animation: beat 1.5s ease-in-out infinite; } }
@@ -635,6 +645,25 @@ html.win .wctl { display: flex; }
 .warn-line { font: 10px var(--font-mono); color: var(--st-working); }
 .warn-line.hot { color: var(--st-attention); }
 .gspark { line-height: 0; }
+
+/* --- the background fleet (a Workflow fan-out, or a burst of Task subagents) ---
+   Deliberately built like `.plan` rather than like a gauge: both answer "how far
+   through is it", and two progress cards that looked unrelated would read as two
+   different kinds of fact. The violet is what separates them at a glance. */
+.fanout { border-radius: var(--radius); padding: 11px 12px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-bg) 26%, var(--hair)); display: flex; flex-direction: column; gap: 8px; }
+.fanout .fo-h { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fanout .fo-g { flex: none; font-size: 11px; color: var(--st-bg); }
+@media (prefers-reduced-motion: no-preference) { .fanout .fo-g { animation: pulse 3s ease-in-out infinite; } }
+.fanout .fo-name { font: 600 11.5px var(--font-mono); color: var(--text); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fanout .fo-frac { margin-left: auto; flex: none; font: 600 11px var(--font-mono); color: var(--st-bg); font-variant-numeric: tabular-nums; }
+.fanout .fo-detail { font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.fanout .fo-bar { height: 5px; border-radius: 3px; background: var(--hair-strong); overflow: hidden; }
+.fanout .fo-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--st-bg); transition: width .4s ease; }
+/* The phases the run declared, in order — a list of what it set out to do. Nothing is
+   ticked off: no hook says which phase a workflow has reached, and the bar above is the
+   only progress the telemetry actually supports. */
+.fanout .fo-phases { display: flex; gap: 5px; flex-wrap: wrap; }
+.fanout .fo-ph { font: 9.5px var(--font-mono); letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; color: var(--muted); background: color-mix(in srgb, var(--st-bg) 10%, transparent); border: 1px solid color-mix(in srgb, var(--st-bg) 22%, transparent); }
 
 /* --- plan (TodoWrite checklist + progress) --- */
 .plan { border-radius: var(--radius); padding: 11px 12px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 8px; }
@@ -2153,6 +2182,7 @@ select.in-ctl { cursor: pointer; }
 .isb.live.g-attn { color: var(--st-attention); }
 .isb.live.g-done { color: var(--st-done); }
 .isb.live.g-idle { color: var(--st-idle); }
+.isb.live.g-bg { color: var(--st-bg); }
 .isep { width: 18px; height: 1px; background: var(--hair); margin: 4px 0; }
 
 @media (max-width: 1180px) {

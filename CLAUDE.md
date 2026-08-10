@@ -96,7 +96,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 | Module | What |
 | --- | --- |
-| `types.ts` | the shared data model: `Sess`, `Phase`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`, `runElapsed`, `taskStateText`) |
+| `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts — data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
@@ -156,6 +156,7 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()` — session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **A turn the API killed is not a turn that finished.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once — `docs/architecture.md`.
+- **A turn that ended is not work that ended, either.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, counted from `SubagentStart`/`Stop` — no disk, no backend), `statusKey` answers `"background"` for it, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`** — `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write** — statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage` — small, unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **Persistence is all `localStorage`**, every key prefixed `cc-` — `grep '"cc-'` for the current set.
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash — the durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
