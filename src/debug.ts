@@ -61,6 +61,10 @@ export function dbgSnapshot() {
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
       lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
+      // The background fleet, if one is up. Both counts, not just the live one: "3
+      // running" and "3 running, 47 done" are the same session at very different points,
+      // and a fan-out that has stopped moving is only visible as the gap between them.
+      fanout: s.fanout ? `${s.fanout.name || "unnamed"} ${s.fanout.done}/${s.fanout.started} done, ${s.subagents} up` : null,
       // Where the agent's writes are actually landing, when that isn't `workdir`. In
       // the snapshot because the two disagreeing is precisely the state that needs
       // explaining from outside the app — the case this was written for looked, from

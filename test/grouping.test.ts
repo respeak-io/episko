@@ -24,13 +24,20 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [],
     kind: "claude", external: false, ...o,
   } as Sess;
 }
+/// The `Sess` fields of a session with a background fan-out up — `total` agents
+/// launched, `done` of them landed. Spelled out rather than driven through applyHook,
+/// which lives in a module this suite deliberately does not import.
+const fleet = (total: number, done: number): Partial<Sess> => ({
+  subagents: total - done,
+  fanout: { name: "wf", detail: "", phases: [], since: 0, started: total, done, lastAt: Date.now() },
+});
 // Sessions reach grouping through the state map, in insertion order.
 function open(...list: Sess[]): Sess[] { for (const s of list) sessions.set(s.id, s); return list; }
 const ext = (o: Partial<ExtSession> = {}): ExtSession =>
@@ -810,6 +817,20 @@ describe("needsYou — is this pane waiting on the human", () => {
     taskPrefs.attention = false;
     expect(needsYou(sess({ kind: "task", phase: "error" }))).toBe(false);
     expect(needsYou(sess({ phase: "error" }))).toBe(true); // an agent is not the switch's business
+  });
+  it("does not count a session whose background fleet is still running", () => {
+    // The Workflow tool ends the parent's turn in about two seconds and its agents run
+    // for another twenty minutes. Counting that as "your turn" put a workflow in the
+    // reactor badge and the tray title as one more session waiting on a human who had
+    // nothing to answer — for the whole run.
+    expect(needsYou(sess({ phase: "done", ...fleet(13, 12) }))).toBe(false);
+    expect(urgencyRank(sess({ phase: "done", ...fleet(13, 12) }))).toBe(3); // ranks with the work it is
+  });
+  it("still counts one that hit a permission or died mid-fleet", () => {
+    // Both outrank the fan-out: Claude is blocked on you now, or the turn is not coming
+    // back on its own. Neither resolves itself when the agents land.
+    expect(needsYou(sess({ phase: "done", attention: "Bash", ...fleet(13, 12) }))).toBe(true);
+    expect(needsYou(sess({ phase: "error", ...fleet(13, 12) }))).toBe(true);
   });
 });
 

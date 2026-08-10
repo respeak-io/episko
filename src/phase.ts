@@ -12,7 +12,7 @@
 // settable `setOnTurnEnd` hook. See test/phase.test.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Phase, Risk, Sess } from "./types";
+import type { Fanout, Phase, Risk, Sess } from "./types";
 import { addUsage, costDelta } from "./usage";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
@@ -91,6 +91,57 @@ export function applyPlan(s: Sess, input: any) {
     .filter((t) => t.content);
   if (todos.length) s.todos = todos;
 }
+// ---------- background fan-outs ----------
+// A `Workflow` call hands us its whole script as `tool_input.script`, and the script's
+// first statement is a `meta` object literal the tool contract requires to be pure — no
+// variables, no interpolation. So the run's name, its one-line description and its phase
+// titles are sitting in the hook payload, and the alternative (Claude Code's own
+// run-state JSON) is written when the run *ends*, which is exactly too late.
+//
+// Parsed with regexes rather than evaluated, for the obvious reason: this is arbitrary
+// JavaScript arriving from a tool call. Everything is optional — an unparseable script
+// still starts a fan-out, just an unnamed one, because the counts are what the sidebar
+// needs and they come from the hooks either way.
+const META_WINDOW = 4000;
+export function parseWorkflowMeta(script: string): { name: string; detail: string; phases: string[] } {
+  const at = script.indexOf("export const meta");
+  const head = at < 0 ? script.slice(0, META_WINDOW) : script.slice(at, at + META_WINDOW);
+  // The literal's closing brace is the first `}` at column 0 — the shape every workflow
+  // script is written in. Bounding it matters: `title:` and `name:` occur all over the
+  // agent prompts below, and an unbounded match would pick a phase title out of one.
+  const end = head.search(/^\}/m);
+  const meta = end > 0 ? head.slice(0, end) : head;
+  const unquote = (v: string) => v.replace(/\\(['"`\\])/g, "$1").replace(/\s+/g, " ").trim();
+  const one = (key: string) => {
+    const m = new RegExp(`\\b${key}\\s*:\\s*(['"\`])((?:\\\\.|(?!\\1).)*)\\1`).exec(meta);
+    return m ? unquote(m[2]) : "";
+  };
+  const phases: string[] = [];
+  for (const m of meta.matchAll(/\btitle\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/g)) {
+    const t = unquote(m[2]);
+    if (t) phases.push(abbr(t, 32));
+    if (phases.length === 8) break;
+  }
+  // Bounded here rather than at the surfaces that draw it: a `Fanout` is state, and a
+  // 4kB description reaching a sidebar tooltip is not something a view should have to
+  // defend against one caller at a time.
+  return { name: abbr(one("name"), 56), detail: abbr(one("description"), 120), phases };
+}
+// A fresh fleet, replacing whatever the last one left behind. The counters restart even
+// if the previous fan-out still has agents up — `fanoutTally` is what keeps that from
+// showing as a bar past its own end.
+export function startFanout(s: Sess, script: unknown) {
+  const meta = parseWorkflowMeta(typeof script === "string" ? script : "");
+  const now = Date.now();
+  s.fanout = { ...meta, since: now, started: 0, done: 0, lastAt: now };
+}
+// The first `SubagentStart` of a plain `Task` burst mints an unnamed record, so the
+// counts and the elapsed work for a fan-out nobody wrote a script for.
+function fanoutOf(s: Sess): Fanout {
+  const now = Date.now();
+  return (s.fanout ??= { name: "", detail: "", phases: [], since: now, started: 0, done: 0, lastAt: now });
+}
+
 export function abbr(s: string, n = 160): string {
   const one = s.replace(/\s+/g, " ").trim();
   return one.length > n ? one.slice(0, n - 1) + "…" : one;
@@ -151,7 +202,11 @@ export function applyHook(s: Sess, data: any) {
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
     // OR directly in the CLI), so reset the pending/attention state either way.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); break;
+    // A fresh REPL — `/clear`, `/compact`, a resume. Nothing the old conversation had
+    // in flight survives it, and a `SubagentStop` we will now never see would otherwise
+    // leave the count stuck above zero forever, which reads as a fleet that never
+    // finishes. The one place either field is reset without a matching event.
+    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.subagents = 0; s.fanout = null; break;
     case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";
@@ -159,6 +214,9 @@ export function applyHook(s: Sess, data: any) {
       if (tool === "TodoWrite") applyTodos(s, data.tool_input);
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
       else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
+      // The one hook that names a fan-out. It fires ~2s before the turn ends, so the
+      // record is already in place when `Stop` would otherwise have painted a green ✓.
+      if (tool === "Workflow") startFanout(s, data.tool_input?.script);
       if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
@@ -191,7 +249,7 @@ export function applyHook(s: Sess, data: any) {
       s.apiErr = { kind: String(data.error ?? "unknown"), detail: abbr(String(data.error_details ?? data.message ?? "")), at: Date.now() };
       setPhase(s, "error"); clearPending(s); s.curTool = ""; s.curArg = "";
       break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
+    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; s.subagents = 0; s.fanout = null; break;
     case "Notification": {
       const nt: string = data.notification_type ?? "";
       const msg: string = typeof data.message === "string" ? data.message : "";
@@ -203,8 +261,16 @@ export function applyHook(s: Sess, data: any) {
       break;
     }
     case "PermissionRequest": s.attention = `permission: ${data.tool_name ?? ""}`; s.pendingCmd = permCmd(data); s.pendRisk = riskLevel(data.tool_name, data.tool_input); break;
-    case "SubagentStart": s.subagents++; break;
-    case "SubagentStop": s.subagents = Math.max(0, s.subagents - 1); break;
+    // Every agent a fan-out spawns fires these on the PARENT, workflow fleets included
+    // — which is what makes the whole background readout possible without a byte of
+    // disk. `subagents` stays the live count; the cumulative pair rides the record.
+    case "SubagentStart": { s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break; }
+    // No record means a Stop whose Start we never saw (a fan-out that predates the
+    // pane, a rotated session). Counting it would invent a completion.
+    case "SubagentStop":
+      s.subagents = Math.max(0, s.subagents - 1);
+      if (s.fanout) { s.fanout.done = Math.min(s.fanout.started, s.fanout.done + 1); s.fanout.lastAt = Date.now(); }
+      break;
   }
 }
 export function pushHist(arr: number[], v: number, cap = 24) { arr.push(v); if (arr.length > cap) arr.splice(0, arr.length - cap); }

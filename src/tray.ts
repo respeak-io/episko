@@ -39,6 +39,7 @@ const SHAPE: Record<string, string> = {
   idle: "ring",         // ○
   error: "cross",       // ✕
   ended: "small",       // ·
+  background: "half",   // ◐ — the turn is over, its agents are not
 };
 
 // Resolve a status colour by asking the *stylesheet*, not by restating it here.
