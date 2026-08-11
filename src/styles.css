@@ -1239,8 +1239,17 @@ select.in-ctl { cursor: pointer; }
 /* new-session dialog — one question ("where should this session run?"), one list.
    Head + query + foot are pinned; .wt-body is the only scroll region, so a repo with
    ninety refs can never push the keyboard legend or the title off-screen (the old
-   dialog scrolled itself AND its branch list, which nested two scrollbars). */
-.wtdlg { position: fixed; top: 12vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(880px, 94vw); max-height: 76vh; display: flex; flex-direction: column; overflow: hidden; z-index: 42; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+   dialog scrolled itself AND its branch list, which nested two scrollbars).
+
+   Fixed footprint, on purpose and for the same reason as .setdlg: this dialog's lists
+   arrive in three waves (skeletons, then local git, then a background fetch), so a
+   content-sized box resized itself twice AFTER opening — once when the skeletons went
+   and again when eleven remote branches landed. Every one of those resizes moves
+   `Start session here` out from under a pointer already on its way to it, and the repo
+   row is live from the first frame precisely so you needn't wait for the read. So the
+   height is the same whether the repo has one branch or ninety; what varies is how far
+   .wt-list scrolls. #histDlg shares the rule and wants it more (its scan is slower). */
+.wtdlg { position: fixed; top: 12vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.98); width: min(880px, 94vw); height: min(640px, 76vh); display: flex; flex-direction: column; overflow: hidden; z-index: 42; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .wtdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
 
 .wt-head { flex: none; padding: 13px 14px 11px; border-bottom: 1px solid var(--hair); }
@@ -1331,6 +1340,12 @@ select.in-ctl { cursor: pointer; }
 .wt-sk i.a { width: 20px; height: 20px; border-radius: 6px; flex: none; }
 @keyframes wtpulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
 @media (prefers-reduced-motion: reduce) { .wt-sk i { animation: none; opacity: .6; } }
+/* A group heading with nothing under it. Only Worktrees renders one (see wtRender):
+   the skeleton put that heading on screen, so its silent disappearance reads as a load
+   that never finished rather than as a repo with no worktrees. Sized like a row so the
+   swap out of the skeletons barely moves the list under it. */
+.wt-none { padding: 3px 10px 9px; font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); }
+.wt-none b { display: block; font: 400 11.5px var(--font-mono); color: var(--muted); }
 .wt-empty { padding: 22px 12px; text-align: center; color: var(--muted-2); font-size: 12px; }
 .wt-empty b { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 3px; }
 

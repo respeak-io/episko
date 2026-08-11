@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **The new-session dialog stops resizing after it opens.** Its lists arrive in three
+  waves — the skeletons, then git, then a background fetch — and the box was sized by
+  whatever happened to be in it, so it grew or shrank a second or two after opening,
+  taking *Start session here* out from under a pointer already travelling towards it. The
+  repo row is live in the first frame precisely so that starting a session in the project
+  itself needn't wait for the read, and a box that moves a beat later takes that back. The
+  dialog is now the same height whether the repo has one branch or ninety; the list
+  scrolls instead. A repo with no worktrees says so under the *Worktrees* heading, where
+  before that heading simply vanished along with the skeletons, which read as a load that
+  never finished.
+
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
 created, edited and read, each one a click away from opening.

@@ -478,8 +478,26 @@ function wtRender() {
   const cur = wtRows[wtSel];
   if (!cur || cur.kind === "create" || cur.dir !== wtArmed) wtArmed = "";
 
+  // Worktrees is the one group that renders when it holds nothing. Every other group's
+  // absence reads as "nothing to say"; this one's reads as "still loading", because the
+  // skeleton put that heading here a moment ago and what the eye tracks between the two
+  // frames is the heading, not the rows under it. Two gates: an empty query (with a
+  // filter typed, "none" is a fact about the filter, and .wt-empty already says that),
+  // and a repo that git actually answered for — `list_worktrees` returns [] for a
+  // non-repo, where it always lists the main checkout for a real one.
+  const noWts = !wtLoading && !($("wtQ") as HTMLInputElement).value.trim()
+    && wtWts.length > 0 && !wtWts.some((w) => !w.is_main);
+  const noneHtml = `<div class="wt-gh">Worktrees<span class="rule"></span></div>`
+    + `<div class="wt-none"><b>No worktrees yet</b>Type a branch name above to make one</div>`;
+  // Emitted where the group WOULD have been, so it can't drift below Branches: the
+  // first group that sorts after it triggers it, and the end of the list is the
+  // fallback for a repo whose only other rows are the repo itself.
+  const afterWt = new Set(["Branches", "Remote branches"]);
+  let noneDone = !noWts;
+
   let html = "", lastGroup: string | null = null;
   wtRows.forEach((d, i) => {
+    if (!noneDone && afterWt.has(d.group)) { html += noneHtml; noneDone = true; }
     if (d.group && d.group !== lastGroup) {
       lastGroup = d.group;
       const n = wtRows.filter((x) => x.group === d.group).length;
@@ -500,6 +518,7 @@ function wtRender() {
       + d.tags.map(([k, t]) => `<span class="wt-tag ${k}">${esc(t)}</span>`).join("")
       + `${d.meta}</span></button>`;
   });
+  if (!noneDone) html += noneHtml;
   if (wtLoading) {
     html += `<div class="wt-gh">Worktrees<span class="rule"></span></div>`
       + [44, 62, 37].map((w) => `<div class="wt-sk"><i class="a"></i><i style="width:${w}%"></i></div>`).join("")
