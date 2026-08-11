@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A session that finishes lights up, and the ⌂ badge stops hoarding the ones you have
+  already read.** The moment a pane starts wanting you — a turn ending, a turn the API
+  killed, a permission, a run going red — its sidebar row glows in that state's own
+  colour and fades out over a few seconds, so an agent finishing three projects down the
+  rail is something you catch rather than something you go looking for. The header's
+  "your turn" badge now queues **newest first**, which is the one you came back for, and
+  **opening a session takes it out of the badge**, the tray title and the palette's
+  *Needs you* — a blocking permission excepted, since looking at one is not answering it.
+  All four parts are yours to set in **Settings › Sessions › When a session wants you**,
+  with a preview that lights up so you can pick the duration by watching it rather than
+  by guessing at a number.
+
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
 created, edited and read, each one a click away from opening.

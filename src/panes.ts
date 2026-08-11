@@ -39,7 +39,7 @@ import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
 import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
-import { renderFoot } from "./footer";
+import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
 import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
@@ -105,7 +105,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
@@ -241,7 +241,7 @@ async function adoptSession(o: { id: string; workdir: string; meta: Restorable |
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
     resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
     title: m?.title ?? "",
-    phase: "idle", phaseSince: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null,
     apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
@@ -307,7 +307,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
     lastEvent: "", activity: [],
@@ -371,7 +371,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
-    phase: "working", phaseSince: Date.now(), lastActivity: Date.now(), attention: null,
+    phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
@@ -570,6 +570,7 @@ export function focusInGroup(id: string) {
   const s = sessions.get(id);
   if (!s || !stageGroup || s.run?.groupId !== stageGroup || id === activeId) return;
   setActiveId(id);
+  s.seenAt = Date.now();   // reading a tile counts as looking at it, same as setActive
   for (const x of sessions.values()) x.pane.classList.toggle("focused", x.id === id);
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
   renderAll();
@@ -584,6 +585,11 @@ export function setActive(id: string, keepGroup = false) {
   // the stage to the empty card, which this immediately replaces with the pane.
   closeExternalView();
   setActiveId(id);
+  // You have now looked at this one. The only write of `seenAt`, and the whole of what
+  // takes a finished session back out of the reactor badge and stops its row flashing
+  // (./attn). Stamped for every pane, agent or not, so the field never has to be read
+  // together with a kind test.
+  s.seenAt = Date.now();
   // Picking a row in the sidebar always means "show me that one", group member or not.
   // It used to keep the tiled view when the row was inside the tiled group and only
   // move the focus ring — which read as the click doing nothing at all. The split is
@@ -624,7 +630,12 @@ export function setActive(id: string, keepGroup = false) {
   // collapsed project group — and a rail with nothing selected while a pane is plainly
   // on screen reads as the selection having been lost. Unfold it before painting.
   revealProjGroup(s.colorKey);
+  // `renderAttn` and `updateTray` join the targeted list because the stamp above moved
+  // the needs-you set: opening a session takes it out of the badge and the tray title
+  // (./attn), and a count that only caught up on the next telemetry event would leave
+  // the badge advertising a session you are looking at.
   renderHeader(s); renderInspector(s); renderSidebar(); renderMini(); renderFoot();
+  renderAttn(); updateTray();
   // Show the branch that's really checked out right now, immediately on activate.
   void refreshBranch(s).then((changed) => { if (changed) { renderSidebar(); if (activeId === id) renderHeader(s); } });
   void refreshSessionStats(s); // working-set diff + CPU/RAM for the inspector

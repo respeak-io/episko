@@ -71,6 +71,20 @@ export const foldEmpty = () => `<div class="pfempty">Drag a project here</div>`;
 // is finished and half of it is still going.
 export const GLYPH: Record<string, string> = { attention: "◆", working: "●", thinking: "●", done: "✓", idle: "○", error: "✕", ended: "·", background: "◐" };
 export const GCLASS: Record<string, string> = { attention: "g-attn", working: "g-work", thinking: "g-work", done: "g-done", idle: "g-idle", error: "g-error", ended: "g-ended", background: "g-bg" };
+// The wash a row is lit with while its finish highlight fades (./attn, driven by
+// `applyFlash` in ./sidebar). Only the three states that can enter the needs-you set
+// ever appear here; anything else falls back to the "your turn" green rather than
+// going unlit, so a state added to that set later is visible rather than silent.
+//
+// A colour per state and not one neutral flash, because the two questions the highlight
+// answers are "where" and "what": a pink row across the rail means something is blocked
+// on you, and that is worth telling apart from a green one at a glance you are taking
+// from another window. It is a *variable*, not a class, precisely so it cannot collide
+// with the `g-*` classes above — those already carry a `pulse` animation, and the row's
+// own fade would have fought it for the same property.
+export const LIT_COLOR: Record<string, string> = {
+  attention: "var(--st-attention)", error: "var(--st-error)", done: "var(--st-done)",
+};
 export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping", "done", ""].includes(e.status);
 
 // A stable colour per branch, from the same hash as project accents so the sidebar's

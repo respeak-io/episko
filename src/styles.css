@@ -317,6 +317,37 @@ html.win .wctl { display: flex; }
 .sclose:hover { color: var(--st-attention); background: var(--surface); }
 .srow:hover { background: var(--surface); }
 .srow.active { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hair); }
+/* The finish highlight: a row that has just started wanting you glows in its own status
+   colour and fades out over --lit-ms. ./attn owns when, applyFlash in ./sidebar sets all
+   three variables, and --lit-delay is negative — it resumes the fade where the clock is,
+   so a repaint mid-fade doesn't replay it from the top (same trick as .parm above).
+   `background` rather than a border or an outline: a row is 24px tall and already
+   carries a glyph, a label, a chip and a ctx%, and a wash is the only mark left that
+   reads from the far side of the screen without moving any of them a pixel. */
+/* No fill mode, deliberately: an animation's filled value outranks every normal rule,
+   so a finished `both` would keep painting `background: transparent` over `.srow:hover`
+   for as long as the class happened to linger — a row that had stopped answering the
+   pointer. With no fill it hands the row straight back at the last frame, and the class
+   coming off (applyFlash, or its timeout) is then pure hygiene rather than a repair.
+   Nothing flashes at the *start* for the same reason: a negative delay means the
+   animation is already under way, so there is no pre-start phase to fill either. */
+.srow.lit { animation: srow-lit var(--lit-ms, 4000ms) ease-out var(--lit-delay, 0ms); }
+@keyframes srow-lit {
+  0%   { background: color-mix(in srgb, var(--lit-c, var(--st-done)) 30%, transparent);
+         box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lit-c, var(--st-done)) 45%, transparent); }
+  70%  { background: color-mix(in srgb, var(--lit-c, var(--st-done)) 13%, transparent);
+         box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lit-c, var(--st-done)) 16%, transparent); }
+  100% { background: transparent; box-shadow: inset 0 0 0 1px transparent; }
+}
+/* No fade, but not no highlight: a flat tint for the same duration, taken off by the
+   timeout applyFlash schedules. Losing the mark entirely would cost this reader the
+   feature rather than the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .srow.lit { animation: none; background: color-mix(in srgb, var(--lit-c, var(--st-done)) 18%, transparent); }
+}
+/* The selection still wins: whatever is on stage must read as on stage, and a lit row
+   you have just clicked is one applyFlash is about to unlight anyway. */
+.srow.lit.active { animation: none; }
 .sglyph { font-size: 10.5px; text-align: center; line-height: 1; }
 /* single session label: the abbreviated title (mirrors the stage header),
    falling back to the branch when there's no title yet */
@@ -1667,6 +1698,25 @@ select.in-ctl { cursor: pointer; }
 .peekdemo .pkglyph { font-size: 9px; }
 .peekdemo .pkgo { font-size: 10px; }
 .peekhint { font-size: 11px; line-height: 1.5; color: var(--muted-2); max-width: 58ch; }
+
+/* ---------- Settings › Sessions › when a session wants you ----------
+   Same parts as the peek control above (.peekrow, .peekstep, .peeksub, .peekhint) so
+   the panels read as one window. The preview is REAL .psessions > .srow markup rather
+   than a mock of it — the highlight is the thing being set, so previewing it through a
+   second implementation would preview the wrong thing the day either one changed. */
+.attnbox { display: flex; flex-direction: column; gap: 13px; margin-top: 11px; }
+/* Only the half the switch governs. The queue order and the clearing rule below still
+   apply with the highlight off — dimming the whole box would say they had gone too. */
+.attnbox.off .peekrow, .attnbox.off .attndemo { opacity: .5; }
+.attnbox .set-fbtn[disabled] { opacity: .35; cursor: default; }
+.attnbox .set-fbtn[disabled]:hover { border-color: var(--hair-strong); background: var(--surface); }
+.attnbox .set-freset[disabled] { opacity: .35; cursor: default; }
+.attnbox .set-freset[disabled]:hover { color: var(--muted); border-color: var(--hair); }
+.attndemo { min-height: 0; padding: 10px 12px; }
+.attndemo .psessions { margin-left: 0; padding: 0; border-left: none; gap: 2px; }
+.attndemo .srow { cursor: pointer; }
+/* The wash is what this box is for; the hover grey underneath it would only mute it. */
+.attndemo .srow:hover { background: transparent; }
 
 /* ---------- Settings › Sounds ----------
    Deliberately built out of the peek control's parts (.peekrow, .peekstep, .peekhint)

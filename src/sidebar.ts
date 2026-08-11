@@ -13,6 +13,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { $, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, tilde } from "./format";
+import { statusKey } from "./types";
+import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
 import { groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
@@ -20,9 +22,9 @@ import {
   type PeekState,
 } from "./peek";
 import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
-import { dormantRows, foldEmpty, foldHead, groupBody, peekBody } from "./sidebarview";
+import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs, projGroups,
+  activeId, attnPrefs, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs, projGroups,
   saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
   type SortMode,
 } from "./state";
@@ -82,12 +84,18 @@ export function renderSidebar() {
   if (draggingProjects) return;
   const html = groupedProjects().map((slot) =>
     slot.kind === "project" ? projectHtml(slot.project) : foldHtml(slot.group, slot.projects)).join("");
-  if (html === lastHtml) return; // nothing the sidebar shows has changed
-  lastHtml = html;
-  $("projects").innerHTML = html;
-  // The DOM the expansion lives on was just replaced, so re-apply it. This is the
-  // whole reason ./peek tracks a project *path* rather than an element.
-  applyPeek();
+  if (html !== lastHtml) {
+    lastHtml = html;
+    $("projects").innerHTML = html;
+    // The DOM the expansion lives on was just replaced, so re-apply it. This is the
+    // whole reason ./peek tracks a project *path* rather than an element.
+    applyPeek();
+  }
+  // Outside that guard, unlike applyPeek: a highlight is a *clock*, so it has to be
+  // re-applied to rows the repaint above replaced AND kept in step on the passes where
+  // nothing about the markup changed at all. It costs one early return when nothing is
+  // lit, which is almost every pass.
+  applyFlash();
 }
 
 // One user-defined group: its header, and its projects nested inside a body that
@@ -267,6 +275,60 @@ export function initSidebarPeek() {
     peekHover = null;
     peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
   });
+}
+
+// ---------- the finish highlight ----------
+// ./attn owns the rules and is pure; this is the driver, and it is deliberately the
+// same shape as the peek one above — for three of the same reasons and one new one:
+//
+//   1. **The lit state is not in the markup.** It would bust `lastHtml` twice per
+//      finished session, and worse, it cannot be *in* a string honestly: what the row
+//      needs is how far through the fade it is, so the markup would differ on every
+//      repaint for as long as a row was lit and the guard would be off for all of it.
+//   2. **A repaint must not restart the fade.** #projects is rebuilt under a busy
+//      fleet several times a second; a class re-applied to the fresh node would replay
+//      the animation from zero every time, so a 4s highlight would glow for as long as
+//      anything else in the rail was moving. The negative `animation-delay` is what
+//      resumes it instead — the same trick, and the same trap, as the arming hairline.
+//   3. **An idle rail must cost nothing.** One timeout to the next expiry, and an
+//      early return on the common path where nothing is lit.
+//   4. Reduced motion gets a flat tint rather than a fade, which means the class must
+//      actually come *off* at the end. That is what the timeout is for; with the fade
+//      running, CSS has already landed on the transparent frame by then.
+let flashTimer: number | null = null;
+/// The ids lit on the last pass — what makes "nothing is lit and nothing was" a single
+/// string compare rather than a walk of every row in the rail.
+let lastLit = "";
+
+function applyFlash() {
+  const now = Date.now();
+  const lit = new Map<string, number>();
+  for (const s of sessions.values()) {
+    const age = attnFlash(s, attnPrefs, s.id === activeId, now);
+    if (age !== null) lit.set(s.id, age);
+  }
+  const sig = [...lit.keys()].join(",");
+  if (sig || lastLit) {
+    lastLit = sig;
+    for (const el of $("projects").querySelectorAll<HTMLElement>(".srow[data-sel]")) {
+      const s = sessions.get(el.dataset.sel!);
+      const age = lit.get(el.dataset.sel!);
+      el.classList.remove("lit");
+      if (age === undefined || !s) continue;
+      // Re-run the fade from where the *clock* is rather than from zero — see 2 above.
+      // The forced reflow is what makes the removal above take effect before the class
+      // goes back on; it is paid per lit row, which is one or two.
+      void el.offsetWidth;
+      el.style.setProperty("--lit-ms", `${attnPrefs.highlightMs}ms`);
+      el.style.setProperty("--lit-delay", `${-age}ms`);
+      el.style.setProperty("--lit-c", LIT_COLOR[statusKey(s)] ?? LIT_COLOR.done);
+      el.classList.add("lit");
+    }
+  }
+  if (flashTimer !== null) { clearTimeout(flashTimer); flashTimer = null; }
+  const at = attnFlashDeadline(sessions.values(), attnPrefs, activeId, now);
+  if (at === null) return;
+  flashTimer = window.setTimeout(() => { flashTimer = null; applyFlash(); }, Math.max(0, at - Date.now()));
 }
 
 /// Collapse whatever is expanded — called when peek is switched off in Settings, and
