@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The ▶ Run picker's *recent* list is yours to edit.** Hover a recent row and a small
+  ✕ appears — ⇧⌫ does the same from the keyboard — and the task is forgotten, so the
+  one-off script you happened to run twice last week stops sitting above the three you
+  actually use. Nothing is deleted and nothing is hidden: the row drops back into its own
+  source group below (the confirmation says which file it went back to), and running it
+  again earns its place back. ⌘K's Recent group reads the same history, so it agrees.
+
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
 created, edited and read, each one a click away from opening.
