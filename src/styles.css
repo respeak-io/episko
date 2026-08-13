@@ -309,6 +309,14 @@ html.win .wctl { display: flex; }
 .premove { flex: none; margin-left: 7px; opacity: 0; color: var(--muted-2); font-size: 10px; cursor: pointer; transition: opacity .12s, color .12s; }
 .phead.empty-p:hover .premove { opacity: .75; }
 .premove:hover { color: var(--st-attention); opacity: 1; }
+/* The header whose dashboard holds the stage — the same treatment .srow.active gives a
+   selected session, since a dashboard owns the stage the same way. Deliberately AFTER
+   .phead:hover and the .empty-p overrides: all three are two classes, so source order
+   is what decides, and a selected header must not lose its state to the pointer or to
+   being a project with nothing running in it. --accent is the dashboard project's (set
+   on open), which is right precisely because only its own row can be active. */
+.phead.active { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hair); }
+.phead.active .pname { color: var(--accent-ink); }
 
 .psessions { padding: 1px 0 4px 8px; margin-left: 10px; border-left: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; }
 .srow { position: relative; display: grid; grid-template-columns: 14px minmax(0,1fr) auto; gap: 7px; align-items: center; padding: 5px 8px; border-radius: 7px; cursor: pointer; }
