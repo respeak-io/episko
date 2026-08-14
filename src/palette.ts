@@ -27,6 +27,14 @@ export interface PalItem {
 export const frecency: Record<string, { n: number; t: number }> = JSON.parse(localStorage.getItem("cc-frecency") || "{}");
 export function frecScore(key: string): number { const f = frecency[key]; return f ? f.n * Math.pow(0.5, (Date.now() - f.t) / 2592000000) : 0; }
 export function bumpFrec(key: string) { if (!key || key.startsWith("session:")) return; const f = frecency[key] || { n: 0, t: 0 }; f.n++; f.t = Date.now(); frecency[key] = f; localStorage.setItem("cc-frecency", JSON.stringify(frecency)); }
+// Drop a key's history — the ✕ on a Run picker "recent" row. A deletion rather than
+// a hidden flag, because the score *is* the memory: forgetting is the whole of it,
+// and using the thing again earns the row back, which is the undo.
+export function forgetFrec(key: string) {
+  if (!(key in frecency)) return;
+  delete frecency[key];
+  localStorage.setItem("cc-frecency", JSON.stringify(frecency));
+}
 
 // Subsequence fuzzy match with matched-char highlighting. null = no match; higher
 // score = better (rewards contiguous runs and matches at word starts).

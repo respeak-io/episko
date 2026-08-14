@@ -30,7 +30,7 @@ import { basename, elidePath, esc, tilde } from "./format";
 import type { Runnable } from "./types";
 import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
 import { activeBind, comboMatches } from "./keys";
-import { bumpFrec, frecScore } from "./palette";
+import { bumpFrec, forgetFrec, frecScore } from "./palette";
 import {
   applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
   prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
@@ -451,6 +451,7 @@ function renderRunPicker(term: string) {
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
         ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
+        ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
       </div>`;
     }).join("");
     return `<div class="run-grp">${esc(g.name)}${g.sub ? `<span class="n">${esc(g.sub)}</span>` : ""}</div>${rows}`;
@@ -463,7 +464,36 @@ function renderRunPicker(term: string) {
     // stop there, or asking for parameters would also start a run without them.
     el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.p!; pickRun("params"); });
   });
+  body.querySelectorAll<HTMLElement>("[data-forget]").forEach((el) => {
+    // Same trap as ⋯, with a worse ending: without stopPropagation, forgetting a
+    // task would also launch it.
+    el.addEventListener("click", (e) => { e.stopPropagation(); forgetRecent(el.dataset.forget!); });
+  });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+/// Take one row out of *recent*. The task is not going anywhere — it drops back to
+/// its own source group below, which is why this says so rather than staying quiet:
+/// a row that visibly moves instead of disappearing otherwise reads as a misfire.
+/// The score it loses is the ⌘K palette's too, since both read one frecency table.
+function forgetRecent(id: string) {
+  const r = runList.find((x) => x.id === id);
+  forgetFrec("task:" + id);
+  if (r) toast(`Forgot ${r.label} — still under ${r.sourceFile || sourceShort(r)}`);
+  renderRunPicker(($("runInput") as HTMLInputElement).value);
+  ($("runInput") as HTMLInputElement).focus();
+}
+
+/// The runnable the selection is on, but only while it sits in *recent* — ⇧⌫ edits
+/// that group and must never touch a row that only looks similar. Also the guard
+/// that keeps the chord out of the search box's way: recent exists only on an empty
+/// term, so wherever backspace has text to delete, this answers null.
+function selectedRecent(): Runnable | null {
+  let i = 0;
+  for (const g of runGroups(($("runInput") as HTMLInputElement).value)) {
+    for (const r of g.items) if (i++ === runSel) return g.name === "recent" ? r : null;
+  }
+  return null;
 }
 
 function pickRun(how: "run" | "pin" | "params") {
@@ -569,6 +599,13 @@ $("runInput").addEventListener("keydown", (e) => {
   // the cache, then re-discover. Read from the binding rather than spelled out, so it
   // follows a rebind in Settings › Keys instead of stranding on the old ⌘⇧R.
   else if (comboMatches(activeBind(keyPrefs, "runTask"), e)) { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
+  // ⇧⌫ / ⇧⌦ is the ✕ without the mouse (the browser's own history-suggestion chord).
+  // Not a binding: it exists only inside this picker, on a group that only exists
+  // with an empty search box, so it can never take a chord anybody uses elsewhere.
+  else if ((e.key === "Backspace" || e.key === "Delete") && e.shiftKey) {
+    const r = selectedRecent();
+    if (r) { e.preventDefault(); forgetRecent(r.id); }
+  }
   else if (e.key === "Tab") { e.preventDefault(); cycleRunSource(e.shiftKey ? -1 : 1); }
   else if (e.key === "Escape") { e.preventDefault(); closeRunPicker(); }
 });

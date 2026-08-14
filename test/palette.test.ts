@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  bumpFrec, frecency, frecScore, fuzzy, parsePal, scoreItem, type PalItem,
+  bumpFrec, forgetFrec, frecency, frecScore, fuzzy, parsePal, scoreItem, type PalItem,
 } from "../src/palette";
 
 const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
@@ -217,5 +217,40 @@ describe("frecency — recency × frequency, with a 30-day half-life", () => {
   it("persists, so the ranking survives a restart", () => {
     bumpFrec("cmd:kill");
     expect(JSON.parse(store.get("cc-frecency")!)).toEqual({ "cmd:kill": { n: 1, t: NOW_MS } });
+  });
+});
+
+// The ✕ on a Run picker "recent" row. It drops the history rather than flagging the
+// row hidden, so there is nothing to keep in sync and nothing that could resurrect
+// a stale score later.
+describe("forgetFrec — dropping one thing's history", () => {
+  it("takes the key back to never-used", () => {
+    bumpFrec("task:npm:dev"); bumpFrec("task:npm:dev");
+    forgetFrec("task:npm:dev");
+    expect(frecScore("task:npm:dev")).toBe(0);
+    expect(frecency["task:npm:dev"]).toBeUndefined();
+  });
+  it("leaves every other key alone", () => {
+    bumpFrec("task:npm:dev"); bumpFrec("task:npm:test");
+    forgetFrec("task:npm:dev");
+    expect(frecScore("task:npm:test")).toBe(1);
+  });
+  it("persists, so the row doesn't come back on the next launch", () => {
+    bumpFrec("task:npm:dev"); bumpFrec("task:npm:test");
+    forgetFrec("task:npm:dev");
+    expect(JSON.parse(store.get("cc-frecency")!)).toEqual({ "task:npm:test": { n: 1, t: NOW_MS } });
+  });
+  it("is undone by using the thing again, from zero", () => {
+    // The whole undo story: forgetting is not a tombstone, so a task you forget and
+    // then run is simply a task used once.
+    bumpFrec("task:npm:dev"); bumpFrec("task:npm:dev"); bumpFrec("task:npm:dev");
+    forgetFrec("task:npm:dev");
+    bumpFrec("task:npm:dev");
+    expect(frecScore("task:npm:dev")).toBe(1);
+  });
+  it("ignores a key it has never seen, without writing", () => {
+    forgetFrec("task:never");
+    expect(frecency).toEqual({});
+    expect(store.get("cc-frecency")).toBeUndefined();
   });
 });
