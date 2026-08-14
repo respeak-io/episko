@@ -20,6 +20,18 @@ Markers: `+` new · `~` changed · `!` fixed
   source group below (the confirmation says which file it went back to), and running it
   again earns its place back. ⌘K's Recent group reads the same history, so it agrees.
 
++ **A session that finishes lights up, and the ⌂ badge stops hoarding the ones you have
+  already read.** The moment a pane starts wanting you — a turn ending, a turn the API
+  killed, a permission, a run going red — its sidebar row glows in that state's own
+  colour and fades out over a few seconds, so an agent finishing three projects down the
+  rail is something you catch rather than something you go looking for. The header's
+  "your turn" badge now queues **newest first**, which is the one you came back for, and
+  **opening a session takes it out of the badge**, the tray title and the palette's
+  *Needs you* — a blocking permission excepted, since looking at one is not answering it.
+  All four parts are yours to set in **Settings › Sessions › When a session wants you**,
+  with a preview that lights up so you can pick the duration by watching it rather than
+  by guessing at a number.
+
 ! **The new-session dialog stops resizing after it opens.** Its lists arrive in three
   waves — the skeletons, then git, then a background fetch — and the box was sized by
   whatever happened to be in it, so it grew or shrank a second or two after opening,

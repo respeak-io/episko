@@ -2,15 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { isExited, midFlight, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
-  accentFor, colorOverrides, dirtyByFolder, sessions, setBackendLive, setDormants,
+  accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
+  setBackendLive, setDormants,
   setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
   worktreesByRepo,
 } from "../src/state";
+import { ATTN_DEFAULTS } from "../src/attn";
 import {
-  allProjects, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  allProjects, attnPending, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
-  reactorLabel, reactorState, splitByWorktree, urgencyRank,
+  reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
   type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
@@ -23,7 +25,7 @@ function sess(o: Partial<Sess> = {}): Sess {
   return {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
-    phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
+    phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
@@ -62,6 +64,8 @@ beforeEach(() => {
   dirtyByFolder.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
   taskPrefs.attention = true; // needsYou reads it; restore the shipped default
+  setAttnPrefs(ATTN_DEFAULTS); // ditto for the reactor's queue (./attn)
+  setActiveId(null);
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -834,6 +838,79 @@ describe("needsYou — is this pane waiting on the human", () => {
   });
 });
 
+describe("syncAttn — when each pane started wanting you", () => {
+  it("stamps a session on the way into the set and clears it on the way out", () => {
+    const [s] = open(sess({ id: "a", phase: "working" }));
+    syncAttn();
+    expect(s.attnAt).toBe(0);
+    s.phase = "done";
+    syncAttn();
+    expect(s.attnAt).toBe(NOW_MS);
+    s.phase = "thinking";
+    syncAttn();
+    expect(s.attnAt).toBe(0);
+  });
+  it("does not move a stamp that is already set", () => {
+    // It runs on every paint, and a fleet paints several times a second: a stamp that
+    // re-took `now` each time would leave every highlight one frame long and the
+    // "longest waiting" order meaningless.
+    const [s] = open(sess({ id: "a", phase: "done", attnAt: NOW_MS - 5000 }));
+    syncAttn();
+    expect(s.attnAt).toBe(NOW_MS - 5000);
+  });
+  it("stamps a permission that never moved the phase", () => {
+    // The reason this is not `phaseSince`: a PermissionRequest arrives mid-tool-call
+    // and leaves the phase exactly where it was.
+    const [s] = open(sess({ id: "a", phase: "working", phaseSince: NOW_MS - 60000 }));
+    syncAttn();
+    expect(s.attnAt).toBe(0);
+    s.attention = "permission: Bash";
+    syncAttn();
+    expect(s.attnAt).toBe(NOW_MS);
+  });
+  it("stamps a fan-out whose grace window has expired, which no event announces", () => {
+    const [s] = open(sess({ id: "a", phase: "done", ...fleet(4, 4) }));
+    s.subagents = 0;
+    s.fanout!.lastAt = NOW_MS - 1000;   // still inside FANOUT_GRACE_MS
+    syncAttn();
+    expect(s.attnAt).toBe(0);           // the fleet is between stages, not finished
+    s.fanout!.lastAt = NOW_MS - 200_000;
+    syncAttn();
+    expect(s.attnAt).toBe(NOW_MS);      // …and now it is your turn, with no hook to say so
+  });
+  it("leaves a session it has never seen alone", () => {
+    const [s] = open(sess({ id: "a", kind: "shell", phase: "error" }));
+    syncAttn();
+    expect(s.attnAt).toBe(0);
+  });
+});
+
+describe("attnPending — the needs-you set minus what you have been to", () => {
+  it("drops a finished turn you have opened since", () => {
+    const [s] = open(sess({ id: "a", phase: "done", attnAt: 500, seenAt: 900 }));
+    expect(needsYou(s)).toBe(true);      // the raw fact is unchanged…
+    expect(attnPending(s)).toBe(false);  // …but you have already read it
+  });
+  it("keeps one you have not been back to", () => {
+    const [s] = open(sess({ id: "a", phase: "done", attnAt: 500, seenAt: 100 }));
+    expect(attnPending(s)).toBe(true);
+  });
+  it("keeps a blocking permission you have looked at, because looking is not answering", () => {
+    const [s] = open(sess({ id: "a", phase: "working", attention: "permission: Bash", attnAt: 500, seenAt: 900 }));
+    expect(attnPending(s)).toBe(true);
+  });
+  it("drops the pane on the stage without waiting for a second click", () => {
+    const [s] = open(sess({ id: "a", phase: "done", attnAt: 500, seenAt: 100 }));
+    setActiveId("a");
+    expect(attnPending(s)).toBe(false);
+  });
+  it("drops nothing with the clearing rule switched off", () => {
+    setAttnPrefs({ ...ATTN_DEFAULTS, clearOnOpen: false });
+    const [s] = open(sess({ id: "a", phase: "done", attnAt: 500, seenAt: 900 }));
+    expect(attnPending(s)).toBe(true);
+  });
+});
+
 describe("needsYouSessions — the reactor's queue", () => {
   it("keeps only the sessions that want you", () => {
     open(
@@ -851,11 +928,32 @@ describe("needsYouSessions — the reactor's queue", () => {
     );
     expect(ids(needsYouSessions())).toEqual(["blocked", "broken", "turn"]);
   });
-  it("breaks a tie by who has been waiting longest", () => {
+  it("keeps the urgency tier ahead of the order, whichever order is picked", () => {
+    // The badge takes its wording and its colour from list[0]. A permission sorting
+    // below a finished turn because the turn is newer would have it announce "1 your
+    // turn" with Claude sitting blocked — which is the one thing it must never say.
     open(
-      sess({ id: "recent", phase: "done", phaseSince: 900 }),
-      sess({ id: "oldest", phase: "done", phaseSince: 100 }),
-      sess({ id: "middle", phase: "done", phaseSince: 500 }),
+      sess({ id: "turn", phase: "done", attnAt: 900 }),
+      sess({ id: "blocked", phase: "working", attention: "Bash", attnAt: 100 }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["blocked", "turn"]);
+    setAttnPrefs({ ...ATTN_DEFAULTS, order: "waiting" });
+    expect(ids(needsYouSessions())).toEqual(["blocked", "turn"]);
+  });
+  it("breaks a tie with the one that just landed, by default", () => {
+    open(
+      sess({ id: "recent", phase: "done", attnAt: 900 }),
+      sess({ id: "oldest", phase: "done", attnAt: 100 }),
+      sess({ id: "middle", phase: "done", attnAt: 500 }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["recent", "middle", "oldest"]);
+  });
+  it("breaks it the other way when the order is set to longest-waiting", () => {
+    setAttnPrefs({ ...ATTN_DEFAULTS, order: "waiting" });
+    open(
+      sess({ id: "recent", phase: "done", attnAt: 900 }),
+      sess({ id: "oldest", phase: "done", attnAt: 100 }),
+      sess({ id: "middle", phase: "done", attnAt: 500 }),
     );
     expect(ids(needsYouSessions())).toEqual(["oldest", "middle", "recent"]);
   });
@@ -863,30 +961,37 @@ describe("needsYouSessions — the reactor's queue", () => {
     setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
     setProjOrder(["/w/b", "/w/a"]);
     open(
-      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", phaseSince: 100 }),
-      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", phaseSince: 900 }),
+      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", attnAt: 900 }),
+      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", attnAt: 100 }),
     );
     expect(ids(orderedSessions())).toEqual(["b1", "a1"]); // the sidebar puts b first…
-    expect(ids(needsYouSessions())).toEqual(["a1", "b1"]); // …the reactor still asks who waited
+    expect(ids(needsYouSessions())).toEqual(["a1", "b1"]); // …the reactor still asks when
   });
   it("does not consult the sidebar order even to break an exact tie", () => {
-    // Same urgency, same wait: the stable sort falls back to the order the sessions
+    // Same urgency, same stamp: the stable sort falls back to the order the sessions
     // were opened in, NOT to where the sidebar happens to be showing them.
     setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
     setProjOrder(["/w/b", "/w/a"]);
     open(
-      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", phaseSince: 100 }),
-      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", phaseSince: 100 }),
+      sess({ id: "a1", project: "a", colorKey: "/w/a", phase: "done", attnAt: 100 }),
+      sess({ id: "b1", project: "b", colorKey: "/w/b", phase: "done", attnAt: 100 }),
     );
     expect(ids(orderedSessions())).toEqual(["b1", "a1"]);
     expect(ids(needsYouSessions())).toEqual(["a1", "b1"]);
   });
-  it("sorts a failed run in beside the agents, by its own wait", () => {
+  it("sorts a failed run in beside the agents, by its own urgency", () => {
     open(
-      sess({ id: "turn", phase: "done", phaseSince: 100 }),
-      sess({ id: "run", kind: "task", phase: "error", phaseSince: 900 }),
+      sess({ id: "turn", phase: "done", attnAt: 900 }),
+      sess({ id: "run", kind: "task", phase: "error", attnAt: 100 }),
     );
     expect(ids(needsYouSessions())).toEqual(["run", "turn"]); // error outranks your turn
+  });
+  it("leaves out the ones you have already been to", () => {
+    open(
+      sess({ id: "read", phase: "done", attnAt: 100, seenAt: 500 }),
+      sess({ id: "fresh", phase: "done", attnAt: 900, seenAt: 500 }),
+    );
+    expect(ids(needsYouSessions())).toEqual(["fresh"]);
   });
   it("is empty when nothing wants you", () => {
     open(sess({ id: "a", phase: "working" }));

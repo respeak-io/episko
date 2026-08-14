@@ -20,9 +20,11 @@ import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  dashMirror, FAVORITES, IO_SCOPES, ioInfoAt, ioScope, keyPrefs, markWorkdirStale, peekPrefs, permMode,
+  attnPrefs, dashMirror, FAVORITES, IO_SCOPES, ioInfoAt, ioScope, keyPrefs, markWorkdirStale,
+  peekPrefs, permMode,
   permModeDef, projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
+  setAttnPrefs as setAttnPrefsState,
   setFavorites, setIoInfoAt, setIoScope, setKeyPrefs as setKeyPrefsState,
   setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
@@ -36,6 +38,7 @@ import {
   renameGroup, setCollapsed, type GroupStore,
 } from "./projgroups";
 import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
+import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
 import type { PermMode } from "./types";
@@ -144,6 +147,18 @@ export function setPeekPrefs(p: PeekPrefs) {
   closePeek();
   renderSidebar();
   renderSettings(); // the live preview in the Worktrees tab reads these values
+}
+
+// The same shape once more for the finish highlight and the "your turn" queue. This
+// one takes the full `renderAll`: the badge's contents, the tray title, a collapsed
+// group's warning glyph and the rail's highlights are all downstream of these four
+// values, and switching the highlight off has to take a lit row's class back off rather
+// than leaving it glowing until its timer happens to fire.
+export function setAttnPrefs(p: AttnPrefs) {
+  setAttnPrefsState(p);
+  localStorage.setItem("cc-attn", JSON.stringify(attnPrefs));
+  renderAll();
+  renderSettings(); // the preview row in Settings › Sessions replays at the new timing
 }
 
 // And again for the sound alerts. `renderSettings` alone, not `renderAll`: nothing

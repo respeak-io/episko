@@ -86,13 +86,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 56 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 57 modules
 
-**No framework, and no longer one file.** 56 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 57 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty-four, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty-five, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -104,12 +104,13 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
-| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
+| `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes *and* `cwd` |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
+| `attn.ts` | the moment a session starts wanting you: the highlight that fades off its row, the order the "your turn" badge queues in, and what opening a pane does to it |
 | `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type; capture, filing, removal |
@@ -192,6 +193,14 @@ And the things that hold however the files are arranged:
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 - **`termEngine` picks where a terminal lives** (embedded xterm pane / ghostty / Terminal / iTerm); the per-launch instrumentation and telemetry are identical for all four. `permMode` is orthogonal and sets the *starting* permission mode only (`docs/sessions.md`).
+- **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
+  you have been to since it finished leaves the badge, the tray title, the palette's
+  "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);
+  a blocking permission never leaves any of them, because looking at one is not answering
+  it. `attnAt` is stamped in **one** place — `syncAttn()`, the first line of
+  `renderAllNow` — never at the five events that can set it, and never from `phaseSince`,
+  which a permission does not move. Don't fold the filter into `needsYou`: `syncAttn`
+  asks that one, and the two would then flip each other every paint (`docs/architecture.md`).
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
 
 ## Deep dives (`docs/`)
@@ -203,7 +212,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/releases.md`**: `CHANGELOG.md` has three consumers that must never disagree; the gate is on the PR rather than the tag; don't reintroduce the fresh-install guard.
 - **`docs/dashboard.md`**: the project dashboard and its GitHub half. Three tiers (GitHub / git / neither); per-project cost comes from `cc-usage-detail`, never `cc-usage`; a claim is only ever a hint; a day's two generated sentences must never be mixed, and only the project half is committable (`.episko/digest.md`).
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
-- **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
+- **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
 - **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), and History.
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas) and the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items).

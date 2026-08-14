@@ -21,7 +21,7 @@ import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
 import { isAgent, taskStateText, type Runnable, type Sess } from "./types";
-import { allProjects, needsYou, orderedSessions, urgencyRank } from "./grouping";
+import { allProjects, attnPending, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
 import {
@@ -181,8 +181,11 @@ function buildPalGroups(raw: string): PalGroup[] {
   const sessNatural = (a: PalItem, b: PalItem) => urgencyRank(a.session!) - urgencyRank(b.session!) || b.session!.lastActivity - a.session!.lastActivity;
 
   const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands), tsk = score(taskCands);
-  const needy = sess.filter((i) => needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
-  const rest = sess.filter((i) => !needsYou(i.session!)).sort(emptyTerm ? sessNatural : byScore);
+  // `attnPending`, not `needsYou`: a session you have already been to since it finished
+  // is not one the palette should still be pushing to the top of the list. A blocking
+  // permission stays in this group however often you look at it — see ./attn.
+  const needy = sess.filter((i) => attnPending(i.session!)).sort(emptyTerm ? sessNatural : byScore);
+  const rest = sess.filter((i) => !attnPending(i.session!)).sort(emptyTerm ? sessNatural : byScore);
 
   const groups: PalGroup[] = [];
   const recentKeys = new Set<string>();

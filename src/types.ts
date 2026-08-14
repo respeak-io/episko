@@ -318,6 +318,16 @@ export interface Sess {
   resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
+  /// When this pane entered the "needs you" set, and **0 when it is not in it** —
+  /// maintained in exactly one place (`syncAttn` in ./grouping) rather than at each of
+  /// the four events that can put it there. It is not `phaseSince`: a permission is
+  /// raised without the phase moving at all, and a fan-out's grace window expiring puts
+  /// a session back in the set with no event of any kind. See ./attn for what reads it.
+  attnAt: number;
+  /// The last time you put this pane on the stage. Compared against `attnAt` — and
+  /// against nothing else — to answer "have you looked at this since it started wanting
+  /// you", which is what stops the reactor badge counting turns you have already read.
+  seenAt: number;
   /// Agents running in this session's name RIGHT NOW — `SubagentStart` minus
   /// `SubagentStop`. The live count and nothing else; the cumulative tally, the run's
   /// name and its phases live on `fanout` beside it.

@@ -23,7 +23,8 @@ import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setKeyPrefs, setPeekPrefs, setPermMode,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setKeyPrefs, setPeekPrefs,
+  setPermMode,
   setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
   toggleIoInfo, toggleRail, toggleTheme,
 } from "./actions";
@@ -94,7 +95,7 @@ import {
   setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
-import { orderedSessions } from "./grouping";
+import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
@@ -228,7 +229,7 @@ setMirrorRenderAll(renderAll);
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs,
+  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
 });
 // "Why was there no noise?" is otherwise unanswerable from outside the player.
 setSoundLogger(dlog);
@@ -407,6 +408,11 @@ function flushRender() {
 }
 function renderAllNow() {
   telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
+  // BEFORE anything paints. Five different things can put a session into (or out of)
+  // the needs-you set, one of which is a fan-out's grace window expiring with no event
+  // at all — so the stamp every attention surface below reads is refreshed here, once,
+  // rather than at each of them. See syncAttn in ./grouping.
+  syncAttn();
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
