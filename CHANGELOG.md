@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.20.0 — 2026-08-14
+A session that wants you lights up its own row, the "your turn" badge lets go of the
+ones you have opened, and the sidebar says which project dashboard is on screen.
+
 + **A recent row in the ▶ Run picker can be forgotten.** Hover it for the ✕, or press ⇧⌫.
   The task drops back into its own source group below (the confirmation says which file),
   and running it again earns its place back. ⌘K's Recent group reads the same history.
