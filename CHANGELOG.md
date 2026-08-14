@@ -13,43 +13,29 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-+ **The ▶ Run picker's *recent* list is yours to edit.** Hover a recent row and a small
-  ✕ appears — ⇧⌫ does the same from the keyboard — and the task is forgotten, so the
-  one-off script you happened to run twice last week stops sitting above the three you
-  actually use. Nothing is deleted and nothing is hidden: the row drops back into its own
-  source group below (the confirmation says which file it went back to), and running it
-  again earns its place back. ⌘K's Recent group reads the same history, so it agrees.
++ **A recent row in the ▶ Run picker can be forgotten.** Hover it for the ✕, or press ⇧⌫.
+  The task drops back into its own source group below (the confirmation says which file),
+  and running it again earns its place back. ⌘K's Recent group reads the same history.
 
-+ **A session that finishes lights up, and the ⌂ badge stops hoarding the ones you have
-  already read.** The moment a pane starts wanting you — a turn ending, a turn the API
-  killed, a permission, a run going red — its sidebar row glows in that state's own
-  colour and fades out over a few seconds, so an agent finishing three projects down the
-  rail is something you catch rather than something you go looking for. The header's
-  "your turn" badge now queues **newest first**, which is the one you came back for, and
-  **opening a session takes it out of the badge**, the tray title and the palette's
-  *Needs you* — a blocking permission excepted, since looking at one is not answering it.
-  All four parts are yours to set in **Settings › Sessions › When a session wants you**,
-  with a preview that lights up so you can pick the duration by watching it rather than
-  by guessing at a number.
++ **A session that starts wanting you lights up its sidebar row** in that state's own
+  colour, fading over a few seconds: a turn ending, a turn the API killed, a permission,
+  a run going red.
 
-! **The new-session dialog stops resizing after it opens.** Its lists arrive in three
-  waves — the skeletons, then git, then a background fetch — and the box was sized by
-  whatever happened to be in it, so it grew or shrank a second or two after opening,
-  taking *Start session here* out from under a pointer already travelling towards it. The
-  repo row is live in the first frame precisely so that starting a session in the project
-  itself needn't wait for the read, and a box that moves a beat later takes that back. The
-  dialog is now the same height whether the repo has one branch or ninety; the list
-  scrolls instead. A repo with no worktrees says so under the *Worktrees* heading, where
-  before that heading simply vanished along with the skeletons, which read as a load that
-  never finished.
+~ **The "your turn" badge queues newest first, and opening a session takes it out** of the
+  badge, the tray title and the palette's *Needs you*. A blocking permission stays, since
+  looking at one is not answering it. **Settings › Sessions › When a session wants you**
+  sets the duration and switches off any of it, with a preview to pick the duration by eye.
 
-! **A project dashboard now shows in the sidebar as the thing you are looking at.**
-  Opening one changed the stage and left every row in the sidebar looking unselected, so
-  the only surface on screen had nothing pointing at it, and with the sidebar collapsed
-  to the rail there was nothing to say which project you were reading. The project's
-  header now carries the same selection a session row does, and its rail button lights
-  the same way. A repo split across its checkouts marks the project's own row, since
-  every one of those rows opens the same dashboard.
+! **The new-session dialog stops resizing after it opens.** Its lists arrive in three waves
+  and the box was sized by whatever was in it, so *Start session here* moved out from under
+  a pointer already travelling towards it. The height is fixed now and the list scrolls; a
+  repo with no worktrees says so under the *Worktrees* heading, which used to vanish with
+  the skeletons.
+
+! **The sidebar shows which project dashboard you are looking at.** Opening one left every
+  row unselected, and collapsed to the rail nothing said which project was on screen. The
+  project's header now carries the same selection a session row does, and its rail button
+  lights the same way; a repo split across its checkouts marks the project's own row.
 
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
