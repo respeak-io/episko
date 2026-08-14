@@ -8,17 +8,24 @@
 // returns fresh arrays, touching no DOM and calling no renderer. The render layer in
 // main.ts consumes ProjGroup/WtCluster; it does not build them. (The one exception to
 // "pure over ./state" is `needsYou`, which also reads a task preference out of
-// ./tasks — that module owns the switch and nothing here should copy it.)
+// ./tasks — that module owns the switch and nothing here should copy it. Its
+// neighbours read the attention preference out of ./state and its rules out of ./attn,
+// on the same terms.)
+//
+// `syncAttn` is the one function here that WRITES to a session, and it writes exactly
+// one derived field — see its own comment for why it is here and why it is called from
+// a single place.
 //
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
 import { checkoutDir } from "./gitwatch";
 import { bgWaiting, type ExtSession, type LiveSess, type Phase, type Restorable, type Sess } from "./types";
+import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, backendLive, dormants, externals, FAVORITES, folderDirty, projGroups,
-  projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
+  accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty,
+  projGroups, projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -205,6 +212,25 @@ export function projectList(): ProjGroup[] {
   return groups;
 }
 
+/// Which rows of that list the open dashboard belongs to — what the sidebar header and
+/// the mini-rail button mark as selected. `root` is the dash mirror's, or `null` when
+/// no dashboard holds the stage (in which case nothing is marked).
+///
+/// Not simply "the row whose path matches". Every project header opens the dashboard of
+/// `repoRoot ?? path`, so in toplevel mode a repo split across checkouts has SEVERAL
+/// rows pointing at the same one, and lighting all of them would claim the project is
+/// on stage several times over. The root row *is* the project (`splitByWorktree` is
+/// what leaves it without a `repoRoot`), so it wears the mark alone whenever it is in
+/// the list. The checkouts share it only in the one case that has no root row — a
+/// worktree-only repo, whose phantom root is dropped — because there the alternative is
+/// the bug this exists to fix: a click that opened a dashboard with no row to show it.
+export function dashHeads(list: ProjGroup[], root: string | null): Set<string> {
+  if (!root) return new Set();
+  const own = list.filter((p) => (p.repoRoot ?? p.path) === root);
+  const rootRow = own.find((p) => !p.repoRoot);
+  return new Set((rootRow ? [rootRow] : own).map((p) => p.path));
+}
+
 // ---------- the user's named groups, folded into that list ----------
 // `projectList()` above answers "which projects, in what order"; this layers the user's
 // own headings over the result without touching either question. ./projgroups owns the
@@ -267,7 +293,9 @@ export function groupSummary(projects: ProjGroup[]): GroupSummary {
     count += p.sessions.length + p.externals.length;
     if (!dirty) dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
     for (const s of p.sessions) {
-      if (!needsYou(s)) continue;
+      // `attnPending`, not `needsYou`: a fold that went on flagging a turn you have
+      // already read would be the badge's own drift, one level down.
+      if (!attnPending(s)) continue;
       if (!urgent || urgencyRank(s) < urgencyRank(urgent) || (urgencyRank(s) === urgencyRank(urgent) && s.phaseSince < urgent.phaseSince)) urgent = s;
     }
   }
@@ -411,8 +439,50 @@ export function needsYou(s: Sess): boolean {
   if (bgWaiting(s)) return false;
   return s.phase === "done" || s.phase === "error";
 }
+/**
+ * When each pane entered the set above — `Sess.attnAt`, the anchor the finish
+ * highlight fades from and the reactor's queue is ordered by (./attn).
+ *
+ * ONE CALL SITE, AT THE TOP OF `renderAllNow`, and that is the point. Four different
+ * events can put a session in this set (a turn ending, a `StopFailure`, a permission
+ * arriving on its own channel, a task's exit code) and a fifth non-event can too — a
+ * background fan-out's grace window expiring, which no hook announces. Stamping at each
+ * of them would be five places to forget; every one of them already ends in
+ * `renderAll()` by the app's oldest rule, so asking the question once per paint is both
+ * complete and self-healing. Being up to one frame late does not show on a highlight
+ * measured in seconds.
+ *
+ * `was` is read back off the stamp rather than tracked separately, which is what keeps
+ * this idempotent: running it twice in a row changes nothing.
+ */
+export function syncAttn(now = Date.now()) {
+  for (const s of sessions.values()) {
+    const needy = needsYou(s);
+    if (needy && !s.attnAt) s.attnAt = now;
+    else if (!needy && s.attnAt) s.attnAt = 0;
+  }
+}
+/**
+ * The needs-you set MINUS whatever you have already been to — what every surface that
+ * *counts* sessions at you reads (the reactor badge and its picker, the tray title, the
+ * palette's "Needs you" group, a collapsed group's warning glyph).
+ *
+ * Deliberately not folded into `needsYou` itself, which has to stay the raw fact: it is
+ * what `syncAttn` above asks, and a predicate that answered "no, you've seen it" would
+ * clear the very stamp that decides whether you have — the two would then flip each
+ * other on alternate paints forever.
+ */
+export function attnPending(s: Sess): boolean {
+  return needsYou(s) && !attnCleared(s, attnPrefs, s.id === activeId);
+}
+/// The reactor's queue: most urgent first, then whichever end of the wait the user
+/// picked (./attn's `attnOrder`). The urgency tier stays the primary key whatever that
+/// setting says — the badge takes its colour and its wording from `list[0]`, so a
+/// permission sorting below a finished turn would have it announce "1 your turn" while
+/// Claude sat blocked.
 export function needsYouSessions(): Sess[] {
-  return [...sessions.values()].filter(needsYou).sort((a, b) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince);
+  const wait = attnOrder(attnPrefs);
+  return [...sessions.values()].filter(attnPending).sort((a, b) => urgencyRank(a) - urgencyRank(b) || wait(a, b));
 }
 export function reactorState(s: Sess): "attention" | "error" | "done" { return s.attention ? "attention" : s.phase === "error" ? "error" : "done"; }
 export function reactorLabel(dom: "attention" | "error" | "done", n: number): string {

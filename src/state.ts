@@ -21,6 +21,7 @@
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
+import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
@@ -110,6 +111,15 @@ export function setCmpBase(repoDir: string, ref: string) {
 // than three keys, because the three are only ever read together.
 export let peekPrefs: PeekPrefs = clampPeekPrefs(safeParse(localStorage.getItem("cc-peek")));
 export function setPeekPrefs(p: PeekPrefs) { peekPrefs = clampPeekPrefs(p); }
+
+// --- the "needs you" set -----------------------------------------------------------
+// Whether a session lights up when it starts wanting you, for how long, which end of
+// the queue the reactor badge lists from, and whether opening a pane takes it out of
+// that queue. One JSON blob under cc-attn for the same reason as cc-peek below it: the
+// four are only ever read together. The rules (and the clamping) live in ./attn, which
+// is pure and tested; this only holds the value.
+export let attnPrefs: AttnPrefs = clampAttnPrefs(safeParse(localStorage.getItem("cc-attn")));
+export function setAttnPrefs(p: AttnPrefs) { attnPrefs = clampAttnPrefs(p); }
 
 // --- sound alerts ---------------------------------------------------------------
 // Whether Episko makes a noise when something wants you, and which noise. One JSON

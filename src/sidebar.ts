@@ -13,16 +13,19 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { $, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, tilde } from "./format";
+import { statusKey } from "./types";
+import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
-import { groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
 } from "./peek";
 import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
-import { dormantRows, foldEmpty, foldHead, groupBody, peekBody } from "./sidebarview";
+import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
 import {
-  activeId, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs, projGroups,
+  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs,
+  projGroups,
   saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
   type SortMode,
 } from "./state";
@@ -80,14 +83,25 @@ function invalidateSidebarCache() { lastHtml = null; }
 export function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
-  const html = groupedProjects().map((slot) =>
-    slot.kind === "project" ? projectHtml(slot.project) : foldHtml(slot.group, slot.projects)).join("");
-  if (html === lastHtml) return; // nothing the sidebar shows has changed
-  lastHtml = html;
-  $("projects").innerHTML = html;
-  // The DOM the expansion lives on was just replaced, so re-apply it. This is the
-  // whole reason ./peek tracks a project *path* rather than an element.
-  applyPeek();
+  const list = projectList();
+  // Which header(s) the open dashboard belongs to. ./grouping's rule rather than a
+  // `p.path === root` test here, because one repo can be several rows and they all
+  // open the same dashboard.
+  const dash = dashHeads(list, dashMirror()?.root ?? null);
+  const html = groupedProjects(list).map((slot) =>
+    slot.kind === "project" ? projectHtml(slot.project, dash) : foldHtml(slot.group, slot.projects, dash)).join("");
+  if (html !== lastHtml) {
+    lastHtml = html;
+    $("projects").innerHTML = html;
+    // The DOM the expansion lives on was just replaced, so re-apply it. This is the
+    // whole reason ./peek tracks a project *path* rather than an element.
+    applyPeek();
+  }
+  // Outside that guard, unlike applyPeek: a highlight is a *clock*, so it has to be
+  // re-applied to rows the repaint above replaced AND kept in step on the passes where
+  // nothing about the markup changed at all. It costs one early return when nothing is
+  // lit, which is almost every pass.
+  applyFlash();
 }
 
 // One user-defined group: its header, and its projects nested inside a body that
@@ -99,14 +113,16 @@ export function renderSidebar() {
 // markup string: hover changes many times a second and would shred `lastHtml`, but a
 // collapse is a deliberate click, so it costs exactly one repaint and keeps the state
 // in the one place a re-render can't lose it.
-function foldHtml(g: GroupDef, projects: ProjGroup[]): string {
-  const body = projects.length ? projects.map(projectHtml).join("") : foldEmpty();
+function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string {
+  // Wrapped rather than `projects.map(projectHtml)`: map would pass the index as the
+  // second argument, and every row after the first would think it was the dashboard's.
+  const body = projects.length ? projects.map((p) => projectHtml(p, dash)).join("") : foldEmpty();
   return `<div class="pfold${g.collapsed ? " collapsed" : ""}" data-fold="${esc(g.id)}">`
     + foldHead(g, groupSummary(projects), projects.length)
     + `<div class="pfbody"><div class="pfbody-in">${body}</div></div></div>`;
 }
 
-function projectHtml(p: ProjGroup): string {
+function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const rows = groupBody(p) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
@@ -130,18 +146,24 @@ function projectHtml(p: ProjGroup): string {
   // *inside* the project's dashboard, which is where a worktree belongs.
   const dashRoot = p.repoRoot ?? p.path;
   const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
+  // A dashboard owns the stage exactly the way a session does, so the row that opened it
+  // says so — the same `.active` a session row wears. Without it the project header was
+  // the one selectable thing in the sidebar with no selected state, so the dashboard on
+  // screen appeared to belong to no project, and (with the rail collapsed) there was
+  // nothing to say which one you were looking at.
+  const on = dash.has(p.path) ? " active" : "";
   let head: string;
   if (p.sessions.length) {
-    head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
   } else if (isFav) {
     const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-    head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
+    head = `<div class="phead empty-p${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
   } else {
     // discovered via an external session or a restorable one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
       : `<span class="pcount ext">${p.dormants.length} past</span>`;
-    head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
   }
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
 }
@@ -267,6 +289,60 @@ export function initSidebarPeek() {
     peekHover = null;
     peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
   });
+}
+
+// ---------- the finish highlight ----------
+// ./attn owns the rules and is pure; this is the driver, and it is deliberately the
+// same shape as the peek one above — for three of the same reasons and one new one:
+//
+//   1. **The lit state is not in the markup.** It would bust `lastHtml` twice per
+//      finished session, and worse, it cannot be *in* a string honestly: what the row
+//      needs is how far through the fade it is, so the markup would differ on every
+//      repaint for as long as a row was lit and the guard would be off for all of it.
+//   2. **A repaint must not restart the fade.** #projects is rebuilt under a busy
+//      fleet several times a second; a class re-applied to the fresh node would replay
+//      the animation from zero every time, so a 4s highlight would glow for as long as
+//      anything else in the rail was moving. The negative `animation-delay` is what
+//      resumes it instead — the same trick, and the same trap, as the arming hairline.
+//   3. **An idle rail must cost nothing.** One timeout to the next expiry, and an
+//      early return on the common path where nothing is lit.
+//   4. Reduced motion gets a flat tint rather than a fade, which means the class must
+//      actually come *off* at the end. That is what the timeout is for; with the fade
+//      running, CSS has already landed on the transparent frame by then.
+let flashTimer: number | null = null;
+/// The ids lit on the last pass — what makes "nothing is lit and nothing was" a single
+/// string compare rather than a walk of every row in the rail.
+let lastLit = "";
+
+function applyFlash() {
+  const now = Date.now();
+  const lit = new Map<string, number>();
+  for (const s of sessions.values()) {
+    const age = attnFlash(s, attnPrefs, s.id === activeId, now);
+    if (age !== null) lit.set(s.id, age);
+  }
+  const sig = [...lit.keys()].join(",");
+  if (sig || lastLit) {
+    lastLit = sig;
+    for (const el of $("projects").querySelectorAll<HTMLElement>(".srow[data-sel]")) {
+      const s = sessions.get(el.dataset.sel!);
+      const age = lit.get(el.dataset.sel!);
+      el.classList.remove("lit");
+      if (age === undefined || !s) continue;
+      // Re-run the fade from where the *clock* is rather than from zero — see 2 above.
+      // The forced reflow is what makes the removal above take effect before the class
+      // goes back on; it is paid per lit row, which is one or two.
+      void el.offsetWidth;
+      el.style.setProperty("--lit-ms", `${attnPrefs.highlightMs}ms`);
+      el.style.setProperty("--lit-delay", `${-age}ms`);
+      el.style.setProperty("--lit-c", LIT_COLOR[statusKey(s)] ?? LIT_COLOR.done);
+      el.classList.add("lit");
+    }
+  }
+  if (flashTimer !== null) { clearTimeout(flashTimer); flashTimer = null; }
+  const at = attnFlashDeadline(sessions.values(), attnPrefs, activeId, now);
+  if (at === null) return;
+  flashTimer = window.setTimeout(() => { flashTimer = null; applyFlash(); }, Math.max(0, at - Date.now()));
 }
 
 /// Collapse whatever is expanded — called when peek is switched off in Settings, and
@@ -459,9 +535,13 @@ function hint(id: KeyAction): string {
 let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
+  const list = projectList();
+  // The collapsed rail is the only project surface on screen while it is up, so a
+  // dashboard has to mark its button here too — see projectHtml's `on`.
+  const dash = dashHeads(list, dashMirror()?.root ?? null);
   const html =
     `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">»</button>` +
-    projectList().map((p) => {
+    list.map((p) => {
       const first = p.sessions[0];
       const firstExt = p.externals[0];
       const attn = p.sessions.some((s) => s.attention || s.phase === "error");
@@ -470,7 +550,8 @@ export function renderMini() {
         : `data-launch="${esc(p.path)}" data-proj="${esc(p.name)}"`;
       const ic = iconFor(p.path);
       const glyph = ic ? `<img class="rm-icon" src="${ic}" alt="" />` : `<span class="rm-dot"></span>`;
-      const onCls = p.name === activeProj || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
+      const onCls = p.name === activeProj || dash.has(p.path)
+        || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +

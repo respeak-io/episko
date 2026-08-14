@@ -13,6 +13,30 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A recent row in the ▶ Run picker can be forgotten.** Hover it for the ✕, or press ⇧⌫.
+  The task drops back into its own source group below (the confirmation says which file),
+  and running it again earns its place back. ⌘K's Recent group reads the same history.
+
++ **A session that starts wanting you lights up its sidebar row** in that state's own
+  colour, fading over a few seconds: a turn ending, a turn the API killed, a permission,
+  a run going red.
+
+~ **The "your turn" badge queues newest first, and opening a session takes it out** of the
+  badge, the tray title and the palette's *Needs you*. A blocking permission stays, since
+  looking at one is not answering it. **Settings › Sessions › When a session wants you**
+  sets the duration and switches off any of it, with a preview to pick the duration by eye.
+
+! **The new-session dialog stops resizing after it opens.** Its lists arrive in three waves
+  and the box was sized by whatever was in it, so *Start session here* moved out from under
+  a pointer already travelling towards it. The height is fixed now and the list scrolls; a
+  repo with no worktrees says so under the *Worktrees* heading, which used to vanish with
+  the skeletons.
+
+! **The sidebar shows which project dashboard you are looking at.** Opening one left every
+  row unselected, and collapsed to the rail nothing said which project was on screen. The
+  project's header now carries the same selection a session row does, and its rail button
+  lights the same way; a repo split across its checkouts marks the project's own row.
+
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
 created, edited and read, each one a click away from opening.

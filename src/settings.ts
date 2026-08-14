@@ -16,10 +16,16 @@ import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import type { Engine, PermMode } from "./types";
 import {
-  ALL_PERM_MODES, availEngines, engineDef, keyPrefs, peekPrefs, permMode, setTermFontSize,
+  ALL_PERM_MODES, attnPrefs, availEngines, engineDef, keyPrefs, peekPrefs, permMode,
+  setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
+import {
+  ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
+  isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
+} from "./attn";
+import { LIT_COLOR } from "./sidebarview";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -67,12 +73,15 @@ export interface SettingsHost {
   // And again for the shortcuts — ./actions clamps through ./keys, persists the
   // switch plus only the overrides, and repaints every surface that spells a chord.
   setKeyPrefs: (p: KeyPrefs) => void;
+  // And for the finish highlight — ./actions clamps through ./attn, persists, and
+  // repaints everything downstream of the needs-you set.
+  setAttnPrefs: (p: AttnPrefs) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
-  setKeyPrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -97,6 +106,11 @@ type SetControl =
   | { kind: "sound"; label: string; hint?: string }
   // The shortcut picker: a row per bindable action, each recording a real keypress.
   | { kind: "keys"; label: string; hint?: string }
+  // What happens when a session starts wanting you: the row highlight and its timing,
+  // the order the "your turn" badge queues in, and whether opening a pane clears it.
+  // One control for the same reason `peek` is one — they are one decision, and the
+  // preview row is only honest sitting directly under the stepper that sets it.
+  | { kind: "attn"; label: string; hint?: string }
   // A single on/off switch.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
@@ -140,6 +154,8 @@ const SET_TABS: SetTab[] = [
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
+      { kind: "attn", label: "When a session wants you",
+        hint: "A turn finishing, a turn the API killed, a permission, a failed run. The row lights up in the rail for a few seconds, and the ⌂ badge in the header queues them all up. Hover the preview to see the light." },
     ],
   },
   {
@@ -394,6 +410,95 @@ function renderPeekControl(): string {
   </div>`;
 }
 
+// ---------- the attention control: a light you can see, and a queue order ----------
+// THE PREVIEW IS THREE REAL SIDEBAR ROWS. Not a mock of one: `.psessions > .srow.lit`
+// is the exact CSS path the rail takes, so what you set here is what you will see over
+// there, and a change to either cannot quietly stop describing the other. Only the
+// contents are invented.
+//
+// It replays on hover AND on every repaint of this pane, which means every press of the
+// stepper plays the new duration immediately. That is the whole reason the preview
+// exists: "is 4 seconds right?" has no answer until something has actually lit up for
+// four seconds, and the one thing a highlight must never be is a number you guessed.
+const ATTN_DEMO: { title: string; k: string; glyph: string; cls: string; ctx: string }[] = [
+  { title: "Fix telemetry routing", k: "done",      glyph: "✓", cls: "g-done",  ctx: "12%" },
+  { title: "Review PR #49",         k: "attention", glyph: "◆", cls: "g-attn",  ctx: "61%" },
+  { title: "fe-check",              k: "error",     glyph: "✕", cls: "g-error", ctx: "exit 1" },
+];
+function attnDemoHtml(): string {
+  // Unlit while the switch is off, which is the honest preview of what the rail will
+  // then do: nothing. (`attnDemoReplay` stands down for the same reason.)
+  const on = attnPrefs.highlight ? " lit" : "";
+  const rows = ATTN_DEMO.map((d) =>
+    `<div class="srow${on}" style="--lit-ms:${attnPrefs.highlightMs}ms;--lit-c:${LIT_COLOR[d.k] ?? LIT_COLOR.done}">`
+    + `<span class="sglyph ${d.cls}">${d.glyph}</span>`
+    + `<span class="sbranch">${esc(d.title)}</span>`
+    + `<span class="sctx">${esc(d.ctx)}</span></div>`).join("");
+  return `<div class="p-mini attndemo" id="attnDemo"><div class="psessions">${rows}</div></div>`;
+}
+function attnStepper(v: number): string {
+  return `<div class="set-font peekstep">
+    <span class="peekstep-l">Fades over</span>
+    <button class="set-fbtn" data-setattn="hl:${-ATTN_HIGHLIGHT_STEP}" ${v <= ATTN_HIGHLIGHT_RANGE.min ? "disabled" : ""} aria-label="Shorter">−</button>
+    <span class="set-fval mono">${(v / 1000).toFixed(1)}s</span>
+    <button class="set-fbtn" data-setattn="hl:${ATTN_HIGHLIGHT_STEP}" ${v >= ATTN_HIGHLIGHT_RANGE.max ? "disabled" : ""} aria-label="Longer">+</button>
+  </div>`;
+}
+function renderAttnControl(): string {
+  const p = attnPrefs;
+  return `<div class="attnbox${p.highlight ? "" : " off"}">
+    <div class="peekrow">
+      ${attnStepper(p.highlightMs)}
+      <button class="set-freset" data-setattn="reset" ${isDefaultAttnPrefs(p) ? "disabled" : ""}>Reset</button>
+    </div>
+    ${attnDemoHtml()}
+    <div class="sndwhen">
+      <div class="peekstep-l">Queue order</div>
+      <div class="chips">${ATTN_ORDERS.map((o) =>
+        `<button class="chip-opt ${p.order === o.id ? "on" : ""}" data-setattn="order:${o.id}" title="${esc(o.sub)}">`
+        + `<span class="seg-glyph">${o.glyph}</span>${esc(o.label)}</button>`).join("")}</div>
+    </div>
+    <div class="peeksub set-inline">
+      <div class="set-itxt">
+        <div class="set-glabel">Clear it when you open the session</div>
+        <div class="set-hint">Going to a session takes it out of the badge, the tray and the palette's “Needs you”. A blocking permission stays until you actually answer it — looking at one doesn't unblock Claude. Off means the badge only empties when the sessions in it move on by themselves.</div>
+      </div>
+      <button class="sw${p.clearOnOpen ? " on" : ""}" data-setattn="clear" role="switch" aria-checked="${p.clearOnOpen}"></button>
+    </div>
+    <div class="peekhint">${esc(p.highlight
+      ? "The rail is where you catch this: a session finishing three projects down is otherwise one glyph quietly changing colour among twenty. The light stops the moment you open the pane — it is there to point, not to nag."
+      : "The highlight is off, so a finished session is announced by its glyph and the badge alone. The queue order and the clearing rule above still apply.")}</div>
+  </div>`;
+}
+/**
+ * A press in the attention panel. Everything routes through `host.setAttnPrefs`, which
+ * clamps, persists and re-renders this window — so the markup above is always painted
+ * from the stored value, and the preview replays at the new timing for free.
+ */
+function applyAttnSetting(cmd: string) {
+  const p = attnPrefs;
+  if (cmd === "reset") { host.setAttnPrefs(ATTN_DEFAULTS); return; }
+  if (cmd === "highlight") { host.setAttnPrefs({ ...p, highlight: !p.highlight }); return; }
+  if (cmd === "clear") { host.setAttnPrefs({ ...p, clearOnOpen: !p.clearOnOpen }); return; }
+  const [verb, a] = cmd.split(":");
+  // Clamping is `clampAttnPrefs`' job; the buttons disable at the bounds and it catches
+  // the rest, exactly as the peek and volume steppers do.
+  if (verb === "hl") host.setAttnPrefs({ ...p, highlightMs: p.highlightMs + Number(a) });
+  else if (verb === "order") host.setAttnPrefs({ ...p, order: a as AttnOrder });
+}
+/// Replay one demo row's light. The class has to come off, force a layout and go back
+/// on — restarting a CSS animation is not something re-adding a class does on its own,
+/// and this is the same reflow `applyFlash` pays for the same reason.
+/// Which preview row the pointer is on — see the mouseover handler at the bottom of
+/// this file. Not persisted and not state anybody else can see, like `soundPick`.
+let attnHover: HTMLElement | null = null;
+function attnDemoReplay(el: HTMLElement) {
+  el.classList.remove("lit");
+  if (!attnPrefs.highlight) return;
+  void el.offsetWidth;
+  el.classList.add("lit");
+}
+
 // ---------- the sound control: a volume, a focus rule, and a row per event ----------
 // Every button in here PLAYS what it changes, and that is the design rather than a
 // flourish: a list of ten names ("Chime", "Drop", "Buzz") is unusable — nobody knows
@@ -619,6 +724,14 @@ function renderSetControl(c: SetControl): string {
       + `<button class="sw${peekPrefs.enabled ? " on" : ""}" data-setpeek="toggle" role="switch"`
       + ` aria-checked="${peekPrefs.enabled}"></button></div>${renderPeekControl()}</div>`;
   }
+  if (c.kind === "attn") {
+    // Same shape as `peek` below: the switch that governs the panel rides the label row.
+    // It is the *highlight's* switch and not the whole control's — the queue order and
+    // the clearing rule are not things you turn off, they are things you choose.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${attnPrefs.highlight ? " on" : ""}" data-setattn="highlight" role="switch"`
+      + ` aria-checked="${attnPrefs.highlight}"></button></div>${renderAttnControl()}</div>`;
+  }
   if (c.kind === "sound") {
     // Same shape as `peek` above: the master switch rides the label row, the panel it
     // governs sits under it, because they are one decision.
@@ -829,6 +942,13 @@ $("setBody").addEventListener("click", (e) => {
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
   const pk = (e.target as HTMLElement).closest<HTMLElement>("[data-setpeek]");
   if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
+  const at = (e.target as HTMLElement).closest<HTMLElement>("[data-setattn]");
+  if (at) { applyAttnSetting(at.dataset.setattn!); return; }
+  // Clicking a preview row is the third way to replay it, after hovering it and moving
+  // the stepper — the one gesture somebody reaches for when the first two are not
+  // obvious. It changes nothing, so it does not fall through to a setting.
+  const ad = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
+  if (ad) { attnDemoReplay(ad); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");
@@ -842,6 +962,16 @@ $("setBody").addEventListener("click", (e) => {
 // sidebar's is delegated on #projects: renderSettings() replaces the demo's DOM on
 // every stepper press, and per-element listeners would go with it.
 $("setBody").addEventListener("mouseover", (e) => {
+  // The attention preview replays under the pointer. A highlight is over in seconds, so
+  // a preview you can only see by pressing a stepper is one you have to break to watch.
+  //
+  // `attnHover` is the same guard ./sidebar's peek needs and for the same reason:
+  // mouseover fires again for every child the pointer crosses, so replaying on each of
+  // them would restart the fade three times on the way across one row — a light that
+  // never fades, which is precisely the thing this preview is here to let you judge.
+  const row = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
+  if (row !== attnHover) { attnHover = row; if (row) attnDemoReplay(row); }
+  if (row) return;
   const g = (e.target as HTMLElement).closest<HTMLElement>("#peekDemo .pgroup");
   const path = g?.dataset.peekdemo;
   if (!path || path === demoHover) return;
@@ -881,4 +1011,9 @@ $("setBody").addEventListener("mousemove", (e) => {
   uTip.style.left = e.clientX + "px";
   uTip.style.top = (e.clientY - 14) + "px";
 });
-$("setBody").addEventListener("mouseleave", () => { uTip.hidden = true; });
+$("setBody").addEventListener("mouseleave", () => {
+  uTip.hidden = true;
+  // Leaving the pane fires no further mouseover, so without this the preview row the
+  // pointer left is still "the one we are on" and coming back to it would not replay.
+  attnHover = null;
+});
