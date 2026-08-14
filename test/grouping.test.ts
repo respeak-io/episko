@@ -9,7 +9,8 @@ import {
 } from "../src/state";
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
-  allProjects, attnPending, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  allProjects, attnPending, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
+  foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
   reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
@@ -356,6 +357,39 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     const out = splitByWorktree([p]);
     expect(out[0].externals.map((e) => e.session_id)).toEqual(["e2"]);
     expect(out[1].externals.map((e) => e.session_id)).toEqual(["e1"]);
+  });
+});
+
+describe("dashHeads — which sidebar row the open dashboard is marked on", () => {
+  const wt = (path: string, repoRoot: string) => grp({ path, repoRoot, wtBranch: "feature" });
+  it("marks nothing when no dashboard holds the stage", () => {
+    expect(dashHeads([grp()], null).size).toBe(0);
+  });
+  it("marks the row whose project the dashboard is of", () => {
+    const list = [grp(), grp({ name: "other", path: "/w/other" })];
+    expect([...dashHeads(list, "/w/epi")]).toEqual(["/w/epi"]);
+  });
+  it("marks nothing when the dashboard's project is not in the list", () => {
+    // It can leave it: a project with nothing running drops off a filtered list while
+    // its dashboard is still on stage. No row is better than the wrong row.
+    expect(dashHeads([grp({ path: "/w/other" })], "/w/epi").size).toBe(0);
+  });
+  it("marks the root row alone when a repo is split across checkouts", () => {
+    // Every one of these rows opens the SAME dashboard (`repoRoot ?? path`), and
+    // lighting all three would say the project is on stage three times over.
+    const list = [grp(), wt("/w/wt-a", "/w/epi"), wt("/w/wt-b", "/w/epi")];
+    expect([...dashHeads(list, "/w/epi")]).toEqual(["/w/epi"]);
+  });
+  it("falls back to the checkouts when the repo has no root row", () => {
+    // splitByWorktree drops the phantom root of a worktree-only repo, and that row is
+    // what would otherwise carry the mark — leaving the click that opened the dashboard
+    // with nothing to show for it.
+    const list = [wt("/w/wt-a", "/w/epi"), wt("/w/wt-b", "/w/epi")];
+    expect([...dashHeads(list, "/w/epi")]).toEqual(["/w/wt-a", "/w/wt-b"]);
+  });
+  it("never marks another project's checkout", () => {
+    const list = [grp(), wt("/w/other-wt", "/w/other")];
+    expect([...dashHeads(list, "/w/other")]).toEqual(["/w/other-wt"]);
   });
 });
 

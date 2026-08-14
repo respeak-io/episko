@@ -16,7 +16,7 @@ import { esc, tilde } from "./format";
 import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
-import { groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
@@ -24,7 +24,8 @@ import {
 import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
 import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
 import {
-  activeId, attnPrefs, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs, projGroups,
+  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs,
+  projGroups,
   saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
   type SortMode,
 } from "./state";
@@ -82,8 +83,13 @@ function invalidateSidebarCache() { lastHtml = null; }
 export function renderSidebar() {
   // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
-  const html = groupedProjects().map((slot) =>
-    slot.kind === "project" ? projectHtml(slot.project) : foldHtml(slot.group, slot.projects)).join("");
+  const list = projectList();
+  // Which header(s) the open dashboard belongs to. ./grouping's rule rather than a
+  // `p.path === root` test here, because one repo can be several rows and they all
+  // open the same dashboard.
+  const dash = dashHeads(list, dashMirror()?.root ?? null);
+  const html = groupedProjects(list).map((slot) =>
+    slot.kind === "project" ? projectHtml(slot.project, dash) : foldHtml(slot.group, slot.projects, dash)).join("");
   if (html !== lastHtml) {
     lastHtml = html;
     $("projects").innerHTML = html;
@@ -107,14 +113,16 @@ export function renderSidebar() {
 // markup string: hover changes many times a second and would shred `lastHtml`, but a
 // collapse is a deliberate click, so it costs exactly one repaint and keeps the state
 // in the one place a re-render can't lose it.
-function foldHtml(g: GroupDef, projects: ProjGroup[]): string {
-  const body = projects.length ? projects.map(projectHtml).join("") : foldEmpty();
+function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string {
+  // Wrapped rather than `projects.map(projectHtml)`: map would pass the index as the
+  // second argument, and every row after the first would think it was the dashboard's.
+  const body = projects.length ? projects.map((p) => projectHtml(p, dash)).join("") : foldEmpty();
   return `<div class="pfold${g.collapsed ? " collapsed" : ""}" data-fold="${esc(g.id)}">`
     + foldHead(g, groupSummary(projects), projects.length)
     + `<div class="pfbody"><div class="pfbody-in">${body}</div></div></div>`;
 }
 
-function projectHtml(p: ProjGroup): string {
+function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const rows = groupBody(p) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
@@ -138,18 +146,24 @@ function projectHtml(p: ProjGroup): string {
   // *inside* the project's dashboard, which is where a worktree belongs.
   const dashRoot = p.repoRoot ?? p.path;
   const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
+  // A dashboard owns the stage exactly the way a session does, so the row that opened it
+  // says so — the same `.active` a session row wears. Without it the project header was
+  // the one selectable thing in the sidebar with no selected state, so the dashboard on
+  // screen appeared to belong to no project, and (with the rail collapsed) there was
+  // nothing to say which one you were looking at.
+  const on = dash.has(p.path) ? " active" : "";
   let head: string;
   if (p.sessions.length) {
-    head = `<div class="phead" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
   } else if (isFav) {
     const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-    head = `<div class="phead empty-p" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
+    head = `<div class="phead empty-p${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
   } else {
     // discovered via an external session or a restorable one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
       : `<span class="pcount ext">${p.dormants.length} past</span>`;
-    head = `<div class="phead ext-only" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
   }
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
 }
@@ -521,9 +535,13 @@ function hint(id: KeyAction): string {
 let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
+  const list = projectList();
+  // The collapsed rail is the only project surface on screen while it is up, so a
+  // dashboard has to mark its button here too — see projectHtml's `on`.
+  const dash = dashHeads(list, dashMirror()?.root ?? null);
   const html =
     `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">»</button>` +
-    projectList().map((p) => {
+    list.map((p) => {
       const first = p.sessions[0];
       const firstExt = p.externals[0];
       const attn = p.sessions.some((s) => s.attention || s.phase === "error");
@@ -532,7 +550,8 @@ export function renderMini() {
         : `data-launch="${esc(p.path)}" data-proj="${esc(p.name)}"`;
       const ic = iconFor(p.path);
       const glyph = ic ? `<img class="rm-icon" src="${ic}" alt="" />` : `<span class="rm-dot"></span>`;
-      const onCls = p.name === activeProj || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
+      const onCls = p.name === activeProj || dash.has(p.path)
+        || (extMirrorId() && p.externals.some((e) => e.session_id === extMirrorId())) ? "on" : "";
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +

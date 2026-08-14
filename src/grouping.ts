@@ -212,6 +212,25 @@ export function projectList(): ProjGroup[] {
   return groups;
 }
 
+/// Which rows of that list the open dashboard belongs to — what the sidebar header and
+/// the mini-rail button mark as selected. `root` is the dash mirror's, or `null` when
+/// no dashboard holds the stage (in which case nothing is marked).
+///
+/// Not simply "the row whose path matches". Every project header opens the dashboard of
+/// `repoRoot ?? path`, so in toplevel mode a repo split across checkouts has SEVERAL
+/// rows pointing at the same one, and lighting all of them would claim the project is
+/// on stage several times over. The root row *is* the project (`splitByWorktree` is
+/// what leaves it without a `repoRoot`), so it wears the mark alone whenever it is in
+/// the list. The checkouts share it only in the one case that has no root row — a
+/// worktree-only repo, whose phantom root is dropped — because there the alternative is
+/// the bug this exists to fix: a click that opened a dashboard with no row to show it.
+export function dashHeads(list: ProjGroup[], root: string | null): Set<string> {
+  if (!root) return new Set();
+  const own = list.filter((p) => (p.repoRoot ?? p.path) === root);
+  const rootRow = own.find((p) => !p.repoRoot);
+  return new Set((rootRow ? [rootRow] : own).map((p) => p.path));
+}
+
 // ---------- the user's named groups, folded into that list ----------
 // `projectList()` above answers "which projects, in what order"; this layers the user's
 // own headings over the result without touching either question. ./projgroups owns the

@@ -43,6 +43,14 @@ Markers: `+` new · `~` changed · `!` fixed
   before that heading simply vanished along with the skeletons, which read as a load that
   never finished.
 
+! **A project dashboard now shows in the sidebar as the thing you are looking at.**
+  Opening one changed the stage and left every row in the sidebar looking unselected, so
+  the only surface on screen had nothing pointing at it, and with the sidebar collapsed
+  to the rail there was nothing to say which project you were reading. The project's
+  header now carries the same selection a session row does, and its rail button lights
+  the same way. A repo split across its checkouts marks the project's own row, since
+  every one of those rows opens the same dashboard.
+
 ## 0.19.0 — 2026-08-10
 The inspector stops listing tool calls and starts listing files — what the agent
 created, edited and read, each one a click away from opening.
