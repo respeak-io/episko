@@ -1058,6 +1058,81 @@ pub(crate) struct Resources {
     /// rates are 0 rather than measured. Lets the UI show "—" instead of a confident,
     /// wrong "0 B/s".
     primed: bool,
+    /// The `claude` binaries installed right now — the evidence `usage.ts` needs to keep
+    /// a **self-update** out of the write figures. See `version_files_in`.
+    install: Vec<InstallFile>,
+}
+
+/// One installed `claude` binary: a name to tell it from its neighbours between two
+/// polls, and the size to discount when it is one that just appeared.
+#[derive(serde::Serialize)]
+pub(crate) struct InstallFile {
+    name: String,
+    mb: f64,
+}
+
+/// Where the native installer keeps its version binaries, resolved **once per run**.
+///
+/// `resolve_claude()` can end in a login-shell probe, and this is read from a poll that
+/// runs every four seconds: a meter whose whole design rule is "do not add churn to the
+/// thing you are measuring" certainly must not spawn a shell per sample. The directory
+/// does not move during a run — only its contents change, which is the entire point.
+static VERSIONS_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+fn versions_dir() -> Option<&'static std::path::Path> {
+    VERSIONS_DIR
+        .get_or_init(|| {
+            // `~/.local/bin/claude` is a symlink into `…/share/claude/versions/<ver>`, so
+            // the real binary's parent IS the directory to watch. The well-known path is
+            // the fallback for an install we reached some other way (a shell probe, a
+            // shim); anything else — npm, Homebrew — updates through a package manager
+            // whose writes are charged to *its* process, never to a session of ours, so
+            // finding nothing here is the correct answer rather than a miss.
+            let real = std::fs::canonicalize(crate::platform::resolve_claude()).ok();
+            let by_link = real
+                .as_deref()
+                .and_then(|p| p.parent())
+                .filter(|p| p.file_name().is_some_and(|n| n == "versions"))
+                .map(|p| p.to_path_buf());
+            by_link.or_else(|| {
+                let p = std::path::Path::new(&crate::platform::home_dir())
+                    .join(".local")
+                    .join("share")
+                    .join("claude")
+                    .join("versions");
+                p.is_dir().then_some(p)
+            })
+        })
+        .as_deref()
+}
+
+/// The installed `claude` binaries and their sizes in MiB.
+///
+/// **Why a disk meter reads a directory:** a Claude Code self-update writes a whole new
+/// ~290 MiB binary in here, and the `claude` process doing it is one of ours, so the
+/// kernel charges those bytes to a session and the day reads as 300 MiB of agent churn.
+/// The size on disk is the exact number to take back out — see `installGrown` in
+/// `usage.ts`, which owns that decision.
+///
+/// Takes the directory rather than finding it so the scan is testable; one `read_dir`
+/// over the two or three entries an install holds, with no file contents read.
+fn version_files_in(dir: &std::path::Path) -> Vec<InstallFile> {
+    let mut out: Vec<InstallFile> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            md.is_file().then(|| InstallFile {
+                name: e.file_name().to_string_lossy().into_owned(),
+                mb: md.len() as f64 / (1024.0 * 1024.0),
+            })
+        })
+        .collect();
+    // Sorted so two polls describe the same install in the same order; the frontend keys
+    // by name, but a stable list keeps the payload diffable by eye in the 🐞 console.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 /// App-wide **disk I/O**: every embedded-PTY `claude` process Episko owns, summed into
@@ -1146,6 +1221,11 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
         read_mb: folded.read.saturating_add(retired.0) as f64 / MIB,
         written_mb: folded.written.saturating_add(retired.1) as f64 / MIB,
         primed: folded.primed,
+        // Reported raw, every poll: this half only states what is installed, and
+        // `usage.ts` decides what that means for the figures. Which keeps the decision in
+        // a module a test can reach — the counters above cannot be faked in a unit test,
+        // but "a binary that was not there last time" is pure arithmetic.
+        install: versions_dir().map(version_files_in).unwrap_or_default(),
     }
 }
 
@@ -1681,6 +1761,33 @@ mod tests {
             after > before,
             "written-bytes counter must move after an 8 MiB fsync'd write (before={before}, after={after})"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The evidence behind discounting a self-update: what is installed, and how big.
+    /// Only the *sizes* matter to the frontend's arithmetic, and a size read wrong (a
+    /// directory counted as a binary, MiB confused with bytes) would discount the wrong
+    /// number of bytes from a real day, silently.
+    #[test]
+    fn version_files_reports_each_installed_binary_by_size() {
+        use crate::testutil::scratch_dir;
+        let dir = scratch_dir();
+        std::fs::write(dir.join("2.1.232"), vec![0u8; 3 * 1024 * 1024]).unwrap();
+        std::fs::write(dir.join("2.1.233"), vec![0u8; 1024 * 1024]).unwrap();
+        // A subdirectory is not a version, and neither is anything inside it.
+        std::fs::create_dir(dir.join("staging")).unwrap();
+        std::fs::write(dir.join("staging").join("part"), vec![0u8; 512]).unwrap();
+
+        let files = version_files_in(&dir);
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["2.1.232", "2.1.233"], "files only, sorted");
+        assert_eq!(files[0].mb, 3.0, "MiB, not bytes");
+        assert_eq!(files[1].mb, 1.0);
+
+        // A directory that isn't there answers "nothing installed" rather than failing:
+        // an npm or Homebrew install has no versions dir, and its updates are charged to
+        // the package manager, so there is nothing for this to find and nothing to fix.
+        assert!(version_files_in(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

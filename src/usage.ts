@@ -14,7 +14,7 @@
 // that join — no DOM, no Tauri — so it unit-tests in isolation, like ./rl.
 // See test/usage.test.ts.
 
-import { isAgent, type Sess } from "./types";
+import { type InstallFile, isAgent, type Sess } from "./types";
 import { basename } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
@@ -286,6 +286,79 @@ let ioPrevAt = 0;
 let ioSavedAt = 0;
 let ioDirty = false;
 let ioDay = "";
+
+// ---------- keeping a Claude Code self-update out of the figures ----------
+
+/**
+ * The `claude` binaries seen at the previous poll, name → MiB, and how much of that is
+ * **new**.
+ *
+ * A Claude Code self-update writes a whole new ~290 MiB native binary into
+ * `~/.local/share/claude/versions/`, and the process that does it is a session of ours,
+ * so the kernel charges every one of those bytes to a `claude` pid the meter sums. The
+ * day then reads as ~300 MiB of agent churn, which is the single most misleading figure
+ * this panel has ever shown: it is thirty times a hard day's real work, it lands in the
+ * first minute, and it happens on the first launch after a few days away — so the number
+ * a returning user sees first is the wrong one. (Measured 2026-08-16: `2.1.233` = 292.8
+ * MiB written by the session pid, whose counter then sat still; the two earlier spike days
+ * in this rollup match `2.1.232` and `2.1.227` the same way, and Episko's own process
+ * wrote 0.8 MiB in the same stretch.)
+ *
+ * Explaining it in the I/O card's info panel was the other option and is not enough:
+ * nobody reads a bullet to find out whether a number means anything. So the bytes come
+ * out of the figure instead, and the size on disk is exactly how many to take.
+ *
+ * **Evidence, not a threshold.** The alternative — reject any implausibly large window —
+ * would also swallow the case this meter exists for, an agent writing at a runaway rate,
+ * and it could never say which it had done. This only ever discounts bytes it can point
+ * at a binary for.
+ *
+ * `null` until the first reading, and that reading only ever establishes the baseline: a
+ * version installed before Episko started was never charged to a process we measure.
+ * Growth counts as well as arrival, because a file written in place grows across several
+ * polls; a version that *disappears* (the installer pruning an old one) credits nothing,
+ * it just lowers the baseline.
+ */
+let instPrev: Map<string, number> | null = null;
+export function installGrown(cur: InstallFile[], prev: Map<string, number> | null): number {
+  if (!prev) return 0;
+  let grown = 0;
+  for (const f of cur) grown += Math.max(0, f.mb - (prev.get(f.name) ?? 0));
+  return grown;
+}
+
+/// MiB discovered as a new `claude` binary and not yet taken off a write figure.
+let ioCredit = 0;
+let ioCreditAt = 0;
+/// How long an unclaimed credit is kept. It normally lives for a single poll — the bytes
+/// are already in the reading, or in the day, when we find the binary. What survives is a
+/// credit for an update some *other* claude did (one running in a terminal, outside
+/// Episko), whose bytes were never charged to a session of ours and so can never be
+/// matched. Dropping it is what stops that becoming a standing discount against whatever
+/// a session writes next — the failure mode a threshold-based version would have had all
+/// the time.
+const IO_CREDIT_TTL_MS = 10 * 60_000;
+/// MiB discounted so far this run. Bounds the discount (`ioAll`'s total and the day can
+/// only ever give back bytes this run actually reported) and lets `pollIo` show a run
+/// figure net of the update.
+let ioExcluded = 0;
+export const ioExcludedMb = (): number => ioExcluded;
+
+/// What one poll banked, for the caller that has to draw a rate from the same sample.
+export interface IoBank {
+  /// MiB discounted as a self-update on this poll.
+  credited: number;
+  /// The window the increment was measured across; 0 on a run's first reading.
+  windowMs: number;
+}
+
+/// The share of a poll's write *rate* that was a self-update rather than session churn.
+/// Same sample, same arithmetic — so the bar cannot spike to 40 MiB/s over bytes the total
+/// beside it has already disowned.
+export function ioCreditBps(b: IoBank): number {
+  return b.windowMs > 0 ? (b.credited * 1024 * 1024) / (b.windowMs / 1000) : 0;
+}
+
 /// Bank a fresh `all_sessions_resources` reading into today. Called from the same poll
 /// that updates `ioAll`, so the rollup and the live bars can never describe different
 /// samples.
@@ -307,31 +380,89 @@ let ioDay = "";
 /// alternative is an IPC on the quit path to improve a disk meter, and the figure is a
 /// rough one by nature.
 ///
+/// `cur` is the raw backend reading and stays that way in `ioPrev`: the deltas are taken
+/// gross and a self-update is discounted from them afterwards, so one poll's discount can
+/// never distort the next poll's increment.
+///
 /// `now` is a parameter so the split is testable without a fake clock reaching into it;
 /// the app always calls it with the default.
-export function addIo(cur: DayIo, now: number = Date.now()): void {
+export function addIo(cur: DayIo, install: InstallFile[] = [], now: number = Date.now()): IoBank {
+  const grown = installGrown(install, instPrev);
+  instPrev = new Map(install.map((f) => [f.name, f.mb]));
+  if (grown > 0) { ioCredit += grown; ioCreditAt = now; }
+  else if (ioCredit > 0 && now - ioCreditAt > IO_CREDIT_TTL_MS) ioCredit = 0;
+
   const d = ioDelta(cur, ioPrev);
   const from = ioPrevAt;
   // Advanced even when the increment is zero, so an idle stretch shortens the next
   // window instead of being spread across as though it had been busy.
   ioPrev = cur;
   ioPrevAt = now;
-  if (d.r <= 0 && d.w <= 0) return;
-  const parts = splitIo(d, from, now);
-  const k = parts[parts.length - 1][0];
-  // A day that has been left behind must be written before the floor would allow it:
-  // nothing adds to yesterday again, so a throttled write would drop its last minutes
-  // permanently rather than merely late. A split that touched more than one day has
-  // left one behind by construction, whatever `ioDay` said.
-  const rolled = parts.length > 1 || (ioDay !== "" && ioDay !== k);
-  ioDay = k;
-  for (const [key, part] of parts) {
-    const day = dayIo[key] || (dayIo[key] = { r: 0, w: 0 });
-    day.r += part.r;
-    day.w += part.w;
+
+  // Spend the credit, newest bytes first. Both halves are needed because the flush of a
+  // 290 MiB file and its appearance in the directory do not have to land in the same
+  // four-second window, in either order: the pages can be charged before the entry is
+  // there to see (write-then-rename), or the file can be sitting there while the last of
+  // it is still being flushed.
+  let credited = 0;
+  let retro = 0;
+  if (ioCredit > 0) {
+    // Never give back more than this run has reported. Without it, an update installed by
+    // a claude running *outside* Episko — bytes we were never charged for — would come off
+    // real churn, and a day could read as 0 MiB written while agents worked all morning.
+    const room = () => Math.max(0, cur.w - ioExcluded - credited);
+    const off = (avail: number) => {
+      const take = Math.min(ioCredit, Math.max(0, avail), room());
+      ioCredit -= take;
+      credited += take;
+      return take;
+    };
+    d.w -= off(d.w);                       // 1. this window's increment, before it is booked
+    // 2. what an earlier window already booked. Today only: an update banked at 23:58 and
+    // found at 00:01 leaves yesterday as it is, which is the honest end of a trade — the
+    // alternative is reaching back through days on the strength of a guess about when the
+    // bytes were charged.
+    const today = dayIo[dayKeyOf(now)];
+    if (today) {
+      retro = off(today.w);
+      today.w -= retro;
+      if (retro > 0) ioDirty = true;
+    }
+    ioExcluded += credited;
   }
-  ioDirty = true;
-  if (rolled || now - ioSavedAt >= IO_SAVE_FLOOR_MS) flushIo();
+
+  const bank: IoBank = { credited, windowMs: from > 0 && now > from ? now - from : 0 };
+  if (d.r <= 0 && d.w <= 0 && credited === 0) return bank;
+
+  let rolled = false;
+  if (d.r > 0 || d.w > 0) {
+    const parts = splitIo(d, from, now);
+    const k = parts[parts.length - 1][0];
+    // A day that has been left behind must be written before the floor would allow it:
+    // nothing adds to yesterday again, so a throttled write would drop its last minutes
+    // permanently rather than merely late. A split that touched more than one day has
+    // left one behind by construction, whatever `ioDay` said.
+    rolled = parts.length > 1 || (ioDay !== "" && ioDay !== k);
+    ioDay = k;
+    for (const [key, part] of parts) {
+      const day = dayIo[key] || (dayIo[key] = { r: 0, w: 0 });
+      day.r += part.r;
+      day.w += part.w;
+    }
+    ioDirty = true;
+  }
+  // `retro` — a discount that took bytes back *out* of a stored day — joins the reasons to
+  // write before the floor would allow it, on the same grounds as `rolled`: that figure has
+  // been wrong on disk since the last flush, and nothing else will revisit it.
+  //
+  // **`retro`, deliberately, and not `credited`.** A credit spent on the current window's
+  // increment needs no early write: nothing was taken out of anything, the increment simply
+  // arrives smaller, and the floor covers it as it covers every other poll. Keying this on
+  // `credited` instead would flush on EVERY poll for as long as a 290 MiB binary was still
+  // growing on disk — a few dozen writes on a slow link — which is precisely the shape of
+  // heavy writing the floor exists to prevent.
+  if (ioDirty && (rolled || retro > 0 || now - ioSavedAt >= IO_SAVE_FLOOR_MS)) flushIo();
+  return bank;
 }
 
 /// Write the rollup out now. Called on the floor above, across a midnight, and from the
@@ -353,6 +484,10 @@ export function resetIoRollup() {
   ioSavedAt = 0;
   ioDirty = false;
   ioDay = "";
+  instPrev = null;
+  ioCredit = 0;
+  ioCreditAt = 0;
+  ioExcluded = 0;
   localStorage.removeItem(IO_KEY);
 }
 

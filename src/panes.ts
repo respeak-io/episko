@@ -27,7 +27,8 @@ import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
   isAgent, isExited, statusKey, taskStateText, type DiffStat, type GitActionResult,
-  type LiveSess, type Res, type Restorable, type Runnable, type Sess, type WtHead,
+  type InstallFile, type LiveSess, type Res, type Restorable, type Runnable, type Sess,
+  type WtHead,
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fmtMb, fmtRate } from "./format";
@@ -45,7 +46,7 @@ import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } f
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
-import { addIo } from "./usage";
+import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
   accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, engineDef,
@@ -658,16 +659,19 @@ export function setActive(id: string, keepGroup = false) {
 /// this more often does not write more often.
 export async function pollIo(): Promise<void> {
   const res = await invoke<
-    { read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean } | null
+    { read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean;
+      install: InstallFile[] } | null
   >("all_sessions_resources").catch(() => null);
   if (!res) return;
-  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
-  ioAll.readBps = res.read_bps; ioAll.writeBps = res.write_bps;
-  ioAll.readMb = res.read_mb; ioAll.writtenMb = res.written_mb;
-  ioAll.primed = res.primed;
   // Bank the increment off the SAME sample the bars are drawn from, so the rollup and
-  // the live figure can never describe different readings.
-  addIo({ r: res.read_mb, w: res.written_mb });
+  // the live figure can never describe different readings — and banked FIRST, because it
+  // is what decides how much of this reading was a claude self-update rather than session
+  // churn (`addIo`), which every figure below then has to be net of.
+  const bank = addIo({ r: res.read_mb, w: res.written_mb }, res.install);
+  // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
+  ioAll.readBps = res.read_bps; ioAll.writeBps = Math.max(0, res.write_bps - ioCreditBps(bank));
+  ioAll.readMb = res.read_mb; ioAll.writtenMb = Math.max(0, res.written_mb - ioExcludedMb());
+  ioAll.primed = res.primed;
 }
 
 export async function refreshSessionStats(s: Sess) {

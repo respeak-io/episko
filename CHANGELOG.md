@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
+  updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
+  Episko launched — so the kernel charged those bytes to a `claude` process and the
+  inspector's disk figure showed a day's work having written thirty times what it really
+  did, in the first minute, on the first launch after a few days away. The update's own
+  size now comes back out of the figure and out of the rate beside it. Only bytes a new
+  binary on disk accounts for are ever discounted, so an agent writing hard still shows up
+  as an agent writing hard.
+
 ## 0.20.0 — 2026-08-14
 A session that wants you lights up its own row, the "your turn" badge lets go of the
 ones you have opened, and the sidebar says which project dashboard is on screen.

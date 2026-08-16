@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, ioDayCount, ioDelta,
-  ioSameNote, ioTotal,
+  addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, installGrown,
+  ioCreditBps, ioDayCount, ioDelta, ioExcludedMb, ioSameNote, ioTotal,
   modelFamily,
   resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange, splitIo,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
@@ -493,6 +493,125 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     addIo({ r: 30, w: 10 });
     expect(ioTotal()).toEqual({ r: 30, w: 10 });
     expect(ioDayCount()).toBe(2);
+  });
+});
+
+// A Claude Code self-update writes a whole new ~290 MiB binary, and the process that does
+// it is one of ours — so the kernel charges those bytes to a session and the day reads as
+// 300 MiB of agent churn, thirty times a hard day's real work, on the first launch after a
+// few days away. Measured on this machine (2026-08-16): 292.8 MiB written by the session's
+// own pid within a minute of app start, its counter still afterwards, while Episko's own
+// process wrote 0.8 MiB. The size of the binary on disk is exactly how much to take back.
+describe("addIo — a claude self-update is not session churn", () => {
+  const KEY = "2027-03-14";
+  const INSTALLED = [{ name: "2.1.232", mb: 292 }];
+  const UPDATED = [{ name: "2.1.232", mb: 292 }, { name: "2.1.233", mb: 293 }];
+
+  it("counts a binary that arrived or grew, and nothing else", () => {
+    expect(installGrown(UPDATED, new Map([["2.1.232", 292]]))).toBe(293);   // arrival
+    expect(installGrown([{ name: "a", mb: 10 }], new Map([["a", 4]]))).toBe(6); // in place
+    // A pruned version frees space; it never wrote anything. And the first reading of a
+    // run is a baseline, never a credit: what was installed before Episko started was
+    // never charged to a process we measure.
+    expect(installGrown([{ name: "a", mb: 10 }], new Map([["a", 10], ["old", 280]]))).toBe(0);
+    expect(installGrown(UPDATED, null)).toBe(0);
+  });
+
+  it("discounts a version that appeared in the same window as the bytes", () => {
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 3, w: 300 }, UPDATED);        // +299 written, 293 of it a new binary
+    expect(dayIo[KEY].w).toBeCloseTo(7, 5);  // the 1 already banked + the 6 that was churn
+    expect(dayIo[KEY].r).toBe(3);            // reads are left alone — see ioFigures
+    expect(ioExcludedMb()).toBeCloseTo(293, 5);
+  });
+
+  it("takes the bytes back out of the day when they were booked before the binary appeared", () => {
+    // The flush of a 290 MiB file and its appearance in the directory need not land in the
+    // same four-second window, and write-then-rename puts them in this order.
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 3, w: 300 }, INSTALLED);
+    expect(dayIo[KEY].w).toBe(300);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 3, w: 300 }, UPDATED);
+    expect(dayIo[KEY].w).toBeCloseTo(7, 5);
+  });
+
+  it("credits a binary written in place across as many polls as it takes", () => {
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 1, w: 101 }, [...INSTALLED, { name: "2.1.233", mb: 100 }]);
+    expect(dayIo[KEY].w).toBeCloseTo(1, 5);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 1, w: 294 }, UPDATED);
+    expect(dayIo[KEY].w).toBeCloseTo(1, 5);
+  });
+
+  it("never discounts a version that was already installed when the run began", () => {
+    addIo({ r: 1, w: 300 }, INSTALLED);
+    expect(dayIo[KEY].w).toBe(300);
+    expect(ioExcludedMb()).toBe(0);
+  });
+
+  it("bounds the discount by what this run actually reported", () => {
+    // The update was installed by a claude running *outside* Episko: those bytes were
+    // never charged to a session of ours, so there is next to nothing to give back — and
+    // an earlier run's real churn must not be handed over to pay for it.
+    dayIo[KEY] = { r: 0, w: 500 };
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 2, w: 3 }, UPDATED);
+    expect(dayIo[KEY].w).toBe(500);   // this run's 3 MiB is the most that could come off
+  });
+
+  it("drops a credit nothing ever claims instead of discounting later work", () => {
+    // Otherwise a foreign update leaves a standing 290 MiB discount against whatever a
+    // session writes next — which is exactly the failure a size threshold would have had
+    // all the time, and it would hide the runaway agent this meter exists to show.
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 1, w: 1 }, UPDATED);
+    vi.advanceTimersByTime(11 * 60_000);
+    addIo({ r: 1, w: 51 }, UPDATED);        // 50 MiB of real churn, much later
+    expect(dayIo[KEY].w).toBeCloseTo(50, 5);
+  });
+
+  it("takes the update out of the write RATE as well as the totals", () => {
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    vi.advanceTimersByTime(4000);
+    const bank = addIo({ r: 1, w: 294 }, UPDATED);
+    expect(bank).toEqual({ credited: 293, windowMs: 4000 });
+    // 293 MiB over 4s is the ~73 MiB/s bar the meter would otherwise draw — beside a
+    // total that has already disowned those bytes.
+    expect(ioCreditBps(bank)).toBeCloseTo((293 * 1024 * 1024) / 4, 0);
+    expect(ioCreditBps({ credited: 5, windowMs: 0 })).toBe(0); // a run's first reading
+  });
+
+  it("does not write on every poll while a 290 MiB binary is still landing", () => {
+    // The discount must not become the heavy writer the floor exists to prevent. A credit
+    // spent on the current window takes nothing out of a stored day, so it earns no early
+    // write — only the retro half does, and that happens once.
+    addIo({ r: 1, w: 1 }, INSTALLED);
+    store.clear();
+    const spy = vi.spyOn(localStorage, "setItem");
+    for (let mb = 10; mb <= 290; mb += 10) {   // 29 polls of a binary growing in place
+      vi.advanceTimersByTime(4000);
+      addIo({ r: 1, w: 1 + mb }, [...INSTALLED, { name: "2.1.233", mb }]);
+    }
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(2);   // the floor's ~1/minute, no more
+    spy.mockRestore();
+    expect(dayIo[KEY].w).toBeCloseTo(1, 5);                 // and none of it counted
+  });
+
+  it("leaves an install it cannot see alone", () => {
+    // npm and Homebrew have no versions directory, and their updates are charged to the
+    // package manager rather than to a session, so the backend sends an empty list and
+    // every figure is the raw reading.
+    addIo({ r: 1, w: 1 }, []);
+    vi.advanceTimersByTime(4000);
+    addIo({ r: 1, w: 300 }, []);
+    expect(dayIo[KEY].w).toBe(300);
   });
 });
 

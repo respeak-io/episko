@@ -97,6 +97,11 @@ export interface Fanout {
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
 export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
+// One installed `claude` binary, as `all_sessions_resources` reports it alongside the
+// counters. A version that appears mid-run is a self-update, whose ~290 MiB the kernel
+// charged to a session of ours — see `installGrown` in ./usage, which is what turns this
+// list into the discount that keeps it out of the day.
+export interface InstallFile { name: string; mb: number }
 // One process keeping a folder alive, as the backend's `path_holders` reports it.
 // `why` is how it was found and how it reads to a human: "cwd" is a process sitting
 // in the folder (a terminal, a dev server, a PTY pane on its way out), "file" is an

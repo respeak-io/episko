@@ -100,7 +100,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts; data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
-| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
