@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  apiErrText, bgWaiting, FANOUT_GRACE_MS, fanoutTally, phaseText, statusKey, type Sess,
+  apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, phaseText, statusKey, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -406,6 +406,32 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       expect(s.fanout).toMatchObject({ name: "legal-launch-audit", started: 1 });
       expect(s.subagents).toBe(1);
     });
+    it("names a resumed run from its script path, since a resume carries no script", () => {
+      // Iterate/resume calls pass `scriptPath` + `resumeFromRunId` and no `script`;
+      // parsing the missing script made every resumed workflow an unnamed one. The
+      // persisted file is named `<meta.name>-<runId>.js`, so the basename has the name.
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: {
+        scriptPath: "/x/y/workflows/scripts/tabs-refactor-wf_36528eec-064.js", resumeFromRunId: "wf_36528eec-064",
+      } });
+      expect(s.fanout).toMatchObject({ name: "tabs-refactor", started: 0, done: 0 });
+    });
+    it("keeps the description and phases across a resume the pane launched inline", () => {
+      // The filename can recover the name but not the rest; the record already held —
+      // written when the inline call's script was parsed — carries both, and it wins
+      // whenever the two names agree.
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+      hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: {
+        scriptPath: "/x/scripts/legal-launch-audit-wf_12ab34cd-001.js", resumeFromRunId: "wf_12ab34cd-001",
+      } });
+      expect(s.fanout).toMatchObject({
+        name: "legal-launch-audit",
+        detail: "Audit every German-law surface before the lawyer meeting",
+        started: 0,
+      });
+      expect(s.fanout!.phases).toEqual(["Repo-Audit", "Verifikation"]);
+    });
 
     describe("what the cockpit reads off it", () => {
       /// A session in exactly the state the screenshot showed: the turn is over, the
@@ -462,6 +488,41 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
         const s = fleet();
         vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS * 10);
         expect(bgWaiting(s)).toBe(true);
+      });
+      it("writes the fleet off once the silence outlasts what any real run has shown", () => {
+        // The count is differenced from fire-and-forget hooks, and a SubagentStop can
+        // genuinely never come (an interrupted run's agents, a dropped POST) — one real
+        // pane read "2/8 background" an hour after its run completed, and would have
+        // forever. Past FANOUT_DEAD_MS the silence outvotes the counter.
+        const s = fleet();                                // one agent up, per the counter
+        vi.setSystemTime(NOW_MS + FANOUT_DEAD_MS - 60_000);
+        expect(bgWaiting(s)).toBe(true);                  // still believed…
+        vi.setSystemTime(NOW_MS + FANOUT_DEAD_MS + 1000);
+        expect(bgWaiting(s)).toBe(false);                 // …and now written off
+        expect(statusKey(s)).toBe("done");
+        expect(fanoutTally(s)).toBeNull();
+      });
+      it("zeroes the leaked count on the next event, so no later fleet inherits it", () => {
+        // fanoutTally's total is `done + subagents`: a ghost agent left in the count
+        // would put a fresh one-agent burst at 0/2 before it had done anything.
+        const s = fleet();
+        vi.setSystemTime(NOW_MS + FANOUT_DEAD_MS + 1000);
+        hook(s, "UserPromptSubmit");
+        expect(s.subagents).toBe(0);
+        hook(s, "SubagentStart");
+        setPhase(s, "done");                              // the turn ends; the burst runs on
+        expect(s.fanout).toMatchObject({ started: 1, done: 0 });
+        expect(fanoutTally(s)).toEqual({ done: 0, total: 1 });
+      });
+      it("starts a new fleet for a burst after the old one stood down", () => {
+        // Resuming the retired record would show "12 of 14 done" for two agents that
+        // just launched — page two of a run that already ended.
+        const s = fleet();
+        hook(s, "SubagentStop");                          // the 13th lands; all done
+        vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS * 2);   // the grace window passes
+        hook(s, "SubagentStart");
+        expect(s.fanout).toMatchObject({ name: "", started: 1, done: 0 });
+        expect(s.subagents).toBe(1);
       });
       it("says nothing about a session that never fanned out", () => {
         const s = sess({ phase: "done" });

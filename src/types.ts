@@ -188,13 +188,29 @@ export const midFlight = (s: Sess) =>
 /// boundary, which is worse than the bug this fixes. It is generous because the cost of
 /// being late is one stale minute, and the cost of being early is a lie.
 export const FANOUT_GRACE_MS = 90_000;
+/// The opposite bound: how long `subagents > 0` is believed with no event behind it.
+///
+/// The live count is differenced from fire-and-forget hooks, and a `SubagentStop` can
+/// genuinely never come — an interrupted workflow's agents, a turn the API killed, a
+/// silently dropped POST (`curl -s` + async by design). Every miss skews the count up
+/// and nothing ever skews it down, so without a ceiling one lost Stop pinned the
+/// "background" badge on a finished pane for the rest of the app's life: a pane once
+/// read "2/8" an hour after its run-state file said completed, six leaked agents
+/// strong. An hour of silence outvotes the counter while sitting far above the longest
+/// real quiet stretch seen mid-run (eighteen minutes); a fleet that outlives it only
+/// dims until its next event, because that event re-stamps `lastAt` and revives the
+/// readout. `applyHook` zeroes the count itself off this same answer.
+export const FANOUT_DEAD_MS = 3_600_000;
 /// The session's fan-out if it is still in flight, else null.
 ///
 /// `subagents > 0` has to be sufficient on its own — a workflow agent can run eighteen
 /// minutes without the parent seeing a single `Subagent*` event in between, so a rule
-/// that only trusted recent activity would drop the longest runs first.
+/// that only trusted recent activity would drop the longest runs first. Sufficient,
+/// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
+/// the fleet is written off however high it reads.
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
   if (!isAgent(s) || !s.fanout) return null;
+  if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
   return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
 /// Is the fan-out the whole story — i.e. the conversation itself has nothing in flight?

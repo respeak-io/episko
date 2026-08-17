@@ -12,7 +12,7 @@
 // settable `setOnTurnEnd` hook. See test/phase.test.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Fanout, Phase, Risk, Sess } from "./types";
+import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
 import { mergeRl, onRlUpdate, rl } from "./rl";
@@ -131,8 +131,24 @@ export function parseWorkflowMeta(script: string): { name: string; detail: strin
 // A fresh fleet, replacing whatever the last one left behind. The counters restart even
 // if the previous fan-out still has agents up — `fanoutTally` is what keeps that from
 // showing as a bar past its own end.
-export function startFanout(s: Sess, script: unknown) {
-  const meta = parseWorkflowMeta(typeof script === "string" ? script : "");
+//
+// Takes the whole tool_input, not the script: a resumed run (`scriptPath` +
+// `resumeFromRunId`) carries no script text at all, and parsing the empty string made
+// every resumed workflow an unnamed one. The persisted script is named
+// `<meta.name>-<runId>.js`, so the basename recovers the name; the record this pane
+// already holds wins when the two agree, because it also carries the description and
+// the phases a filename cannot.
+export function startFanout(s: Sess, input: any) {
+  const script = typeof input?.script === "string" ? input.script : "";
+  let meta = parseWorkflowMeta(script);
+  if (!script) {
+    const base = (typeof input?.scriptPath === "string" ? input.scriptPath : "").split(/[\\/]/).pop() ?? "";
+    const name = abbr(base.replace(/\.[^.]*$/, "").replace(/-wf_[a-z0-9-]+$/, ""), 56);
+    const prev = s.fanout;
+    meta = prev?.name && (!name || prev.name === name)
+      ? { name: prev.name, detail: prev.detail, phases: prev.phases }
+      : { ...meta, name };
+  }
   const now = Date.now();
   s.fanout = { ...meta, since: now, started: 0, done: 0, lastAt: now };
 }
@@ -199,6 +215,12 @@ export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";
   s.lastEvent = ev;
   s.lastActivity = Date.now(); // a lifecycle hook = the session did something (drives "sort by activity")
+  // The live count's one repair. `subagents` is differenced from fire-and-forget
+  // hooks, so a `SubagentStop` that never arrives leaves it high forever — and past
+  // `FANOUT_DEAD_MS` of silence `liveFanout` already answers "no fleet". Believe that
+  // answer in the state too, or the ghost count would poison `bg()` below and the
+  // *next* fleet's tally, whose total is `done + subagents`.
+  if (s.subagents > 0 && !liveFanout(s)) s.subagents = 0;
   const bg = () => s.subagents > 0 || s.phase === "done";
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
@@ -217,7 +239,7 @@ export function applyHook(s: Sess, data: any) {
       else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
       // The one hook that names a fan-out. It fires ~2s before the turn ends, so the
       // record is already in place when `Stop` would otherwise have painted a green ✓.
-      if (tool === "Workflow") startFanout(s, data.tool_input?.script);
+      if (tool === "Workflow") startFanout(s, data.tool_input);
       if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
@@ -273,7 +295,14 @@ export function applyHook(s: Sess, data: any) {
     // Every agent a fan-out spawns fires these on the PARENT, workflow fleets included
     // — which is what makes the whole background readout possible without a byte of
     // disk. `subagents` stays the live count; the cumulative pair rides the record.
-    case "SubagentStart": { s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break; }
+    // A record `liveFanout` has already written off is history, not the burst starting
+    // now: resuming it would put a finished run's counters under a fresh fleet ("12 of
+    // 14 done" for two agents that just launched). Within the grace lull it is the
+    // same run, and the record — with its name and phases — carries on.
+    case "SubagentStart": {
+      if (!liveFanout(s)) s.fanout = null;
+      s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break;
+    }
     // No record means a Stop whose Start we never saw (a fan-out that predates the
     // pane, a rotated session). Counting it would invent a completion.
     case "SubagentStop":

@@ -22,6 +22,19 @@ Markers: `+` new · `~` changed · `!` fixed
   binary on disk accounts for are ever discounted, so an agent writing hard still shows up
   as an agent writing hard.
 
+! **A finished fleet's badge now stands down instead of haunting the row.** The
+  background tally is counted from `SubagentStart`/`SubagentStop` hooks, and a Stop can
+  genuinely never arrive — an interrupted workflow's agents, a turn the API killed — so
+  one missed event left a pane reading "2/8 ◑" hours after everything had completed.
+  After an hour with no subagent event the fleet is written off however high the count
+  reads (a real event revives it), the leaked count is zeroed so no later run inherits
+  it, and a new burst starts a fresh tally rather than resuming a finished run's.
+
+~ **A resumed workflow keeps its name.** Resuming a run passes a script *path* rather
+  than the script, which used to demote the fleet to "Background agents" with the
+  counters wiped; the name now comes from the persisted script's filename, and the
+  description and phases survive when the pane launched the run itself.
+
 ## 0.20.0 — 2026-08-14
 A session that wants you lights up its own row, the "your turn" badge lets go of the
 ones you have opened, and the sidebar says which project dashboard is on screen.
