@@ -67,6 +67,7 @@ import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
+import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
 // context menu (./projmenu) and owns its own handlers; this file only has to close it
 // with the shared scrim and Esc, like every other dialog.
@@ -200,10 +201,18 @@ setFooterCloseColorPop(closeColorPop);
 setFooterSetActive(setActive);
 // A palette row can do almost anything the app can do, so the ⌘K UI takes one host
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
+/// ⌘P — the explorer, on whatever owns the stage. Keyed by folder like the peek, and
+/// resolved through `activeCwd()` so a worktree session explores its own checkout
+/// rather than the repo it groups under — the same answer `❯ Terminal` gives.
+function openProjectFiles() {
+  const wd = activeCwd();
+  if (!wd) { toast("No project on screen"); return; }
+  void openExplorer(wd, basename(wd));
+}
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
-  revealActiveFolder, openProjectFolder,
+  revealActiveFolder, openProjectFolder, openProjectFiles,
 });
 // Same reasoning, seven callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
@@ -263,6 +272,7 @@ setDashHost({
 wireDashboard();
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
+setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
@@ -733,7 +743,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); });
 // What each bindable action does. The chords themselves are NOT here — they live in
 // `keyPrefs` (./state, from ./keys) so the user can change or switch them off in
 // Settings › Keys — and this map is only the verb each one runs. One entry per
@@ -749,6 +759,7 @@ const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
   terminal: openPlainTerminal,
   history: () => { histOpen() ? closeHistory() : void openHistory(true); },
+  files: () => { explorerOpen ? closeExplorer() : openProjectFiles(); },
   reveal: revealActiveFolder,
   buildTask: () => { void runDefaultTask("build"); },
   testTask: () => { void runDefaultTask("test"); },
@@ -772,6 +783,7 @@ window.addEventListener("keydown", (e) => {
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
   if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
+  else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   // graphEscape, not closeGraph: the panel can have a commit open over it, and Esc has to
   // step out of that first.

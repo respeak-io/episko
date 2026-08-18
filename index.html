@@ -288,9 +288,44 @@
       </div>
     </div>
 
+    <!--
+      The project explorer (⌘P). One field: empty it browses the folder in the
+      breadcrumb, typed it finds across the whole project. The scope chips are filters
+      over the same rows — the working set and the Context card's touches, which is why
+      this is one list rather than a fourth idea. Read-only throughout; see ./explorer.
+    -->
+    <div class="expdlg" id="expDlg" role="dialog" aria-modal="true" aria-label="Project files">
+      <div class="exp-top">
+        <span class="exp-mag" aria-hidden="true">⌕</span>
+        <input class="exp-in" id="expIn" type="text" placeholder="Find a file, or browse the project…"
+               aria-label="Find a file in this project" role="combobox" aria-expanded="true"
+               aria-controls="expList" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+        <span class="exp-mode" id="expMode">browse</span>
+        <button class="exp-x" id="expClose" title="Close (Esc)" type="button">✕</button>
+      </div>
+      <div class="exp-bar" id="expBar">
+        <button class="exp-chip on" id="expScope-all" data-expscope="all" type="button">All</button>
+        <button class="exp-chip" id="expScope-changed" data-expscope="changed" type="button"
+                title="Only files git says have changed">Changed <i id="expCount-changed">0</i></button>
+        <button class="exp-chip" id="expScope-touched" data-expscope="touched" type="button"
+                title="Only files an agent has read, edited or created here">Touched <i id="expCount-touched">0</i></button>
+        <nav class="exp-crumb" id="expCrumb" aria-label="Folder"></nav>
+      </div>
+      <div class="exp-list" id="expList" role="listbox" aria-label="Project files"></div>
+      <div class="exp-foot">
+        <span class="exp-act" id="expAct"></span>
+        <span class="exp-keys">
+          <span id="expReveal"><kbd>⌘⏎</kbd> reveal</span>
+          <span><kbd>⌥⏎</kbd> copy path</span>
+          <span><kbd>⌫</kbd> up a folder</span>
+        </span>
+      </div>
+    </div>
+
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
+        <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
       <div class="diff-body" id="diffBody"></div>

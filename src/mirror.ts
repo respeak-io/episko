@@ -18,6 +18,7 @@ import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
+import { wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import { dormantBusy, orderedSessions } from "./grouping";
@@ -138,7 +139,9 @@ export async function refreshDirtyStates(force = false) {
   const targets = [...folders].filter((f) => sweep || dirtyStale.has(f) || !dirtyByFolder.has(f));
   dirtyStale.clear();
   if (!targets.length) return;
-  const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.added}/${g.removed}` : "-");
+  // Every field the card *prints* belongs here, `dirty` included: it is the file count
+  // the working-set row shows, so a change only it sees still has to reach the paint.
+  const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.dirty}/${g.added}/${g.removed}` : "-");
   let changed = false;
   await Promise.all(targets.map(async (f) => {
     const g = await invoke<DiffStat | null>("git_diffstat", { workdir: f }).catch(() => null);
@@ -320,15 +323,9 @@ export function renderExtHeader(e: ExtSession) {
 // Episko session's, minus the fetch/pull/push row (we don't drive this checkout).
 // Shown only when the folder actually has uncommitted changes.
 function extPeekHtml(e: ExtSession, g: DiffStat): string {
-  const tot = g.added + g.removed || 1;
-  const aw = Math.round((g.added / tot) * 100);
-  const newBadge = g.untracked ? ` · ${g.untracked} new` : "";
   return `<div class="wset ext-wset">
     <div class="lab" style="margin-bottom:2px">Working set · in this folder</div>
-    <div class="wpeek" data-diff="${esc(e.cwd)}" data-difftitle="${esc(basename(e.cwd))}" title="Open the uncommitted diff">
-      <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}${newBadge}</span><span class="wpeek-cue">⤢</span></div>
-      <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>
-    </div></div>`;
+    ${wpeekHtml(e.cwd, basename(e.cwd), g)}</div>`;
 }
 export function renderExtInspector(e: ExtSession) {
   const working = extWorking(e);

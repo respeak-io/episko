@@ -50,9 +50,9 @@ Three hard constraints shape this code:
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
-## Backend (`src-tauri/src/`): thirteen modules
+## Backend (`src-tauri/src/`): fourteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the twelve modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the thirteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
 
 | Module | What |
 | --- | --- |
@@ -68,6 +68,7 @@ Three hard constraints shape this code:
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
+| `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else |
 | `testutil.rs` | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
@@ -86,13 +87,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 57 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 59 modules
 
-**No framework, and no longer one file.** 57 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 59 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty-five, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty-six, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -116,6 +117,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `notes.ts` | the one thing on the dashboard you type; capture, filing, removal |
 | `branches.ts` | branch cleanup: what is worth deleting, what blocks it, and what each command is asked for (see docs/worktrees.md) |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
+| `explore.ts` | the explorer's rules: browse vs. find over one index, the scope filters, the touch join, what ↵ does (see docs/explorer.md) |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
 | `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
 | `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
@@ -126,11 +128,11 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`.
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `explorer` (⌘P, the project explorer), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 56 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 59 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -191,6 +193,13 @@ And the things that hold however the files are arranged:
 ## App-wide rules
 
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
+- **The app has three lists of files, and they must describe a path the same way.** The
+  working set (git, `wpeekHtml` → the peek), the Context card (the hook stream, `files.ts`)
+  and the explorer (`explore.ts`, the project index). The explorer is the superset: its
+  scope chips are *filters* over the other two rather than a fourth idea, it reuses their
+  marks and colours, and a row's ↵ hands a changed file to the peek rather than growing a
+  viewer of its own. Adding a fourth place that lists files means adding it to that join,
+  not beside it (docs/explorer.md).
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 - **`termEngine` picks where a terminal lives** (embedded xterm pane / ghostty / Terminal / iTerm); the per-launch instrumentation and telemetry are identical for all four. `permMode` is orthogonal and sets the *starting* permission mode only (`docs/sessions.md`).
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
@@ -216,6 +225,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
 - **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), and History.
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas) and the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items).
+- **`docs/explorer.md`**: the project explorer (⌘P). One index feeds both modes; the marks come from the other two file lists; `git ls-files` is why there is no ignore parser; nothing watches the filesystem, and this is not the feature that changes that.
 - **`docs/sounds.md`**: sound alerts. The hard part is playing one sound instead of six: the same moment reaches the frontend twice *by design*, so every play is gated, except that a more urgent event still gets through the burst window, which is the point. Anything that fires on routine activity ships switched off.
 
 ## Notes on scope & doc drift

@@ -680,7 +680,7 @@ export async function refreshSessionStats(s: Sess) {
   // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
   const sig = (g: DiffStat | null, r: Res) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
     + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
   // Sampled BEFORE the await: `pollIo` writes straight into `ioAll`, so reading the
   // "before" state afterwards would compare the new values against themselves and the

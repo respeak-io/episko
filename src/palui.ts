@@ -49,12 +49,13 @@ let host: {
   requestLaunch: (project: string, path: string) => void;
   revealActiveFolder: () => void;
   openProjectFolder: (key: string) => void;
+  openProjectFiles: () => void;
 } = {
   setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   toggleTheme: () => {}, requestLaunch: () => {},
-  revealActiveFolder: () => {}, openProjectFolder: () => {},
+  revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -105,18 +106,25 @@ function sessionActions(s: Sess): PalItem[] {
 // the shortcuts are rebindable (Settings › Keys), and this table is built once at
 // module load, so a literal here would keep advertising the default forever. The
 // glyphs are resolved per refresh in `refreshPal` below.
+//
+// **Every `run` is a closure over `host`, never a bare `host.method` reference.** This
+// table is evaluated at module load, when `host` is still the all-no-op default object;
+// a bare reference copies THAT function, and `setPaletteHost` reassigning the variable
+// afterwards never reaches the copy. Seven rows here (and the no-matches fallback below)
+// were captured that way and did nothing at all when clicked.
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; act?: KeyAction }[] = [
-  { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: host.addProject },
-  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: host.openPlainTerminal, act: "terminal" },
-  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: host.revealActiveFolder, act: "reveal" },
+  { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: () => host.addProject() },
+  { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: () => host.openPlainTerminal(), act: "terminal" },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: () => host.revealActiveFolder(), act: "reveal" },
+  { key: "cmd:files", label: "Find a file in this project…", glyph: "⌕", run: () => host.openProjectFiles(), act: "files" },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, act: "runTask" },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, act: "history" },
   { key: "cmd:histall", label: "Session history · every project…", glyph: "◷", run: () => { void openHistory(false); } },
-  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: host.cycleSort },
-  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: host.toggleInsp, act: "inspector" },
-  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: host.toggleRail, act: "sidebar" },
-  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: host.toggleTheme },
+  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: () => host.cycleSort() },
+  { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
+  { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
+  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
 /// A command row's chord as it stands right now, or nothing if the user cleared it —
 /// a hint that named a shortcut which no longer fires is worse than no hint.
@@ -199,7 +207,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   if (mode === "all" || mode === "sess") { const l = launch.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (l.length) groups.push({ name: "Launch", items: l }); }
   if (mode === "all" || mode === "sess") { const t = tsk.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (t.length) groups.push({ name: "Tasks", count: t.length, items: t }); }
   if (mode === "all" || mode === "cmd") { const c = cmds.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (c.length) groups.push({ name: "Commands", items: c }); }
-  if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: host.addProject }] });
+  if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: () => host.addProject() }] });
   return groups;
 }
 function runPalItem(it: PalItem | undefined) { if (!it) return; bumpFrec(it.key); closePalette(); it.run(); }
