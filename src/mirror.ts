@@ -251,7 +251,10 @@ export function forgetDormant(id: string) {
 // with no transcript can't be resumed — a session launched but never prompted never
 // writes one — so it's dropped rather than shown as a row that would fail on click.
 // Titles are refreshed from disk too: `ai-title` beats our in-memory OSC title and,
-// unlike it, exists for sessions launched into an external terminal.
+// unlike it, exists for sessions launched into an external terminal. So is "last
+// active", and that one is the transcript's newest *record*, not its mtime — a
+// machine that shuts down with six sessions open touches all six files at once, and
+// believing the file stamped every one of those rows with the reboot.
 export async function loadDormants() {
   let roster: Restorable[] = [];
   try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
@@ -267,12 +270,12 @@ export async function loadDormants() {
   }
   const found: Restorable[] = [];
   await Promise.all([...byDir.entries()].map(async ([workdir, entries]) => {
-    const past = await invoke<{ session_id: string; title: string; mtime: number }[]>("list_past_sessions", { workdir }).catch(() => []);
+    const past = await invoke<{ session_id: string; title: string; last_active: number }[]>("list_past_sessions", { workdir }).catch(() => []);
     const byId = new Map(past.map((p) => [p.session_id.toLowerCase(), p]));
     for (const r of entries) {
       const hit = byId.get(r.resumeId.toLowerCase());
       if (!hit) continue; // no transcript → nothing to resume
-      found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.mtime ? hit.mtime * 1000 : r.lastActivity });
+      found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.last_active ? hit.last_active * 1000 : r.lastActivity });
     }
   }));
   found.sort((a, b) => b.lastActivity - a.lastActivity);

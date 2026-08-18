@@ -22,7 +22,7 @@ import { histLabel, histProject, type HistEntry } from "./history";
 import { uDkey, type UDay } from "./usage";
 
 /// One commit, as `git_log_days` returns it. `when` is UNIX **seconds**, matching
-/// `HistEntry.mtime` — the backend speaks seconds for both, and every consumer here
+/// `HistEntry.last_active` — the backend speaks seconds for both, and every consumer here
 /// converts once, at the boundary, rather than each caller remembering to.
 export interface TrailCommit {
   sha: string; author: string; when: number; subject: string; root: string;
@@ -85,7 +85,7 @@ export function trailSession(h: HistEntry): TrailSession {
     colorKey: p.colorKey,
     branch: p.worktree || h.branch || "",
     cwd: h.cwd,
-    when: ms(h.mtime),
+    when: ms(h.last_active),
     exists: h.exists,
   };
 }
@@ -124,7 +124,7 @@ export function trailDays(
   // Sessions and commits outside the window are simply not in `byKey` — no day is
   // invented for them, which is what keeps the window honest.
   for (const h of hist) {
-    const day = byKey.get(dayKeyOf(ms(h.mtime)));
+    const day = byKey.get(dayKeyOf(ms(h.last_active)));
     if (day) day.sessions.push(trailSession(h));
   }
   for (const c of commits) {

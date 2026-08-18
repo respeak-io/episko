@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **"Last active" now means the last thing the session did, not the last time its file
+  was touched.** It was read off the transcript's mtime, and Claude appends untimestamped
+  bookkeeping records whenever a session starts or goes away — so every conversation open
+  when a machine shut down was stamped with the shutdown, to the second. Four sessions
+  last worked at 08:08, 10:30, 12:50 and 15:50 all read "6h ago" after one 03:41 Windows
+  update reboot, in an order that meant nothing. Half of this machine's 352 transcripts
+  were wrong by more than ten minutes and some by weeks. The figure now comes from the
+  newest timestamp the records themselves carry, which fixes the dormant rows and the past
+  session's card, History's ordering and its buckets, and the day a session is filed under
+  in the Trail. A transcript with nothing timestamped in it still falls back to the file.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the
