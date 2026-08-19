@@ -13,6 +13,21 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A tool call on the inspector's Tools tab opens to show what ran and what came back.**
+  A row was a tool name, one abbreviated argument and a latency bar, so a `Bash` heredoc
+  showed its first 64 characters and nothing a tool returned was kept at all. Click a row
+  for the whole command, prompt or patch that was submitted and the whole of what came
+  back — stdout and stderr, the file a `Read` returned, the patch an `Edit` applied — with
+  a Copy button for the pair. **A call that failed says so on the row and shows why**,
+  which is the half that had no surface anywhere in the app: the reason Claude Code sends
+  on a failure was being dropped on the floor. Both sides are capped as they arrive and
+  none of it is written to disk.
+
+~ **A tool call's timing lands on the call it belongs to.** Pairing the start and end of
+  a call by tool *name* picks the most recent open call so named, which is wrong whenever
+  two calls of one tool overlap — routine under parallel subagents. They are now paired by
+  the id Claude Code puts on both, so a fast call no longer takes a slow one's latency.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

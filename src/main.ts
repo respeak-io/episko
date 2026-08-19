@@ -17,7 +17,7 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
-import { renderInspector, setCtxMode, tickDwell, toggleFileGroup } from "./inspector";
+import { copyAct, renderInspector, setCtxMode, tickDwell, toggleActRow, toggleFileGroup } from "./inspector";
 import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
@@ -606,7 +606,7 @@ document.addEventListener("click", (e) => {
   // for free — but only if its attribute is in this list. A data- attribute the
   // selector doesn't name resolves to the enclosing row instead, silently doing the
   // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlcopy],[data-tlrow]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -658,6 +658,12 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.fopen) void openTouchedFile(el.dataset.fopen);
   else if (el.dataset.fgroup) toggleFileGroup(el.dataset.fgroup);
   else if (el.dataset.fmode) setCtxMode(el.dataset.fmode);
+  // The Tools tab's expandable rows. The detail block is a *sibling* of the row rather
+  // than a child of it, which is what lets you select the output text and press Copy
+  // without the click folding the row shut under you — so these two never both match and
+  // the order is only belt and braces.
+  else if (el.dataset.tlcopy) copyAct(el.dataset.tlcopy);
+  else if (el.dataset.tlrow) toggleActRow(el.dataset.tlrow);
   else if (el.dataset.ioscope) cycleIoScope();
   else if (el.dataset.ioinfo) toggleIoInfo();
   else if (el.dataset.toast) toast(el.dataset.toast);

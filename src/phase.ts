@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
+import { inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
@@ -53,17 +54,36 @@ export function toolArg(tool: string, input: any): string {
   if ((tool === "Read" || tool === "Edit" || tool === "Write") && /[/\\]/.test(v)) return v.split(/[/\\]/).pop() || v;
   return abbr(v, 64);
 }
-// Open a timeline entry on PreToolUse; closeActivity fills its latency on the
-// matching PostToolUse. Matching the most-recent open call of the same tool name
-// is approximate under parallel subagents, but right for the common serial case.
-function openActivity(s: Sess, tool: string, arg: string) {
+/// How many calls one session rings. The ceiling on what the detail view can cost:
+/// twelve rows × the two sides ./toolio caps, and none of it persisted.
+const ACT_CAP = 12;
+// Open a timeline entry on PreToolUse; closeActivity fills in its latency and its
+// output on the matching PostToolUse.
+//
+// **The two are paired by `tool_use_id`**, which Claude Code puts on both payloads of a
+// call. Matching on the tool name instead — the most recent open call so named — was
+// what this did, and it is wrong whenever two calls of one tool overlap, which is the
+// normal state of affairs under parallel subagents. That only ever misplaced a latency
+// bar, so nobody noticed; attaching a command's *output* to the wrong row is a lie the
+// card states plainly, so the name match is now only the fallback for a payload with no
+// id (an older CLI, a hook variant that omits it), where a mispairing is no worse than
+// what the name match always did.
+function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null });
-  if (s.activity.length > 12) s.activity.length = 12;
+  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null, id, inp, out: "", failed: false });
+  if (s.activity.length > ACT_CAP) s.activity.length = ACT_CAP;
 }
-function closeActivity(s: Sess, tool: string) {
-  const a = s.activity.find((x) => x.tool === tool && x.durMs == null);
-  if (a) a.durMs = Date.now() - a.startMs;
+function closeActivity(s: Sess, tool: string, id: string, inp: string, out: string, failed: boolean) {
+  const a = (id && s.activity.find((x) => x.id === id))
+    || s.activity.find((x) => x.tool === tool && x.durMs == null);
+  if (!a) return;
+  a.durMs = Date.now() - a.startMs;
+  a.out = out;
+  a.failed = failed;
+  // The Post payload repeats `tool_input`, so a row whose Pre hook arrived without one
+  // can still be filled — but it never *overwrites*, because an empty repeat is not a
+  // correction and the Pre hook is the one that saw the call as it was submitted.
+  if (!a.inp && inp) a.inp = inp;
 }
 // Claude keeps its own to-do list via the TodoWrite tool; the payload rides the
 // PreToolUse hook we already receive. Capture it as the session's live plan.
@@ -236,7 +256,9 @@ export function applyHook(s: Sess, data: any) {
       const arg = toolArg(tool, data.tool_input);
       if (tool === "TodoWrite") applyTodos(s, data.tool_input);
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
-      else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
+      // The plan is its own module; keep it off the timeline. Everything else opens a
+      // row carrying the whole of what was submitted, capped by ./toolio as it lands.
+      else openActivity(s, tool, arg, String(data.tool_use_id ?? ""), inputText(tool, data.tool_input));
       // The one hook that names a fan-out. It fires ~2s before the turn ends, so the
       // record is already in place when `Stop` would otherwise have painted a green ✓.
       if (tool === "Workflow") startFanout(s, data.tool_input);
@@ -248,7 +270,12 @@ export function applyHook(s: Sess, data: any) {
     case "PostToolUse":
     case "PostToolUseFailure": {
       const tool = data.tool_name || "";
-      closeActivity(s, data.tool_name);
+      // What came back, onto the row its `tool_use_id` opened. A failure carries no
+      // `tool_response` whatsoever — the reason is in `error` — so both are handed over
+      // and ./toolio decides which one it is looking at.
+      closeActivity(s, data.tool_name, String(data.tool_use_id ?? ""),
+        inputText(tool, data.tool_input), outputText(data.tool_response, data.error),
+        ev === "PostToolUseFailure");
       // The Context card's two inputs. Both are fed from the *Post* hook rather than
       // the Pre one the timeline opens on, and for opposite reasons: the file set needs
       // `tool_response` (it is what says create vs. update), and the tally would

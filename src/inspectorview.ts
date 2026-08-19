@@ -17,8 +17,8 @@ import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
-  type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
 import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
@@ -314,11 +314,14 @@ export type CtxMode = "files" | "tools";
 /// The inspector's Context card: every file the session has touched, grouped by what it
 /// did to them, plus a one-line tally of everything that touched no file.
 ///
-/// `open` is the set of group names currently shown in full — ephemeral view state owned
-/// by ./inspector, passed in rather than read, so this stays a pure function of its
-/// arguments like every other card here.
+/// `open` is whatever the *current mode* has unfolded — group names in Files, act keys in
+/// Tools. Ephemeral view state owned by ./inspector and passed in rather than read, so
+/// this stays a pure function of its arguments like every other card here. Two sets
+/// rather than one shared one: the modes fold different things, and keeping them apart
+/// means nobody ever has to reason about whether a tool-call id can collide with the
+/// word "created".
 export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): string {
-  if (mode === "tools") return ctxHead(mode, "last 8 calls") + timelineHtml(s);
+  if (mode === "tools") return ctxHead(mode, "last 8 calls") + timelineHtml(s, open);
 
   const g = groupTouches(s.files);
   const others = otherTools(s.tally);
@@ -335,7 +338,36 @@ export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): 
   return ctxHead(mode, "") + `<div class="fx">${body}</div>` + foot;
 }
 
-export function timelineHtml(s: Sess): string {
+/// One expanded row: what was executed, and what came back.
+///
+/// Both sides are already capped — ./toolio did that at capture — so this only labels
+/// and escapes them. `esc` rather than `escAttr` because a `<pre>`'s content is a text
+/// node; the only attribute here carries the row key, which the app minted.
+///
+/// The two "nothing here" cases are spelled out rather than left as an empty box,
+/// because they are different facts and both are worth reading: a call still in flight
+/// has an input and no answer *yet*, and a finished call whose output is blank really
+/// did return nothing (`mkdir`, `git add`).
+function actDetail(a: Act): string {
+  const running = a.durMs == null;
+  const outLabel = a.failed ? "Failed" : "Returned";
+  const out = a.out || (running ? "still running…" : "(nothing returned)");
+  const copy = `<button class="tl2c" data-tlcopy="${escAttr(actKey(a))}" title="Copy this call and its result">Copy</button>`;
+  return `<div class="tl2d">`
+    + `<div class="tl2h">Executed${copy}</div>`
+    + `<pre class="tl2p">${esc(a.inp || "(no arguments)")}</pre>`
+    + `<div class="tl2h${a.failed ? " bad" : ""}">${outLabel}</div>`
+    + `<pre class="tl2p${a.failed ? " bad" : ""}${a.out ? "" : " dim"}">${esc(out)}</pre>`
+    + `</div>`;
+}
+
+/// The Tools timeline: the last eight calls, each one expandable to the whole of what it
+/// ran and the whole of what it said back.
+///
+/// `open` is the expanded-row set, owned by ./inspector and passed in rather than read —
+/// same arrangement as the Files mode's folded groups, and for the same reason: it keeps
+/// this a pure function of its arguments like every other card here.
+export function timelineHtml(s: Sess, open: ReadonlySet<string>): string {
   const acts = s.activity.slice(0, 8);
   if (!acts.length) return `<div class="insp-empty" style="padding:14px 0">No tool calls yet.</div>`;
   const maxDur = Math.max(1, ...acts.map((a) => a.durMs ?? 0));
@@ -344,9 +376,24 @@ export function timelineHtml(s: Sess): string {
     const running = a.durMs == null;
     const w = running ? 100 : Math.max(6, Math.round(((a.durMs ?? 0) / maxDur) * 100));
     const ms = running ? "···" : fmtLatency(a.durMs!);
-    return `<div class="row"><span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span><span class="arg">${esc(a.arg)}</span><span class="lat"><span class="latbar ${running ? "run" : ""}" style="width:${w}%"></span><span class="ms">${ms}</span></span></div>`;
+    const k = actKey(a);
+    const shown = open.has(k);
+    return `<div class="tl2i${a.failed ? " bad" : ""}">`
+      + `<div class="row${shown ? " on" : ""}" data-tlrow="${escAttr(k)}" title="${escAttr(`${a.tool} · ${a.arg}\n${shown ? "Hide" : "Show"} what ran and what came back`)}">`
+      + `<span class="tw">›</span><span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span>`
+      + `<span class="arg">${esc(a.arg)}</span>`
+      + `<span class="lat"><span class="latbar ${running ? "run" : ""}" style="width:${w}%"></span><span class="ms">${ms}</span></span></div>`
+      + (shown ? actDetail(a) : "")
+      + `</div>`;
   }).join("");
   return `<div class="tl2">${rows}</div>`;
+}
+
+/// What the copy button hands over: the same two blocks the card shows, labelled, so a
+/// pasted call still says which half is which.
+export function actClipText(a: Act): string {
+  const out = a.out || (a.durMs == null ? "still running" : "(nothing returned)");
+  return `${a.tool}${a.arg ? ` · ${a.arg}` : ""}\n\n# executed\n${a.inp || "(no arguments)"}\n\n# ${a.failed ? "failed" : "returned"}\n${out}\n`;
 }
 // Disk I/O for the session's `claude` process. Replaced cpu/mem, which measured the one
 // thing a Claude session is never short of: this is an I/O-bound workload — it reads

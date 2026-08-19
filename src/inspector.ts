@@ -13,17 +13,17 @@
 // something for the bootstrap trim to sweep up.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, stageGen } from "./dom";
+import { $, stageGen, toast } from "./dom";
 import { esc, tilde } from "./format";
-import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
+import { actKey, apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
 import { activeId, sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml,
-  resHtml, RISK_LABEL, vitalHtml, wsetHtml,
+  actClipText, contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml,
+  planHtml, resHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 // ---- the Context card's view state ----
@@ -35,7 +35,15 @@ import {
 // ./panes' `collapsedRuns` — the module that owns the state calls the one renderer that
 // reads it, rather than reaching for a global `renderAll`.
 const openGroups = new Set<string>();
+/// The Tools mode's own fold: which calls are expanded to show what ran and what came
+/// back. Kept apart from `openGroups` because the two modes fold different things and a
+/// single set would make "is a tool_use_id ever the word 'created'" a question anyone
+/// ever had to answer. Keys, not indices — the ring buffer shifts under a live session,
+/// and an index would move the expansion onto whatever call arrived next.
+const openActs = new Set<string>();
 let ctxMode: CtxMode = "files";
+/// What the Context card is currently folding: whichever set the mode on screen owns.
+const ctxOpen = () => (ctxMode === "tools" ? openActs : openGroups);
 function repaintActive() {
   const s = activeId ? sessions.get(activeId) : null;
   if (s) renderInspector(s);
@@ -43,6 +51,23 @@ function repaintActive() {
 export function toggleFileGroup(g: string) {
   if (openGroups.has(g)) openGroups.delete(g); else openGroups.add(g);
   repaintActive();
+}
+export function toggleActRow(k: string) {
+  if (openActs.has(k)) openActs.delete(k); else openActs.add(k);
+  repaintActive();
+}
+/// Copy one call and its result. `navigator.clipboard` rather than the clipboard plugin,
+/// matching every other non-terminal copy in the app — the plugin exists for the panes,
+/// where `navigator.clipboard` raises an OS permission prompt on read.
+///
+/// The button exists because selecting the text by hand does not survive this render
+/// model: the inspector repaints whenever telemetry lands, and on a busy session an
+/// assignment mid-drag takes the selection with it.
+export function copyAct(k: string) {
+  const s = activeId ? sessions.get(activeId) : null;
+  const a = s?.activity.find((x) => actKey(x) === k);
+  if (!a) return;
+  navigator.clipboard.writeText(actClipText(a)).then(() => toast("Call copied")).catch(() => toast("copy failed"));
 }
 export function setCtxMode(m: string) {
   ctxMode = m === "tools" ? "tools" : "files";
@@ -86,7 +111,7 @@ export function renderInspector(s: Sess | null) {
   // for any repo session — a clean tree that's behind is exactly what you want to
   // see, and it's the only place the fetch/pull/push buttons live.
   if (s.git) html.push(wsetHtml(s));
-  html.push(contextHtml(s, openGroups, ctxMode));                 // the files it's been into
+  html.push(contextHtml(s, ctxOpen(), ctxMode));                  // the files it's been into
   html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
   paintInspector(html.join(""));
   // The dwell is patched, never rendered — see `paintInspector`. Do this after the
