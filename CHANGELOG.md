@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Windows: the tray menu no longer stops updating after a day, and the log no longer
+  fills with a warning that says nothing went wrong.** Every session row in the tray menu
+  carries its status as a small coloured image, and the menu library was minting a fresh
+  Windows bitmap for each one on every rebuild without ever releasing it. A rebuild happens
+  whenever a row's wording changes, so a long-lived instance with a few panes eventually
+  hit the 10,000-handle limit Windows gives a process — after which no icon could be made
+  at all: the menu froze at whatever it last drew and the app logged
+  `The operation completed successfully.` roughly twice a second, for hours, crowding
+  everything else out of `episko.log` and the 🐞 console. Fixed in a patched build of the
+  menu library, reported upstream, and reversible the day a fixed release exists.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the
