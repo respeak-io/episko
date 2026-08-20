@@ -126,14 +126,61 @@ export interface GitActionResult {
 }
 // What `purge_worktree_folder` answers: did the folder go, and if not, who is left.
 export interface PurgeResult { gone: boolean; stranded: Stranded | null }
-// What a pane actually contains. All three run in an identical PTY; the kind is
+// What a pane actually contains. All four run in an identical PTY; the kind is
 // what decides whether telemetry, cost and git actions apply to it.
 //   claude — an instrumented `claude` session (the only kind with telemetry)
 //   shell  — a plain login shell (❯ Terminal)
 //   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
+//   agent  — somebody else's coding-agent CLI (codex, opencode, gemini…): a real
+//            pane in the right worktree, with no telemetry, because the hooks and
+//            statusLine Episko generates are Claude Code's settings format and
+//            nothing else reads them. See `available_agents` in pty.rs.
 // Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
 // rather than an embedded pane", and only ever applies to a claude session.
-export type SessKind = "claude" | "shell" | "task";
+export type SessKind = "claude" | "shell" | "task" | "agent";
+// One coding-agent CLI Episko knows about, as `list_agents` reports it — the whole
+// catalogue, installed or not. `path` is where it is, or **null** for "this machine
+// hasn't got it": those rows are shown, greyed and inert, rather than dropped, because
+// a missing row reads as "Episko doesn't support Codex" and sends somebody to the
+// issue tracker. `bin` is what was looked for, which is the only useful thing to say
+// about an agent that wasn't found. `mark` is its two-letter monogram; see the AGENTS
+// table in pty.rs for why these are letters rather than logos.
+export interface AgentCli { id: string; label: string; mark: string; bin: string; path: string | null }
+/// Can this one actually be launched? The single place the null-path convention is
+/// read, so no caller has to remember which way round it goes.
+export const agentInstalled = (a: AgentCli) => a.path !== null;
+// Claude Code as an entry in the same list, so the Settings picker and the launch path
+// can treat "which agent" as one question with one shape of answer.
+//
+// Not in the backend's AGENTS table on purpose (that table is what `spawn_agent` will
+// run, and claude must go through `spawn_claude` to be instrumented), so it is spelled
+// once here instead. `path` is empty because nothing probes for it: `resolve_claude`
+// is the app's own binary lookup and never reports "not installed" — if claude is
+// missing, Episko has bigger problems than a greyed-out row.
+export const CLAUDE_CLI: AgentCli = { id: "claude", label: "Claude Code", mark: "Cc", bin: "claude", path: "" };
+/// Which agent a launch in `colorKey` actually starts — the project override if there
+/// is one, else the global default, else Claude.
+///
+/// The fallback is the whole reason this is a function and not a lookup. Both prefs
+/// are ids persisted in `localStorage`, and `avail` is re-probed at every startup, so
+/// either can name an agent that has since been uninstalled — at which point every
+/// launch in that project would fail on a binary that is no longer there, with the
+/// setting still cheerfully showing the name. Falling back means the worst case is "it
+/// started the wrong agent", not "⌘N stopped working".
+///
+/// A plain cascade rather than a strict one: an override naming a dead agent drops to
+/// the *default*, not straight to Claude. "My override broke, so I get my default" is
+/// what every settings system does, and Claude is the floor of that cascade rather
+/// than a special case inside it.
+export function pickAgent(colorKey: string, def: string, byProject: Record<string, string>, avail: AgentCli[]): AgentCli {
+  // `agentInstalled`, not just "is in the list": since `list_agents` began returning
+  // the whole catalogue, being *in* `avail` stopped meaning the binary is there. An id
+  // naming a listed-but-absent agent has to fall through exactly as an unknown one
+  // does, or the picker's greyed rows become launchable through the back door.
+  const known = (id: string | undefined) =>
+    id === CLAUDE_CLI.id ? CLAUDE_CLI : avail.find((a) => a.id === id && agentInstalled(a));
+  return known(byProject[colorKey]) ?? known(def) ?? CLAUDE_CLI;
+}
 // Where a launched terminal lives. The instrumentation is identical for all four;
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
@@ -147,7 +194,13 @@ export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
 // Always ask through this rather than re-testing the string: whether telemetry,
 // cost and git actions apply to a pane is one decision, made in one place.
-export const isAgent = (s: Sess) => s.kind === "claude";
+//
+// Named for the binary and not for the concept, deliberately. This used to be
+// `isClaude`, which stopped being true the moment a pane could hold `codex` — the
+// question it answers is "is this the instrumented Claude Code session", and every
+// caller (the roster, the cost rollup, the git surfaces, the reactor) wants exactly
+// that rather than "is this an agent of some sort".
+export const isClaude = (s: Sess) => s.kind === "claude";
 // Whether the process behind a pane has exited. The pane still renders — an ended
 // row is information — but nothing behind it can change any more, so the pollers
 // skip it and the quit guard doesn't count it. Phase alone can't answer this for a
@@ -170,8 +223,16 @@ export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != nul
 //            fires the instant you allow it. Idle, done and error are all "the agent is
 //            waiting on you" — it is not touching the tree, and its next turn reads
 //            HEAD fresh rather than from the conversation.
+//   agent  — never, and this one is a judgement call rather than a fact. There is no
+//            telemetry behind a third-party agent, so "is it mid-edit?" is genuinely
+//            unanswerable; the choice is between a switch that is occasionally unsafe
+//            and a checkout that can never be switched while a codex pane is open,
+//            since nothing would ever report it idle again. A session lives for hours
+//            (unlike a task run, which is why that one blocks), so the permanent block
+//            is the worse of the two — and the user drove the agent here and knows
+//            whether it is working.
 export const midFlight = (s: Sess) =>
-  s.kind === "shell" ? false
+  s.kind === "shell" || s.kind === "agent" ? false
     : s.kind === "task" ? !isExited(s)
       : !!s.attention || s.phase === "working" || s.phase === "thinking";
 // ---------- background fan-outs ----------
@@ -209,7 +270,7 @@ export const FANOUT_DEAD_MS = 3_600_000;
 /// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
 /// the fleet is written off however high it reads.
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
-  if (!isAgent(s) || !s.fanout) return null;
+  if (!isClaude(s) || !s.fanout) return null;
   if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
   return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
@@ -389,6 +450,11 @@ export interface Sess {
   // snapshot's seq is already inside it and is dropped on flush; see adoptSession
   // in ./panes for the whole protocol.
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
+  /// agent panes only: which CLI is in here (`AgentCli.id` from `available_agents`).
+  /// The label goes in `title`, which is what every row already reads; this is the
+  /// stable slug, kept so a surface can tell two agent panes apart without parsing a
+  /// display name.
+  agent?: string;
   // task panes only
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;

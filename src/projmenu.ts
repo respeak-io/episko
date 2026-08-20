@@ -22,13 +22,13 @@ import {
 } from "./actions";
 import { groupById, groupOf, groupPaths } from "./projgroups";
 import { extWorking } from "./sidebarview";
-import { isAgent, isExited, midFlight } from "./types";
+import { CLAUDE_CLI, isClaude, isExited, midFlight } from "./types";
 import {
-  accentFor, activeId, colorOverrides, engineDef, externals, FAVORITES, projGroups,
-  sessions, termEngine,
+  accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
+  engineDef, externals, FAVORITES, missingAgents, projGroups, sessions, termEngine,
 } from "./state";
 
-// The seven things a menu row does that this module does not own — panes, the project
+// The eight things a menu row does that this module does not own — panes, the project
 // list and the repaint all belong to main.ts. Past the ~4 where per-callee setters
 // stop reading as anything but noise, so it takes one host (settings.ts's deviation).
 let host: {
@@ -36,12 +36,13 @@ let host: {
   requestLaunch: (project: string, path: string) => void;
   launchWorktree: (project: string, root: string, dir: string, branch: string) => void;
   launchShell: (project: string, workdir: string, opts: { colorKey?: string }) => void;
+  setProjectAgent: (colorKey: string, id: string | null) => void;
   openProjectFolder: (key: string) => void;
   addProjectPath: (dir: string) => void;
   removeFavorite: (path: string) => void;
 } = {
   renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
-  openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
+  setProjectAgent: () => {}, openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
@@ -132,8 +133,13 @@ const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name ||
 // Where "Open project folder" actually lands, so the row can name it.
 
 type CtxRow = { act: string; ic: string; label: string; sub?: string; cls?: string; chev?: boolean };
+// A two-character icon is an agent monogram (`Cx`, `Gm`) and needs smaller, tighter
+// type than the single glyphs every other row uses — derived from the content rather
+// than flagged on the row, because "two characters" IS the condition, and a flag would
+// be a second thing to remember to set. Counted in code points: no icon here is astral
+// today, and `.length` would quietly mis-size the first one that is.
 const ctxRowHtml = (r: CtxRow) =>
-  `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}"><span class="mp-ic">${r.ic}</span>`
+  `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}"><span class="mp-ic${[...r.ic].length === 2 ? " mp-mono" : ""}">${r.ic}</span>`
   + `<span class="mp-main"><span class="mp-l">${esc(r.label)}</span>${r.sub ? `<span class="mp-s">${esc(r.sub)}</span>` : ""}</span>`
   + (r.chev ? `<span class="mp-chev">›</span>` : "") + `</button>`;
 const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
@@ -145,17 +151,26 @@ let menuX = 0, menuY = 0;
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = null; // one #ctxMenu, one target — see the module header
+  wtTarget = gTarget = pickPath = agentKey = null; // one #ctxMenu, one target — see the module header
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
   const fav = FAVORITES.some((f) => f.path === key);
-  const live = [...sessions.values()].filter((s) => s.colorKey === key && isAgent(s)).length;
+  const live = [...sessions.values()].filter((s) => s.colorKey === key && isClaude(s)).length;
+  const agent = effectiveAgent(key);
   const ic = iconFor(key);
   const rows: (CtxRow | null)[] = [
-    { act: "launch", ic: "＋", label: "New session", sub: live ? `${live} already running here` : "start Claude Code in this folder" },
+    // The sub names the agent instead of saying "Claude Code" unconditionally, which
+    // is the whole point of the row below it: the button that starts a session is the
+    // last honest moment to say what it is about to start.
+    { act: "launch", ic: "＋", label: "New session", sub: live ? `${live} already running here` : `start ${agent.label} in this folder` },
     { act: "worktree", ic: "⑃", label: "New worktree session…", sub: "on a branch of its own" },
     { act: "terminal", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
+    // Always present, even on a machine with nothing but Claude installed — which is
+    // the case where it earns the most: the picker behind it is where "Episko supports
+    // twenty-one of these, here is what it looked for" is written down. Dropping it
+    // then would hide the feature from exactly the person who has not found it yet.
+    { act: "agents", ic: agent.mark, label: `Agent · ${agent.label}`, sub: agentSub(key), chev: true },
     null,
     // Dropped below unless the probe says this folder is a repo — a graph row on a
     // plain directory would open a panel with nothing but an error in it.
@@ -200,7 +215,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = gTarget = pickPath = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = gTarget = pickPath = agentKey = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -263,9 +278,15 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
   ctxKey = null; // one #ctxMenu, one target — see the module header
   wtTarget = t;
-  const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isAgent(s)).length;
+  // Stamped for the same reason `openCtxMenu` stamps it: the agent picker replaces
+  // this menu in place, and its ‹ Back has to reopen on the same pixels.
+  menuX = x; menuY = y;
+  const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isClaude(s)).length;
   const rows: (CtxRow | null)[] = [
-    { act: "wtlaunch", ic: "＋", label: "New session here", sub: live ? `${live} already running in this checkout` : "start Claude Code on this branch" },
+    // No agent row of its own: the override is keyed by repo (`colorKey`), which is
+    // what every checkout of it launches under, so a per-worktree picker would be
+    // setting something other than what it appeared to. Naming it is the honest half.
+    { act: "wtlaunch", ic: "＋", label: "New session here", sub: live ? `${live} already running in this checkout` : `start ${effectiveAgent(t.root).label} on this branch` },
     { act: "wtterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
     null,
     { act: "wtfolder", ic: "⌂", label: "Open checkout folder", sub: FILE_MANAGER },
@@ -314,6 +335,84 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
 });
 
+// ---------- which agent this project runs: the picker ----------
+// A fourth mode of the one #ctxMenu, and a drill-down rather than a submenu for the
+// same reason "which group?" is one: it is a list of rows, so it replaces the menu in
+// place and offers ‹ Back.
+//
+// It sets a preference; it does not launch. That is the whole difference from the
+// version this replaced, which asked "which agent, this time?" on every single start —
+// nobody switches agent per session, they switch per project, so the answer is stored
+// and `＋ New session` reads it. One picker, one meaning.
+let agentKey: string | null = null;   // the project whose agent is being chosen
+
+/// What the "Agent · X" row says underneath. Names where the answer came from, because
+/// the same label means two different things: a repo pinned to Codex must not read
+/// identically to one that merely inherits Codex from the global default — otherwise
+/// clearing an override you forgot you set is guesswork.
+function agentSub(key: string): string {
+  if (agentByProject[key]) return "set for this project";
+  const n = allAgents().length - 1;
+  return n ? `the default · ${n} other${n === 1 ? "" : "s"} installed` : "the default · nothing else installed";
+}
+
+/// Whether the picker is showing the agents this machine hasn't got. Sticky for the
+/// app's life rather than per-open: somebody who expanded it once is shopping, and
+/// re-collapsing under them on the next open would read as the menu forgetting.
+let agentShowAll = false;
+
+function openAgentPicker(key: string, x: number, y: number) {
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = pickPath = null; // one #ctxMenu, one target
+  agentKey = key;
+  const cur = agentByProject[key];
+  const eff = effectiveAgent(key);
+  const missing = missingAgents();
+  const rows: (CtxRow | null)[] = [
+    { act: "aback", ic: "‹", label: "Back", sub: projName(key) },
+    null,
+    // Above the fold: Claude plus what the probe FOUND. A row here is a promise the
+    // binary exists, and the probe is the only thing that can make that promise.
+    ...allAgents().map((a) => ({
+      act: `apick:${a.id}`, ic: a.mark, label: a.label,
+      // The tick marks the *override*, not the effective agent: ticking an inherited
+      // row would make "follow the default" below it look like a no-op.
+      sub: a.id === cur ? "✓ set for this project"
+        : a.id === CLAUDE_CLI.id ? "instrumented — phase, cost, context"
+        : tilde(a.path ?? ""),
+    })),
+    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Sessions · ${defaultAgentDef().label}` } : null,
+    // …and below it, everything Episko supports that this machine hasn't got. Folded,
+    // because twelve rows you cannot pick would bury the ones you can — but present,
+    // because a *missing* row is indistinguishable from "Episko doesn't support Codex"
+    // and the only place to take that question is the issue tracker. Same rule as a
+    // Runnable that cannot run and a worktree that cannot be removed: say why.
+    ...(missing.length ? [null, {
+      act: "amore", ic: agentShowAll ? "−" : "+",
+      label: `${missing.length} more supported`,
+      sub: agentShowAll ? "installed ones are above" : "not found on this machine",
+    }] as (CtxRow | null)[] : []),
+    // `cls: "dis"` is what makes them inert: every click listener on this menu bails on
+    // a `.dis` row before reading its act, so there is no dead branch to write.
+    ...(agentShowAll
+      ? missing.map((a) => ({
+        act: "", ic: a.mark, label: a.label, cls: "dis",
+        // The binary name IS the answer to "why isn't it here?" — it says exactly what
+        // Episko searched the PATH for, which no install link could tell you as
+        // precisely, and which cannot rot the way twenty-one vendor URLs would.
+        sub: `not on PATH · ${a.bin}`,
+      }))
+      : []),
+  ];
+  const menu = $("ctxMenu");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">Agent</span><span class="mp-hpath">${esc(projName(key))} · runs ${esc(eff.label)}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
+}
+
+
 // ---------- project groups: the picker, and a group's own menu ----------
 // Two more modes of the one #ctxMenu, and they are drill-downs rather than submenus:
 // Appearance hangs a *panel* off the menu's edge because a colour grid is not a list of
@@ -334,7 +433,7 @@ const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputEl
 
 function openGroupPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = null;
+  ctxKey = wtTarget = gTarget = agentKey = null;
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
@@ -357,7 +456,7 @@ function openGroupPicker(key: string, x: number, y: number) {
 
 function openGroupMenu(gid: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = pickPath = null;
+  ctxKey = wtTarget = pickPath = agentKey = null;
   gTarget = gid;
   menuX = x; menuY = y;
   const g = groupById(projGroups, gid);
@@ -401,19 +500,46 @@ function openRenameGroup(gid: string) {
 }
 
 /// A row that REPLACES this menu's markup instead of committing has to stop the click
-/// there, and the reason is not obvious enough to leave unwritten: main.ts's outside-
-/// click closer asks `t.closest("#ctxMenu")` of the original target, and by the time it
-/// runs the innerHTML has been swapped — so the node it is asking about is detached,
-/// answers null, and the menu we just opened is closed as an outside click. Appearance
-/// never hit this because it only adds a class; every drill-down here re-renders.
-const keepMenuOpen = (e: Event) => e.stopPropagation();
+/// dead, and the reason is not obvious enough to leave unwritten — there are *two*
+/// things that would otherwise close the menu it just opened.
+///
+/// 1. main.ts's outside-click closer asks `t.closest("#ctxMenu")` of the original
+///    target, and by the time it runs the innerHTML has been swapped — so the node it
+///    is asking about is detached, answers null, and the menu we just opened is closed
+///    as an outside click. Appearance never hit this because it only adds a class;
+///    every drill-down here re-renders.
+/// 2. **The sibling listeners on this very element.** `#ctxMenu` carries three click
+///    listeners (worktree menu, drill-downs, project menu) and they fire in
+///    registration order; `stopPropagation` only stops the trip *onward*, so every one
+///    of them still sees a click any one of them has already handled. A drill-down
+///    reopens its parent menu synchronously, which means a later listener finds its
+///    own target set again and an act it has no case for — and falls through to the
+///    unconditional `closeCtxMenu()` before its switch. That is why ‹ Back on *Move to
+///    group* used to blink the menu shut instead of going back, and it is why this is
+///    `stopImmediatePropagation` rather than the `stopPropagation` it was.
+const keepMenuOpen = (e: Event) => e.stopImmediatePropagation();
 
-// One listener for both, guarded on their own targets exactly as the project and
-// worktree menus guard on theirs — three modes, one element, no shared branch.
+// One listener for all three drill-downs, guarded on their own targets exactly as the
+// project and worktree menus guard on theirs — four modes, one element, no shared
+// branch.
 $("ctxMenu").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
   if (!b || b.classList.contains("dis")) return;
   const act = b.dataset.ctx || "";
+  if (agentKey) {
+    const key = agentKey;
+    if (act === "aback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
+    // Anything else is not this picker's vocabulary — leave the menu exactly as it is
+    // rather than closing it on a row we did not draw. Belt and braces behind
+    // `keepMenuOpen` above, which is what actually keeps a sibling listener's click
+    // from arriving here at all.
+    // The fold is a re-render in place, not a commit — same shape as ‹ Back above it.
+    if (act === "amore") { keepMenuOpen(e); agentShowAll = !agentShowAll; openAgentPicker(key, menuX, menuY); return; }
+    if (act !== "aclear" && !act.startsWith("apick:")) return;
+    closeCtxMenu();
+    host.setProjectAgent(key, act === "aclear" ? null : act.slice(6));
+    return;
+  }
   if (pickPath) {
     const path = pickPath;
     // Back is the one row that reopens rather than commits — same coordinates, so the
@@ -477,6 +603,8 @@ $("ctxMenu").addEventListener("click", (e) => {
   // (see openGroupPicker), so it must not fall through to the close below, and the
   // click must not reach main.ts's outside-click closer (see keepMenuOpen).
   if (b.dataset.ctx === "movegroup") { keepMenuOpen(e); openGroupPicker(key, menuX, menuY); return; }
+  // Third row that opens rather than commits, same rule as the two above it.
+  if (b.dataset.ctx === "agents") { keepMenuOpen(e); openAgentPicker(key, menuX, menuY); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
     case "launch": host.requestLaunch(name, key); break;

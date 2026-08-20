@@ -17,7 +17,7 @@ import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  apiErrText, bgWaiting, fanoutTally, fanoutText, isClaude, liveFanout, statusKey,
   type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
@@ -80,7 +80,7 @@ export function dwellText(s: Sess): string {
 // on you, so crowning it "longest waiting" would point you at the one row with nothing
 // to answer.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention && !bgWaiting(x));
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isClaude(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
@@ -442,7 +442,7 @@ export function resHtml(): string {
   const rd = r.primed ? fmtRate(r.readBps) : "—";
   const wr = r.primed ? fmtRate(r.writeBps) : "—";
   const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
-  const n = [...sessions.values()].filter((x) => isAgent(x) && !x.external).length;
+  const n = [...sessions.values()].filter((x) => isClaude(x) && !x.external).length;
   // The total is a *window*, and which window was never stated — it said "total" while
   // showing the current run, so it read as a lifetime figure that reset overnight. The
   // scope is now named on the row and the whole row cycles it.

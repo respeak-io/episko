@@ -81,7 +81,7 @@ Four conventions hold across them:
 
 The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-time, the `cc-io` rollup, `splitIo`, what the counters do and don't cover) is subtle and lives in `docs/architecture.md`; read it before touching any of it.
 
-- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane. The `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see docs/tasks.md).
+- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane. The `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see docs/tasks.md), and `spawn_agent` the fourth — somebody else's coding-agent CLI (`codex`, `opencode`, `gemini`…) in a pane, discovered by `available_agents` and uninstrumented by construction (docs/sessions.md).
 - **`write_pty` is the one place that decides what a child receives**, and on Windows that is not "the bytes we were given": ConPTY re-synthesizes a VT stream into key events, and a character it best-fits into the OEM code page arrives on a key-**up** record, where `_getwch` (Python's `getpass`, i.e. any script asking for a secret) never looks. So a non-ASCII character goes out as a win32 input record instead (`win32_input_encode`), exactly as Windows Terminal does. **ASCII and escape sequences are never rewritten.** Read docs/architecture.md before touching it; a hidden prompt makes every mistake here silent.
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
@@ -96,7 +96,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 | Module | What |
 | --- | --- |
-| `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
+| `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isClaude`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
 | `format.ts` | durations, paths, escaping, sparklines, money and token counts; data in, string out |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
@@ -128,7 +128,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
-**Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
+**Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
 Four rules keep that graph honest. **There are no import cycles across the 56 modules; re-run a cycle check after any change that adds an import.**
 
@@ -141,11 +141,25 @@ Four rules keep that graph honest. **There are no import cycles across the 56 mo
 
 And the things that hold however the files are arranged:
 
-- **`Sess.kind`** (`"claude" | "shell" | "task"`) decides whether telemetry, cost
-  and git actions apply to a pane. Use the `isAgent(s)` helper rather than
-  re-testing the string. It is orthogonal to `Sess.external`, which means "the
-  terminal lives in Ghostty/iTerm rather than an embedded pane" and only ever
-  applies to a claude session.
+- **`Sess.kind`** (`"claude" | "shell" | "task" | "agent"`) decides whether telemetry,
+  cost and git actions apply to a pane. Use the `isClaude(s)` helper rather than
+  re-testing the string — it is named for the binary because that is the question it
+  answers, and it was called `isAgent` until a pane could hold `codex`. It is orthogonal
+  to `Sess.external`, which means "the terminal lives in Ghostty/iTerm rather than an
+  embedded pane" and only ever applies to a claude session.
+- **Only `claude` panes have telemetry, and that is a property of Claude Code rather
+  than a gap.** `agent` panes run twenty-one other vendors' CLIs (`docs/sessions.md`);
+  the hooks and statusLine Episko generates are Claude Code's own settings format and
+  nothing else reads them, so an agent pane has no phase, cost, context or permission
+  prompt and every surface says so plainly instead of showing a dash. What it does get
+  is what Episko owns outright: the worktree, the project tree, the palette, the
+  working-set card (which reads git), and an exit on its row. **Never invent a phase for
+  one** — `needsYou`, `urgencyRank` and `midFlight` all answer "no" for `agent`, and a
+  badge nothing can clear is worse than no badge.
+- **A pane glyph that isn't a phase lives in two tables that must move together**:
+  `sidebarview.ts`'s (`❯` shell, `»` agent) and `tray.ts`'s `SHAPE` plus `icons.rs`'s
+  `shape_sdf` (`chevron`, `dchevron`). The tray once spelled every kind of pane with the
+  phase vocabulary and drew a live shell as an idle agent.
 - **A pane's WebGL context comes from a small LRU pool** (`attachWebgl`/`detachWebgl` in `terminal.ts`, `GL_POOL_MAX` = 8). Both simpler designs (a context per pane for life, dispose-per-deactivation) were tried and are wrong; `docs/architecture.md` says why, along with the ended-pane scrollback rules.
 - **A claude pane's keystrokes are filtered before the PTY sees them.** They go through `claudeInput` in `terminal.ts`, which swallows a fast double `^C`. xterm keeps only **one** `attachCustomKeyEventHandler` per pane: a new key rule belongs in `claudeInput`/`winClaudePaste` (claude), `shellKeys` (shell) or `clipboardKeys` (task), never in a second handler.
 - **Copy/paste in a shell or task pane is Ctrl+Shift+C/V**, read/written via `tauri-plugin-clipboard-manager` (never `navigator.clipboard`, which raises OS permission prompts) and pasted through `term.paste` (never `write_pty`, since bracketed paste and `\r\n`→`\r` must still apply).
@@ -192,7 +206,7 @@ And the things that hold however the files are arranged:
 
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
-- **`termEngine` picks where a terminal lives** (embedded xterm pane / ghostty / Terminal / iTerm); the per-launch instrumentation and telemetry are identical for all four. `permMode` is orthogonal and sets the *starting* permission mode only (`docs/sessions.md`).
+- **Three orthogonal facts decide a launch, all preferences, all read at the launch site and never stored on a `Sess`**: `defaultAgent` (**what** runs — Claude Code by default, overridable per project via `agentByProject`; resolved by `pickAgent` in ./types), `termEngine` (**where** its terminal lives — embedded xterm / ghostty / Terminal / iTerm, with identical instrumentation for all four), and `permMode` (**how** it starts). `launch()` forks on the agent before it builds anything; a resume and the dashboard's issue dispatch pin Claude, and both for reasons rather than taste (`docs/sessions.md`).
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
   you have been to since it finished leaves the badge, the tray title, the palette's
   "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);

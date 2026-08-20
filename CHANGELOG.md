@@ -13,6 +13,39 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Episko runs the other agents too, and which one is a setting.** Settings › Sessions
+  gains *Agent*, sitting above *Launch engine* and *Permission mode* because it is the
+  outermost of the three: what a session runs, then where its terminal opens, then how
+  it starts. Claude Code is now the default **value** rather than a hardcoded choice, and
+  the alternatives are the coding-agent CLIs actually installed on your machine — Codex,
+  OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity,
+  Devin, Cline, Pi and the rest, twenty-one in all. Only agents found on your PATH are
+  offered, so the picker never promises a binary you haven't got.
+
+  The agents you *haven't* installed are listed too, folded below the ones you have and
+  greyed, each saying which binary Episko searched your PATH for. A row that simply
+  wasn't there read as "Episko doesn't support Codex" — which is a support ticket, not
+  an answer.
+
+  Any project can override the choice from its own right-click menu (*Agent · Codex*),
+  keyed to the repo so every worktree of it agrees. `⌘N`, the new-session dialog and a worktree
+  launch all obey. Uninstall an agent and anything pinned to it quietly falls back
+  rather than failing to start.
+
+  What an agent pane deliberately does *not* have is a phase, a cost or a context gauge.
+  Those come from hooks Episko writes into Claude Code's own settings, and no other agent
+  reads them — so instead of a grid of dashes, the row says `»`, the inspector says which
+  agent and where, and every launch surface names the agent before you commit to it.
+  Two things ignore the setting on purpose: resuming a conversation (that is Claude's own
+  transcript), and dispatching at a GitHub issue (the claim is handed back on a hook only
+  Claude fires, so an uninstrumented agent would hold the issue forever).
+
+! **‹ Back in a project menu's drill-down goes back instead of shutting the menu.**
+  Found while adding the agent picker beside it: `#ctxMenu` carries three click
+  listeners, and stopping propagation never stopped its *siblings* — so the listener
+  after the one that handled ‹ Back saw the same click, found the menu reopened, and
+  closed it again. *Move to group → ‹ Back* had done this since the drill-down shipped.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

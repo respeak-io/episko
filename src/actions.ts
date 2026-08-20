@@ -26,6 +26,8 @@ import {
   saveFavorites, saveProjGroups, sessions, termEngine,
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setIoInfoAt, setIoScope, setKeyPrefs as setKeyPrefsState,
+  agentByProject, agentDef, defaultAgent, effectiveAgent,
+  setDefaultAgent as setDefaultAgentState, setProjectAgent as setProjectAgentState,
   setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
@@ -239,6 +241,29 @@ export function collapseAllProjGroups(collapsed: boolean) { commitProjGroups(col
 // it: a pane started in Bypass or Don't ask never raises a permission card at all, so
 // there is no later moment where the choice becomes visible. Only new launches move;
 // a running session keeps whatever mode it is in (Claude's ⇧⇥ owns that).
+// Which agent a new session runs (Settings › Sessions). Persisting lives here rather
+// than in state.ts for the usual reason — a `setX` there assigns and nothing else — and
+// the toast is doing real work: this is the one preference that can turn the cockpit
+// off, so the moment you change it is the moment to say what you have just lost.
+export function setDefaultAgent(id: string) {
+  setDefaultAgentState(id);
+  localStorage.setItem("cc-agent", defaultAgent);
+  const a = agentDef(defaultAgent);
+  toast(a && a.id !== "claude"
+    ? `New sessions run ${a.label} — no phase, cost or context`
+    : "New sessions run Claude Code");
+  renderSettings();
+}
+// The per-project override, set from a project's own menu. `null` clears it, which is
+// the row that says "follow the global setting" rather than a third state.
+export function setProjectAgent(colorKey: string, id: string | null) {
+  setProjectAgentState(colorKey, id);
+  localStorage.setItem("cc-agent-by-project", JSON.stringify(agentByProject));
+  const a = effectiveAgent(colorKey);
+  toast(id ? `${basename(colorKey)} runs ${a.label}` : `${basename(colorKey)} follows the default (${a.label})`);
+  renderAll();
+}
+
 export function setPermMode(m: PermMode) {
   setPermModeState(m);
   localStorage.setItem("cc-perm-mode", permMode);

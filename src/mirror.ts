@@ -21,7 +21,7 @@ import { renderFoot } from "./footer";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import { dormantBusy, orderedSessions } from "./grouping";
-import { isAgent, type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess } from "./types";
+import { isClaude, type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess } from "./types";
 import {
   accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
@@ -51,7 +51,7 @@ function rosterEntry(s: Sess): Restorable {
   };
 }
 function saveRoster() {
-  const open = [...sessions.values()].filter((s) => isAgent(s) && s.workdir).map(rosterEntry);
+  const open = [...sessions.values()].filter((s) => isClaude(s) && s.workdir).map(rosterEntry);
   // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
   // restores only some of them doesn't quietly discard the rest.
   const live = new Set(open.map((r) => r.id));
@@ -128,7 +128,11 @@ let dirtySweptAt = 0;
 // re-read on the tick after the edit rather than up to 5s later.
 export async function refreshDirtyStates(force = false) {
   const folders = new Set<string>();
-  for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
+  // An agent pane counts as much as a claude one: the dot means "this checkout has
+  // uncommitted work", and `codex` writing files is exactly that. A *shell* still does
+  // not — one is as often opened to look at a folder as to change it, and each folder
+  // in this set costs a `git_diffstat` every sweep.
+  for (const s of sessions.values()) if ((isClaude(s) || s.kind === "agent") && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;

@@ -122,10 +122,13 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
     ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
     : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
   // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited).
+  // An agent pane has none either, so it takes the same rule with a doubled chevron:
+  // same family (a terminal with no phase behind it), visibly not the same thing.
   // tasks keep the status glyphs: an exit code *is* a done/error phase, so a red
   // build reads exactly like a broken session in the rail.
-  const glyph = s.kind === "shell" ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
-  const gcls = s.kind === "shell" ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
+  const bare = s.kind === "shell" ? "❯" : s.kind === "agent" ? "»" : "";
+  const glyph = bare ? (s.phase === "ended" ? GLYPH.ended : bare) : GLYPH[k];
+  const gcls = bare ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
   const chipHtml = chip ? clusterChip(chip) : "";
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.

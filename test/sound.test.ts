@@ -277,6 +277,10 @@ describe("exitSound", () => {
     expect(exitSound("claude", 0)).toBe("ended");
     expect(exitSound("claude", 1)).toBe("ended");
     expect(exitSound("shell", 0)).toBe("ended");
+    // An agent pane has no verdict to report — only a task's exit code is one, and
+    // reading a codex exit as taskFail would ring the failure chime on every quit.
+    expect(exitSound("agent", 0)).toBe("ended");
+    expect(exitSound("agent", 130)).toBe("ended");
   });
 });
 

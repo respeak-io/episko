@@ -14,7 +14,7 @@
 // that join — no DOM, no Tauri — so it unit-tests in isolation, like ./rl.
 // See test/usage.test.ts.
 
-import { type InstallFile, isAgent, type Sess } from "./types";
+import { type InstallFile, isClaude, type Sess } from "./types";
 import { basename } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
@@ -103,7 +103,7 @@ export function addUsage(delta: number, s?: Sess) {
   usage[k] = (usage[k] || 0) + delta;
   trimDays(usage);
   localStorage.setItem("cc-usage", JSON.stringify(usage));
-  if (!s || !isAgent(s)) return;
+  if (!s || !isClaude(s)) return;
   // Attribute the cost delta to whichever model is active right now and to the
   // session's project — the closest honest split the statusLine data allows.
   const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {} });

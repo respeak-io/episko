@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isExited, midFlight, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
+import { CLAUDE_CLI, isExited, midFlight, pickAgent, type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
@@ -700,6 +700,15 @@ describe("urgencyRank — who needs you first", () => {
     }
     expect(urgencyRank(sess({ kind: "shell", attention: "Bash" }))).toBe(6);
   });
+  it("never lets a third-party agent demand attention either — same missing telemetry", () => {
+    // The row for a `codex` pane has no hooks behind it, so nothing it shows can be
+    // urgent. `attention` is checked too: it is a field on every Sess, and if the rank
+    // ever consulted it before the kind, a stale value would outrank a real permission.
+    for (const phase of ["error", "done", "working", "idle", "ended"] as const) {
+      expect(urgencyRank(sess({ kind: "agent", phase }))).toBe(6);
+    }
+    expect(urgencyRank(sess({ kind: "agent", attention: "Bash" }))).toBe(6);
+  });
   it("raises a task only when it failed — a red build reads like a broken session", () => {
     expect(urgencyRank(sess({ kind: "task", phase: "error" }))).toBe(1);
     expect(urgencyRank(sess({ kind: "task", phase: "done" }))).toBe(6);
@@ -842,6 +851,12 @@ describe("needsYou — is this pane waiting on the human", () => {
       expect(needsYou(sess({ kind: "shell", phase }))).toBe(false);
     }
     expect(needsYou(sess({ kind: "shell", attention: "Bash" }))).toBe(false);
+  });
+  it("never counts a third-party agent — nothing can say it is waiting on you", () => {
+    for (const phase of ["done", "error", "working", "idle", "ended"] as const) {
+      expect(needsYou(sess({ kind: "agent", phase }))).toBe(false);
+    }
+    expect(needsYou(sess({ kind: "agent", attention: "Bash" }))).toBe(false);
   });
   it("counts a failed run only — a green one settles quietly and auto-dismisses", () => {
     expect(needsYou(sess({ kind: "task", phase: "error" }))).toBe(true);
@@ -1170,6 +1185,10 @@ describe("isExited — the process behind the pane is gone", () => {
     // "done" is a live claude pane whose turn finished — NOT an exited one.
     expect(isExited(sess({ phase: "done" }))).toBe(false);
   });
+  it("reads the phase for an agent pane too — pty-exit is the only thing that ends one", () => {
+    expect(isExited(sess({ kind: "agent", phase: "ended" }))).toBe(true);
+    expect(isExited(sess({ kind: "agent", phase: "idle" }))).toBe(false);
+  });
   it("reads the exit code for a task — its done/error phases are live states elsewhere", () => {
     expect(isExited(taskSess("t"))).toBe(false);                                   // running
     expect(isExited(taskSess("t", { phase: "done" }, { exitCode: 0 }))).toBe(true);
@@ -1197,6 +1216,14 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
   it("never counts a shell — it is the prompt you would type `git switch` into", () => {
     expect(midFlight(sess({ kind: "shell", phase: "working" }))).toBe(false);
     expect(midFlight(sess({ kind: "shell", phase: "idle" }))).toBe(false);
+  });
+  it("never counts a third-party agent — it would block the checkout forever", () => {
+    // Not the shell's reasoning. Nothing reports an agent pane idle, so a `true` here
+    // would mean a checkout holding one could never be switched again for as long as
+    // the pane stayed open — which is most of a working day.
+    expect(midFlight(sess({ kind: "agent", phase: "idle" }))).toBe(false);
+    expect(midFlight(sess({ kind: "agent", phase: "working" }))).toBe(false);
+    expect(midFlight(sess({ kind: "agent", attention: "Bash" }))).toBe(false);
   });
   it("counts a task until it exits, whatever phase it is showing", () => {
     expect(midFlight(taskSess("build"))).toBe(true);
@@ -1267,5 +1294,61 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
   it("never adopts a pane the frontend already has", () => {
     open(sess({ id: "o1" }));
     expect(orphanAdoptions([live()], [])).toEqual([]);
+  });
+});
+
+describe("pickAgent — which agent a launch in this project starts", () => {
+  const cli = (id: string, label = id): AgentCli =>
+    ({ id, label, mark: id.slice(0, 2), bin: id, path: `/usr/local/bin/${id}` });
+  /// Known to Episko, absent from this machine — what `list_agents` now returns for
+  /// the twelve you haven't installed, and what the picker greys out.
+  const gone = (id: string, label = id): AgentCli => ({ ...cli(id, label), path: null });
+  const avail = [cli("codex", "Codex"), cli("gemini", "Gemini CLI")];
+
+  it("prefers the project override, then the global default, then Claude", () => {
+    expect(pickAgent("/repo", "claude", {}, avail).id).toBe("claude");
+    expect(pickAgent("/repo", "codex", {}, avail).id).toBe("codex");
+    expect(pickAgent("/repo", "codex", { "/repo": "gemini" }, avail).id).toBe("gemini");
+    // The override is per project, so another repo still follows the default.
+    expect(pickAgent("/other", "codex", { "/repo": "gemini" }, avail).id).toBe("codex");
+  });
+
+  it("falls back to Claude when a stored id is no longer installed", () => {
+    // The point of the whole function. Both prefs are ids in localStorage and `avail`
+    // is re-probed every startup, so uninstalling an agent must not break ⌘N — the
+    // worst case has to be "it started the wrong one", never "nothing starts".
+    expect(pickAgent("/repo", "opencode", {}, avail).id).toBe("claude");
+    expect(pickAgent("/repo", "codex", {}, []).id).toBe("claude");
+    // A dead override drops to the DEFAULT, not straight to Claude — the plain cascade
+    // every settings system has, and the least astonishing: "my override broke, so I
+    // get my default". Claude is the floor of that cascade, not a special case of it.
+    expect(pickAgent("/repo", "codex", { "/repo": "opencode" }, avail).id).toBe("codex");
+    // …and when the default is dead too, the floor is where it lands.
+    expect(pickAgent("/repo", "kiro", { "/repo": "opencode" }, avail).id).toBe("claude");
+  });
+
+  it("refuses an agent that is listed but not installed", () => {
+    // The rule that arrived with the greyed rows. `list_agents` returns the whole
+    // catalogue now, so being *in* `avail` stopped meaning the binary is there —
+    // without the installed check, a preference naming an uninstalled agent (set on a
+    // machine that had it, synced or carried over) would launch a row the picker draws
+    // as unpickable, and ⌘N would die on a missing binary.
+    const mixed = [...avail, gone("opencode", "OpenCode")];
+    expect(pickAgent("/repo", "opencode", {}, mixed).id).toBe("claude");
+    expect(pickAgent("/repo", "codex", { "/repo": "opencode" }, mixed).id).toBe("codex");
+    // And the installed ones in the same list still resolve, so the filter is not just
+    // rejecting everything.
+    expect(pickAgent("/repo", "gemini", {}, mixed).id).toBe("gemini");
+  });
+
+  it("never needs claude to be in the probed list", () => {
+    // `available_agents` deliberately omits it — claude goes through spawn_claude, not
+    // spawn_agent — so resolving "claude" must work against an empty probe.
+    expect(pickAgent("/repo", "claude", {}, [])).toEqual(CLAUDE_CLI);
+    expect(pickAgent("/repo", "claude", { "/repo": "claude" }, [])).toEqual(CLAUDE_CLI);
+  });
+
+  it("returns the whole entry, so a caller gets the label and mark it will render", () => {
+    expect(pickAgent("/repo", "codex", {}, avail)).toEqual(avail[0]);
   });
 });

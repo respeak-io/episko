@@ -1,13 +1,14 @@
-// Panes: the three things Episko can put on stage, and the life of one once it is
-// there. `spawn_claude`, `spawn_shell` and `spawn_task` are three backend entry points
-// but one frontend shape — a `Sess` in the map, a `.term-pane` in #terminals, and a
-// PTY behind it — which is why they sit together rather than beside the surfaces that
-// trigger them.
+// Panes: the four things Episko can put on stage, and the life of one once it is
+// there. `spawn_claude`, `spawn_shell`, `spawn_task` and `spawn_agent` are four backend
+// entry points but one frontend shape — a `Sess` in the map, a `.term-pane` in
+// #terminals, and a PTY behind it — which is why they sit together rather than beside
+// the surfaces that trigger them.
 //
-// What each spawner does *not* share is the point of having three: a claude session is
+// What each spawner does *not* share is the point of having four: a claude session is
 // instrumented (and may live in an external terminal, in which case its pane is a
 // placard rather than a terminal), a shell gets Terminal.app's ⌥/⌘ key conventions and
-// no telemetry, and a task run carries its exit code as its phase.
+// no telemetry, a task run carries its exit code as its phase, and an agent pane runs
+// somebody else's CLI with none of the above.
 //
 // Also here: the stage's own chrome (`renderHeader`, `syncStageButtons`), because both
 // read only what pane is active, and the two context resolvers every "…here" action
@@ -26,7 +27,7 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, isExited, statusKey, taskStateText, type DiffStat, type GitActionResult,
+  CLAUDE_CLI, isClaude, isExited, statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Res, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
@@ -49,7 +50,8 @@ import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, engineDef,
+  accentFor, activeId, agentDef, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permMode, permModeDef,
   sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, worktreesByRepo, wtSig,
@@ -84,9 +86,23 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
 // `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
 // the toast said it hadn't, and neither the prompt nor the claim was ever sent.
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; agent?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
+  // Which agent this is, before anything else is built — a non-Claude one is a wholly
+  // different pane (no instrumentation, no external-terminal engines, different key
+  // handling), so it forks here rather than being patched in afterwards.
+  //
+  // Two things override the preference, and both are facts rather than tastes:
+  //   · a **resume** is Claude's transcript being replayed through `claude --resume`.
+  //     There is nothing to resume in another agent, so the pref cannot apply.
+  //   · an explicit `opts.agent`, which is how the dashboard pins issue dispatch to
+  //     Claude: the claim it writes is handed back on the `SessionEnd` hook, so
+  //     dispatching an uninstrumented agent would leave the issue claimed forever.
+  const agent = opts.resume ? CLAUDE_CLI : agentDef(opts.agent ?? "") ?? effectiveAgent(colorKey);
+  if (agent.id !== CLAUDE_CLI.id) {
+    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch });
+  }
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
   const external = termEngine !== "embedded";
@@ -324,6 +340,64 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     dlog("error", `shell launch failed: ${e}`);
     toast("shell failed: " + e);
     term.writeln(`\r\n\x1b[31m[shell error] ${e}\x1b[0m`);
+  }
+  renderAll();
+  return id;
+}
+
+// Somebody else's coding agent in an embedded xterm pane — codex, opencode, gemini
+// and the rest of `available_agents`. Mirrors launchShell exactly, because that is
+// what an uninstrumented agent pane *is*: the same PTY, the same xterm, a different
+// program on the other end.
+//
+// What it deliberately does not do is pretend to be a session. There is no phase
+// machine, no cost, no context gauge and no resume, because none of those exist
+// without Claude Code's hooks — see `spawn_agent` in pty.rs. The row still says
+// something useful (which agent, which checkout, and whether it has exited), which
+// is exactly what the ❯ Terminal row already says.
+export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string> {
+  const id = crypto.randomUUID();
+  // Same grouping rule as a shell: key on the repo root so an agent started in a
+  // worktree nests under its project instead of becoming a top-level entry.
+  const colorKey = opts.colorKey ?? workdir;
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  $("terminals").appendChild(pane);
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(pane);
+  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+  // `clipboardKeys` alone, not `shellKeys`: these are full-screen TUIs that own their
+  // own keyboard, and a shell pane's ⌥/⌘ word-navigation rewrites would land inside
+  // whatever chord the agent has bound to those keys. Ctrl+Shift+C/V is the one pair
+  // worth taking, for the same reason a task pane takes it — Ctrl+C has to stay the
+  // interrupt.
+  term.attachCustomKeyEventHandler(clipboardKeys(term));
+  const s: Sess = {
+    // resumeId is inert here exactly as it is for a shell: no transcript of ours to
+    // resume, and saveRoster only keeps claude sessions anyway.
+    id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    lastEvent: "", activity: [],
+    files: [], tally: {},
+    kind: "agent", agent: agent.id, external: false, term, fit, pane,
+  };
+  sessions.set(id, s);
+  setActive(id);
+  dlog("info", `agent ${agent.id} · ${project} · ${id.slice(0, 8)}`);
+  try {
+    await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80 });
+  } catch (e) {
+    dlog("error", `${agent.id} launch failed: ${e}`);
+    toast(`${agent.label} failed: ${e}`);
+    term.writeln(`\r\n\x1b[31m[${agent.id} error] ${e}\x1b[0m`);
   }
   renderAll();
   return id;
@@ -614,7 +688,7 @@ export function setActive(id: string, keepGroup = false) {
     if (on) { paintPaneCap(x); attachWebgl(x); }
     else if (isExited(x)) {
       detachWebgl(x);
-      if (isAgent(x) && x.phase === "ended") trimScrollback(x);
+      if (isClaude(x) && x.phase === "ended") trimScrollback(x);
     }
   }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
@@ -675,7 +749,7 @@ export async function pollIo(): Promise<void> {
 }
 
 export async function refreshSessionStats(s: Sess) {
-  if (!isAgent(s) || s.external) return;
+  if (!isClaude(s) || s.external) return;
   // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
   // comparing the rendered strings avoids a needless inspector rebuild (which would
   // restart the heartbeat animation) every 4s while a session sits idle.
@@ -732,7 +806,7 @@ let idleWtSweptAt = 0;
 
 async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
-  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
+  for (const s of sessions.values()) if (isClaude(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
   // **A favourite with nothing running needs a roster too.** This set used to be
   // sessions and externals alone, which quietly made the sidebar's peek rows a feature
@@ -818,7 +892,7 @@ export function noteGitCommand(cmd: unknown) {
 // the repaint. Both fields it reads come off the same payload — `cwd` catches the moves
 // Claude Code makes itself, `file_path` the ones it doesn't know about.
 export function noteDrift(s: Sess, tool: string, data: any) {
-  if (!isAgent(s) || !s.workdir) return;
+  if (!isClaude(s) || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
   const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);

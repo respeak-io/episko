@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { isAgent, isExited } from "./types";
+import { isClaude, isExited, type AgentCli } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
@@ -23,8 +23,8 @@ import {
   addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setKeyPrefs, setPeekPrefs,
-  setPermMode,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
+  setPeekPrefs, setPermMode, setProjectAgent,
   setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
   toggleIoInfo, toggleRail, toggleTheme,
 } from "./actions";
@@ -91,7 +91,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
+  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
@@ -205,10 +205,10 @@ setPaletteHost({
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder,
 });
-// Same reasoning, seven callees: a context-menu row starts panes and edits the project
+// Same reasoning, eight callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
 setProjMenuHost({
-  renderAll, requestLaunch, launchWorktree, launchShell, openProjectFolder,
+  renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite,
 });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
@@ -229,7 +229,7 @@ setMirrorRenderAll(renderAll);
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
 });
 // "Why was there no noise?" is otherwise unanswerable from outside the player.
 setSoundLogger(dlog);
@@ -516,11 +516,14 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     dlog(code === 0 ? "info" : "warn", `task ${s.run!.id} exit ${code}`);
   } else {
     s.phase = "ended";
-    s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
+    // Name what actually exited. "claude exited" under a `codex` pane is a small lie
+    // that costs a real minute when the pane is one of six on the stage.
+    const what = s.kind === "shell" ? "shell" : s.kind === "agent" ? (s.agent ?? "agent") : "claude";
+    s.term?.writeln(`\r\n\x1b[90m[${what} exited: code ${code}]\x1b[0m`);
     // Reclaim an ended claude pane's scrollback the moment nobody is looking at it;
     // the pane you watched end keeps its buffer until it leaves the stage (setActive
     // trims on the way off). See trimScrollback for why claude panes only.
-    if (isAgent(s) && activeId !== s.id) trimScrollback(s);
+    if (isClaude(s) && activeId !== s.id) trimScrollback(s);
   }
   // A task's exit code is its verdict; anything else just stopped. After the branches
   // above so a task has its `exitCode` before this reads the kind, and in one place
@@ -848,15 +851,20 @@ listen("quit-requested", async () => {
   // isExited, not `phase !== "ended"`: a finished task's phase is done/error, so the
   // old test counted every failed run as "1 task still running" in the quit dialog.
   const live = [...sessions.values()].filter((s) => !isExited(s));
-  const agents = live.filter((s) => isAgent(s)).length;
+  const agents = live.filter((s) => isClaude(s)).length;
   const terms = live.filter((s) => s.kind === "shell").length;
   const runs = live.filter((s) => s.kind === "task").length;
-  const total = agents + terms + runs;
+  // Counted apart from `agents`, which means instrumented claude sessions: quitting ends
+  // a codex pane just as dead, and a dialog that left it out of the tally would be
+  // understating what the button does.
+  const clis = live.filter((s) => s.kind === "agent").length;
+  const total = agents + terms + runs + clis;
   if (total === 0) { await invoke("confirm_quit"); return; }
   const parts: string[] = [];
   if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
   if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
   if (runs) parts.push(`${runs} ${runs === 1 ? "task" : "tasks"}`);
+  if (clis) parts.push(`${clis} ${clis === 1 ? "agent" : "agents"}`);
   const ok = await ask(`${listPhrase(parts)} still running. Quitting ends ${total === 1 ? "it" : "them"}.`, {
     title: "Quit Episko?",
     kind: "warning",
@@ -885,6 +893,16 @@ FAVORITES.forEach((f) => probeIcon(f.path));
 
 // discover which external terminals are installed, so the footer/palette only
 // offers ones that actually work (embedded is always available).
+// ...and the coding-agent catalogue, each entry saying whether it is on this machine.
+// The whole list, not just the hits: a picker that can only show what you already have
+// cannot answer "why is Codex not here?". One probe per run — the answer changes when
+// you install something, which is not a thing to poll for.
+invoke<AgentCli[]>("list_agents").then((list) => {
+  setAvailAgents(list);
+  const on = list.filter((a) => a.path !== null).map((a) => a.id);
+  dlog("info", `agents on PATH: ${on.length ? on.join(", ") : "none"} (of ${list.length} known)`);
+}).catch(() => {});
+
 invoke<string[]>("available_terminals").then((ids) => {
   setAvailEngines(ALL_ENGINES.map((e) => e.id).filter((id) => id === "embedded" || ids.includes(id)));
   if (!availEngines.includes(termEngine)) { setTermEngine("embedded"); localStorage.setItem("cc-term-engine", termEngine); }
@@ -909,7 +927,7 @@ setInterval(() => {
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
-  if (!s || !isAgent(s)) return;
+  if (!s || !isClaude(s)) return;
   tickDwell(s);
 }, 1000);
 

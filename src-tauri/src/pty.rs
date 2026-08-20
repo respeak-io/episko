@@ -698,6 +698,249 @@ pub(crate) fn spawn_task(
     Ok(())
 }
 
+// ---------- other people's agents ----------
+
+/// One coding-agent CLI Episko will drop into a pane.
+///
+/// `bin` is the interactive executable's *bare* name, resolved against the augmented
+/// PATH at detection time rather than stored as an install path: these are twenty-one
+/// third-party tools with twenty-one installers (npm, brew, curl-to-`~/.local/bin`,
+/// bun, a vendor MSI) and no two agree on a prefix, so the PATH the user's own shell
+/// has is the only thing that knows where any of them landed.
+///
+/// One spelling covers both OSes. `win_resolve` walks PATHEXT, so `cursor-agent`
+/// finds `cursor-agent.cmd` without a second field to keep in step.
+struct AgentSpec {
+    id: &'static str,
+    label: &'static str,
+    bin: &'static str,
+    /// Two letters for the picker's icon slot, where every other row in that menu has
+    /// a glyph. Vendor logos were the obvious answer and are not available: the CC0
+    /// sets have no mark for Codex, Grok, Kiro, Devin, Droid, Antigravity, Kilo, Maki,
+    /// MastraCode, OMP or Qoder (OpenAI's and xAI's have been *removed* on request),
+    /// and two of the names that do resolve resolve to the wrong product entirely —
+    /// `AMP` is Google's web framework, `Hermes` is a German parcel courier. Half a set
+    /// of logos plus two wrong ones is worse than no logos, so every agent gets the
+    /// same kind of mark instead.
+    ///
+    /// Lives here rather than being derived on the frontend from `label` because the
+    /// four C's (Codex, Cursor, Cline, Copilot) need deciding by hand, and a collision
+    /// between two derived monograms would be silent.
+    mark: &'static str,
+}
+
+/// The agents Episko can launch, in the order the picker lists them — sorted by label
+/// here so no call site sorts, and `agents_are_sorted_by_label` stops a new entry
+/// being dropped in wherever it happened to be typed.
+///
+/// Three binaries are not their agent's name and cannot be guessed: Antigravity
+/// installs `agy`, Kiro installs `kiro-cli`, Cursor installs `cursor-agent`. Getting
+/// one wrong fails silently — the agent simply never appears in the picker on a
+/// machine that has it — so these come from each vendor's own installer rather than
+/// from the product name.
+///
+/// **Claude Code is deliberately absent.** `spawn_claude` launches it with the
+/// per-launch instrumentation this whole path has none of, and a second entry here
+/// would offer the same binary stripped of every reason to run it inside Episko — no
+/// phase, no cost, no context, no permission prompts — with nothing on the row to say
+/// which of the two you had picked.
+const AGENTS: &[AgentSpec] = &[
+    AgentSpec { id: "amp", label: "Amp", bin: "amp", mark: "Am" },
+    AgentSpec { id: "antigravity", label: "Antigravity CLI", bin: "agy", mark: "Ag" },
+    AgentSpec { id: "cline", label: "Cline", bin: "cline", mark: "Cl" },
+    AgentSpec { id: "codex", label: "Codex", bin: "codex", mark: "Cx" },
+    AgentSpec { id: "cursor", label: "Cursor Agent CLI", bin: "cursor-agent", mark: "Cu" },
+    AgentSpec { id: "devin", label: "Devin CLI", bin: "devin", mark: "Dv" },
+    AgentSpec { id: "droid", label: "Droid", bin: "droid", mark: "Dr" },
+    AgentSpec { id: "gemini", label: "Gemini CLI", bin: "gemini", mark: "Gm" },
+    AgentSpec { id: "copilot", label: "GitHub Copilot CLI", bin: "copilot", mark: "Cp" },
+    AgentSpec { id: "grok", label: "Grok CLI", bin: "grok", mark: "Gr" },
+    AgentSpec { id: "hermes", label: "Hermes Agent", bin: "hermes", mark: "He" },
+    AgentSpec { id: "kilo", label: "Kilo Code CLI", bin: "kilo", mark: "Kl" },
+    AgentSpec { id: "kimi", label: "Kimi Code CLI", bin: "kimi", mark: "Km" },
+    AgentSpec { id: "kiro", label: "Kiro CLI", bin: "kiro-cli", mark: "Kr" },
+    AgentSpec { id: "maki", label: "Maki", bin: "maki", mark: "Mk" },
+    AgentSpec { id: "mastracode", label: "MastraCode", bin: "mastracode", mark: "Ms" },
+    AgentSpec { id: "omp", label: "OMP", bin: "omp", mark: "Om" },
+    AgentSpec { id: "opencode", label: "OpenCode", bin: "opencode", mark: "Oc" },
+    AgentSpec { id: "pi", label: "Pi", bin: "pi", mark: "Pi" },
+    AgentSpec { id: "qodercli", label: "Qoder CLI", bin: "qodercli", mark: "Qo" },
+    AgentSpec { id: "qwen", label: "Qwen Code", bin: "qwen", mark: "Qw" },
+];
+
+fn agent_spec(id: &str) -> Option<&'static AgentSpec> {
+    AGENTS.iter().find(|a| a.id == id)
+}
+
+/// Where an agent CLI actually is, or `None` if this machine hasn't got it.
+///
+/// A sibling of `platform::resolve_claude`, deliberately not beside it. The Windows
+/// half *is* `win_resolve`, which belongs to this module (it exists for
+/// `argv_command`), and `platform.rs`'s first half has to stay free of crate
+/// dependencies — so the helper moves to its consumer rather than dragging PATHEXT
+/// resolution down into the leaf layer.
+///
+/// Two things it does differently from `resolve_claude`, both because here the answer
+/// *is* the detection rather than a best effort at one:
+///
+/// - **It never falls back to the bare name.** `resolve_claude` returns `"claude"`
+///   when it finds nothing, because the alternative is refusing to launch the app's
+///   whole reason for existing. A fallback here would instead put all twenty-one
+///   agents in the picker on every machine, and twenty of those rows would be a way
+///   to open a pane onto "command not found".
+/// - **It never spawns a login shell.** `resolve_claude` can afford one probe; this
+///   runs over the entire table at once, and twenty-one login shells is a visible
+///   stall on a Mac. `augmented_path()` already harvested that shell's PATH once for
+///   the whole app run, so scanning it directly answers the same question for free.
+#[cfg(not(windows))]
+fn resolve_cli(bin: &str) -> Option<String> {
+    let home = crate::platform::home_dir();
+    // Where per-user installers land things the *process* PATH may not carry under
+    // Finder. `augmented_path` already lists some of these; the overlap costs one
+    // `is_file` each and lets this list be read on its own.
+    let extra = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.deno/bin"),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.npm-global/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+    let path = augmented_path();
+    std::env::split_paths(&path)
+        .chain(extra.iter().map(std::path::PathBuf::from))
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn resolve_cli(bin: &str) -> Option<String> {
+    // `win_resolve` walks PATHEXT across the augmented PATH, which is what "is this
+    // installed?" means on Windows — and it is the same call `argv_command` makes at
+    // launch, so detection and spawn cannot disagree about which file this is.
+    if let Some(p) = win_resolve(bin) {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // npm's global bin dir is the one common install location `augmented_path` does
+    // not carry, and it is where every npm-distributed agent lands.
+    let home = crate::platform::home_dir();
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| format!(r"{home}\AppData\Roaming"));
+    for dir in [format!(r"{appdata}\npm"), format!(r"{home}\.bun\bin")] {
+        for ext in [".cmd", ".exe", ".bat", ".ps1"] {
+            let cand = std::path::Path::new(&dir).join(format!("{bin}{ext}"));
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct AgentInfo {
+    id: &'static str,
+    label: &'static str,
+    mark: &'static str,
+    /// What was looked for. Sent even when it was found, because it is the only useful
+    /// thing to say about an agent that *wasn't*: "Episko searched your PATH for
+    /// `cursor-agent`" is the answer to the question a missing row provokes.
+    bin: &'static str,
+    /// Where it is, or `None` if this machine hasn't got it.
+    path: Option<String>,
+}
+
+/// The whole catalogue, each entry saying whether it is installed — **not** a filtered
+/// list, which is what this used to be and was wrong.
+///
+/// `available_terminals` filters, and copying that contract here was a mistake worth
+/// recording: an external terminal Episko doesn't offer is one you can plainly see is
+/// not on your Mac, whereas an agent that silently fails to appear is indistinguishable
+/// from Episko not supporting it. That difference is a support issue — "why is Codex
+/// not in the list?" has no discoverable answer if there is no row to read. The rule
+/// this now follows is the one `tasks.rs` already follows for a Runnable that cannot
+/// run, and `projmenu.ts` for a worktree that cannot be removed: **what can't be used
+/// says why, rather than vanishing.**
+///
+/// The frontend decides what to do with a `path: None` row (the picker greys it and
+/// makes it inert); what this owes it is the fact and the binary name.
+#[tauri::command]
+pub(crate) fn list_agents() -> Vec<AgentInfo> {
+    AGENTS
+        .iter()
+        .map(|a| AgentInfo { id: a.id, label: a.label, mark: a.mark, bin: a.bin, path: resolve_cli(a.bin) })
+        .collect()
+}
+
+/// Run someone else's coding agent in an embedded PTY — the fourth kind of pane.
+///
+/// Uninstrumented, and that is the design rather than a gap to close later: the hooks
+/// and statusLine `write_instrument_settings` generates are Claude Code's own settings
+/// format, so there is no version of this that yields a phase, a cost or a permission
+/// prompt for `codex`. What an agent pane does get is everything Episko owns outright
+/// rather than infers from telemetry — its own worktree, a place in the project tree,
+/// the palette, the working-set card (which reads git, not hooks), and an exit that
+/// lands on its row.
+///
+/// The pid stays out of `owned_pids` for exactly the reason a shell's does: it is not
+/// a claude process, it never registers in `~/.claude/sessions`, and it must not be
+/// able to masquerade as an external session.
+#[tauri::command]
+pub(crate) fn spawn_agent(
+    app: AppHandle,
+    state: State<AppState>,
+    session_id: String,
+    workdir: String,
+    agent: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let spec = agent_spec(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    // Resolve here rather than handing `argv_command` the bare name. The picker only
+    // lists agents the probe found, so a miss at this point means it was uninstalled
+    // between the poll and the click — and naming it beats a pane that opens onto a
+    // shell's "not recognized" with no clue which of the two halves failed.
+    let bin = resolve_cli(spec.bin)
+        .ok_or_else(|| format!("{} isn't installed — `{}` is not on PATH", spec.label, spec.bin))?;
+    std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+
+    // Through `argv_command`, not `CommandBuilder::new`, and that is load-bearing on
+    // Windows: most of these ship as an npm `.cmd` shim, which `CreateProcessW` cannot
+    // start on its own (ERROR_BAD_EXE_FORMAT) — the same wall every `package.json`
+    // script hit before `argv_command` existed.
+    let mut cmd = argv_command(&bin, Vec::new());
+    cmd.cwd(&workdir);
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", augmented_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    apply_utf8_locale(&mut cmd);
+
+    log::info!("spawn agent · {} · {session_id} · {workdir} · {bin}", spec.id);
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
+    let child_pid = child.process_id();
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
+    let win32 = Arc::new(AtomicBool::new(false));
+    state.sessions.lock().unwrap().insert(
+        session_id.clone(),
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", scrollback: scroll.clone(), win32_input: win32.clone() },
+    );
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
+    Ok(())
+}
+
 /// No Ghostty engine on Windows — the embedded xterm.js pane is the only engine.
 #[cfg(windows)]
 fn find_ghostty() -> Option<String> {
@@ -1911,4 +2154,98 @@ mod tests {
             "claude accepted a nonsense --permission-mode, so the assertions above prove nothing"
         );
     }
+
+    // ---------- the agent table ----------
+    //
+    // Nothing else can check this half. A wrong `bin` compiles, passes clippy and
+    // ships; the only symptom is that the agent never appears in the picker on a
+    // machine that has it installed, which looks exactly like not having installed it.
+    // So the table gets the checks a table can have: no duplicates, no empties, and
+    // the ordering the picker relies on.
+
+    #[test]
+    fn agents_are_sorted_by_label() {
+        // The picker renders `available_agents()` in table order and does not sort, so
+        // an entry appended at the bottom (the obvious way to add one) would show up
+        // after Qwen with no test to say otherwise.
+        let labels: Vec<String> = AGENTS.iter().map(|a| a.label.to_lowercase()).collect();
+        let mut sorted = labels.clone();
+        sorted.sort();
+        assert_eq!(labels, sorted, "AGENTS is the picker's order — keep it sorted by label");
+    }
+
+    #[test]
+    fn agent_ids_and_labels_are_unique_and_populated() {
+        let mut ids = std::collections::HashSet::new();
+        let mut labels = std::collections::HashSet::new();
+        let mut marks = std::collections::HashSet::new();
+        for a in AGENTS {
+            assert!(!a.id.is_empty() && !a.label.is_empty() && !a.bin.is_empty() && !a.mark.is_empty(), "{} has an empty field", a.id);
+            // The id is the wire value `spawn_agent` takes and the key the frontend
+            // stores on a pane, so it has to be a stable slug rather than a display
+            // name that might get prettied up later.
+            assert!(
+                a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                "agent id {:?} must be a lowercase ascii slug",
+                a.id
+            );
+            assert!(ids.insert(a.id), "duplicate agent id {:?}", a.id);
+            assert!(labels.insert(a.label), "duplicate agent label {:?}", a.label);
+            // The mark is the only thing distinguishing two rows at a glance, so a
+            // duplicate is exactly as bad as a duplicate label — and far easier to
+            // introduce, since `Codex`, `Cursor`, `Cline` and `Copilot` all want "Co".
+            assert_eq!(a.mark.chars().count(), 2, "agent mark {:?} must be two characters", a.mark);
+            assert!(marks.insert(a.mark), "duplicate agent mark {:?} ({})", a.mark, a.id);
+        }
+    }
+
+    #[test]
+    fn claude_is_not_in_the_agent_table() {
+        // Deliberate, and easy to "fix" by someone who reads the list as an omission:
+        // launching claude through this path would strip the instrumentation the whole
+        // cockpit is built on. See the AGENTS doc comment.
+        assert!(
+            agent_spec("claude").is_none() && !AGENTS.iter().any(|a| a.bin == "claude"),
+            "claude belongs to spawn_claude, which instruments it — see the AGENTS comment"
+        );
+    }
+
+    #[test]
+    fn spawn_agent_only_answers_to_ids_in_the_table() {
+        for a in AGENTS {
+            assert_eq!(agent_spec(a.id).map(|s| s.bin), Some(a.bin));
+        }
+        // The lookup `spawn_agent` refuses on. A frontend that sent a label, a binary
+        // name or a stale id must not fall through to launching *something*.
+        for bogus in ["", "Codex", "cursor-agent", "claude", "opencode2"] {
+            assert!(agent_spec(bogus).is_none(), "{bogus:?} should not resolve to an agent");
+        }
+    }
+
+    #[test]
+    fn list_agents_reports_the_whole_table_and_marks_what_it_found() {
+        // Machine-dependent by nature — CI has none of these installed and a dev box
+        // has some — so the assertions are about shape rather than contents. The one
+        // that matters: the list is the *whole* table, because a picker built from a
+        // filtered one cannot explain an agent that is missing.
+        let list = list_agents();
+        assert_eq!(list.len(), AGENTS.len(), "list_agents must not filter");
+        for info in list {
+            let spec = agent_spec(info.id).expect("list_agents invented an id");
+            assert_eq!((spec.label, spec.bin, spec.mark), (info.label, info.bin, info.mark));
+            // A `Some` path is a promise the agent will start, so it has to be a real
+            // file — that is what the picker lets you click.
+            if let Some(p) = &info.path {
+                assert!(std::path::Path::new(p).is_file(), "{} reported {p}, not a file", info.id);
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_cli_says_no_to_something_nobody_ships() {
+        // The other half of the contract above: a miss is `None`, never a bare-name
+        // fallback. If this ever returns Some, every agent is in every picker.
+        assert!(resolve_cli("episko-definitely-not-a-real-binary").is_none());
+    }
+
 }

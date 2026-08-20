@@ -1525,6 +1525,9 @@ select.in-ctl { cursor: pointer; }
 .seg-opt.on { background: var(--accent-wash); border-color: var(--accent-line); }
 .seg-top { display: flex; align-items: center; gap: 8px; }
 .seg-glyph { flex: none; width: 15px; text-align: center; color: var(--muted); font-size: 12px; }
+/* An agent monogram: two letters where the other rows have one symbol. Smaller and
+   tracked in, so the pair reads as one mark rather than as a truncated word. */
+.seg-mono, .mp-mono { font: 700 9px/1 var(--font-mono); letter-spacing: -.2px; }
 .seg-opt.on .seg-glyph { color: var(--accent-ink); }
 .seg-l { font-weight: 650; font-size: 12px; }
 .seg-check { margin-left: auto; color: var(--accent-ink); font-size: 11px; opacity: 0; }
@@ -1841,6 +1844,14 @@ select.in-ctl { cursor: pointer; }
 .menupop .mp-item:hover { background: var(--surface); }
 .menupop .mp-item.on { background: var(--accent-wash); border-color: var(--accent-line); }
 .menupop .mp-ic { flex: none; width: 18px; text-align: center; color: var(--muted); font-size: 12px; }
+/* The monogram sits in a hairline box, so a letter pair in the icon column cannot be
+   misread as the beginning of the label beside it. */
+.menupop .mp-mono { display: inline-flex; align-items: center; justify-content: center; height: 15px; border: 1px solid var(--hair); border-radius: 4px; }
+.menupop .mp-item:hover .mp-mono { border-color: var(--hair-strong); color: var(--text); }
+/* A settings row that still works but currently decides nothing (permission mode
+   under a non-Claude agent). Dimmed, never disabled — it is still editing your
+   stored preference for when you switch back. */
+.set-dim { opacity: .45; }
 .menupop .mp-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .menupop .mp-l { font-weight: 650; }
 .menupop .mp-s { font-size: 10px; font-weight: 500; color: var(--muted-2); }

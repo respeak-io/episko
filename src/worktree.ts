@@ -18,7 +18,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded } from "./types";
+import { CLAUDE_CLI, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded } from "./types";
 // The one thing an external session's registry file says about what it is doing. A view
 // module, and mirror.ts already reaches for it from the render layer for the same reason:
 // "is that terminal busy?" has one answer and this is where it lives.
@@ -31,7 +31,8 @@ import {
   remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
 } from "./branches";
 import {
-  cmpBase, engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
+  cmpBase, effectiveAgent, engineDef, externals, permMode, permModeDef, sessions, termEngine,
+  worktreesByRepo,
 } from "./state";
 // The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
 // killed pane is actually *dead* rather than merely signalled — which is what a
@@ -246,9 +247,23 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   // otherwise looks exactly like any other until it acts (or refuses to). Hidden in
   // manage mode alongside the engine chip: nothing is being launched from there, so a
   // chip describing the next launch would only be furniture of a worse kind.
+  // Which agent this dialog will start, on the same "only when it differs" rule as the
+  // permission chip below — and this one matters more, because picking a non-Claude
+  // agent silently empties the cockpit the pane is about to appear in. This is the last
+  // moment before the launch where saying so costs nothing.
+  const ag = effectiveAgent(repoDir);
+  const agEl = $("wtAgent") as HTMLElement;
+  agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
+  agEl.textContent = `${ag.mark} ${ag.label}`;
+  agEl.title = `${ag.label} runs here — no phase, cost, context or permission prompts, `
+    + `because those come from hooks only Claude Code reads. Change it on the project's `
+    + `own menu, or in Settings › Sessions.`;
   const pm = permModeDef(permMode);
   const modeEl = $("wtMode") as HTMLElement;
-  modeEl.hidden = manage || permMode === "default";
+  // …and the permission mode is a `claude` flag, so under any other agent the chip
+  // would be describing a launch that never happens. Dropped rather than dimmed: a
+  // dialog header is a row of facts about the next launch, not a settings panel.
+  modeEl.hidden = manage || permMode === "default" || ag.id !== CLAUDE_CLI.id;
   modeEl.textContent = `${pm.glyph} ${pm.label}`;
   modeEl.title = `Starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)`;
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");

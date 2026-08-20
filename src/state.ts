@@ -26,7 +26,8 @@ import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
-import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
+import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
+import type { AgentCli, DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -242,6 +243,57 @@ export let availEngines: Engine[] = ["embedded"];
 export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
 export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
+// --- other people's agents -----------------------------------------------------
+// The coding-agent CLIs found on this machine, filled once at startup from
+// `available_agents` (pty.rs owns the table of what to look for; this is only what
+// the probe found). Empty until then, and empty forever on a machine with none
+// installed — every surface that offers them drops its row rather than showing a
+// picker with nothing in it.
+export let availAgents: AgentCli[] = [];
+export function setAvailAgents(l: AgentCli[]) { availAgents = l; }
+/// Only the ones that will actually start. `availAgents` is the whole catalogue now,
+/// so every surface that offers a *choice* filters through this; the project picker is
+/// the one place that reads the unfiltered list, because explaining what is missing is
+/// its job.
+export function installedAgents(): AgentCli[] { return availAgents.filter(agentInstalled); }
+export function agentDef(id: string): AgentCli | undefined {
+  return id === CLAUDE_CLI.id ? CLAUDE_CLI : availAgents.find((a) => a.id === id);
+}
+// Everything installed, Claude first — what Settings offers and what the project
+// picker lists above its fold. Claude leads rather than sorting in among the C's
+// because it is the default and the only instrumented one, not because of its name.
+export function allAgents(): AgentCli[] { return [CLAUDE_CLI, ...installedAgents()]; }
+// The rest of the catalogue: known to Episko, absent from this machine. What the
+// project picker shows below the fold so that "why is Codex not here?" has an answer
+// on screen instead of in an issue.
+export function missingAgents(): AgentCli[] { return availAgents.filter((a) => !agentInstalled(a)); }
+// --- which agent a new session runs -------------------------------------------
+// The third fact about a launch, beside where its terminal opens (`termEngine`) and
+// how it starts (`permMode`), and persisted exactly like them. Claude Code is the
+// default *value* rather than a hardcoded choice — see `pickAgent` in ./types for the
+// resolution order and why an uninstalled agent falls back instead of failing.
+export let defaultAgent: string = localStorage.getItem("cc-agent") || CLAUDE_CLI.id;
+export function setDefaultAgent(id: string) { defaultAgent = id; }
+// Per project, keyed by `colorKey` (the repo root), so every worktree of a repo
+// inherits one answer. Same shape and the same reasoning as `cc-task-onstop`: a
+// personal preference, in localStorage, never a committed project fact — a colleague
+// opening the same repo keeps whichever agent *they* drive.
+export const agentByProject: Record<string, string> =
+  JSON.parse(localStorage.getItem("cc-agent-by-project") || "{}");
+export function setProjectAgent(colorKey: string, id: string | null) {
+  if (id) agentByProject[colorKey] = id; else delete agentByProject[colorKey];
+}
+/// The agent a launch in this project starts. Read at the launch site, never stored on
+/// a `Sess` — the same rule `permMode` follows, and for the same reason: it is a
+/// preference, and recording it on a session would be a second copy that can go stale.
+export function effectiveAgent(colorKey: string): AgentCli {
+  return pickAgent(colorKey, defaultAgent, agentByProject, availAgents);
+}
+/// The global default on its own, ignoring any project override — what the "Follow the
+/// default" row names. Resolved through the same fallback a launch uses (empty overrides
+/// rather than a sentinel key), so the row cannot offer an agent that has since been
+/// uninstalled: it would say "Claude Code", which is what would actually run.
+export function defaultAgentDef(): AgentCli { return pickAgent("", defaultAgent, {}, availAgents); }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
 // --- how a new session starts (claude --permission-mode) -----------------------

@@ -63,7 +63,7 @@ export interface DashHost {
   // "string"` to decide whether to type a prompt in and write a claim, so a host whose
   // launch resolves to `undefined` makes all three permanently take the failure branch
   // — which shipped, silently, because `unknown` accepted a `void`-returning launch.
-  launch: (project: string, workdir: string, opts?: { colorKey?: string }) => Promise<string | null>;
+  launch: (project: string, workdir: string, opts?: { colorKey?: string; agent?: string }) => Promise<string | null>;
   /// "Where should this session start?" — a plain launch in a folder that isn't a repo,
   /// the new-session dialog in one that is. `launch` above is the unconditional verb and
   /// is what a *dispatch* wants (it has already decided); this is what a **person**
@@ -1226,7 +1226,14 @@ async function doDispatch(): Promise<void> {
   const t = sheet.t, r = root(), n = name();
   sheet = null;
   renderDash();
-  const sid = await host.launch(n, r, { colorKey: r });
+  // Pinned to Claude, and this is the one launch in the app that ignores the agent
+  // preference. The claim written below is handed back on the `SessionEnd` hook, which
+  // only an instrumented session fires — dispatching an uninstrumented agent at an
+  // issue would assign it, label it, comment on it and then never release it, so a
+  // colleague's tooling would read the work as in-flight forever. The two dispatches
+  // that only *type* into a pane (a note, a colleague's sentence) follow the
+  // preference, because nothing outside Episko is waiting on those.
+  const sid = await host.launch(n, r, { colorKey: r, agent: "claude" });
   // No toast: `launch` already showed the actual spawn error, and a second one would
   // replace the reason with a vaguer restatement of it. No claim either — see above.
   if (typeof sid !== "string") return;

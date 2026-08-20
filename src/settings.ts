@@ -14,9 +14,11 @@
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
-import type { Engine, PermMode } from "./types";
+import { CLAUDE_CLI, type Engine, type PermMode } from "./types";
 import {
-  ALL_PERM_MODES, attnPrefs, availEngines, engineDef, keyPrefs, peekPrefs, permMode,
+  allAgents, ALL_PERM_MODES, attnPrefs, availEngines, defaultAgent, engineDef, keyPrefs,
+  missingAgents,
+  peekPrefs, permMode,
   setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -66,6 +68,7 @@ export interface SettingsHost {
   // Same reason as setWtGroup: the app-level one (./actions), which persists and
   // announces — state.ts's same-named setter only assigns.
   setPermMode: (m: PermMode) => void;
+  setDefaultAgent: (id: string) => void;
   // Ditto. ./actions clamps through ./peek, persists and repaints the sidebar.
   setPeekPrefs: (p: PeekPrefs) => void;
   // Ditto again — ./actions clamps through ./sound, persists and repaints this window.
@@ -77,10 +80,26 @@ export interface SettingsHost {
   // repaints everything downstream of the needs-you set.
   setAttnPrefs: (p: AttnPrefs) => void;
 }
+/// The Agent control's hint. Computed rather than fixed because the sentence that
+/// matters depends on the machine: with nothing else installed, "what a new session
+/// runs" is a row with one option and the useful half is that twenty-one others exist
+/// and where to look for them. Without this, the only place that fact is written is a
+/// picker you have no reason to open.
+function agentHint(): string {
+  const missing = missingAgents().length;
+  return "What a new session runs — ⌘N, the new-session dialog and a worktree launch all "
+    + "follow this. Only Claude Code is instrumented: the others get a pane, a worktree and "
+    + "the project tree, but no phase, cost, context or permission cards, because those come "
+    + "from hooks nothing else reads. Per-project overrides live on a project's own menu"
+    + (missing
+      ? `, which also lists the ${missing} agents Episko supports that aren't on your PATH, and the binary it looked for.`
+      : ".");
+}
+
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
-  setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
+  setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
@@ -93,7 +112,12 @@ type SetSeg = { value: string; label: string; sub?: string; glyph?: string };
 // A control is a segmented picker (radio-style), the font stepper, or the worktree-
 // grouping preview grid (segmented pick shown as live mini-sidebars instead of text).
 type SetControl =
-  | { kind: "seg"; set: string; label: string; hint?: string; active: () => string; segs: () => SetSeg[] }
+  // `dim` greys a control that still *works* but currently decides nothing — the
+  // permission mode when the agent isn't Claude. Deliberately not `disabled`: it edits
+  // a stored preference, so hiding or blanking it would turn "your mode is kept" into
+  // a lie the moment you switched agent, which is exactly the reasoning that keeps the
+  // Keys picker readable with the master switch off.
+  | { kind: "seg"; set: string; label: string; hint?: string; dim?: () => boolean; active: () => string; segs: () => SetSeg[] }
   | { kind: "font"; label: string; hint?: string }
   | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
   // The sidebar's peek: one switch, two millisecond steppers, and a mini-sidebar you
@@ -144,11 +168,23 @@ const SET_TABS: SetTab[] = [
   {
     id: "sessions", label: "Sessions", glyph: "▤",
     controls: () => [
+      // First, because it is the outermost of the three: what runs, then where its
+      // terminal opens, then how it starts. A machine with no other agent installed
+      // still sees the row — it says what Episko runs, which is worth knowing even
+      // when there is only one answer.
+      { kind: "seg", set: "agent", label: "Agent",
+        hint: agentHint(),
+        active: () => defaultAgent,
+        segs: () => allAgents().map((a) => ({
+          value: a.id, label: a.label, glyph: a.mark,
+          sub: a.id === CLAUDE_CLI.id ? "phase, cost, context" : "no telemetry",
+        })) },
       { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
       { kind: "seg", set: "permmode", label: "Permission mode",
         hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there; this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
+        dim: () => defaultAgent !== CLAUDE_CLI.id,
         active: () => permMode,
         segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
@@ -771,12 +807,16 @@ function renderSetControl(c: SetControl): string {
     return `<div class="set-group">${head}<div class="chips">${opts}</div></div>`;
   }
   const active = c.active();
+  // `--permission-mode` is a `claude` flag; under any other agent the control is still
+  // yours to set but decides nothing until you switch back, and saying so with opacity
+  // beats a hint nobody reads twice.
+  const dim = c.dim?.() ? " set-dim" : "";
   const opts = c.segs().map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}">` +
-      `<span class="seg-top">${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
+      `<span class="seg-top">${s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
       `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`
   ).join("");
-  return `<div class="set-group">${head}<div class="seg">${opts}</div></div>`;
+  return `<div class="set-group${dim}">${head}<div class="seg">${opts}</div></div>`;
 }
 // Dispatch a segmented pick to the existing setter, then repaint the picker.
 function applySetting(set: string, val: string) {
@@ -784,6 +824,7 @@ function applySetting(set: string, val: string) {
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set === "permmode") host.setPermMode(val as PermMode);
+  else if (set === "agent") host.setDefaultAgent(val);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {
     const p = val as Provider;

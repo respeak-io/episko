@@ -377,7 +377,9 @@ export function groupPhase(members: Sess[]): Phase {
 // How much a session wants the user's attention (lower = more urgent). Shared by
 // the sidebar's "attention" sort and the header reactor.
 export function urgencyRank(s: Sess): number {
-  if (s.kind === "shell") return 6;
+  // A shell and a third-party agent rank the same and for the same reason: neither
+  // reports a phase, so neither can ever be more urgent than "it is open".
+  if (s.kind === "shell" || s.kind === "agent") return 6;
   if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
@@ -430,7 +432,10 @@ export function nextAfterClose(s: Sess): Sess | null {
 // build reaches you the same way a blocked session does. A *successful* run does
 // not — it settles quietly and auto-dismisses.
 export function needsYou(s: Sess): boolean {
-  if (s.kind === "shell") return false;
+  // An agent pane never joins the set, and that is honesty rather than a gap: with no
+  // hooks behind it nothing can say it is waiting on you, and a row that guessed would
+  // put a badge on the tray title that no amount of looking could clear.
+  if (s.kind === "shell" || s.kind === "agent") return false;
   if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
   if (s.attention) return true;
   // A background fan-out ends the turn without ending the work, so `done` alone stopped
