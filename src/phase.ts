@@ -15,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
-import { inputText, outputText } from "./toolio";
+import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
@@ -56,7 +56,7 @@ export function toolArg(tool: string, input: any): string {
 }
 /// How many calls one session rings. The ceiling on what the detail view can cost:
 /// twelve rows × the two sides ./toolio caps, and none of it persisted.
-const ACT_CAP = 12;
+export const ACT_CAP = 12;
 // Open a timeline entry on PreToolUse; closeActivity fills in its latency and its
 // output on the matching PostToolUse.
 //
@@ -68,12 +68,12 @@ const ACT_CAP = 12;
 // card states plainly, so the name match is now only the fallback for a payload with no
 // id (an older CLI, a hook variant that omits it), where a mispairing is no worse than
 // what the name match always did.
-function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string) {
+function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string, desc: string) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null, id, inp, out: "", failed: false });
+  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null, id, inp, desc, out: "", failed: false });
   if (s.activity.length > ACT_CAP) s.activity.length = ACT_CAP;
 }
-function closeActivity(s: Sess, tool: string, id: string, inp: string, out: string, failed: boolean) {
+function closeActivity(s: Sess, tool: string, id: string, inp: string, desc: string, out: string, failed: boolean) {
   const a = (id && s.activity.find((x) => x.id === id))
     || s.activity.find((x) => x.tool === tool && x.durMs == null);
   if (!a) return;
@@ -84,6 +84,7 @@ function closeActivity(s: Sess, tool: string, id: string, inp: string, out: stri
   // can still be filled — but it never *overwrites*, because an empty repeat is not a
   // correction and the Pre hook is the one that saw the call as it was submitted.
   if (!a.inp && inp) a.inp = inp;
+  if (!a.desc && desc) a.desc = desc;
 }
 // Claude keeps its own to-do list via the TodoWrite tool; the payload rides the
 // PreToolUse hook we already receive. Capture it as the session's live plan.
@@ -258,7 +259,7 @@ export function applyHook(s: Sess, data: any) {
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
       // The plan is its own module; keep it off the timeline. Everything else opens a
       // row carrying the whole of what was submitted, capped by ./toolio as it lands.
-      else openActivity(s, tool, arg, String(data.tool_use_id ?? ""), inputText(tool, data.tool_input));
+      else openActivity(s, tool, arg, String(data.tool_use_id ?? ""), inputText(tool, data.tool_input), descText(tool, data.tool_input));
       // The one hook that names a fan-out. It fires ~2s before the turn ends, so the
       // record is already in place when `Stop` would otherwise have painted a green ✓.
       if (tool === "Workflow") startFanout(s, data.tool_input);
@@ -274,7 +275,8 @@ export function applyHook(s: Sess, data: any) {
       // `tool_response` whatsoever — the reason is in `error` — so both are handed over
       // and ./toolio decides which one it is looking at.
       closeActivity(s, data.tool_name, String(data.tool_use_id ?? ""),
-        inputText(tool, data.tool_input), outputText(data.tool_response, data.error),
+        inputText(tool, data.tool_input), descText(tool, data.tool_input),
+        outputText(data.tool_response, data.error),
         ev === "PostToolUseFailure");
       // The Context card's two inputs. Both are fed from the *Post* hook rather than
       // the Pre one the timeline opens on, and for opposite reasons: the file set needs

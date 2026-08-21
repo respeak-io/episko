@@ -16,7 +16,7 @@ import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import type { Engine, PermMode } from "./types";
 import {
-  ALL_PERM_MODES, attnPrefs, availEngines, engineDef, keyPrefs, peekPrefs, permMode,
+  ALL_PERM_MODES, attnPrefs, availEngines, engineDef, footPrefs, keyPrefs, peekPrefs, permMode,
   setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -26,6 +26,7 @@ import {
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
 } from "./attn";
 import { LIT_COLOR } from "./sidebarview";
+import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -45,7 +46,9 @@ import {
   ALL_PROVIDERS, clearStopRule, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
   stopRules, taskPrefs, untrustProject, type Provider, type TaskPrefs,
 } from "./tasks";
-import { usagePanelHtml } from "./usageview";
+import { costPopHtml, ioPopHtml, usagePanelHtml, usageRow } from "./usageview";
+import { enginePopHtml, shortPopHtml } from "./footerview";
+import type { Forecast } from "./rl";
 import { setUsageRange } from "./usage";
 
 // What this dialog changes but does not own. Every entry is somebody else's
@@ -76,12 +79,15 @@ export interface SettingsHost {
   // And for the finish highlight — ./actions clamps through ./attn, persists, and
   // repaints everything downstream of the needs-you set.
   setAttnPrefs: (p: AttnPrefs) => void;
+  // And for the status bar's segments — ./actions flips one through ./footprefs,
+  // persists the hidden list, and repaints the bar.
+  setFootSeg: (id: FootSeg) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -111,8 +117,11 @@ type SetControl =
   // One control for the same reason `peek` is one — they are one decision, and the
   // preview row is only honest sitting directly under the stepper that sets it.
   | { kind: "attn"; label: string; hint?: string }
-  // A single on/off switch.
-  | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
+  // A single on/off switch, optionally over a preview of what it governs.
+  | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean; preview?: () => string }
+  // Prose with no control under it — a rule that governs the group below it and would
+  // otherwise have to be repeated in every one of their hints.
+  | { kind: "note"; label: string; hint: string }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
   | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string };
 // Most tabs are a list of declarative controls; a tab may instead supply `render`
@@ -128,6 +137,120 @@ const WT_GROUP_SEGS: SetSeg[] = [
   { value: "chip",      label: "Chip",      glyph: "◆", sub: "Flat rows; each worktree row carries a colour-coded chip" },
 ];
 
+// ---- Settings > Footer: what each switch controls, drawn ----
+//
+// A switch labelled "Usage limits" still leaves two questions a settings pane is the
+// wrong place to answer in prose: *which* of the things on my bar is that, and what do I
+// get when I click it? So each row carries both states of its segment.
+//
+// The CLOSED half is the real chip — the same markup `index.html` puts in the footer,
+// reaching the same CSS (see the `.fpv-bar` half of the `.foot .fseg` selectors in
+// styles.css). It cannot drift from the thing it previews, which is the entire reason it
+// is not a hand-drawn imitation.
+//
+// The OPEN half is a sketch. It exists to be recognised rather than read, and rendering
+// seven live popovers into a settings pane would drag half the app's renderers in behind
+// them for no gain at this size.
+//
+// **The figures are sample data, deliberately** — the same call the worktree-grouping
+// preview makes and for the same reason. The preview is about what the thing looks like,
+// not what it currently says, and on a fresh install the live values are `$0.00`, `–`
+// and `–`: three previews showing nothing at all, on the one tab whose whole job is
+// showing you what these are.
+const FPV_CLOSED: Record<FootSeg, string> = {
+  sessions: `<span class="fseg">3 sessions</span>`,
+  cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">▴</span></span>`,
+  limits: `<span class="fseg fclick"><span class="flabel">limits</span><b class="s-ok">12%</b><span class="fsub">5h</span>`
+    + `<span class="freset">↻ 28m</span><span class="fmid">·</span><b class="s-ok">4%</b><span class="fsub">7d</span>`
+    + `<span class="freset">↻ 4d 7h</span><span class="fcaret">▴</span></span>`,
+  io: `<span class="fseg fclick"><span class="flabel">disk</span><b>1.2 GiB</b><span class="fsub">read</span>`
+    + `<span class="fmid">·</span><b>348 MiB</b><span class="fsub">write</span><span class="fcaret">▴</span></span>`,
+  engine: `<span class="fseg fclick">new in <b>embedded</b> <span class="fcaret">▴</span></span>`,
+  shortcuts: `<span class="fseg fclick"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>`,
+  debug: `<span class="fpv-dbg">🐞</span>`,
+};
+
+const fpvRow = (l: string, r: string) => `<div class="fpv-r">${esc(l)}${r}</div>`;
+
+/// A sample forecast for the limits preview.
+///
+/// `resetTs` is relative to *now* rather than a fixed epoch, so "in 28m" stays "in 28m"
+/// instead of drifting to "in -3h" the week after this shipped. The figures are invented;
+/// a figure that says something impossible is worse than none.
+const fpvFc = (used: number, proj: number, secLeft: number): Forecast => ({
+  status: "ok", used, proj, etaSec: null, secLeft,
+  resetTs: Math.floor(Date.now() / 1000) + secLeft, runsOut: false, hasRate: true, rate: null,
+});
+
+/// What opens, per segment — and for five of the six it is **the popover's own renderer**,
+/// handed sample data. `cls` puts the popover's real classes on the preview box, so the
+/// markup and the CSS are both the live ones and neither can drift from what it previews.
+///
+/// `sessions` has nothing behind it — a count, and clicking it does nothing — so it gets
+/// no open half rather than an empty box implying there is something to find. `debug` is
+/// the one hand-drawn entry left: the 🐞 opens a full-height panel with a live event log,
+/// not a popover, and there is nothing honest to shrink it into.
+const FPV_OPEN: Partial<Record<FootSeg, { cls: string; body: string }>> = {
+  cost: {
+    cls: "costpop",
+    body: costPopHtml({
+      total: 4.61,
+      projects: [
+        { key: "episko", label: "episko", sub: "", usd: 2.84 },
+        { key: "site", label: "site", sub: "", usd: 1.35 },
+        { key: "", label: "unattributed", sub: "", usd: 0.42 },
+      ],
+      sessions: [
+        { key: "s1", label: "Footer previews", sub: "episko", usd: 1.9 },
+        { key: "s2", label: "Call sheet", sub: "episko", usd: 0.94 },
+      ],
+      split: 4.19,
+    }, new Set(["s1"])),
+  },
+  limits: {
+    cls: "usagepop",
+    body: `<div class="up-h">Claude usage limits</div>`
+      + usageRow("Session", "5-hour window", fpvFc(12, 13, 28 * 60))
+      + usageRow("Weekly", "7-day window", fpvFc(4, 10, 4 * 86400 + 7 * 3600))
+      + `<div class="up-foot"><span>today <b>$110.19</b></span><span>8 live · account-wide</span></div>`,
+  },
+  io: {
+    cls: "iopop",
+    body: ioPopHtml({
+      readBps: 280 * 1024, writeBps: 45 * 1024, primed: true, running: 3, note: null,
+      windows: [
+        { label: "today", tip: "", text: "1.2 GiB read · 348 MiB written" },
+        { label: "this run", tip: "", text: "412 MiB read · 96 MiB written" },
+        { label: "recorded", tip: "", text: "8.1 GiB read · 2.1 GiB written" },
+      ],
+    }),
+  },
+  engine: { cls: "", body: enginePopHtml(["embedded", "ghostty", "terminal"], "embedded") },
+  shortcuts: {
+    cls: "shortpop",
+    body: shortPopHtml([
+      { label: "Command palette", chords: [["⌘", "K"]] },
+      { label: "Toggle sidebar", chords: [["⌘", "B"]] },
+      { label: "Run a task…", chords: [["⌘", "⇧", "R"]] },
+    ], false),
+  },
+  debug: {
+    cls: "",
+    body: `<div class="fpv-h">Debug console</div>`
+      + fpvRow("telemetry", `<b>1 284</b>`) + fpvRow("paints", `<b>206</b>`) + fpvRow("errors", `<b>0</b>`),
+  },
+};
+
+function footPreview(id: FootSeg): string {
+  const open = FPV_OPEN[id];
+  const col = (cap: string, body: string) =>
+    `<div class="fpv-col"><span class="fpv-cap">${cap}</span>${body}</div>`;
+  return `<div class="fpv${footShown(footPrefs, id) ? "" : " off"}">`
+    + col("on the bar", `<div class="fpv-bar">${FPV_CLOSED[id]}</div>`)
+    + (open ? col("when clicked", `<div class="fpv-pop menupop ${open.cls}">${open.body}</div>`) : "")
+    + `</div>`;
+}
+
 const SET_TABS: SetTab[] = [
   {
     id: "appearance", label: "Appearance", glyph: "◐",
@@ -139,6 +262,24 @@ const SET_TABS: SetTab[] = [
           { value: "dark",  label: "Dark",  glyph: "☾", sub: "Dim surfaces" },
         ] },
       { kind: "font", label: "Terminal font size", hint: "Text size in embedded terminals (also ⌘+ / ⌘− / ⌘0)." },
+    ],
+  },
+  {
+    id: "footer", label: "Footer", glyph: "▁",
+    // One switch per segment, straight off ./footprefs' table — there is no second list
+    // here to fall out of step with the bar. What is NOT in that table is what cannot be
+    // switched off, which is why the note says so rather than a disabled row implying
+    // you might one day.
+    controls: () => [
+      {
+        kind: "note", label: "What the status bar shows",
+        hint: "The repo link, the version and What's new always stay, so the bar can never end up empty — and an update is not something to hide by accident.",
+      },
+      ...FOOT_SEGS.map((seg): SetControl => ({
+        kind: "toggle", set: `foot:${seg.id}`, label: seg.label, hint: seg.hint,
+        on: () => footShown(footPrefs, seg.id),
+        preview: () => footPreview(seg.id),
+      })),
     ],
   },
   {
@@ -714,6 +855,7 @@ function recordKey(e: KeyboardEvent) {
 
 function renderSetControl(c: SetControl): string {
   const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
+  if (c.kind === "note") return `<div class="set-group set-note">${head}</div>`;
   if (c.kind === "wtpreview") {
     return `<div class="set-group">${head}${renderWtPreview(c.active())}</div>`;
   }
@@ -758,8 +900,14 @@ function renderSetControl(c: SetControl): string {
     const on = c.on();
     // The label and hint have to be one block, or the row lays them out as two
     // flex siblings of the switch and the whole group centres itself.
-    return `<div class="set-group set-inline"><div class="set-itxt">${head}</div>` +
-      `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button></div>`;
+    const inner = `<div class="set-itxt">${head}</div>`
+      + `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button>`;
+    // Without a preview the group IS the row. With one, the row becomes a child and the
+    // preview sits under it — the same shape `peek` and `attn` use, because a switch and
+    // the thing it governs are one decision and belong in one group.
+    return c.preview
+      ? `<div class="set-group"><div class="set-inline">${inner}</div>${c.preview()}</div>`
+      : `<div class="set-group set-inline">${inner}</div>`;
   }
   if (c.kind === "multi") {
     const on = c.on();
@@ -797,6 +945,9 @@ function applySetting(set: string, val: string) {
   else if (set === "taskcwd") { taskPrefs.cwd = val as TaskPrefs["cwd"]; saveTaskPrefs(); }
   else if (set === "dismiss") { taskPrefs.dismissMs = +val; saveTaskPrefs(); }
   else if (set === "taskattn") { taskPrefs.attention = val === "1"; saveTaskPrefs(); }
+  // `foot:<id>` rather than seven names in this chain: the ids are ./footprefs' and
+  // adding a segment there should not mean editing a switch statement here too.
+  else if (set.startsWith("foot:")) host.setFootSeg(set.slice(5) as FootSeg);
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);
   renderSettings();

@@ -37,6 +37,11 @@ export interface ApiErr { kind: string; detail: string; at: number }
 export interface Act {
   tool: string; arg: string; time: string; startMs: number; durMs: number | null;
   id: string; inp: string; out: string; failed: boolean;
+  /// Claude's own note on why it made this call, lifted out of `inp` rather than left
+  /// inside it — a `description:` line in the middle of a command is the difference
+  /// between a block you can paste into a shell and one you have to edit first. See
+  /// ./toolio's `descText` for which tools it is taken from and why not all of them.
+  desc: string;
 }
 /// How a row is addressed by the click dispatcher and the expanded-row set. `startMs`
 /// backs the id up rather than an array index, which every new call would shift.

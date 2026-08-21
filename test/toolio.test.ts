@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clip, DETAIL_CAP, fieldsText, inputText, outputText } from "../src/toolio";
+import { actClipText, clip, DESC_CAP, descText, DETAIL_CAP, fieldsText, inputText, outputText } from "../src/toolio";
+import type { Act } from "../src/types";
 
 // What a tool call was and what came back, out of the raw hook payloads.
 //
@@ -159,5 +160,86 @@ describe("outputText — what came back", () => {
   it("caps whatever came back, however big", () => {
     const out = outputText({ stdout: "s".repeat(DETAIL_CAP * 3) }, null);
     expect(out.length).toBeLessThan(DETAIL_CAP + 80);
+  });
+});
+
+describe("actClipText — what Copy hands over", () => {
+  const act = (o: Partial<Act> = {}): Act => ({
+    tool: "Bash", arg: "pnpm test", time: "14:22", startMs: 0, durMs: 120,
+    id: "toolu_01", inp: "pnpm test", desc: "", out: "12 passed", failed: false, ...o,
+  });
+
+  // The pasted text has to say which half is which — a command and its output are both
+  // just text, and the two are indistinguishable once they leave the card that labelled
+  // them.
+  it("labels both halves and heads it with the call", () => {
+    expect(actClipText(act())).toBe(
+      "Bash · pnpm test\n\n# executed\npnpm test\n\n# returned\n12 passed\n",
+    );
+  });
+  it("says failed rather than returned when the call did", () => {
+    expect(actClipText(act({ failed: true, out: "Exit code 1" }))).toContain("# failed\nExit code 1");
+  });
+  // The three fallbacks are distinct facts, and the whole point is that a paste never
+  // reads as an empty result when it was really an unfinished one.
+  it("distinguishes a call still in flight from one that returned nothing", () => {
+    expect(actClipText(act({ durMs: null, out: "" }))).toContain("# returned\nstill running\n");
+    expect(actClipText(act({ out: "" }))).toContain("# returned\n(nothing returned)\n");
+  });
+  it("says so when there were no arguments", () => {
+    expect(actClipText(act({ inp: "" }))).toContain("# executed\n(no arguments)");
+  });
+  it("drops the separator for a call with no argument to show", () => {
+    expect(actClipText(act({ arg: "" })).startsWith("Bash\n\n")).toBe(true);
+  });
+});
+
+describe("descText — Claude's note on why, kept out of what ran", () => {
+  // The real shape: Claude Code sends `description` inside `tool_input`, right beside
+  // the command. Rendered there it made the Executed block unpasteable — you got the
+  // command plus a `description:` line, and `find . | sort` came back needing an edit.
+  const bash = { command: 'find . -maxdepth 1 -name "*.md" | sort', description: "List markdown files at top level" };
+
+  it("lifts the description off a tool whose payload has one field that IS the call", () => {
+    expect(descText("Bash", bash)).toBe("List markdown files at top level");
+    expect(descText("Task", { prompt: "go", description: "Explore the inspector" })).toBe("Explore the inspector");
+  });
+  it("leaves the input block as the thing that ran, and nothing else", () => {
+    expect(inputText("Bash", bash)).toBe('find . -maxdepth 1 -name "*.md" | sort');
+  });
+
+  // The reason this is not a blanket "drop every `description`": for a tool with no
+  // dominant field, all of them are arguments — an MCP call that creates a calendar
+  // event puts the event's own description there, and hiding it would hide an input.
+  it("leaves a description that IS an argument alone", () => {
+    const ev = { summary: "Standup", description: "Daily sync, 15 minutes" };
+    expect(descText("mcp__google_calendar__create_event", ev)).toBe("");
+    expect(inputText("mcp__google_calendar__create_event", ev)).toContain("description: Daily sync, 15 minutes");
+  });
+
+  it("is empty when there is no description, or no payload at all", () => {
+    expect(descText("Bash", { command: "ls" })).toBe("");
+    expect(descText("Bash", { command: "ls", description: "   " })).toBe("");
+    expect(descText("Bash", null)).toBe("");
+    expect(descText("Read", { file_path: "/x", description: "d" })).toBe("");
+  });
+  it("caps a pathological description", () => {
+    const long = descText("Bash", { command: "ls", description: "d".repeat(DESC_CAP * 2) });
+    expect(long.length).toBeLessThan(DESC_CAP + 40);
+    expect(long).toContain("more characters");
+  });
+
+  // The whole point of the split: one copy is annotated for reading, the other is the
+  // command itself. The note may appear in the first and must never appear in the second.
+  it("puts the note in the header of a copied call, never in the executed block", () => {
+    const text = actClipText({
+      tool: "Bash", arg: "find .", time: "12:58", startMs: 0, durMs: 193, id: "t1",
+      inp: 'find . -maxdepth 1 -name "*.md" | sort', desc: "List markdown files at top level",
+      out: "./CHANGELOG.md", failed: false,
+    });
+    expect(text).toBe(
+      'Bash · find .\nList markdown files at top level\n\n# executed\nfind . -maxdepth 1 -name "*.md" | sort\n\n# returned\n./CHANGELOG.md\n',
+    );
+    expect(text.split("# executed\n")[1]).not.toContain("List markdown files");
   });
 });
