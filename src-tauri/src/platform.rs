@@ -920,10 +920,11 @@ pub(crate) fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<St
 /// WebKit stores localStorage values as UTF-16LE BLOBs (no BOM).
 #[cfg(target_os = "macos")]
 fn decode_utf16le(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    // `as_chunks::<2>` rather than `chunks_exact(2)`: it hands back `&[u8; 2]` instead of
+    // a slice, so `from_le_bytes` takes it whole and no indexing can panic. Clippy asks
+    // for this from 1.98 (`chunks_exact_to_as_chunks`), and clippy is a CI gate.
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
     String::from_utf16_lossy(&units)
 }
 

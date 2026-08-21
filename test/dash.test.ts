@@ -22,7 +22,7 @@ const dk = (back: number) => {
 
 const hist = (o: Partial<HistEntry> = {}): HistEntry => ({
   session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
-  title: "a session", last_prompt: "", mtime: NOW / 1000, bytes: 10, exists: true,
+  title: "a session", last_prompt: "", last_active: NOW / 1000, bytes: 10, exists: true,
   repo_root: "/w/epi", ...o,
 });
 const commit = (o: Partial<TrailCommit> = {}): TrailCommit =>
@@ -99,7 +99,7 @@ describe("dashDays — scoped before assembly, not after", () => {
 describe("dashPulse", () => {
   const days = dashDays(
     "/w/epi",
-    [hist({ session_id: "a" }), hist({ session_id: "b", mtime: (NOW - 86_400_000) / 1000 })],
+    [hist({ session_id: "a" }), hist({ session_id: "b", last_active: (NOW - 86_400_000) / 1000 })],
     [
       commit({ sha: "c1", author: "Tim" }),
       commit({ sha: "c2", author: "Frederic" }),
@@ -132,7 +132,7 @@ describe("densePerDay — the chart must not drop the quiet days", () => {
     // Two busy days a week apart render as two adjacent bars without this, which reads
     // as "constantly busy" — the exact opposite of the truth.
     const days = dashDays("/w/epi",
-      [hist({ mtime: NOW / 1000 }), hist({ session_id: "old", mtime: (NOW - 6 * 86_400_000) / 1000 })],
+      [hist({ last_active: NOW / 1000 }), hist({ session_id: "old", last_active: (NOW - 6 * 86_400_000) / 1000 })],
       [commit(), commit({ sha: "c2" }), commit({ sha: "c3", when: (NOW - 6 * 86_400_000) / 1000 })],
       [uday(dk(0)), uday(dk(6))], () => 0);
     expect(days).toHaveLength(2);          // the list keeps only the two real days…

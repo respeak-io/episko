@@ -15,7 +15,7 @@ const at = (y: number, m: number, d: number, h = 12, min = 0) => new Date(y, m -
 /// bug this guards against is a Date built from seconds, which lands in 1970.
 const secs = (d: Date) => Math.floor(d.getTime() / 1000);
 
-const hist = (over: Partial<HistEntry> & { mtime: number }): HistEntry => ({
+const hist = (over: Partial<HistEntry> & { last_active: number }): HistEntry => ({
   session_id: "s1", cwd: "/w/episko", project: "episko", branch: "dev",
   title: "", last_prompt: "", bytes: 10, exists: true, repo_root: "/w/episko",
   ...over,
@@ -37,8 +37,8 @@ describe("day grouping", () => {
   it("groups sessions and commits into the local calendar day they happened", () => {
     const days = usageWindow(3); // 12th, 13th, 14th
     const out = trailDays(
-      [hist({ mtime: secs(at(2027, 3, 13, 9)), title: "morning" }),
-       hist({ mtime: secs(at(2027, 3, 13, 21)), title: "evening", session_id: "s2" })],
+      [hist({ last_active: secs(at(2027, 3, 13, 9)), title: "morning" }),
+       hist({ last_active: secs(at(2027, 3, 13, 21)), title: "evening", session_id: "s2" })],
       days,
       [commit({ when: secs(at(2027, 3, 12, 15)) })],
     );
@@ -52,8 +52,8 @@ describe("day grouping", () => {
     // grouper would put them together (or apart) depending on the runner's offset.
     const days = usageWindow(3);
     const out = trailDays(
-      [hist({ mtime: secs(at(2027, 3, 12, 23, 30)), session_id: "late" }),
-       hist({ mtime: secs(at(2027, 3, 13, 0, 30)), session_id: "early" })],
+      [hist({ last_active: secs(at(2027, 3, 12, 23, 30)), session_id: "late" }),
+       hist({ last_active: secs(at(2027, 3, 13, 0, 30)), session_id: "early" })],
       days, [],
     );
     expect(out.map((d) => d.key)).toEqual(["2027-03-13", "2027-03-12"]);
@@ -69,29 +69,29 @@ describe("day grouping", () => {
 
   it("joins each day to its cost from the usage rollup", () => {
     usage["2027-03-13"] = 12.5;
-    const out = trailDays([hist({ mtime: secs(at(2027, 3, 13)) })], usageWindow(2), []);
+    const out = trailDays([hist({ last_active: secs(at(2027, 3, 13)) })], usageWindow(2), []);
     expect(out[0].cost).toBe(12.5);
   });
 
   it("drops days with nothing in them, but keeps a day that only cost money", () => {
     usage["2027-03-12"] = 3;
-    const out = trailDays([hist({ mtime: secs(at(2027, 3, 14)) })], usageWindow(5), []);
+    const out = trailDays([hist({ last_active: secs(at(2027, 3, 14)) })], usageWindow(5), []);
     expect(out.map((d) => d.key)).toEqual(["2027-03-14", "2027-03-12"]);
   });
 
   it("ignores sessions and commits outside the window rather than inventing days", () => {
     const out = trailDays(
-      [hist({ mtime: secs(at(2020, 1, 1)) })],
+      [hist({ last_active: secs(at(2020, 1, 1)) })],
       usageWindow(3),
       [commit({ when: secs(at(2020, 1, 1)) })],
     );
     expect(out).toEqual([]);
   });
 
-  it("reads mtime as seconds", () => {
+  it("reads last_active as seconds", () => {
     // Guards the units trap directly: seconds treated as ms lands in January 1970 and
     // silently falls outside every window.
-    const s = trailSession(hist({ mtime: secs(at(2027, 3, 13, 8)) }));
+    const s = trailSession(hist({ last_active: secs(at(2027, 3, 13, 8)) }));
     expect(new Date(s.when).getFullYear()).toBe(2027);
   });
 });

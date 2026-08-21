@@ -14,7 +14,7 @@ const DAY = 86400000;
 // a repo checked out at its own root, still on disk.
 const row = (o: Partial<HistEntry> = {}): HistEntry => ({
   session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
-  title: "A past chat", last_prompt: "", mtime: NOW_MS / 1000, bytes: 2048,
+  title: "A past chat", last_prompt: "", last_active: NOW_MS / 1000, bytes: 2048,
   exists: true, repo_root: "/w/epi", ...o,
 });
 const sess = (o: Partial<Sess> = {}): Sess => ({
@@ -176,7 +176,7 @@ describe("histBucket — coarse day buckets", () => {
     expect(at(NOW_MS - 200 * DAY)).toBe("This year");
     expect(at(NOW_MS - 500 * DAY)).toBe("Older");
   });
-  it("keeps a future mtime in Today rather than inventing a bucket", () => {
+  it("keeps a future last-active in Today rather than inventing a bucket", () => {
     // Clock skew, or a transcript still being written to.
     expect(at(NOW_MS + 60000)).toBe("Today");
   });
