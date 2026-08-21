@@ -119,8 +119,51 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn-badge.react-error { --rc: var(--st-error); }
 .attn-badge.react-done { --rc: var(--st-done); }
 .attn-badge .bdot { width: 5px; height: 5px; border-radius: 50%; background: var(--rc, var(--st-attention)); }
-.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-family: var(--font-ui); font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
+
+/* Header glyph boxes (.ibtn and the caffeinate caret up here, the stage header's
+   .act verbs below). Every glyph in this header is a symbol no UI font carries, so
+   it comes from whatever fallback font does — Segoe UI Symbol on Windows, Apple
+   Symbols on macOS — with an advance width and an ink height of its own: ❯ is 5.6px
+   wide and 10px tall where ＋ is 11px wide and 5px tall. Loose in the button's text
+   node each one sets the line box for the whole button, so ❯ Terminal's label sat
+   half a pixel below ◷ History's, and the space in front of every label was a
+   different width. Boxed instead — a 1em square that the button's own `gap` spaces —
+   so the four labels start at the same offset and a glyph can only move its own
+   baseline. A button also has to be *told* the UI font (font-family does not
+   inherit into one), which is why .ibtn's glyphs sat on Arial's baseline while the
+   identical ◷ in `◷ History` sat on Segoe UI's. */
+.act .gl, .ibtn .gl, .caf-caret .gl { display: flex; align-items: center; justify-content: center; flex: none; width: 1em; height: 1em; line-height: 1; position: relative; }
+
+/* Centring the box is not centring the ink. A centred line box puts the baseline at
+   the button's middle + (ascent-descent)/2 whatever the box's height, so boxing on its
+   own moves nothing vertically; each glyph's ink then sits its own distance above that
+   baseline, and every one of these sat low — by two thirds of a pixel in the 27px
+   verbs, by one and a half in the 26px icon buttons. These are the measured corrections,
+   and they leave every glyph within a fifth of a pixel of its button's centre AND of
+   the others in its row, which is the half that shows: a row of glyphs agreeing with
+   each other reads as aligned even when they are all a hair off, and one glyph out of
+   step with its neighbours reads as broken even when it is the correct one.
+
+   Measured how matters, because the obvious method lies. A hairline drawn at `top:50%`
+   to eyeball against is thinner than a pixel, so it snaps DOWN to the pixel grid and
+   sits a pixel below the centre it claims to mark; glyphs judged against one are all
+   dragged a pixel low. So is a zoomed screenshot: under a `transform:scale()` the text
+   is positioned in the untransformed space and rounded there, which quantises exactly
+   the sub-pixel differences you zoomed in to see. The numbers below come from scanning
+   the ink rows of a rendered screenshot against the button's own
+   getBoundingClientRect centre, at 8x for whole-pixel offsets and 1x for halves.
+
+   ＋ takes a whole pixel because its ink genuinely sits higher above the baseline than
+   the rest (its 5px ink is half the height of ❯'s 10px). Windows values, from Segoe UI
+   + Segoe UI Symbol at the sizes used; macOS falls back to different fonts and wants
+   its own measured pass, so until it gets one it keeps the alignment it has today —
+   the box above is metric-neutral. */
+html.win .ibtn .gl { top: -1.5px; }
+html.win .caf-caret .gl { top: 1px; }
+html.win .act .gl { top: -.5px; }
+html.win .act .gl-plus { top: -1px; }
 
 /* The title bar, which is this header — there is no native one (see lib.rs).
    Two platforms, two halves of the job. macOS floats its real traffic lights
@@ -531,6 +574,8 @@ html.win .wctl { display: flex; }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
+/* The leading glyph rides in a .gl box — see the header glyph boxes up in the top
+   bar section, which the four verbs here share. */
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
 .act:disabled { opacity: .35; cursor: default; box-shadow: none; }
@@ -1548,6 +1593,18 @@ select.in-ctl { cursor: pointer; }
 .wt-facts dd .warn { color: var(--st-working); }
 .wt-facts dd .subj { display: block; color: var(--text); margin-top: 2px; font-size: 11px; line-height: 1.4; }
 
+/* the working-tree fact names its files, so it carries the diff viewer's vocabulary:
+   the same +/− colours and the same status letters (.dstat, defined with the viewer) */
+.wt-facts dd .add { color: var(--st-done); }
+.wt-facts dd .del { color: var(--st-attention); }
+.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
+.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
 .wt-warn b { color: var(--text); font: 600 10.5px var(--font-mono); }
@@ -1971,6 +2028,61 @@ select.in-ctl { cursor: pointer; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* The app's own confirmation dialog (./confirm), which replaced the OS one.
+
+   z-index 90/91, above everything else the app can put on screen (the debug console is
+   the previous ceiling at 70) — and its OWN backdrop rather than the shared #scrim,
+   because these questions open on top of #wtDlg and #mgrDlg and must not take the
+   backdrop away from the dialog that asked. It is also darker than #scrim on purpose:
+   two stacked overlays with the same wash read as one, and the point is that the thing
+   underneath is now out of reach. */
+.cfm-scrim { position: fixed; inset: 0; background: rgba(6,5,10,.62); backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .14s; z-index: 90; }
+.cfm-scrim.show { opacity: 1; pointer-events: auto; }
+.cfm { visibility: hidden; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.97); width: min(420px, 92vw); z-index: 91; opacity: 0; pointer-events: none; transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s .14s; border-radius: var(--radius-lg); padding: 17px 18px 15px; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.08); }
+/* `visibility`, not just `opacity`: a closed dialog left at opacity 0 is still in the
+   tab order, and the button that would be under the cursor is "Remove worktree". The
+   0s delay on the way out is what lets the fade finish before it goes non-visible. */
+.cfm.show { visibility: visible; opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s; }
+
+.cfm-head { display: flex; align-items: center; gap: 9px; }
+.cfm-head b { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+/* A drawn box around a plain letter, not ⚠/ℹ️ — see the note in ./confirm: those two
+   land as colour emoji in half the fonts this app can be rendered with. */
+.cfm-ic { flex: none; width: 20px; height: 20px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); }
+.k-info .cfm-ic { color: var(--accent-ink); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.k-warning .cfm-ic { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-working) 38%, transparent); }
+.k-error .cfm-ic { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-error) 40%, transparent); }
+
+/* The body is `dialogBody`'s paragraphs and lists. Margins are set here rather than
+   left to the UA sheet, whose <p>/<ul> defaults are sized for a document. */
+.cfm-body { margin: 11px 0 0; font: 11.5px/1.55 var(--font-ui); color: var(--muted); max-height: 46vh; overflow-y: auto; }
+.cfm-body p { margin: 0 0 8px; }
+.cfm-body p:last-child, .cfm-body ul:last-child { margin-bottom: 0; }
+.cfm-body ul { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.cfm-body li { position: relative; padding-left: 13px; color: var(--text); }
+.cfm-body li::before { content: "•"; position: absolute; left: 2px; color: var(--muted-2); }
+.cfm-body code { font: 10.5px var(--font-mono); color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
+.cfm-body b { color: var(--text); font-weight: 650; }
+
+.cfm-foot { display: flex; align-items: center; gap: 7px; margin-top: 16px; }
+.cfm-hint { flex: 1; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cfm-hint kbd { flex: none; font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }
+.cfm-hint .cfm-dot { opacity: .5; margin: 0 2px; }
+.cfm-btn { flex: none; font: 600 11.5px var(--font-ui); padding: 7px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.cfm-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-line); }
+.cfm-btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.cfm-btn.ghost:hover { color: var(--text); border-color: var(--hair-strong); }
+.cfm-btn.go { border-color: transparent; color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); }
+.cfm-btn.go:hover { filter: brightness(1.08); }
+/* The whole reason for an in-app box: the answer that deletes something has to be
+   distinguishable from the one that doesn't. The native dialog gave two grey buttons. */
+.cfm-btn.danger { border-color: transparent; color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--st-error) 92%, white 8%), color-mix(in srgb, var(--st-error) 88%, black 12%)); }
+.cfm-btn.danger:hover { filter: brightness(1.08); }
+/* Focus lands on the confirming button (⏎ confirms), so its ring has to read against
+   its own fill rather than the panel behind it. */
+.cfm-btn.go:focus-visible, .cfm-btn.danger:focus-visible { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
+
 
 /* generic menu popover (terminal-engine picker) */
 .menupop { position: fixed; z-index: 60; display: none; flex-direction: column; gap: 2px; min-width: 210px; padding: 6px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(16px); border: 1px solid var(--hair-strong); box-shadow: 0 24px 60px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.08); }

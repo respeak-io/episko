@@ -35,11 +35,11 @@
                   d="M16.5 11h1.8a2.6 2.6 0 0 1 0 5.2h-1.3" />
               </svg>
             </button>
-            <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode">▾</button>
+            <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode"><span class="gl">▾</span></button>
           </div>
-          <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history">◷</button>
-          <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
-          <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings">⚙</button>
+          <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history"><span class="gl">◷</span></button>
+          <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"><span class="gl">◐</span></button>
+          <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings"><span class="gl">⚙</span></button>
         </div>
         <!--
           Window controls. Windows only (html.win) — macOS keeps its real traffic
@@ -83,12 +83,12 @@
           <span class="path" id="hPath"></span>
         </div>
         <div class="st-actions">
-          <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)">◷ History</button>
-          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root">❯ Terminal</button>
-          <button class="act" id="btnRun" title="Run a task or script from this project">▶ Run</button>
-          <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch">＋ Session</button>
-          <button class="act icon" id="btnClose" title="Close session" hidden>✕</button>
-          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)">◨</button>
+          <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)"><span class="gl">◷</span>History</button>
+          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root"><span class="gl">❯</span>Terminal</button>
+          <button class="act" id="btnRun" title="Run a task or script from this project"><span class="gl">▶</span>Run</button>
+          <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch"><span class="gl gl-plus">＋</span>Session</button>
+          <button class="act icon" id="btnClose" title="Close session" hidden><span class="gl">✕</span></button>
+          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)"><span class="gl">◨</span></button>
         </div>
       </div>
 
@@ -397,6 +397,26 @@
         <button class="dbg-x" id="dbgClose" title="Close">✕</button>
       </div>
       <div class="dbg-body" id="dbgBody"></div>
+    </div>
+
+    <!--
+      The app's own confirmation, replacing the OS dialog `ask()` used to draw. Its own
+      backdrop rather than the shared #scrim: it opens *over* the new-session dialog and
+      the task manager, so it must not drop the backdrop those are standing on. See
+      ./confirm for the modality and the key handling.
+    -->
+    <div class="cfm-scrim" id="cfmScrim"></div>
+    <div class="cfm" id="cfmDlg" role="alertdialog" aria-modal="true" aria-labelledby="cfmTitle" aria-describedby="cfmBody">
+      <div class="cfm-head"><span class="cfm-ic" id="cfmIc" aria-hidden="true"></span><b id="cfmTitle"></b></div>
+      <div class="cfm-body" id="cfmBody"></div>
+      <div class="cfm-foot">
+        <!-- Generic verbs, not the button labels: ⏎ always fires the right-hand button
+             and esc the left, the two are named an inch away, and "⏎ Terminate & retry ·
+             esc Leave it" is wider than the footer has. Same wording as #inDlg's. -->
+        <span class="cfm-hint"><kbd>⏎</kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
+        <button class="cfm-btn ghost" id="cfmNo" type="button"></button>
+        <button class="cfm-btn go" id="cfmYes" type="button"></button>
+      </div>
     </div>
 
     <div class="toast" id="toast"></div>

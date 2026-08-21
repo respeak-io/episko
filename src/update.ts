@@ -10,10 +10,10 @@
 
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { $, toast } from "./dom";
+import { ask } from "./confirm";
 import { dlog, setAppVersion } from "./debug";
 import { sessions } from "./state";
 

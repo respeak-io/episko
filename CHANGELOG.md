@@ -13,6 +13,28 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Every confirmation is now Episko's own dialog, not the operating system's.** Asking
+  "remove this worktree?" or "quit with three sessions running?" used to pop a Windows
+  task dialog or a macOS sheet: system font, system chrome, the Windows ding, and two
+  identical grey buttons in whatever order the platform preferred — so the one that
+  deletes a checkout looked exactly like the one that doesn't. All ten questions now open
+  in the app's own panel, where the answer that destroys something is red and the one
+  that backs out isn't, and where a message written in paragraphs is read as paragraphs:
+  the list of processes holding a folder open is a list, and a command named mid-sentence
+  is set as code. ⏎ confirms, Esc cancels, and while a question is up the app's shortcuts
+  stand down instead of firing behind it. The one native dialog left is the file picker
+  for adding a project or choosing a logo, which is the OS's own file browser and better
+  than anything an app can imitate.
+
++ **The new-session dialog names the uncommitted files instead of counting them.**
+  Picking a checkout said "3 files uncommitted" and left the question you actually walk
+  in with — whose work, and where — for after you had started a session on top of it. The
+  pane now lists the files themselves, each with what happened to it and its own +/−,
+  renames showing both names and untracked files marked as new. An existing worktree gets
+  the same list, where before it managed only "uncommitted changes" with no count at all.
+  It costs what the count already cost: the same one-or-two git processes, for the
+  highlighted row alone.
+
 + **The project overview gets a Repository card.** Where the main checkout stands, and
   the five verbs that act on it, in the overview column instead of buried in the
   inspector's list: the branch, whether it is ahead, behind, diverged or tracking
@@ -201,6 +223,20 @@ Markers: `+` new · `~` changed · `!` fixed
   than the script, which used to demote the fleet to "Background agents" with the
   counters wiped; the name now comes from the persisted script's filename, and the
   description and phases survive when the pane launched the run itself.
+
+! **The header's icons sit on the middle of their buttons.** Every glyph up there — the
+  clock, the theme dial, the gear, the caffeinate caret, and the ◷ ❯ ▶ ＋ in front of the
+  stage verbs — comes from a fallback font with an advance width and a baseline of its
+  own, and each was left loose in its button's text node. So they sat between a pixel and
+  two above or below centre, ❯ Terminal's label rode lower than ◷ History's because the
+  chevron set the line box, and the space in front of each label was a different width in
+  every button. Each glyph now rides in a box of its own, the top bar's three no longer
+  render in the browser's default font (a button is not told the UI font unless you tell
+  it), and what was still off centre after that is corrected by a measured amount — ink
+  rows scanned out of a screenshot against the button's own centre, since a hairline
+  drawn at `top:50%` to eyeball against snaps a pixel low and takes every glyph judged
+  against it down with it. Each now sits within a fifth of a pixel of its button's
+  centre and of the others in its row.
 
 ## 0.20.0 — 2026-08-14
 A session that wants you lights up its own row, the "your turn" badge lets go of the
