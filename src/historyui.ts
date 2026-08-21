@@ -120,7 +120,7 @@ export function histRender() {
   } else {
     let html = "", bucket = "";
     histRows.forEach((h, i) => {
-      const b = histBucket(h.mtime * 1000);
+      const b = histBucket(h.last_active * 1000);
       if (b !== bucket) { bucket = b; html += `<div class="wt-gh">${esc(b)}<span class="rule"></span></div>`; }
       const busy = histBusy(h);
       const tag = busy ? `<span class="wt-tag ext">live</span>` : !h.exists ? `<span class="wt-tag gone">no folder</span>` : "";
@@ -130,7 +130,7 @@ export function histRender() {
           <span class="wt-br"><span class="hd">${esc(histLabel(h))}</span></span>
           <span class="wt-sub2">${esc(h.project)}${h.branch ? ` · ${esc(h.branch)}` : ""}</span>
         </span>
-        <span class="wt-meta">${tag}<span class="wt-when">${esc(relTime(h.mtime * 1000))}</span></span>
+        <span class="wt-meta">${tag}<span class="wt-when">${esc(relTime(h.last_active * 1000))}</span></span>
       </button>`;
     });
     $("histList").innerHTML = html;
@@ -152,14 +152,14 @@ function histDetailHtml(h: HistEntry | undefined): string {
   }
   const busy = histBusy(h);
   const p = histProject(h);
-  const when = new Date(h.mtime * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const when = new Date(h.last_active * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   // Binary units, spelled binary — this divides by 1024, same as `fmtMb`/`fmtRate`.
   const size = h.bytes >= 1048576 ? `${(h.bytes / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(h.bytes / 1024))} KiB`;
   const facts = histFacts([
     ["project", `<span class="em">${esc(p.project)}</span>`],
     ["path", `${esc(tilde(h.cwd))}${h.exists ? "" : ` <span class="warn">· gone</span>`}`],
     ...(h.branch ? [["branch", esc(h.branch)] as [string, string]] : []),
-    ["last active", `${esc(when)} <span class="dim">· ${esc(relTime(h.mtime * 1000))}</span>`],
+    ["last active", `${esc(when)} <span class="dim">· ${esc(relTime(h.last_active * 1000))}</span>`],
     ["session", `${esc(h.session_id.slice(0, 8))} <span class="dim">· ${esc(size)} transcript</span>`],
   ]);
   const action = busy

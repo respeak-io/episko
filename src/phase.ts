@@ -12,9 +12,10 @@
 // settable `setOnTurnEnd` hook. See test/phase.test.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Fanout, Phase, Risk, Sess } from "./types";
+import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
+import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
@@ -53,17 +54,43 @@ export function toolArg(tool: string, input: any): string {
   if ((tool === "Read" || tool === "Edit" || tool === "Write") && /[/\\]/.test(v)) return v.split(/[/\\]/).pop() || v;
   return abbr(v, 64);
 }
-// Open a timeline entry on PreToolUse; closeActivity fills its latency on the
-// matching PostToolUse. Matching the most-recent open call of the same tool name
-// is approximate under parallel subagents, but right for the common serial case.
-function openActivity(s: Sess, tool: string, arg: string) {
+/// How many calls one session rings. The ceiling on what the detail view can cost:
+/// twelve rows × the two sides ./toolio caps, and none of it persisted.
+export const ACT_CAP = 12;
+// Open a timeline entry on PreToolUse; closeActivity fills in its latency and its
+// output on the matching PostToolUse.
+//
+// **The two are paired by `tool_use_id`**, which Claude Code puts on both payloads of a
+// call. Matching on the tool name instead — the most recent open call so named — was
+// what this did, and it is wrong whenever two calls of one tool overlap, which is the
+// normal state of affairs under parallel subagents. That only ever misplaced a latency
+// bar, so nobody noticed; attaching a command's *output* to the wrong row is a lie the
+// card states plainly, so the name match is now only the fallback for a payload with no
+// id (an older CLI, a hook variant that omits it), where a mispairing is no worse than
+// what the name match always did.
+function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string, desc: string) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null });
-  if (s.activity.length > 12) s.activity.length = 12;
+  s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null, id, inp, desc, out: "", failed: false });
+  if (s.activity.length > ACT_CAP) s.activity.length = ACT_CAP;
 }
-function closeActivity(s: Sess, tool: string) {
-  const a = s.activity.find((x) => x.tool === tool && x.durMs == null);
-  if (a) a.durMs = Date.now() - a.startMs;
+function closeActivity(s: Sess, tool: string, id: string, inp: string, desc: string, out: string, failed: boolean) {
+  // A ternary, never `||`: with an id that matches nothing — its Pre row aged out past
+  // ACT_CAP, or never opened — falling through to the name match closes the oldest
+  // *other* open call of the same tool and staples this output onto it. Under parallel
+  // subagents that is routine, and a row that says it ran something it didn't is worse
+  // than a row with no output. The name match exists for a payload carrying no id.
+  const a = id
+    ? s.activity.find((x) => x.id === id)
+    : s.activity.find((x) => x.tool === tool && x.durMs == null);
+  if (!a) return;
+  a.durMs = Date.now() - a.startMs;
+  a.out = out;
+  a.failed = failed;
+  // The Post payload repeats `tool_input`, so a row whose Pre hook arrived without one
+  // can still be filled — but it never *overwrites*, because an empty repeat is not a
+  // correction and the Pre hook is the one that saw the call as it was submitted.
+  if (!a.inp && inp) a.inp = inp;
+  if (!a.desc && desc) a.desc = desc;
 }
 // Claude keeps its own to-do list via the TodoWrite tool; the payload rides the
 // PreToolUse hook we already receive. Capture it as the session's live plan.
@@ -131,8 +158,24 @@ export function parseWorkflowMeta(script: string): { name: string; detail: strin
 // A fresh fleet, replacing whatever the last one left behind. The counters restart even
 // if the previous fan-out still has agents up — `fanoutTally` is what keeps that from
 // showing as a bar past its own end.
-export function startFanout(s: Sess, script: unknown) {
-  const meta = parseWorkflowMeta(typeof script === "string" ? script : "");
+//
+// Takes the whole tool_input, not the script: a resumed run (`scriptPath` +
+// `resumeFromRunId`) carries no script text at all, and parsing the empty string made
+// every resumed workflow an unnamed one. The persisted script is named
+// `<meta.name>-<runId>.js`, so the basename recovers the name; the record this pane
+// already holds wins when the two agree, because it also carries the description and
+// the phases a filename cannot.
+export function startFanout(s: Sess, input: any) {
+  const script = typeof input?.script === "string" ? input.script : "";
+  let meta = parseWorkflowMeta(script);
+  if (!script) {
+    const base = (typeof input?.scriptPath === "string" ? input.scriptPath : "").split(/[\\/]/).pop() ?? "";
+    const name = abbr(base.replace(/\.[^.]*$/, "").replace(/-wf_[a-z0-9-]+$/, ""), 56);
+    const prev = s.fanout;
+    meta = prev?.name && (!name || prev.name === name)
+      ? { name: prev.name, detail: prev.detail, phases: prev.phases }
+      : { ...meta, name };
+  }
   const now = Date.now();
   s.fanout = { ...meta, since: now, started: 0, done: 0, lastAt: now };
 }
@@ -199,6 +242,12 @@ export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";
   s.lastEvent = ev;
   s.lastActivity = Date.now(); // a lifecycle hook = the session did something (drives "sort by activity")
+  // The live count's one repair. `subagents` is differenced from fire-and-forget
+  // hooks, so a `SubagentStop` that never arrives leaves it high forever — and past
+  // `FANOUT_DEAD_MS` of silence `liveFanout` already answers "no fleet". Believe that
+  // answer in the state too, or the ghost count would poison `bg()` below and the
+  // *next* fleet's tally, whose total is `done + subagents`.
+  if (s.subagents > 0 && !liveFanout(s)) s.subagents = 0;
   const bg = () => s.subagents > 0 || s.phase === "done";
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
@@ -214,10 +263,12 @@ export function applyHook(s: Sess, data: any) {
       const arg = toolArg(tool, data.tool_input);
       if (tool === "TodoWrite") applyTodos(s, data.tool_input);
       else if (tool === "ExitPlanMode") applyPlan(s, data.tool_input);
-      else openActivity(s, tool, arg); // the plan is its own module; keep it off the timeline
+      // The plan is its own module; keep it off the timeline. Everything else opens a
+      // row carrying the whole of what was submitted, capped by ./toolio as it lands.
+      else openActivity(s, tool, arg, String(data.tool_use_id ?? ""), inputText(tool, data.tool_input), descText(tool, data.tool_input));
       // The one hook that names a fan-out. It fires ~2s before the turn ends, so the
       // record is already in place when `Stop` would otherwise have painted a green ✓.
-      if (tool === "Workflow") startFanout(s, data.tool_input?.script);
+      if (tool === "Workflow") startFanout(s, data.tool_input);
       if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
@@ -226,7 +277,13 @@ export function applyHook(s: Sess, data: any) {
     case "PostToolUse":
     case "PostToolUseFailure": {
       const tool = data.tool_name || "";
-      closeActivity(s, data.tool_name);
+      // What came back, onto the row its `tool_use_id` opened. A failure carries no
+      // `tool_response` whatsoever — the reason is in `error` — so both are handed over
+      // and ./toolio decides which one it is looking at.
+      closeActivity(s, data.tool_name, String(data.tool_use_id ?? ""),
+        inputText(tool, data.tool_input), descText(tool, data.tool_input),
+        outputText(data.tool_response, data.error),
+        ev === "PostToolUseFailure");
       // The Context card's two inputs. Both are fed from the *Post* hook rather than
       // the Pre one the timeline opens on, and for opposite reasons: the file set needs
       // `tool_response` (it is what says create vs. update), and the tally would
@@ -273,7 +330,14 @@ export function applyHook(s: Sess, data: any) {
     // Every agent a fan-out spawns fires these on the PARENT, workflow fleets included
     // — which is what makes the whole background readout possible without a byte of
     // disk. `subagents` stays the live count; the cumulative pair rides the record.
-    case "SubagentStart": { s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break; }
+    // A record `liveFanout` has already written off is history, not the burst starting
+    // now: resuming it would put a finished run's counters under a fresh fleet ("12 of
+    // 14 done" for two agents that just launched). Within the grace lull it is the
+    // same run, and the record — with its name and phases — carries on.
+    case "SubagentStart": {
+      if (!liveFanout(s)) s.fanout = null;
+      s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break;
+    }
     // No record means a Stop whose Start we never saw (a fan-out that predates the
     // pane, a rotated session). Counting it would invent a completion.
     case "SubagentStop":

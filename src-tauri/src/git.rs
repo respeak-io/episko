@@ -1868,8 +1868,12 @@ pub(crate) struct DiffStat {
     removed: u32,
     /// Tracked files with uncommitted changes.
     files: u32,
-    /// Untracked files (new, never committed).
+    /// Untracked entries (new, never committed). git collapses an untracked *directory*
+    /// into one entry, so this counts things-git-will-not-commit-yet, not files.
     untracked: u32,
+    /// How many of `untracked` are directories rather than files — the card says "1 new
+    /// folder" rather than "1 new file" for them, because one entry can be forty files.
+    new_dirs: u32,
     /// Total dirty entries (`git status --porcelain` line count).
     dirty: u32,
     /// Upstream ref this branch tracks ("origin/main"), None if it tracks nothing.
@@ -1880,6 +1884,120 @@ pub(crate) struct DiffStat {
     behind: u32,
 }
 
+/// One dirty entry in a working tree, as `git_working_set` reports it — what the
+/// new-session dialog lists under "Working tree" so a checkout's uncommitted work is
+/// named rather than merely counted.
+#[derive(serde::Serialize)]
+pub(crate) struct StatusFile {
+    /// Repo-relative path, git's forward-slash form. For a rename this is the NEW
+    /// path — the one that exists — and `from` carries where it came from.
+    path: String,
+    /// What happened to it, as the single letter the pane shows: `M` modified,
+    /// `A` added (staged, never committed), `D` deleted, `R` renamed, `C` copied,
+    /// `U` unmerged, `?` untracked.
+    code: char,
+    /// Where a rename/copy came from, else None.
+    from: Option<String>,
+    /// Lines added/removed versus HEAD. An untracked file has no `diff HEAD` row at
+    /// all, so it carries the lines `new_file_lines` counted for the stat instead —
+    /// the same figure, or the pane would be the third surface with its own answer.
+    /// Both 0 for a binary file, and for an untracked one that was skipped as too
+    /// large, unreadable or binary.
+    added: u32,
+    removed: u32,
+}
+
+/// A `DiffStat` with the entries behind it. Flattened, so the frontend's `WorkingSet`
+/// is a `DiffStat` plus one field and every reader of the counts is unchanged.
+/// `entries` is capped and `dirty` is not, so the pane can say how many files it is
+/// not showing.
+#[derive(serde::Serialize)]
+pub(crate) struct WorkingSet {
+    #[serde(flatten)]
+    stat: DiffStat,
+    entries: Vec<StatusFile>,
+}
+
+/// `--numstat` names a rename `old => new` (and, when the two share a prefix,
+/// `dir/{old => new}/leaf`), while porcelain=v2 reports the new path alone. The line
+/// counts have to be filed under the latter, or every renamed file in the pane shows
+/// no counts at all.
+fn numstat_path(raw: &str) -> String {
+    let Some(i) = raw.find(" => ") else { return raw.to_string() };
+    let (l, r) = (&raw[..i], &raw[i + 4..]);
+    match (l.rfind('{'), r.find('}')) {
+        (Some(o), Some(c)) => format!("{}{}{}", &l[..o], &r[..c], &r[c + 1..]),
+        _ => r.to_string(),
+    }
+}
+
+/// The path (plus, for a rename, its origin) out of one porcelain=v2 entry. How many
+/// space-separated fields come before the path depends on the kind — 8 for `1` (an
+/// ordinary change), 9 for `2` (the extra one is the rename score), 10 for `u`
+/// (unmerged carries three stages) — and the path is everything after them, because
+/// it may contain spaces itself. A `2` entry then puts the original path after a TAB.
+fn v2_path(line: &str) -> Option<(String, Option<String>)> {
+    let kind = *line.as_bytes().first()?;
+    if kind == b'?' {
+        return Some((line.get(2..)?.to_string(), None));
+    }
+    let fields = match kind {
+        b'1' => 8,
+        b'2' => 9,
+        b'u' => 10,
+        _ => return None,
+    };
+    let mut rest = line;
+    for _ in 0..fields {
+        rest = &rest[rest.find(' ')? + 1..];
+    }
+    Some(match rest.split_once('\t') {
+        Some((new, old)) => (new.to_string(), Some(old.to_string())),
+        None => (rest.to_string(), None),
+    })
+}
+
+/// The letter the pane shows for one entry's `XY` status pair. The index column wins
+/// when it says anything — a file renamed and then edited reads `R`, which is the
+/// fact you would otherwise miss — and an unmerged entry is always `U`, however its
+/// three stages happen to be spelled.
+fn v2_code(kind: u8, xy: &str) -> char {
+    if kind == b'u' {
+        return 'U';
+    }
+    let mut it = xy.chars();
+    let (x, y) = (it.next().unwrap_or('.'), it.next().unwrap_or('.'));
+    if x != '.' { x } else { y }
+}
+
+/// How many untracked files one poll is willing to open, and how large each may be.
+/// A repo can hold thousands of untracked files (a build dir git happens not to ignore);
+/// the card only needs a number, and a meter must not add to what it measures.
+const NEW_SCAN_MAX: usize = 64;
+const NEW_FILE_MAX: u64 = 512 * 1024;
+
+/// Lines in an untracked file, counted the way `git diff --no-index` would report them:
+/// every newline, plus a final line with no terminator. None means "not counted" — the
+/// file is gone, is not a regular file, is too big, or looks binary — and the caller
+/// adds nothing rather than guessing.
+fn new_file_lines(path: &std::path::Path) -> Option<u32> {
+    let md = std::fs::metadata(path).ok()?;
+    if !md.is_file() || md.len() > NEW_FILE_MAX {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return Some(0);
+    }
+    // git's own binary test is a NUL in the first 8000 bytes; a binary file has no
+    // "lines" to add, and the peek renders it as `Binary files … differ` for the same reason.
+    if bytes[..bytes.len().min(8000)].contains(&0) {
+        return None;
+    }
+    let newlines = bytes.iter().filter(|b| **b == b'\n').count() as u32;
+    Some(newlines + u32::from(bytes.last() != Some(&b'\n')))
+}
+
 /// A summary of a session's *uncommitted* work — the "working set" the inspector's
 /// Checks strip shows ("+142 −38 · 7 files · 2 new"). We diff against HEAD rather
 /// than a base branch on purpose: during a live session the interesting delta is
@@ -1888,12 +2006,21 @@ pub(crate) struct DiffStat {
 /// has no commits yet. LC_ALL=C + numeric numstat keep it locale-independent (the
 /// german-git-locale gotcha) and `--no-optional-locks` avoids fighting a running
 /// `git` in the same worktree.
-#[tauri::command(async)]
-pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
+///
+/// `cap` is how many of the dirty entries to name: 0 for the counts alone (the polled
+/// path, `git_diffstat`, which never looks at a path), otherwise the most the caller
+/// will show. One scan serves both, so the dialog's file list and the sidebar's dirty
+/// dot can never disagree about what is uncommitted.
+fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)> {
     let git = |args: &[&str]| {
         sys_command("git")
             .env("LC_ALL", "C")
-            .arg("-C").arg(&workdir)
+            .arg("-C").arg(workdir)
+            // Without this git octal-escapes any path outside ASCII and wraps it in
+            // quotes, and both the untracked scan below and the named entries would
+            // then carry a file whose name is the escape sequence. It costs the counts
+            // nothing.
+            .args(["-c", "core.quotePath=false"])
             .args(args)
             .output()
     };
@@ -1908,16 +2035,40 @@ pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
         return None; // not a repo
     }
     let text = String::from_utf8_lossy(&st.stdout);
-    let (mut untracked, mut dirty) = (0u32, 0u32);
+    let (mut untracked, mut dirty, mut new_dirs) = (0u32, 0u32, 0u32);
+    let mut new_files: Vec<String> = Vec::new();
     let (mut upstream, mut ahead, mut behind) = (None, 0u32, 0u32);
     let mut unborn = false;
+    let mut entries: Vec<StatusFile> = Vec::new();
     for line in text.lines() {
         match line.as_bytes().first() {
-            // Tracked entries: `1` changed, `2` renamed/copied, `u` unmerged.
-            Some(b'1') | Some(b'2') | Some(b'u') => dirty += 1,
-            Some(b'?') => {
+            // Tracked entries: `1` changed, `2` renamed/copied, `u` unmerged. `?` is
+            // untracked, which counts twice — once as dirty, once as new.
+            Some(&k @ (b'1' | b'2' | b'u' | b'?')) => {
                 dirty += 1;
-                untracked += 1;
+                if k == b'?' {
+                    untracked += 1;
+                    // `? sub/` (trailing slash) is a whole untracked directory collapsed
+                    // into one entry. It is not a file, so it is neither read nor
+                    // line-counted — though it is still named, as one row.
+                    match line.strip_prefix("? ") {
+                        Some(p) if p.ends_with('/') => new_dirs += 1,
+                        Some(p) => new_files.push(p.to_string()),
+                        None => {}
+                    }
+                }
+                if entries.len() < cap {
+                    if let Some((path, from)) = v2_path(line) {
+                        let xy = line.split(' ').nth(1).unwrap_or("");
+                        entries.push(StatusFile {
+                            path,
+                            code: if k == b'?' { '?' } else { v2_code(k, xy) },
+                            from,
+                            added: 0,
+                            removed: 0,
+                        });
+                    }
+                }
             }
             Some(b'#') => {
                 if let Some(v) = line.strip_prefix("# branch.upstream ") {
@@ -1948,16 +2099,128 @@ pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
         if !ns.status.success() {
             return None;
         }
+        let mut per: HashMap<String, (u32, u32)> = HashMap::new();
         for line in String::from_utf8_lossy(&ns.stdout).lines() {
             let mut it = line.split('\t');
-            let a = it.next().unwrap_or("");
-            let d = it.next().unwrap_or("");
+            let a = it.next().unwrap_or("").parse::<u32>().unwrap_or(0); // "-" (binary) parses to 0
+            let d = it.next().unwrap_or("").parse::<u32>().unwrap_or(0);
             files += 1;
-            added += a.parse::<u32>().unwrap_or(0); // "-" (binary) parses to 0
-            removed += d.parse::<u32>().unwrap_or(0);
+            added += a;
+            removed += d;
+            if !entries.is_empty() {
+                if let Some(p) = it.next() {
+                    per.insert(numstat_path(p), (a, d));
+                }
+            }
+        }
+        for e in entries.iter_mut() {
+            if let Some(&(a, d)) = per.get(&e.path) {
+                (e.added, e.removed) = (a, d);
+            }
         }
     }
-    Some(DiffStat { added, removed, files, untracked, dirty, upstream, ahead, behind })
+    // A never-committed file has no `diff HEAD` row, so `added`/`removed` used to read
+    // `+0 −0` next to a count saying the tree had gained something — and the peek, which
+    // renders untracked files as new-file diffs, showed `+37` for the very same file.
+    // Two surfaces, one tree, two answers. Counting the lines here settles it — and the
+    // same figure lands on the named entry, so the dialog's per-file `+N` cannot become
+    // the third answer.
+    //
+    // Bounded on purpose: this runs on the per-folder dirty poll, so it reads at most
+    // NEW_SCAN_MAX files, at most NEW_FILE_MAX bytes each, and skips anything that
+    // smells binary. Whatever it skips simply is not counted — the figure stays a
+    // lower bound rather than becoming a guess.
+    for rel in new_files.iter().take(NEW_SCAN_MAX) {
+        let n = new_file_lines(&std::path::Path::new(workdir).join(rel)).unwrap_or(0);
+        added += n;
+        if let Some(e) = entries.iter_mut().find(|e| e.path == *rel) {
+            e.added = n;
+        }
+    }
+    Some((
+        DiffStat { added, removed, files, untracked, new_dirs, dirty, upstream, ahead, behind },
+        entries,
+    ))
+}
+
+#[tauri::command(async)]
+pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
+    working_set(&workdir, 0).map(|(stat, _)| stat)
+}
+
+/// The same working set with its files named — what the new-session dialog lists
+/// before you walk into a checkout. It *is* `git_diffstat` asked to keep the paths,
+/// so the dialog calls this instead of both rather than as well. Capped, because a
+/// folder can hold an untracked `node_modules`; `dirty` still carries the true total,
+/// so the pane can say how many it left out.
+#[tauri::command(async)]
+pub(crate) fn git_working_set(workdir: String) -> Option<WorkingSet> {
+    const LIST_CAP: usize = 200;
+    working_set(&workdir, LIST_CAP).map(|(stat, entries)| WorkingSet { stat, entries })
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct ChangedPath {
+    /// Repo-relative, forward slashes — the same shape the explorer's index uses, so the
+    /// two join on the string without either side normalising.
+    path: String,
+    /// One letter, from the same `v2_code` the new-session dialog's file list uses, so
+    /// the two lists cannot call one file two things. See that function for which half
+    /// of git's XY wins and why.
+    status: String,
+}
+
+/// Which paths are dirty and how — the marks on an explorer row.
+///
+/// A sibling of `git_diffstat` rather than a field on it: the stat is polled every 15s
+/// for every open folder and must stay a handful of integers, while this is asked for
+/// once, by one overlay, when it opens. One `status --porcelain=v2` process either way
+/// and no diffing — but this one asks for `-uall` and the polled one must not, which is
+/// the second reason they are separate commands rather than one with a flag.
+///
+/// Returns an empty list rather than an error when the folder is not a repo: the
+/// explorer works fine there (its index just comes from a walk instead), and a row with
+/// no mark is the correct rendering of "git has nothing to say about this file".
+#[tauri::command(async)]
+pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
+    let out = sys_command("git")
+        .env("LC_ALL", "C")
+        .arg("-C").arg(&workdir)
+        .args(["-c", "core.quotePath=false"])
+        // `-uall`, not git's default `-unormal`. The default collapses a new folder into
+        // the single entry `? sub/`, so every file inside it reaches the explorer with no
+        // mark at all and the `Changed` chip filters out the newest files in the project
+        // — while the index beside it (`ls-files --others`) lists each one. That walk is
+        // already being done for this same overlay, so naming the files here costs
+        // nothing new. `working_set` keeps `-unormal` on purpose: it is polled every 15s
+        // and it *counts* the collapsed entry as one `new_dirs`.
+        .args(["--no-optional-locks", "status", "--porcelain=v2", "-uall"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        // `v2_path`/`v2_code` rather than a second parse of the same format. This used to
+        // re-implement the per-kind field count inline (9/10/11/2 against their 8/9/10,
+        // both correct, both arrived at separately), which meant a fix to either had to
+        // be found twice — and the two disagreed about the status letter, so one file
+        // could be `M` here and `A` in the new-session dialog.
+        let Some(kind) = line.as_bytes().first().copied() else { continue };
+        if !matches!(kind, b'1' | b'2' | b'u' | b'?') {
+            continue;
+        }
+        let Some((path, _from)) = v2_path(line) else { continue };
+        if path.is_empty() {
+            continue;
+        }
+        let xy = line.split(' ').nth(1).unwrap_or("");
+        let code = if kind == b'?' { '?' } else { v2_code(kind, xy) };
+        rows.push(ChangedPath { path, status: code.to_string() });
+    }
+    rows
 }
 
 #[derive(serde::Serialize)]
@@ -2288,18 +2551,26 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                     &format!("git push -u origin {branch}"),
                 );
             }
-            if behind > 0 {
-                return refuse(
-                    &format!("{behind} behind — push would be rejected"),
-                    "git pull --ff-only && git push",
-                );
-            }
+            // "Nothing to send" comes FIRST, and being behind does not change it: a
+            // push with no commits of our own is a no-op whatever the remote has done,
+            // and answering "push would be rejected" describes a rejection that could
+            // never happen while handing the user a terminal they did not need.
             if ahead == 0 {
                 return Ok(GitActionResult {
                     ok: true,
                     summary: "nothing to push".into(),
                     ..Default::default()
                 });
+            }
+            // Which leaves commits on both sides, and that is what diverged *means*, so
+            // the handoff has to be the one that resolves it. `git pull --ff-only` was
+            // offered here and cannot fast-forward a branch that has moved on locally:
+            // it fails exactly as surely as the push would, one command later.
+            if behind > 0 {
+                return refuse(
+                    &format!("diverged — {ahead} ahead, {behind} behind, so the push would be rejected"),
+                    "git pull --rebase && git push",
+                );
             }
             vec!["push"]
         }
@@ -3188,10 +3459,16 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The inspector's working-set strip ("+2 −1 · 1 file · 1 new") and the ahead/
-    /// behind pair beside it. Two things it must not do: count an untracked file's
-    /// lines as insertions (they're a separate, differently-worded number), and
-    /// measure the gap against anything other than the tracking ref.
+    /// The inspector's working-set strip ("+3 −1 · 2 files · 1 new") and the ahead/
+    /// behind pair beside it.
+    ///
+    /// An untracked file's lines **are** insertions here, which reverses what this test
+    /// used to assert. The old rule left the card printing `+0 −0` beside a count saying
+    /// the tree had gained a file, while the peek — which renders untracked files as
+    /// new-file diffs — showed the real number for the very same file. One tree with two
+    /// answers is worse than either answer, so `new_file_lines` now folds them in and
+    /// the two surfaces agree. What must still not happen: measuring the gap against
+    /// anything other than the tracking ref, and reading a file the scan should refuse.
     #[test]
     fn git_diffstat_counts_the_working_set_and_the_upstream_gap() {
         let dir = scratch_dir();
@@ -3215,8 +3492,9 @@ canonicalizehostname false
         std::fs::write(dir.join("a.txt"), "1\nCHANGED\n3\n4\n").unwrap();
         std::fs::write(dir.join("new.txt"), "brand new\n").unwrap();
         let d = git_diffstat(path.clone()).unwrap();
-        assert_eq!((d.added, d.removed, d.files), (2, 1, 1), "numstat covers tracked files only");
-        assert_eq!((d.untracked, d.dirty), (1, 2), "the new file is counted, not diffed");
+        assert_eq!((d.added, d.removed), (3, 1), "2 tracked insertions + the new file's 1 line");
+        assert_eq!(d.files, 1, "`files` stays numstat's count: tracked files only");
+        assert_eq!((d.untracked, d.dirty, d.new_dirs), (1, 2, 0), "one new file, no new folder");
 
         git(&remote, &["init", "-q", "--bare", "-b", "main"]);
         git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
@@ -3226,7 +3504,7 @@ canonicalizehostname false
         assert_eq!(d.upstream.as_deref(), Some("origin/main"));
         assert_eq!((d.ahead, d.behind), (1, 0), "measured against origin/main");
         // The working set is orthogonal to the upstream gap and must survive it.
-        assert_eq!((d.added, d.removed, d.untracked), (2, 1, 1));
+        assert_eq!((d.added, d.removed, d.untracked), (3, 1, 1));
 
         // Detached HEAD tracks nothing — it must not inherit the branch it left.
         git(&dir, &["checkout", "-q", "--detach"]);
@@ -3237,7 +3515,7 @@ canonicalizehostname false
         let d = git_diffstat(path.clone()).expect("a detached checkout still has a working set");
         assert_eq!(d.upstream, None);
         assert_eq!((d.ahead, d.behind), (0, 0));
-        assert_eq!((d.added, d.removed, d.untracked), (2, 1, 1), "detaching changed no files");
+        assert_eq!((d.added, d.removed, d.untracked), (3, 1, 1), "detaching changed no files");
 
         // A clean tree takes the path that skips `--numstat` entirely, so it needs its
         // own assertion — every count zero, and still Some rather than None.
@@ -3250,6 +3528,201 @@ canonicalizehostname false
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The new-session dialog names the uncommitted files rather than counting them,
+    /// which is a different job from the diffstat's totals in three ways the counts
+    /// never exercised: a path is only useful if the line counts land on the *right*
+    /// one (numstat spells a rename `old => new`, porcelain=v2 spells it as the new
+    /// path alone), an untracked file has no diff at all, and the list is capped while
+    /// the total is not — a pane that silently showed 10 of 400 would read as ten.
+    #[test]
+    fn git_working_set_names_the_files_behind_the_counts() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("keep.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(dir.join("old name.txt"), "1\n2\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "x\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit(&dir, "init");
+
+        // A clean tree names nothing, and still answers.
+        let w = git_working_set(path.clone()).expect("a repo with a commit has a working set");
+        assert_eq!(w.stat.dirty, 0);
+        assert!(w.entries.is_empty(), "clean names no files");
+
+        std::fs::write(dir.join("keep.txt"), "a\nCHANGED\nc\nd\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        git(&dir, &["mv", "old name.txt", "sub/new name.txt"]);
+        std::fs::write(dir.join("sub").join("new name.txt"), "1
+2
+3
+").unwrap();
+        std::fs::write(dir.join("untracked file.txt"), "u\n").unwrap();
+
+        let w = git_working_set(path.clone()).unwrap();
+        assert_eq!(w.stat.dirty, 4, "modified + deleted + renamed + untracked");
+        assert_eq!(w.entries.len(), 4, "every dirty entry is named");
+        let by = |p: &str| {
+            w.entries.iter().find(|e| e.path == p).unwrap_or_else(|| panic!("no entry for {p}"))
+        };
+
+        let m = by("keep.txt");
+        assert_eq!(m.code, 'M');
+        assert_eq!((m.added, m.removed), (2, 1), "its own lines, not the tree's total");
+
+        // A path with a space survives: porcelain=v2 puts the path last, so it is
+        // everything after the fields rather than the next token.
+        let r = by("sub/new name.txt");
+        assert_eq!(r.code, 'R', "renamed-then-edited reads R, not M");
+        assert_eq!(r.from.as_deref(), Some("old name.txt"));
+        assert_eq!((r.added, r.removed), (1, 0), "numstat's `old => new` filed under the new path");
+
+        let d = by("gone.txt");
+        assert_eq!(d.code, 'D');
+        assert_eq!((d.added, d.removed), (0, 1));
+
+        let u = by("untracked file.txt");
+        assert_eq!(u.code, '?', "untracked is its own kind, not an add");
+        assert_eq!(
+            (u.added, u.removed),
+            (1, 0),
+            "no `diff HEAD` row, so it carries the lines the stat counted for it"
+        );
+
+        // The cap bounds the list, never the totals — an untracked node_modules must
+        // not put thousands of paths through the IPC, and the pane subtracts the two
+        // to say how many it isn't showing.
+        let (stat, few) = working_set(&path, 1).unwrap();
+        assert_eq!(stat.dirty, 4, "the total ignores the cap");
+        assert_eq!(few.len(), 1);
+        // …and 0 is the polled path: counts, no walk over the entries at all.
+        let (stat, none) = working_set(&path, 0).unwrap();
+        assert_eq!((stat.dirty, stat.untracked, stat.files), (4, 1, 3));
+        assert!(none.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The explorer's row marks. The whole risk here is the parse: porcelain=v2 puts the
+    /// path last after a *different* number of fields per entry type, so a wrong count
+    /// silently yields a path that is half a hash — and a mark that never matches a row.
+    /// The cases that catch it are the ones with a space in the name and a rename, which
+    /// is where a naive `split_whitespace().last()` falls apart.
+    #[test]
+    fn git_changed_names_every_dirty_path_and_says_how() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("edit me.txt"), "1\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("old name.txt"), "same\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit(&dir, "init");
+
+        std::fs::write(dir.join("edit me.txt"), "1\n2\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::rename(dir.join("old name.txt"), dir.join("new name.txt")).unwrap();
+        git(&dir, &["add", "-A"]); // a rename is only a rename once git can see both halves
+        std::fs::write(dir.join("fresh file.txt"), "hi\n").unwrap();
+
+        let rows = git_changed(path.clone());
+        let by = |p: &str| rows.iter().find(|r| r.path == p).map(|r| r.status.clone());
+        assert_eq!(by("edit me.txt").as_deref(), Some("M"), "spaces survive the field split: {rows:?}",
+            rows = rows.iter().map(|r| (&r.path, &r.status)).collect::<Vec<_>>());
+        assert_eq!(by("gone.txt").as_deref(), Some("D"));
+        assert_eq!(by("fresh file.txt").as_deref(), Some("?"));
+        // A rename is reported under its NEW name, which is the one a file list is about,
+        // and the old name must not leak in as a row of its own.
+        assert_eq!(by("new name.txt").as_deref(), Some("R"));
+        assert!(by("old name.txt").is_none(), "the old name is not a file any more: {:?}",
+            rows.iter().map(|r| &r.path).collect::<Vec<_>>());
+        assert_eq!(rows.len(), 4);
+
+        // A new *folder* is where `-unormal` used to give up: it reports `? sub/` as one
+        // entry, so both files below would reach the explorer unmarked while its index
+        // (`ls-files --others`) lists them individually — and the `Changed` chip would
+        // then filter out the newest files in the project.
+        std::fs::create_dir(dir.join("new dir")).unwrap();
+        std::fs::write(dir.join("new dir").join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("new dir").join("b.txt"), "b\n").unwrap();
+        let rows = git_changed(path.clone());
+        let by = |p: &str| rows.iter().find(|r| r.path == p).map(|r| r.status.clone());
+        assert_eq!(by("new dir/a.txt").as_deref(), Some("?"), "each file inside a new folder is named: {:?}",
+            rows.iter().map(|r| &r.path).collect::<Vec<_>>());
+        assert_eq!(by("new dir/b.txt").as_deref(), Some("?"));
+        assert!(by("new dir/").is_none(), "the collapsed folder entry is not a row");
+
+        // The index half of XY wins, and this is the case that says so: staged as added,
+        // then edited in the tree. `A` is the fact worth keeping — every dirty file is
+        // modified, only a new one is added — and the new-session dialog's list reads it
+        // the same way, which is the point of sharing `v2_code`.
+        std::fs::write(dir.join("staged then edited.txt"), "1\n").unwrap();
+        git(&dir, &["add", "staged then edited.txt"]);
+        std::fs::write(dir.join("staged then edited.txt"), "1\n2\n").unwrap();
+        let rows = git_changed(path.clone());
+        let by = |p: &str| rows.iter().find(|r| r.path == p).map(|r| r.status.clone());
+        assert_eq!(by("staged then edited.txt").as_deref(), Some("A"));
+
+        // Not a repo: an empty list, not an error — the explorer still works there.
+        let plain = scratch_dir();
+        assert!(git_changed(plain.to_string_lossy().to_string()).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    /// The bounds on the untracked scan, which are the whole reason it is safe to run on
+    /// a 15s poll: a directory is one entry and is never opened, a binary file adds
+    /// nothing, and an oversized file adds nothing. Each skip must leave the figure a
+    /// lower bound rather than a guess — and must not stop the files after it counting.
+    #[test]
+    fn git_diffstat_bounds_what_it_reads_for_untracked_lines() {
+        let dir = scratch_dir();
+        let path = dir.to_str().unwrap().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("seed.txt"), "seed\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit(&dir, "init");
+
+        // A whole untracked directory: one entry, counted as a folder, never walked —
+        // so neither of the two files inside it reaches the line count.
+        std::fs::create_dir_all(dir.join("scratch")).unwrap();
+        std::fs::write(dir.join("scratch/a.txt"), "1\n2\n3\n").unwrap();
+        std::fs::write(dir.join("scratch/b.txt"), "4\n").unwrap();
+        let d = git_diffstat(path.clone()).unwrap();
+        assert_eq!((d.untracked, d.new_dirs), (1, 1), "a new folder is one entry, and is a folder");
+        assert_eq!(d.added, 0, "a folder's contents are not line-counted");
+
+        // A file with no trailing newline still has a last line, exactly as `git diff`
+        // reports it; a binary file has none.
+        std::fs::write(dir.join("tail.txt"), "one\ntwo").unwrap();
+        std::fs::write(dir.join("blob.bin"), [0x00, 0x01, 0x02, b'a', b'\n']).unwrap();
+        std::fs::write(dir.join("empty.txt"), "").unwrap();
+        let d = git_diffstat(path.clone()).unwrap();
+        assert_eq!(d.added, 2, "2 lines from tail.txt, nothing from the binary or the empty file");
+        assert_eq!((d.untracked, d.new_dirs), (4, 1), "all four entries still counted");
+
+        // The size cap: over it, the file contributes nothing at all rather than a
+        // partial count, and the files beside it are unaffected.
+        std::fs::write(dir.join("huge.txt"), "x\n".repeat((NEW_FILE_MAX as usize / 2) + 10)).unwrap();
+        let d = git_diffstat(path.clone()).unwrap();
+        assert_eq!(d.added, 2, "an oversized file adds nothing, and does not break the others");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// numstat's rename spelling is the one place the two git formats disagree about
+    /// what a file is called, and a miss there is silent: the file still lists, just
+    /// with no line counts.
+    #[test]
+    fn numstat_path_reads_both_rename_spellings() {
+        assert_eq!(numstat_path("src/plain.ts"), "src/plain.ts");
+        assert_eq!(numstat_path("old name.txt => sub/new.txt"), "sub/new.txt");
+        assert_eq!(numstat_path("src/{a.ts => b.ts}"), "src/b.ts");
+        assert_eq!(numstat_path("src/{old => new}/leaf.ts"), "src/new/leaf.ts");
     }
 
     /// The git buttons predict, *before* running git, everything git would reject
@@ -3322,6 +3795,11 @@ canonicalizehostname false
         git(&other, &["push", "-q", "origin", "main"]);
         let r = git_action(path.clone(), "fetch".into()).unwrap();
         assert!(r.ok && r.summary == "fetched — 1 behind", "{}", r.summary);
+        // Behind with nothing of our own: the push has nothing to send, and says that
+        // rather than predicting a rejection that cannot happen and opening a terminal
+        // for it. Being behind only decides anything once there IS something to push.
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(r.ok && r.summary == "nothing to push", "{}", r.summary);
         let r = git_action(path.clone(), "pull".into()).unwrap();
         assert!(r.ok && r.summary == "pulled 1 commit", "{}", r.summary);
 
@@ -3335,8 +3813,11 @@ canonicalizehostname false
         assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
         assert_eq!(r.suggest.as_deref(), Some("git pull --rebase"));
         let r = git_action(path.clone(), "push".into()).unwrap();
-        assert!(!r.ok && r.summary.contains("push would be rejected"), "{}", r.summary);
-        assert_eq!(r.suggest.as_deref(), Some("git pull --ff-only && git push"));
+        assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
+        // NOT `git pull --ff-only && git push`, which is what this used to offer: it
+        // cannot fast-forward a branch with commits of its own, so the handoff failed
+        // one command after the button did.
+        assert_eq!(r.suggest.as_deref(), Some("git pull --rebase && git push"));
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);

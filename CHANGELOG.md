@@ -12,6 +12,148 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+A first run that explains itself, ⌘P to find any file in a project, and a tool call you
+can open to see exactly what ran and what came back. The project overview learned to push
+and switch branch, the status bar became yours to arrange, and every dialog is Episko's own.
+
++ **A guided first run, and a way back to it.** The welcome card opens a picker rather than
+  a linear tour: *Quick start* is required, five chapters are optional and remembered one at
+  a time, and all of it stays replayable from **Settings › Guide** — a chapter you walk out
+  of halfway says *Resume*. Quick start walks the launch the app actually has, makes you
+  answer a real permission, and teaches the rail's seven states as a key in the rail's own
+  colours. It opens on a genuine first run and never after an update; a release that ships a
+  chapter puts a *Show me →* button on its *What's new* entry instead.
+
++ **Find any file in the project, with ⌘P.** Leave the field empty and it browses the folder
+  you are in; type and it finds across the whole project, ranked by the matcher ⌘K already
+  uses. **Every row says what has been happening to it** — an amber `M` where git sees a
+  change, and the Context card's `✦ ◆ ○` where an agent created, edited or read it. Chips
+  narrow the same list to *Changed* or *Touched*. `↵` opens, `⌘↵` reveals, `⌥↵` copies the
+  path, `⌫` steps up a folder — and a file git has something to say about opens its diff
+  rather than leaving the app.
+
++ **A tool call opens in a window of its own.** A row on the Tools tab was a name, one
+  abbreviated argument and a latency bar. Click it now for the whole command, prompt or
+  patch that was submitted and the whole of what came back, beside every other call the
+  session still holds. **A call that failed says why on the row itself** — the reason Claude
+  Code sends was being dropped on the floor. Calls group under *Just now* / *Last 5 minutes*
+  / *Last hour*; Copy takes the call, and each half has its own unlabelled copy button. A
+  window rather than an unfolding row, because the inspector is 296px and a diff is 80–120
+  columns. None of it is written to disk.
+
++ **The project overview gets a Repository card.** Where the main checkout stands and the
+  five verbs that act on it: the branch, whether it is ahead, behind, diverged or tracking
+  nothing, how many files are uncommitted, and ⇣ Pull · ⇡ Push · ⇄ Switch branch ·
+  ⑂ Commit graph · ⌥ Branches. **Push fetches first, exactly as pull does** — nothing on
+  that pane runs git on a schedule, so without it a push goes out against a stale `behind`
+  and comes back as a raw rejection. **⇄ Switch branch** opens the worktree dialog on its
+  switch card, so all four of its guards arrive with it.
+
++ **The status bar carries disk I/O, and Settings › Footer decides what else it carries.**
+  I/O was a card costing ~120px of the inspector to show a figure that is not about the
+  session you are looking at; the bar now shows today's read and write, and clicking it
+  opens the live rates and all three windows at once. There is a switch per segment —
+  session count, spend, limits, I/O, launch engine, Shortcuts, the debug console — **each
+  showing what it controls in both states**: the chip as it sits on the bar, and what opens
+  when you click it. The repo link, the version and What's new have no switch, so the bar
+  can never end up empty.
+
++ **The new-session dialog names the uncommitted files instead of counting them.** "3 files
+  uncommitted" left the question you actually walk in with — whose work, and where — until
+  after you had started a session on top of it. Each file now appears with what happened to
+  it and its own `+/−`, renames showing both names. It costs the same one-or-two git
+  processes the count already did.
+
+~ **Every confirmation is Episko's own dialog now, not the operating system's.** Ten
+  questions used to pop a Windows task dialog or a macOS sheet: system chrome, the Windows
+  ding, and two identical grey buttons in whatever order the platform preferred — so the one
+  that deletes a checkout looked exactly like the one that doesn't. The destructive answer is
+  red now, prose written in paragraphs is read as paragraphs, ⏎ confirms and Esc cancels. The
+  file picker stays native, being the OS's own file browser.
+
+~ **The diff viewer opens as a list of the files, not a wall of every hunk.** One row per
+  file — status, path, `+40 −12` — folded, so the first thing you see is what moved. Each row
+  carries ↗ to open the file and ⌂ to show it in your file manager.
+
+~ **The Context card says what a row does**, since both its tabs are lists of plain-looking
+  rows that are all click targets. **And a call's timing lands on the call it belongs to**:
+  pairing a start and end by tool *name* picks the most recent open call so named, which is
+  wrong whenever two calls of one tool overlap — routine under parallel subagents.
+
+~ **A new file's lines are counted**, so `+N −M` is never a pair of zeroes beside a tree that
+  plainly gained something. `git diff` has nothing to say about a file that was never
+  committed, which is why the card read `+0 −0` while the viewer showed `+37` for that very
+  same file. Bounded on purpose: an untracked *folder* stays one entry, and a file too large
+  or too binary adds nothing rather than a guess.
+
+~ **A resumed workflow keeps its name.** Resuming a run passes a script *path* rather than
+  the script, which used to demote the fleet to "Background agents" with its counters wiped.
+
+! **A tool call's output can no longer land on another call's row.** Pairing fell back to the
+  tool name whenever the id matched nothing — not only when the payload carried none — so a
+  reply whose opening row had aged out closed the oldest *other* open call of that tool and
+  stamped its output, latency and failure onto it.
+
+! **The explorer stops showing a project as it was the first time you opened it.** A cache
+  *hit* restarted the thirty-second clock, so anyone reopening ⌘P more often than that never
+  got a second read. It now also marks the files inside a newly created folder — git
+  collapses those into one entry unless asked otherwise, so the newest files in a project
+  arrived unmarked and the *Changed* chip filtered them out. And one file now reads as one
+  letter: the explorer and the new-session dialog read git's status by opposite rules,
+  showing `M` in one against `A` in the other.
+
+! **A session working through the shell no longer reports the branch it launched on.** An
+  agent told to prefer Bash creates files with `cat > f` and never calls a write tool, and
+  both things that notice a session has moved read either a write's path or a `cwd` that
+  Claude Code pins to the launch directory — so the pane sat on `main` while every byte of
+  its work went to a worktree it had made itself. A shell command that really wrote now
+  counts as a write into the directory it ran in.
+
+! **"Last active" now means the last thing the session did, not the last time its file was
+  touched.** It was read off the transcript's mtime, and Claude appends untimestamped
+  bookkeeping records whenever a session starts or goes away — so every conversation open
+  when a machine shut down was stamped with the shutdown, to the second. Half of this
+  machine's 352 transcripts were wrong by more than ten minutes and some by weeks. It fixes
+  the dormant rows, History's ordering and buckets, and the day a session is filed under in
+  the Trail.
+
+! **Windows: the tray menu no longer stops updating after a day**, and the log no longer
+  fills with a warning that says nothing went wrong. Each session row's coloured status image
+  minted a fresh Windows bitmap on every rebuild without ever releasing it, so a long-lived
+  instance hit the 10,000-handle limit — after which the menu froze at whatever it last drew
+  and the app logged `The operation completed successfully.` twice a second for hours. Fixed
+  in a patched build of the menu library, reported upstream.
+
+! **The working-set card stops arguing with itself.** A folder whose only change was one new
+  file read `+0 −0`, `0 files` and — a line below — a `1 new` chip: three figures for one
+  file. It states the set once now (`9 files · 2 new`), and a tree with nothing deleted no
+  longer hands the whole churn bar to its red half.
+
+! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code writes
+  a whole new ~290 MiB binary inside a session Episko launched, so the kernel charged those
+  bytes to a `claude` process and a day's work looked like thirty times what it really did.
+  The update's own size now comes back out of the figure and the rate beside it; only bytes a
+  new binary on disk accounts for are ever discounted.
+
+! **A finished fleet's badge stands down instead of haunting the row.** A `SubagentStop` can
+  genuinely never arrive — an interrupted workflow's agents, a turn the API killed — so one
+  missed event left a pane reading "2/8 ◑" hours after everything had completed.
+
+! **Seven ⌘K rows did nothing when you clicked them.** *Add a project folder*, *Open a
+  terminal*, *Reveal the current folder*, *Change the sidebar sort order*, both panel toggles
+  and *Toggle the theme* were wired to the palette's placeholder handlers, which the table
+  copied when the module loaded.
+
+! **A push Episko refuses now hands over a command that works.** A branch with commits on
+  both sides was declined with `git pull --ff-only && git push`, which cannot fast-forward a
+  branch that has moved on locally. A branch merely behind with nothing of its own now
+  answers "nothing to push" rather than predicting a rejection that could never happen.
+
+! **Smaller repairs.** The header's glyphs sit on the middle of their buttons. A symlinked
+  folder in a non-repo project is no longer listed as a file. The explorer's "some files not
+  shown" warning no longer fires for a project that fits exactly, nor stays silent for one
+  that genuinely doesn't. Hiding *Session count* no longer leaves the status bar opening with
+  a stray divider. A tool answering with a JSON list no longer reads as *(nothing returned)*.
 
 ## 0.20.0 — 2026-08-14
 A session that wants you lights up its own row, the "your turn" badge lets go of the

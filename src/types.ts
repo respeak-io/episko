@@ -20,7 +20,32 @@ export type Risk = "low" | "med" | "high";
 export interface ApiErr { kind: string; detail: string; at: number }
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
-export interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
+//
+// `inp` and `out` are the whole call — what was executed and what came back — already
+// capped by ./toolio at capture, which is where the cap has to be: a `Read` response is
+// an entire file. `out` stays empty until the Post hook lands, so "" means still running
+// or (for a call the user never answered a permission on) never finished. `failed` is
+// the PostToolUseFailure discriminant, where the reason lives in `error` and there is no
+// `tool_response` at all.
+//
+// `id` is Claude Code's own `tool_use_id`, identical on the Pre and Post payloads of one
+// call. It is what pairs them: matching on the tool *name* picks the most recent open
+// call of that name, which is approximate under parallel subagents and was harmless
+// while all it could misplace was a latency bar. Hanging a command's output off the
+// wrong row is not harmless, so the name match survives only as the fallback for a
+// payload with no id.
+export interface Act {
+  tool: string; arg: string; time: string; startMs: number; durMs: number | null;
+  id: string; inp: string; out: string; failed: boolean;
+  /// Claude's own note on why it made this call, lifted out of `inp` rather than left
+  /// inside it — a `description:` line in the middle of a command is the difference
+  /// between a block you can paste into a shell and one you have to edit first. See
+  /// ./toolio's `descText` for which tools it is taken from and why not all of them.
+  desc: string;
+}
+/// How a row is addressed by the click dispatcher and the expanded-row set. `startMs`
+/// backs the id up rather than an array index, which every new call would shift.
+export const actKey = (a: Act): string => a.id || `t${a.startMs}`;
 // What a session did to one file, accumulated over the whole conversation — the model
 // behind the inspector's Context card. One entry per path, never one per tool call:
 // the question it answers is "what has this agent been into?", and an agent that reads
@@ -41,6 +66,17 @@ export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number;
 }
+// One uncommitted file, as `git_working_set` names it. `code` is the single letter
+// the pane shows (M/A/D/R/C/U, or `?` for untracked), `from` the path a rename came
+// from, and the line counts are that file's own — for an untracked file, the lines the
+// stat's own count read off disk, so the row and the total agree. 0/0 for a binary
+// file, and for an untracked one too large to read.
+export interface StatusFile {
+  path: string; code: string; from: string | null; added: number; removed: number;
+}
+// A DiffStat with the files behind it. `entries` is capped backend-side while `dirty`
+// is not, so `dirty - entries.length` is what a list says it left out.
+export interface WorkingSet extends DiffStat { entries: StatusFile[] }
 // One checkout of a repo as `worktree_heads` reports it — path, the branch on its
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
@@ -97,6 +133,11 @@ export interface Fanout {
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
 // nothing to difference against and the rates are 0 by default rather than measured.
 export interface Res { readBps: number; writeBps: number; readMb: number; writtenMb: number; primed: boolean }
+// One installed `claude` binary, as `all_sessions_resources` reports it alongside the
+// counters. A version that appears mid-run is a self-update, whose ~290 MiB the kernel
+// charged to a session of ours — see `installGrown` in ./usage, which is what turns this
+// list into the discount that keeps it out of the day.
+export interface InstallFile { name: string; mb: number }
 // One process keeping a folder alive, as the backend's `path_holders` reports it.
 // `why` is how it was found and how it reads to a human: "cwd" is a process sitting
 // in the folder (a terminal, a dev server, a PTY pane on its way out), "file" is an
@@ -183,13 +224,29 @@ export const midFlight = (s: Sess) =>
 /// boundary, which is worse than the bug this fixes. It is generous because the cost of
 /// being late is one stale minute, and the cost of being early is a lie.
 export const FANOUT_GRACE_MS = 90_000;
+/// The opposite bound: how long `subagents > 0` is believed with no event behind it.
+///
+/// The live count is differenced from fire-and-forget hooks, and a `SubagentStop` can
+/// genuinely never come — an interrupted workflow's agents, a turn the API killed, a
+/// silently dropped POST (`curl -s` + async by design). Every miss skews the count up
+/// and nothing ever skews it down, so without a ceiling one lost Stop pinned the
+/// "background" badge on a finished pane for the rest of the app's life: a pane once
+/// read "2/8" an hour after its run-state file said completed, six leaked agents
+/// strong. An hour of silence outvotes the counter while sitting far above the longest
+/// real quiet stretch seen mid-run (eighteen minutes); a fleet that outlives it only
+/// dims until its next event, because that event re-stamps `lastAt` and revives the
+/// readout. `applyHook` zeroes the count itself off this same answer.
+export const FANOUT_DEAD_MS = 3_600_000;
 /// The session's fan-out if it is still in flight, else null.
 ///
 /// `subagents > 0` has to be sufficient on its own — a workflow agent can run eighteen
 /// minutes without the parent seeing a single `Subagent*` event in between, so a rule
-/// that only trusted recent activity would drop the longest runs first.
+/// that only trusted recent activity would drop the longest runs first. Sufficient,
+/// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
+/// the fleet is written off however high it reads.
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
   if (!isAgent(s) || !s.fanout) return null;
+  if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
   return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
 /// Is the fan-out the whole story — i.e. the conversation itself has nothing in flight?

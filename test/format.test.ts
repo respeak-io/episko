@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  ageBucket, basename, dialogBody, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
   fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -156,6 +156,43 @@ describe("esc", () => {
   });
   it("double-escapes an already-escaped entity, as a text-node escaper should", () => {
     expect(esc("&amp;")).toBe("&amp;amp;");
+  });
+});
+
+describe("dialogBody — a confirmation's prose → the in-app dialog's markup", () => {
+  it("makes one paragraph per blank line, and keeps single newlines as breaks", () => {
+    expect(dialogBody("Move this session?\n\nThe conversation is kept.")).toBe(
+      "<p>Move this session?</p><p>The conversation is kept.</p>");
+    // The holders message puts the path on a line of its own inside one paragraph;
+    // that break is the author's and has to survive.
+    expect(dialogBody("still on disk:\nE:/repo/wt")).toBe("<p>still on disk:<br>E:/repo/wt</p>");
+  });
+  it("turns an all-bullet paragraph into a list, and drops the bullet character", () => {
+    // <li> draws its own marker; leaving the • in gives every row two of them.
+    expect(dialogBody("  • code (12): has a file open\n  • node (9): sitting here")).toBe(
+      "<ul><li>code (12): has a file open</li><li>node (9): sitting here</li></ul>");
+  });
+  it("does not swallow a lead-in sentence sitting above the bullets", () => {
+    // "Held by:" is not a list item, so the paragraph is prose, not a <ul>.
+    expect(dialogBody("Held by:\n• code (12)")).toBe("<p>Held by:<br>• code (12)</p>");
+  });
+  it("renders backticked text as code", () => {
+    expect(dialogBody("Episko will run `just --dump` inside it.")).toBe(
+      "<p>Episko will run <code>just --dump</code> inside it.</p>");
+  });
+  it("escapes BEFORE anything else, so a branch name can never be markup", () => {
+    // Branch names, task labels and paths all reach these strings unfiltered.
+    expect(dialogBody("Remove <img src=x onerror=alert(1)>?")).toBe(
+      "<p>Remove &lt;img src=x onerror=alert(1)>?</p>");
+    expect(dialogBody("a & b")).toBe("<p>a &amp; b</p>");
+    // …including inside the code span: the backticks decide the tag, the content
+    // stays inert.
+    expect(dialogBody("run `rm <x>`")).toBe("<p>run <code>rm &lt;x></code></p>");
+  });
+  it("drops blank runs rather than emitting an empty paragraph", () => {
+    expect(dialogBody("a\n\n\n\nb")).toBe("<p>a</p><p>b</p>");
+    expect(dialogBody("")).toBe("");
+    expect(dialogBody("\n \n")).toBe("");
   });
 });
 
@@ -322,5 +359,33 @@ describe("uDelta — period-over-period change", () => {
     expect(uDelta(50, 100)).toContain("▼");
     expect(uDelta(50, 100)).toContain("<b>50%</b>"); // magnitude, not signed
     expect(uDelta(100, 100)).toContain("▲");         // flat reads as up
+  });
+});
+
+describe("ageBucket — the sheet's time dividers", () => {
+  const min = (n: number) => n * 60_000;
+  it("bands an age, not a timestamp", () => {
+    expect(ageBucket(0)).toBe("Just now");
+    expect(ageBucket(min(0.9))).toBe("Just now");
+    expect(ageBucket(min(1))).toBe("Last 5 minutes");
+    expect(ageBucket(min(4.9))).toBe("Last 5 minutes");
+    expect(ageBucket(min(5))).toBe("Last 30 minutes");
+    expect(ageBucket(min(29))).toBe("Last 30 minutes");
+    expect(ageBucket(min(30))).toBe("Last hour");
+    expect(ageBucket(min(59))).toBe("Last hour");
+    expect(ageBucket(min(60))).toBe("Earlier");
+    expect(ageBucket(min(600))).toBe("Earlier");
+  });
+  // The bands have to stay in recency order for a list grouped by them to read top-down,
+  // which is only true if each boundary hands off to the next band and none overlap.
+  it("never goes backwards as an age grows", () => {
+    const order = ["Just now", "Last 5 minutes", "Last 30 minutes", "Last hour", "Earlier"];
+    let seen = 0;
+    for (let m = 0; m < 120; m += 0.5) {
+      const i = order.indexOf(ageBucket(min(m)));
+      expect(i).toBeGreaterThanOrEqual(seen);
+      seen = i;
+    }
+    expect(seen).toBe(order.length - 1);
   });
 });

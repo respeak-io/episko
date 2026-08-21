@@ -17,6 +17,40 @@ Easy to get wrong:
 - **Close goes through the OS close request** (`win.close()`), giving the same `quit-requested` confirm as Ctrl+Q, never around the guard.
 - **Maximize is only asked for**; the glyph flips on the `onResized` that comes back (also catching Win+↑, snap, and the drag region's own double-click; the same listener tells macOS it entered fullscreen).
 
+## No OS dialogs: `confirm.ts`
+
+The same argument as the title bar, one layer up. Every yes/no question was
+`ask()` from `tauri-plugin-dialog`, which draws the platform's own box; all ten now go
+through `ask` in `confirm.ts`, which keeps that function's exact signature so a call
+site changes only its import.
+
+- **The reason is not only that it looked foreign.** A native box cannot say which of
+  its two buttons is the destructive one — "Remove" and "Cancel" come back as two grey
+  buttons in whatever order the platform prefers — and it flattens a message written in
+  paragraphs into one blob. `kind` now picks the button: `info` accent, `warning`/
+  `error` red. `dialogBody` (`format.ts`) reads the message's blank lines, bullets and
+  backticks, so the prose stays plain text and is edited where it is written.
+- **`open` stays native and must.** That one is the OS *file browser* — sidebar,
+  recents, permissions — and an in-app imitation is strictly worse. It is the only
+  export of that plugin still imported anywhere; `test/confirm.test.ts` fails on any
+  other, in any module.
+- **It has its own backdrop, not `#scrim`.** These open *over* `#wtDlg` and `#mgrDlg`,
+  so sharing would mean pulling the backdrop out from under the dialog that asked, or
+  teaching `dropScrim` about a dialog that outranks everything it lists. z-index 90/91,
+  above every other overlay; the contract test asserts nothing outranks it.
+- **A modal has to actually own the keyboard**, and one capture listener is not enough
+  to do it. `confirm.ts` registers its `keydown` at module scope so it runs before
+  main.ts's (added later, same target, same phase), and calls
+  **`stopImmediatePropagation`** — the weaker `stopPropagation` blocks main.ts's
+  *bubble* dispatcher but not its capture-phase listener for `reveal`, which is how
+  ⌘⇧⏎ opened a Finder window from behind an unanswered "Remove worktree?". Esc, the
+  cancel button and a backdrop click all resolve `false`; a question raised while
+  another is up queues behind it rather than cancelling it.
+- **Closed means `visibility: hidden`, not just `opacity: 0`.** The app's older
+  overlays get away with opacity alone; this one has two buttons that answer a
+  destructive question, and an invisible "Remove worktree" left in the tab order is
+  reachable by ⇥ from anywhere in the app.
+
 ## The tray menu
 
 The OS owns the font, row height, highlight and radius; Episko controls each row's string and its 16px image. Sessions group under their project and carry status as a coloured icon beside a `title · status` label, the title being Claude's own OSC summary of the conversation (clipped to one line; the branch fills in until a summary arrives); the header row says which repo. The menu is as wide as its widest row, so the clip length in `tray.ts` is the width policy.

@@ -18,7 +18,7 @@
 
 /** Everything the global keydown handler can be asked to do. */
 export type KeyAction =
-  | "palette" | "sessionSwitch" | "terminal" | "history" | "reveal"
+  | "palette" | "sessionSwitch" | "terminal" | "history" | "reveal" | "files"
   | "buildTask" | "testTask" | "runTask"
   | "sidebar" | "inspector" | "settings"
   | "fontUp" | "fontDown" | "fontReset";
@@ -84,6 +84,7 @@ export const KEY_ACTIONS: KeyActionDef[] = [
   { id: "sessionSwitch", label: "Switch to session 1–9",     combo: "mod+digit",   hint: "One binding over nine digits. A digit bound elsewhere is carved out; the rest keep working." },
   { id: "terminal",      label: "Open a terminal here",      combo: "mod+t",       hint: "A plain shell, no Claude." },
   { id: "history",       label: "Session history",           combo: "mod+shift+h" },
+  { id: "files",         label: "Find a file in this project", combo: "mod+p",      hint: "Empty, it browses the folder; typing finds across the project." },
   { id: "reveal",        label: "Reveal this folder",        combo: "mod+shift+enter" },
   { id: "buildTask",     label: "Run the default build task", combo: "mod+shift+b" },
   { id: "testTask",      label: "Run the default test task",  combo: "mod+shift+t" },
@@ -108,7 +109,7 @@ export function keyActionDef(id: KeyAction): KeyActionDef {
  * new action being added to the table and never appearing in the picker.
  */
 export const KEY_GROUPS: { label: string; actions: KeyAction[] }[] = [
-  { label: "Sessions", actions: ["palette", "sessionSwitch", "terminal", "history", "reveal"] },
+  { label: "Sessions", actions: ["palette", "sessionSwitch", "terminal", "history", "reveal", "files"] },
   { label: "Tasks", actions: ["buildTask", "testTask", "runTask"] },
   { label: "The window", actions: ["sidebar", "inspector", "settings", "fontUp", "fontDown", "fontReset"] },
 ];

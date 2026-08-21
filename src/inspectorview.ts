@@ -1,7 +1,10 @@
 // The inspector's markup: everything the right-hand panel shows about an agent
 // session — the vital header, the context/cost gauges, the plan, the working set
-// and its git buttons, the activity timeline, the resource bars — plus the diff
-// viewer's hunk rows.
+// and its git buttons, the activity timeline — plus the diff viewer's hunk rows.
+//
+// The disk-I/O card used to be pinned to the bottom of this panel and is now a footer
+// segment (./usageview's `ioPopHtml`): it was app-wide rather than per-session, so it
+// read identically whichever pane was on stage while costing ~120px of a 296px column.
 //
 // Same boundary as ./usageview: every function here takes a Sess (or a plain
 // value) and returns a string. It touches no DOM and calls no renderer, so it
@@ -12,24 +15,20 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate, sparkline, tilde } from "./format";
+import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
-  type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
-import { ioAll, ioInfoAt, ioScope, sessions, type IoScope } from "./state";
-import { dayIo, ioDayCount, ioSameNote, ioTotal, todayKey } from "./usage";
+import { sessions } from "./state";
 
 // Which session has a fetch/pull/push in flight, if any — the git buttons are
 // disabled while one is.
 export let gitBusy: string | null = null;
 export function setGitBusy(id: string | null) { gitBusy = id; }
-// Shared by the resource bars and the shell inspector: colour a 0–100 meter.
-const mc = (v: number) => (v >= 80 ? "hot" : v >= 55 ? "warn" : "");
-
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
 function toolVerb(tool: string): string {
@@ -39,7 +38,7 @@ function toolVerb(tool: string): string {
   return TOOL_VERB[tool] || "Working";
 }
 // Maps a tool to the CSS colour class that tints its dot / name / verb.
-function toolClass(tool: string): string {
+export function toolClass(tool: string): string {
   if (!tool) return "";
   if (tool === "Read" || tool === "Grep" || tool === "Glob") return "t-read";
   if (tool === "Edit" || tool === "Write" || tool === "NotebookEdit") return "t-edit";
@@ -191,26 +190,63 @@ export function driftHtml(s: Sess): string {
     <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">${cwdMove ? "Follow it here" : "Move session here"}</button></div>
   </div>`;
 }
+/// The clickable half of the working-set card — the counts, the churn bar, and the cue
+/// saying that both of them open the diff. Exported because ./mirror paints the same
+/// block for an external session's folder: the two were copies, and copies of a card
+/// this small drift in exactly the way the two bugs below did.
+///
+/// Two things it must never do again, both of which shipped:
+///
+/// - **Never split the bar when there is no churn.** `added + removed || 1` gave the
+///   deletion half 100% of the width whenever both were zero, so a tree whose only
+///   change is one new file drew a full-width red bar: the loudest possible rendering
+///   of nothing having been deleted. No churn, no split — the empty track says it.
+/// - **Never count only the tracked files.** `files` comes from `diff --numstat HEAD`,
+///   which a never-committed file is not in, so the card read `0 files` directly above
+///   a `1 new` chip and the two argued with each other. There is now one count, of
+///   everything git calls dirty, with the new ones named as a share of it rather than
+///   as a separate figure somewhere else in the card.
+///
+/// The `+N −M` pair is dropped entirely when nothing tracked changed, rather than
+/// printed as `+0 −0`: an untracked file has no line counts until it is added, and a
+/// pair of zeroes reads as "nothing happened" beside a count saying something did.
+export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
+  const churn = g.added + g.removed;
+  const aw = churn ? Math.round((g.added / churn) * 100) : 0;
+  // `dirty` is git's own porcelain line count, so it covers the entries numstat misses
+  // (untracked, unmerged, mode-only); the sum is the fallback for a stat that predates it.
+  const touched = g.dirty || g.files + g.untracked;
+  const plural = touched === 1 ? "" : "s";
+  // "1 file · 1 new" is true and still silly. When every dirty entry is a new file there
+  // is no share to name, so the count says what they are instead of what they aren't.
+  const count = g.untracked >= touched
+    ? `${touched} new file${plural}`
+    : `${touched} file${plural}${g.untracked ? ` · ${g.untracked} new` : ""}`;
+  const lines = churn ? `<span class="add">+${g.added}</span><span class="del">−${g.removed}</span>` : "";
+  const bar = churn
+    ? `<div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`
+    : `<div class="stackbar flat"></div>`;
+  return `<div class="wpeek" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" title="Review the working set — ${escAttr(count)}">
+      <div class="wtop">${lines}<span class="files${lines ? "" : " lone"}">${count}</span><span class="wpeek-cue">⤢</span></div>
+      ${bar}</div>`;
+}
 export function wsetHtml(s: Sess): string {
   const g = s.git!;
-  const tot = g.added + g.removed || 1;
-  const aw = Math.round((g.added / tot) * 100);
-  const newBadge = g.untracked ? `<span class="unc">${g.untracked} new</span>` : "";
   const dirty = g.files || g.untracked;
   // The diff half is only worth drawing when something is actually uncommitted —
   // a clean tree that's 5 behind still needs the branch/sync row below.
-  const diff = dirty
-    ? `<div class="wpeek" data-diff="${esc(s.workdir)}" data-difftitle="${esc(s.project + (s.branch ? " · " + s.branch : ""))}" title="Open the uncommitted diff">
-      <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span><span class="wpeek-cue">⤢</span></div>
-      <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div></div>`
-    : "";
+  const diff = dirty ? wpeekHtml(s.workdir, s.project + (s.branch ? " · " + s.branch : ""), g) : "";
   const sync = g.upstream
     ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
+  // The branch row is about the branch and nothing else. The untracked count used to
+  // sit on its right, where "1 new" a few pixels from a branch name and an ahead/behind
+  // pair reads as a new *commit* or a new *branch*; it belongs with the other file
+  // counts, and that is where `wpeekHtml` now puts it.
   return `<div class="wset">${diff}
-    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span>${newBadge}</div>
+    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span></div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
 // Fetch / pull / push for the session's workdir.
@@ -303,10 +339,18 @@ function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: b
 /// The card's two modes share one header, so the toggle sits still when you flip it.
 /// The Files mode carries no count line: every group already states its own, and the
 /// two together only competed for the width the toggle needs.
-function ctxHead(mode: CtxMode, sub: string): string {
+///
+/// `hint` is the line under it — what a row in this mode *does*, in the same small grey
+/// the I/O panel's note uses. Both modes are lists of unremarkable-looking rows that are
+/// all click targets, and neither said so: Files opens a file in your editor, and since
+/// the Tools row stopped unfolding it has no disclosure chevron left to imply anything
+/// either. Passed empty when there is nothing to click, because a card whose body says
+/// "No tool calls yet" should not also be offering advice about clicking one.
+function ctxHead(mode: CtxMode, sub: string, hint: string): string {
   const tab = (m: CtxMode, t: string) => `<button class="${m === mode ? "on" : ""}" data-fmode="${m}">${t}</button>`;
   return `<div class="fx-head"><span class="label">Context</span><span class="fx-sub">${esc(sub)}</span>`
-    + `<span class="fx-seg">${tab("files", "Files")}${tab("tools", "Tools")}</span></div>`;
+    + `<span class="fx-seg">${tab("files", "Files")}${tab("tools", "Tools")}</span></div>`
+    + (hint ? `<p class="fx-note">${esc(hint)}</p>` : "");
 }
 
 export type CtxMode = "files" | "tools";
@@ -314,11 +358,16 @@ export type CtxMode = "files" | "tools";
 /// The inspector's Context card: every file the session has touched, grouped by what it
 /// did to them, plus a one-line tally of everything that touched no file.
 ///
-/// `open` is the set of group names currently shown in full — ephemeral view state owned
-/// by ./inspector, passed in rather than read, so this stays a pure function of its
-/// arguments like every other card here.
+/// `open` is which of the Files groups is unfolded — ephemeral view state owned by
+/// ./inspector and passed in rather than read, so this stays a pure function of its
+/// arguments like every other card here. Tools has no fold of its own any more: a row
+/// opens ./callsheet instead of unfolding, which is what retired the second set this
+/// used to need.
 export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): string {
-  if (mode === "tools") return ctxHead(mode, "last 8 calls") + timelineHtml(s);
+  if (mode === "tools") {
+    const hint = s.activity.length ? "Click a row to see what ran and what came back." : "";
+    return ctxHead(mode, "last 8 calls", hint) + timelineHtml(s);
+  }
 
   const g = groupTouches(s.files);
   const others = otherTools(s.tally);
@@ -329,12 +378,32 @@ export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): 
     // A session that has run tools but opened no file is a real and readable state
     // (a long `Bash` sweep, a research turn) — say so, and still show what it did run.
     const note = others.length ? "No files opened yet." : "Nothing touched yet.";
-    return ctxHead(mode, "") + `<div class="insp-empty" style="padding:14px 0">${note}</div>` + foot;
+    return ctxHead(mode, "", "") + `<div class="insp-empty" style="padding:14px 0">${note}</div>` + foot;
   }
   const body = GROUP_ORDER.map((k) => fileGroup(k, g[k], s.workdir, open.has(k))).join("");
-  return ctxHead(mode, "") + `<div class="fx">${body}</div>` + foot;
+  return ctxHead(mode, "", "Click a file to open it.") + `<div class="fx">${body}</div>` + foot;
 }
 
+/// The one line of a failure worth putting on a collapsed row.
+///
+/// A `PostToolUseFailure` reason is the single highest-value thing this card carries and
+/// it has no surface anywhere else in the app, so it is the one payload that does not
+/// wait to be asked for. Only the first line, though: the rest is a stack trace or a
+/// compiler's second opinion, and both want the sheet's width rather than the rail's.
+function failLine(a: Act): string {
+  const first = (a.out || "").split("\n").find((l) => l.trim()) || "";
+  return first.length > 84 ? `${first.slice(0, 84)}…` : first;
+}
+
+/// The Tools timeline: the last eight calls, one line each, opening the call sheet.
+///
+/// **A row no longer expands in place.** It used to unfold two `<pre>` blocks into a
+/// 296px column, which is ~38 characters of 10.5px mono — so a diff hunk arrived with
+/// its `+`/`-` markers broken off the lines they belong to, a `Read` response was a
+/// whole file rendered a third of a line at a time, and the block pushed everything
+/// under it down the panel while it was open. ./callsheet holds all of that now, at
+/// ~1120px, and what stays here is the summary a rail is actually good at: which call,
+/// how long, and whether it failed.
 export function timelineHtml(s: Sess): string {
   const acts = s.activity.slice(0, 8);
   if (!acts.length) return `<div class="insp-empty" style="padding:14px 0">No tool calls yet.</div>`;
@@ -344,132 +413,17 @@ export function timelineHtml(s: Sess): string {
     const running = a.durMs == null;
     const w = running ? 100 : Math.max(6, Math.round(((a.durMs ?? 0) / maxDur) * 100));
     const ms = running ? "···" : fmtLatency(a.durMs!);
-    return `<div class="row"><span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span><span class="arg">${esc(a.arg)}</span><span class="lat"><span class="latbar ${running ? "run" : ""}" style="width:${w}%"></span><span class="ms">${ms}</span></span></div>`;
+    const why = a.failed ? failLine(a) : "";
+    // `data-tlsid` rides along rather than being looked up from `activeId` at the click:
+    // the row is markup, and markup outlives the state that produced it by however long
+    // it takes somebody to move the pointer.
+    return `<div class="tl2i${a.failed ? " bad" : ""}">`
+      + `<div class="row" data-tlrow="${escAttr(actKey(a))}" data-tlsid="${escAttr(s.id)}" title="${escAttr(`${a.tool} · ${a.arg}\nOpen what ran and what came back`)}">`
+      + `<span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span>`
+      + `<span class="arg">${esc(a.arg)}</span>`
+      + `<span class="lat"><span class="latbar ${running ? "run" : ""}" style="width:${w}%"></span><span class="ms">${ms}</span></span></div>`
+      + (why ? `<div class="tl2f">${esc(why)}</div>` : "")
+      + `</div>`;
   }).join("");
   return `<div class="tl2">${rows}</div>`;
 }
-// Disk I/O for the session's `claude` process. Replaced cpu/mem, which measured the one
-// thing a Claude session is never short of: this is an I/O-bound workload — it reads
-// your tree and writes files — and a runaway agent shows up as sustained throughput
-// long before it shows up as CPU.
-//
-// The bar is log-scaled against a 32 MiB/s reference rather than linear: real rates span
-// idle-KiB/s to burst-MiB/s, and a linear bar would sit at zero for everything short of a
-// pathological write storm, which is precisely the case it needs to show.
-const IO_REF_BPS = 32 * 1024 * 1024;
-function ioPct(bps: number): number {
-  if (bps <= 0) return 0;
-  return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
-}
-// App-wide, not per-session: `ioAll` sums every claude process Episko owns, so this
-// block reads the same on whichever pane you happen to have open — like the rate
-// limits, and labelled so nobody mistakes it for the session in front of them.
-/// The three windows the total row can show, and what each honestly covers. `run` is
-/// the raw reading; the other two come from the `cc-io` rollup, which only starts the
-/// day it shipped — so a machine that has just updated has a `today` smaller than its
-/// `run`, which is correct rather than a bug.
-const IO_SCOPE_LABEL: Record<IoScope, string> = { today: "today", run: "this run", all: "recorded" };
-function ioFigures(scope: IoScope): { r: number; w: number; known: boolean } {
-  if (scope === "run") return { r: ioAll.readMb, w: ioAll.writtenMb, known: true };
-  const v = scope === "today" ? dayIo[todayKey()] : ioTotal();
-  return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
-}
-/// What one scope reads as. The note below compares these strings rather than the
-/// floats, because two figures that round to the same text are the same figure to
-/// whoever is looking at the row.
-function ioText(scope: IoScope): string {
-  const f = ioFigures(scope);
-  return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
-}
-/// Why the figures in this box look the way they do.
-///
-/// Every number here is **physical** disk I/O — what the kernel's per-process counters
-/// (`proc_pid_rusage` on macOS, and its equivalents elsewhere, via sysinfo) actually
-/// charged the claude processes Episko spawned. Three things about that surprise people
-/// enough to be worth a panel, and all three were measured on this machine rather than
-/// reasoned about:
-///
-/// - Writes ran ~32× the transcript's own growth (3.11 MiB of physical writes against
-///   0.10 MiB of transcript in 90s). Claude Code appends and fsyncs after every message,
-///   and a flush commits whole blocks; that is its journalling, not Episko's overhead
-///   and not something Episko can batch away.
-/// - Reads ran far *below* what the agents obviously read, because a page-cache hit
-///   never reaches the disk — a hot repo re-read costs nothing here.
-/// - Children are absent, and not by omission: a child that wrote 120 MiB moved its
-///   parent's counter by exactly 0.00 MiB. The OS never adds an exited child's bytes to
-///   its parent, so walking the process tree would still miss every sub-second `rg` or
-///   `git` that lives and dies between two four-second polls.
-///
-/// Kept as data rather than one blob of markup so the shape stays obvious and the strings
-/// stay greppable.
-///
-/// The panel expands rather than appearing, and getting that to happen at all is the
-/// interesting part — see `ioInfoAnim`.
-const IO_INFO: Array<[string, string]> = [
-  ["Writes run far above the conversation",
-    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks, measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
-  ["Reads look small",
-    "Anything already in the page cache never reaches the disk, so re-reading a warm repo costs nothing on this meter."],
-  ["Child processes are not counted",
-    "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
-];
-/// How long the expander takes. Mirrored in styles.css (`rinfo-open`) — the two have to
-/// agree, because this file decides when the animation is *over*.
-const IO_INFO_MS = 220;
-/// The inline `style` that makes the expander survive this app's render model.
-///
-/// A CSS **transition** is useless here: `#inspector` is rebuilt by `innerHTML` on every
-/// pass, so the node that would transition is a brand-new one already in its final state
-/// — which is why `.pfbody`'s transition in the sidebar never actually plays either. A
-/// keyframes **animation** does run on a freshly-inserted node, so that is what this uses.
-///
-/// But that trades one bug for another: the inspector repaints on telemetry, so a repaint
-/// landing 80ms into the animation would insert *another* fresh node and play the whole
-/// expansion again — the panel would visibly collapse and re-open under a busy fleet.
-/// A negative `animation-delay` fixes it: it starts an animation partway through, so each
-/// replacement node *resumes* where its predecessor was instead of restarting. Once the
-/// run is over the animation is switched off outright, which also settles the markup
-/// string so ./inspector's guard can go back to skipping repaints.
-function ioInfoAnim(): string {
-  const el = Date.now() - ioInfoAt;
-  return el >= IO_INFO_MS ? ` style="animation:none"` : ` style="animation-delay:-${el}ms"`;
-}
-export function resHtml(): string {
-  const r = ioAll;
-  const info = ioInfoAt > 0;
-  // Before the second sample there is no window to average over, so the rate is unknown
-  // rather than zero — say so instead of showing a confident "0 B/s".
-  const rd = r.primed ? fmtRate(r.readBps) : "—";
-  const wr = r.primed ? fmtRate(r.writeBps) : "—";
-  const rp = r.primed ? ioPct(r.readBps) : 0, wp = r.primed ? ioPct(r.writeBps) : 0;
-  const n = [...sessions.values()].filter((x) => isAgent(x) && !x.external).length;
-  // The total is a *window*, and which window was never stated — it said "total" while
-  // showing the current run, so it read as a lifetime figure that reset overnight. The
-  // scope is now named on the row and the whole row cycles it.
-  const tot = ioText(ioScope);
-  // The `⟳` is permanent, not a hover reveal. This row sits directly under two static
-  // ones it is pixel-identical to at rest, so the only thing that said "clickable" was
-  // a hover highlight — which nobody finds, because nobody hovers a label. A cycling
-  // control has to look like one before it is touched.
-  //
-  // The note below it is the other half: the three windows legitimately coincide on a
-  // machine's first day (see `ioSameNote`), and a click that visibly changes nothing is
-  // indistinguishable from a broken one unless the row says why.
-  const note = ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount());
-  return `<div class="res" title="Disk I/O across every claude session Episko is running (${n}) · ${fmtMb(r.readMb)} read, ${fmtMb(r.writtenMb)} written this run">
-    <div class="rr rall"><span class="rk">all sessions</span><span class="rvall">${n} running</span><button class="rinfob${info ? " on" : ""}" data-ioinfo="1" aria-expanded="${info}" title="${info ? "Hide" : "Why these figures look the way they do"}">i</button></div>
-    <div class="rr"><span class="rk">read</span><span class="rbar ${mc(rp)}"><i style="width:${rp}%"></i></span><span class="rv">${rd}</span></div>
-    <div class="rr"><span class="rk">write</span><span class="rbar ${mc(wp)}"><i style="width:${wp}%"></i></span><span class="rv">${wr}</span></div>
-    <button class="rr rtot" data-ioscope="1" title="${esc(IO_SCOPE_TITLE[ioScope])}"><span class="rk">${IO_SCOPE_LABEL[ioScope]}</span><span class="rcyc">⟳</span><span class="rvtot">${tot}</span></button>
-    ${note ? `<p class="rnote">${esc(note)}</p>` : ""}
-    ${info ? `<div class="rinfo"${ioInfoAnim()}><div class="rinfo-in"><p class="rinfo-lead">Physical disk I/O charged to the claude processes Episko launched, rather than their logical reads and writes.</p>${
-      IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
-    }</div></div>` : ""}</div>`;
-}
-/// Spelled out per scope rather than one generic hint, because the difference between
-/// them is the whole point and two of the three have a caveat worth one sentence.
-const IO_SCOPE_TITLE: Record<IoScope, string> = {
-  today: "Disk I/O by Episko's claude sessions today. Click for this run",
-  run: "Disk I/O since Episko started: the processes' own counters, which reset with the app. Click for everything recorded",
-  all: "Disk I/O across every day Episko has recorded one. It starts when this rollup shipped, so it is not a lifetime figure. Click for today",
-};
