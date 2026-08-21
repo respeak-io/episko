@@ -12,8 +12,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import raw from "../CHANGELOG.md?raw";
 import { $, dropScrim } from "./dom";
 import { dlog } from "./debug";
-import { releaseChapter } from "./tour";
-import { startChapter } from "./tourui";
+import { startChapter, tourForVersion } from "./tourui";
 import { esc } from "./format";
 import {
   grouped, inlineMd, MARK_GLYPH, MARK_LABEL, parseChangelog, parseSeen, recordSeen, releaseFor,
@@ -91,7 +90,12 @@ function render() {
   // already opens itself once per version, so the ask costs no new interruption — and
   // it is the one place the release is already being explained. Declining leaves the
   // button sitting here for later; nothing re-asks.
-  const guide = releaseChapter(r.version);
+  //
+  // `tourForVersion` and not `releaseChapter`: the offer is only an offer while the
+  // chapter is untaken. Asking the manifest alone left "Show me →" on the entry forever,
+  // still calling a chapter you had already walked something new. Once taken it lives in
+  // Settings › Guide, which is what the tour's own closing card sends you to.
+  const guide = tourForVersion(r.version);
   $("clMain").innerHTML =
     `<div class="cl-vh"><h4>${esc(r.released ? `Episko ${r.version}` : "Next release")}</h4>
       ${r.date ? `<span class="when">${esc(r.date)}</span>` : `<span class="when">not released yet</span>`}

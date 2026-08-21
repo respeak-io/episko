@@ -90,8 +90,6 @@ let picked = new Set<string>();
 let sawPermAnswered = false;
 let hadPerm = false;
 
-export const tourRunning = () => ci >= 0 || $("tourCard").classList.contains("show");
-
 // ---------- the store ----------
 const read = (): TourState => parseTourState(localStorage.getItem(TOUR_KEY));
 function write(st: TourState) {
@@ -179,7 +177,7 @@ export const tourForVersion = (v: string) => shouldOfferRelease(v, read());
 export function startChapter(id: string) {
   const c = CHAPTERS.find((x) => x.id === id);
   if (!c) return;
-  plan = [c]; ci = 0; si = firstIndex();
+  plan = [c]; ci = 0; beginChapterState(); si = firstIndex();
   // Left mid-chapter last time? Pick it back up where it stopped. That is the whole
   // point of `at`, which until now was written on every exit and read by nothing — the
   // Guide row says "Resume" on the strength of it.
@@ -204,13 +202,30 @@ function beginPlan() {
   if (!plan.length) { endTour(); return; }
   const st = read();
   write({ ...st, queue: plan.map((c) => c.id) });
-  ci = 0; si = firstIndex();
+  ci = 0; beginChapterState(); si = firstIndex();
   enter();
 }
 
 // ---------- walking ----------
 
 function chapter(): Chapter | null { return plan[ci] ?? null; }
+
+/**
+ * Clear what is per-CHAPTER rather than per-run. Called wherever a chapter begins.
+ *
+ * Both latches below outlive a chapter otherwise, and both then lie about the next one:
+ * `sawPermAnswered` would carry an answer from an earlier chapter into a quickstart
+ * replay, so the permission step would arrive already satisfied — and, worse, the
+ * mode-aware pair would show the *card* step to someone whose mode raises no cards,
+ * because `permAnswered` is one of the three things its `when` accepts. `seenIdx` would
+ * keep counting steps a second run of the same chapter no longer shows.
+ */
+function beginChapterState() {
+  seenCh = chapter()?.id ?? "";
+  seenIdx.clear();
+  sawPermAnswered = false;
+  hadPerm = false;
+}
 /** Every step in the chapter, `when` or no `when` — what `si` indexes. */
 function allSteps(): TourStep[] { return chapter()?.steps ?? []; }
 /**
@@ -221,6 +236,10 @@ function allSteps(): TourStep[] { return chapter()?.steps ?? []; }
  * when the permission lands and leaves again when it is answered, so the counter read
  * "5 / 8" and then "6 / 7", which looks like the tour losing its place rather than a
  * step ending. Remembering what has applied makes the total only ever grow.
+ *
+ * `beginChapterState` clears this when a chapter starts, which is what makes a REPLAY of
+ * the same chapter count itself afresh. The id check here is the other half: `back()`
+ * can walk into the previous chapter of a plan without any chapter having begun.
  */
 let seenCh = "";
 const seenIdx = new Set<number>();
@@ -320,7 +339,7 @@ function finishChapter() {
 }
 
 function nextChapter() {
-  if (ci + 1 < plan.length) { ci++; si = firstIndex(); enter(); return; }
+  if (ci + 1 < plan.length) { ci++; beginChapterState(); si = firstIndex(); enter(); return; }
   ci = -1;
   renderDone();
 }

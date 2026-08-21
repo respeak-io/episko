@@ -20,6 +20,7 @@ const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const SIDEBARVIEW = readFileSync(new URL("../src/sidebarview.ts", import.meta.url), "utf8");
 const SETTINGS = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
 const STATE = readFileSync(new URL("../src/state.ts", import.meta.url), "utf8");
+const CHANGELOGUI = readFileSync(new URL("../src/changelogui.ts", import.meta.url), "utf8");
 /** Every Settings tab, as `id -> label` — the other join a card's copy can get wrong. */
 const SET_TABS: Record<string, string> = Object.fromEntries(
   [...SETTINGS.matchAll(/id: "(\w+)", label: "([^"]+)"/g)].map((m) => [m[1], m[2]]),
@@ -361,6 +362,18 @@ describe("the Quick start predicates", () => {
     // an explanation of what would have happened rather than a wait for it.
     expect(s.done!({ ...W0, phase: "done" })).toBe(true);
     expect(s.done!({ ...W0, phase: "done", permPending: true })).toBe(false);
+  });
+});
+
+describe("the What's new hand-off", () => {
+  it("asks whether the chapter is still worth offering, not just whether it exists", () => {
+    // `releaseChapter` answers "does this version ship one"; `shouldOfferRelease` (via
+    // ./tourui's `tourForVersion`) also asks whether it has been taken. Calling the
+    // first left "Show me →" sitting on the entry forever, offering a chapter you had
+    // already walked as though it were new — and left the predicate that knows better
+    // exported and uncalled.
+    expect(CHANGELOGUI).toMatch(/tourForVersion\(/);
+    expect(CHANGELOGUI).not.toMatch(/\breleaseChapter\(/);
   });
 });
 
