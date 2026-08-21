@@ -108,7 +108,7 @@ The roster answers "what is checked out where"; this answers what it cannot: **w
 | hook `cwd` | **pinned**; every `cd` out is undone | **follows** |
 | the transcript | stays where it was | **Claude re-homes it itself** |
 | `gitMutates` | fires | never; no Bash command ran |
-| the signal | a write's `file_path` | `cwd` |
+| the signal | a write's `file_path`, else the `cd` a write-shaped Bash command ran under | `cwd` |
 
 Hence two signals with different standing (`driftUpdate`), and the asymmetry is the design:
 
@@ -116,6 +116,10 @@ Hence two signals with different standing (`driftUpdate`), and the asymmetry is 
 - **Writes latch** (an agent working elsewhere still reads its original checkout constantly); cleared only by a write home.
 - **Both sides resolve to a checkout before comparison, longest match wins**, which keeps `cd src/` (not a move), a subfolder launch (not a move) and a nested worktree (a move) straight at once.
 - **The target must be a checkout the roster already knows**, because a false positive here puts a wrong branch on screen and offers to relocate a live session into `$TMPDIR`.
+
+**A session told to prefer the shell has no writes to read, and blinds both signals at once.** `cat > f <<'EOF'` to create and an inline `python3` heredoc to edit means every hook says `Bash` with no `file_path`, while case 1 keeps `cwd` pinned — so the pane reported the branch it launched on for its whole life, and nothing on screen said otherwise. The real session this was found on: 129 tool calls, 99 of them `Bash`, zero writes. So `writeSite` widens *what counts as a write and where it landed* rather than adding a third signal with new standing: a Bash command counts as a write into the directory it `cd`'d to, and every latch/clear rule above then applies unchanged (which is why a Bash write **home** retires a drift — an arm that could set but never clear would strand the pane on a card offering to move it into a checkout it had already left).
+
+Bounded on three sides, because a `cd` says where the shell stood and not where the bytes went: the command must **look like it wrote a file** (`BASH_WRITES` — an output redirect, an interpreter script that writes, `sed -i`), it must name **exactly one absolute directory** (`cd a && … && cd b`, or a `cd` in a heredoc *body*, has no answer, so it gets none), and the roster must recognise that directory as before. Both guards on the redirect pattern were put there by a false positive in that session's own traffic rather than by taste — **whitespace before the `>`** (or every `=>` in a TypeScript heredoc is a redirect, 11 of the 99, as is every `2>&1`) and **a `.` or `/` in the target** (or `if (s.activity.length > 12)` redirects to `12`). Replayed over all 129 calls the result is one latch, at the first `cat > src/toolio.ts`, and no other change.
 
 Display is the same either way and **the row does not move**: a `⤳ branch` marker, `old ⤳ ⑃ new` on the header chip, a card atop the inspector above the working set it contradicts.
 

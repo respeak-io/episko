@@ -69,6 +69,16 @@ Markers: `+` new · `~` changed · `!` fixed
   two calls of one tool overlap — routine under parallel subagents. They are now paired by
   the id Claude Code puts on both, so a fast call no longer takes a slow one's latency.
 
+! **A session working through the shell no longer reports the branch it launched on.** An
+  agent told to prefer Bash creates files with `cat > f` and edits them with an inline
+  `python3` heredoc, so it never calls a write tool — and both things that notice a session
+  has moved to another checkout read either a write's path or a `cwd` that Claude Code pins
+  to the launch directory. So the pane sat on `main` while every byte of its work went to a
+  worktree it had made itself. A shell command that wrote a file now counts as a write into
+  the directory it ran in, and the drift marker and *Move session here* appear as they do
+  for any other agent. It takes a command that really wrote, naming one checkout Episko
+  already knows, so an agent glancing into a sibling still moves nothing.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

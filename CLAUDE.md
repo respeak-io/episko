@@ -108,7 +108,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes *and* `cwd` |
+| `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
 | `attn.ts` | the moment a session starts wanting you: the highlight that fades off its row, the order the "your turn" badge queues in, and what opening a pane does to it |
