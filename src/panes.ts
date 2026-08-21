@@ -28,11 +28,10 @@ import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
   CLAUDE_CLI, isClaude, isExited, statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
-  type InstallFile, type LiveSess, type Res, type Restorable, type Runnable, type Sess,
+  type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
-import { fmtMb, fmtRate } from "./format";
 import {
   attachWebgl, claudeInput, cleanTitle, clipboardKeys, detachWebgl, fitSession, MONO,
   refit, shellKeys, trimScrollback, winClaudePaste,
@@ -750,24 +749,26 @@ export async function pollIo(): Promise<void> {
 
 export async function refreshSessionStats(s: Sess) {
   if (!isClaude(s) || s.external) return;
-  // Only re-render when the *displayed* values change — I/O rates jitter every poll, so
-  // comparing the rendered strings avoids a needless inspector rebuild (which would
-  // restart the heartbeat animation) every 4s while a session sits idle.
-  const sig = (g: DiffStat | null, r: Res) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-") + "|"
-    + `${fmtRate(r.readBps)}/${fmtRate(r.writeBps)}/${fmtMb(r.readMb)}/${fmtMb(r.writtenMb)}/${r.primed}`;
-  // Sampled BEFORE the await: `pollIo` writes straight into `ioAll`, so reading the
-  // "before" state afterwards would compare the new values against themselves and the
-  // inspector would never repaint.
-  const before = sig(s.git, ioAll);
+  // Only re-render when the *displayed* values change — comparing the rendered strings
+  // avoids a needless inspector rebuild (which would restart the heartbeat animation)
+  // every 4s while a session sits idle.
+  //
+  // The I/O half of this signature went with the card: those figures are a footer
+  // segment now, and `renderFoot` only writes `textContent`, which destroys no node and
+  // restarts no animation — so it is called unconditionally below rather than guarded.
+  // The rates jitter every poll, which is exactly why the *inspector* could not be.
+  const sig = (g: DiffStat | null) =>
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
+  const before = sig(s.git);
   await pollIo();
+  renderFoot();
   // The working set is read from the dirty poll's map, not fetched here — this tick
   // used to spawn a `git status` every 4s for whatever was on stage, the only
   // recurring subprocess in the app, to re-learn what `refreshDirtyStates` already
   // keeps fresh for every agent folder (hook-driven, 15s sweep for editor changes).
   // The cost is one dirty-poll tick of extra latency before the numbers move.
   s.git = dirtyByFolder.get(s.workdir) ?? null;
-  if (sig(s.git, ioAll) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
+  if (sig(s.git) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
 // Re-derive a session's branch label from its live git HEAD, so it reflects the
@@ -889,13 +890,14 @@ export function noteGitCommand(cmd: unknown) {
 // reporting the branch it left, forever and correctly.
 //
 // `driftUpdate` owns the rule (including which signal outranks which); this owns only
-// the repaint. Both fields it reads come off the same payload — `cwd` catches the moves
-// Claude Code makes itself, `file_path` the ones it doesn't know about.
+// the repaint. Everything it reads comes off the same payload — `cwd` catches the moves
+// Claude Code makes itself, `tool_input` the ones it doesn't know about (a write's
+// `file_path`, or the `cd` a Bash-first agent wrote under).
 export function noteDrift(s: Sess, tool: string, data: any) {
   if (!isClaude(s) || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
-  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
   // All three fields, not just the identity of the checkout: the branch on a drifted-into
   // checkout can be switched underneath us, and it is what every drift surface spells out.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;

@@ -28,6 +28,7 @@ import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
+import { parseFootPrefs, type FootPrefs } from "./footprefs";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -364,27 +365,14 @@ export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.ex
 // rate differencing, because that is where the previous readings live.
 export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, primed: false };
 
-// Which window the inspector's read/written total covers. `run` is what the figure
-// always was — the kernel counters of the claude processes THIS Episko spawned, which
-// go back to zero every launch — and it was labelled a bare "total", so it read as a
-// lifetime number that happened to be small. `today` is the default because it is the
-// question the footer's spend beside it already answers, and `all` is everything the
-// `cc-io` rollup has banked since it started keeping one. Cycled by clicking the row.
-export type IoScope = "today" | "run" | "all";
-export const IO_SCOPES: IoScope[] = ["today", "run", "all"];
-export let ioScope: IoScope =
-  (IO_SCOPES as string[]).includes(localStorage.getItem("cc-io-scope") || "")
-    ? localStorage.getItem("cc-io-scope") as IoScope : "today";
-export function setIoScope(s: IoScope) { ioScope = s; }
-
-// Whether the I/O box's explanation panel is open — and, when it is, the `Date.now()` it
-// opened at. Deliberately NOT persisted and not a `cc-` key: the figures in that box are
-// startling on first sight (a day of agents reads as a gigabyte written) and the panel
-// exists to say why once, not to be a preference somebody carries between runs. Reset by
-// a restart is the right lifetime for it.
+// Which segments the status bar shows. The model, its repair and every mutation of it
+// are in ./footprefs; this is only where the parsed value lives and what `renderFoot`
+// reads. Written through ./actions' `setFootSeg`, per the setters-assign-and-nothing-else
+// rule.
 //
-// One number rather than a flag beside it, because the two would have to agree: the open
-// time IS the open state (0 = closed), so there is no pair to drift. The timestamp is
-// what lets the expander survive a repaint — see `resHtml` in ./inspectorview.
-export let ioInfoAt = 0;
-export function setIoInfoAt(t: number) { ioInfoAt = t; }
+// This replaced `ioScope`/`ioInfoAt`, which existed to cycle the inspector I/O card
+// through its three windows and to expand its explanation. Both went with the card: the
+// popover that replaced it shows all three windows at once and carries the explanation
+// permanently, so there is nothing left to cycle and nothing left to expand.
+export let footPrefs: FootPrefs = parseFootPrefs(localStorage.getItem("cc-foot"));
+export function setFootPrefs(p: FootPrefs) { footPrefs = p; }

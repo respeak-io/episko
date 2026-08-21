@@ -28,6 +28,8 @@ The pattern: build the markup every pass, assign only when the string differs fr
 
 Two things make a guard *effective*: **no per-second clock in the markup** (`dwellText` made the inspector's string differ every second by construction; it is now emitted empty and filled by `tickDwell` via `textContent`), and **invalidate wherever another module writes the same element**. `#inspector` keys on `dom.ts`'s `stageGen` (bumped by `takeStage`), `openDashboard` clears its own cache on entry; `dom.ts` owning the counter keeps the leaf module dependency-free.
 
+The sibling hazard, where a poll compares a *model* rather than a rendered string: **a signature must list every field the markup prints**, and the two are edited in different files, so nothing makes them move together. `refreshSessionStats` (panes.ts) and the dirty poll (mirror.ts) each hash a `DiffStat` to decide whether the change is worth a repaint; when the working-set card started printing `dirty` (git's own count of the entries `files` misses), a stat differing only in that field would have been dropped as "nothing changed". The failure is invisible in the direction that matters — a stale figure, not a wrong one.
+
 **When you measure a render function, force layout or the number is a lie**: `innerHTML` defers style/layout to the next frame, which a benchmark loop never reaches, so read `document.body.offsetHeight` after each call (`renderSidebar`: 0.13ms without, 7.0ms with).
 
 ## The needs-you set: two stamps, one sync, and a light that isn't in the markup

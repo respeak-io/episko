@@ -20,7 +20,32 @@ export type Risk = "low" | "med" | "high";
 export interface ApiErr { kind: string; detail: string; at: number }
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
-export interface Act { tool: string; arg: string; time: string; startMs: number; durMs: number | null }
+//
+// `inp` and `out` are the whole call — what was executed and what came back — already
+// capped by ./toolio at capture, which is where the cap has to be: a `Read` response is
+// an entire file. `out` stays empty until the Post hook lands, so "" means still running
+// or (for a call the user never answered a permission on) never finished. `failed` is
+// the PostToolUseFailure discriminant, where the reason lives in `error` and there is no
+// `tool_response` at all.
+//
+// `id` is Claude Code's own `tool_use_id`, identical on the Pre and Post payloads of one
+// call. It is what pairs them: matching on the tool *name* picks the most recent open
+// call of that name, which is approximate under parallel subagents and was harmless
+// while all it could misplace was a latency bar. Hanging a command's output off the
+// wrong row is not harmless, so the name match survives only as the fallback for a
+// payload with no id.
+export interface Act {
+  tool: string; arg: string; time: string; startMs: number; durMs: number | null;
+  id: string; inp: string; out: string; failed: boolean;
+  /// Claude's own note on why it made this call, lifted out of `inp` rather than left
+  /// inside it — a `description:` line in the middle of a command is the difference
+  /// between a block you can paste into a shell and one you have to edit first. See
+  /// ./toolio's `descText` for which tools it is taken from and why not all of them.
+  desc: string;
+}
+/// How a row is addressed by the click dispatcher and the expanded-row set. `startMs`
+/// backs the id up rather than an array index, which every new call would shift.
+export const actKey = (a: Act): string => a.id || `t${a.startMs}`;
 // What a session did to one file, accumulated over the whole conversation — the model
 // behind the inspector's Context card. One entry per path, never one per tool call:
 // the question it answers is "what has this agent been into?", and an agent that reads

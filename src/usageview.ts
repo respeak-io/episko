@@ -12,12 +12,13 @@
 // `tokenScanning` flag below through setTokenScanning, and the panels read it to
 // decide between a skeleton and a "no data" line.
 
-import { esc, fmtClock, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
+import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
-import { accentFor } from "./state";
+import { accentFor, ioAll, sessions } from "./state";
+import { isClaude } from "./types";
 import {
-  tokenDays, U_MONTHS, uBuckets, uDkey, uModels, usage, usageRange, usageWindow,
-  uSum, type DaySpend, type UDay,
+  dayIo, ioDayCount, ioSameNote, ioTotal, todayKey, tokenDays, U_MONTHS, uBuckets, uDkey,
+  uModels, usage, usageRange, usageWindow, uSum, type DaySpend, type UDay,
 } from "./usage";
 
 // Plain-language forecast line for a window ("→ ~86% by reset" / "runs out …").
@@ -338,4 +339,107 @@ export function usagePanelHtml(): string {
     <div class="u-cols">${uBars()}<section class="u-card">${uModelMix()}${uTokenMix()}</section></div>
     ${uProjects()}
   </div>`;
+}
+
+
+// ---------- disk I/O (footer "disk", and the popover behind it) ----------
+//
+// This used to be a card pinned to the bottom of the inspector, where it cost ~120px of
+// a 296px column to say something that is **not about the session on stage**: `ioAll`
+// sums every claude process Episko owns, so the card read identically whichever pane you
+// had open. A number that never changes with the panel it sits in does not belong in
+// that panel. It is a status-bar figure, and it is one now.
+//
+// What the bar shows is today's totals. Everything else — the live rates, the other two
+// windows, and why the figures look the way they do — is one click away, which is also
+// what retired the old card's scope-cycling button and its `i` expander: a popover can
+// show all three windows at once, so there is nothing left to cycle through.
+
+/// The bar is log-scaled against a 32 MiB/s reference rather than linear: real rates span
+/// idle-KiB/s to burst-MiB/s, and a linear bar would sit at zero for everything short of
+/// a pathological write storm, which is precisely the case it needs to show.
+const IO_REF_BPS = 32 * 1024 * 1024;
+function ioPct(bps: number): number {
+  if (bps <= 0) return 0;
+  return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
+}
+
+/// The three windows, and what each honestly covers. `run` is the processes' own
+/// counters; the other two come from the `cc-io` rollup, which only starts the day it
+/// shipped — so a machine that has just updated has a `today` smaller than its `run`,
+/// which is correct rather than a bug, and is what `ioSameNote` explains.
+const IO_WINDOWS: ReadonlyArray<[IoWindow, string, string]> = [
+  ["today", "today", "Every claude session Episko has run today."],
+  ["run", "this run", "Since Episko started — the processes' own counters, which reset with the app."],
+  ["all", "recorded", "Every day this rollup has recorded one. It starts when the rollup shipped, so it is not a lifetime figure."],
+];
+type IoWindow = "today" | "run" | "all";
+
+export function ioFigures(w: IoWindow): { r: number; w: number; known: boolean } {
+  if (w === "run") return { r: ioAll.readMb, w: ioAll.writtenMb, known: true };
+  const v = w === "today" ? dayIo[todayKey()] : ioTotal();
+  return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
+}
+/// What one window reads as. `ioSameNote` compares these strings rather than the floats,
+/// because two figures that round to the same text are the same figure to whoever is
+/// looking at the row.
+export function ioText(w: IoWindow): string {
+  const f = ioFigures(w);
+  return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
+}
+
+/// Why the figures look the way they do. All three were measured on a real machine
+/// rather than reasoned about, and all three surprise people enough to be worth the
+/// room. Kept as data so the shape stays obvious and the strings stay greppable.
+const IO_INFO: ReadonlyArray<[string, string]> = [
+  ["Writes run far above the conversation",
+    "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks — measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
+  ["Reads look small",
+    "Anything already in the page cache never reaches the disk, so re-reading a warm repo costs nothing on this meter."],
+  ["Child processes are not counted",
+    "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
+];
+
+/// Everything the popover draws, so the markup below is a pure function of its argument
+/// like every other `*view` here. `liveIo()` assembles it from state for the footer;
+/// Settings › Footer passes a fixed sample, which is what lets the preview there be this
+/// renderer rather than a drawing of it.
+export interface IoPop {
+  readBps: number; writeBps: number; primed: boolean;
+  windows: { label: string; tip: string; text: string }[];
+  running: number;
+  /// The "these three coincide because it is day one" line, or null.
+  note: string | null;
+}
+
+/// The live reading, for the footer.
+export function liveIo(): IoPop {
+  return {
+    readBps: ioAll.readBps, writeBps: ioAll.writeBps, primed: ioAll.primed,
+    windows: IO_WINDOWS.map(([id, label, tip]) => ({ label, tip, text: ioText(id) })),
+    running: [...sessions.values()].filter((x) => isClaude(x) && !x.external).length,
+    note: ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount()),
+  };
+}
+
+export function ioPopHtml(d: IoPop): string {
+  // Before the second sample there is no window to average over, so the rate is unknown
+  // rather than zero — say so instead of showing a confident "0 B/s".
+  const rate = (bps: number) => {
+    const pct = d.primed ? ioPct(bps) : 0;
+    const cls = pct >= 80 ? " hot" : pct >= 55 ? " warn" : "";
+    return { txt: d.primed ? fmtRate(bps) : "—", pct, cls };
+  };
+  const meter = (k: string, m: ReturnType<typeof rate>) =>
+    `<div class="io-rate"><span class="io-k">${k}</span><span class="io-bar${m.cls}"><i style="width:${m.pct}%"></i></span><span class="io-v">${esc(m.txt)}</span></div>`;
+  const wins = d.windows.map((w) =>
+    `<div class="io-w" title="${esc(w.tip)}"><span class="io-wk">${esc(w.label)}</span><span class="io-wv">${esc(w.text)}</span></div>`).join("");
+  return `<div class="up-h">Disk I/O</div>
+    ${meter("read", rate(d.readBps))}${meter("write", rate(d.writeBps))}
+    <div class="io-wins">${wins}</div>
+    ${d.note ? `<p class="up-note">${esc(d.note)}</p>` : ""}
+    <div class="up-foot"><span>${d.running} session${d.running === 1 ? "" : "s"} running</span><span>account-wide</span></div>
+    <div class="io-why"><p class="io-lead">Physical disk I/O charged to the claude processes Episko launched, rather than their logical reads and writes.</p>${
+      IO_INFO.map(([h, b]) => `<p><b>${esc(h)}</b>${esc(b)}</p>`).join("")
+    }</div>`;
 }

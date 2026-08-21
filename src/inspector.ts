@@ -22,18 +22,19 @@ import { activeId, sessions } from "./state";
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml, planHtml,
-  resHtml, RISK_LABEL, vitalHtml, wsetHtml,
+  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml,
+  planHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
 // ---- the Context card's view state ----
 //
-// Which of its groups are expanded, and whether it is showing files or the old tool
+// Which of its Files groups are expanded, and whether it is showing files or the tool
 // timeline. Ephemeral and app-wide rather than per-session: it is how *you* want the
 // card, not something about a conversation, so it survives switching panes and doesn't
-// need persisting. Held here, next to the element it repaints, on the same pattern as
-// ./panes' `collapsedRuns` — the module that owns the state calls the one renderer that
-// reads it, rather than reaching for a global `renderAll`.
+// need persisting. Tools has no fold of its own — a row opens ./callsheet instead.
+// Held here, next to the element it repaints, on the same pattern as ./panes'
+// `collapsedRuns` — the module that owns the state calls the one renderer that reads
+// it, rather than reaching for a global `renderAll`.
 const openGroups = new Set<string>();
 let ctxMode: CtxMode = "files";
 function repaintActive() {
@@ -88,7 +89,6 @@ export function renderInspector(s: Sess | null) {
   // see, and it's the only place the fetch/pull/push buttons live.
   if (s.git) html.push(wsetHtml(s));
   html.push(contextHtml(s, openGroups, ctxMode));                 // the files it's been into
-  html.push(resHtml());       // REFERENCE — app-wide disk I/O, pinned to the bottom
   paintInspector(html.join(""));
   // The dwell is patched, never rendered — see `paintInspector`. Do this after the
   // assignment above, so a fresh #iDwell gets its text before the frame is painted.
