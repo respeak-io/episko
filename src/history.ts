@@ -16,7 +16,12 @@ import { backendLive, dormants, externals, FAVORITES, sessions } from "./state";
 /// One row as `list_session_history` returns it.
 export interface HistEntry {
   session_id: string; cwd: string; project: string; branch: string;
-  title: string; last_prompt: string; mtime: number; bytes: number; exists: boolean;
+  title: string; last_prompt: string; bytes: number; exists: boolean;
+  /// Epoch SECONDS, and the transcript's own newest record rather than its file
+  /// mtime — which is why a machine that shut down with six sessions open no longer
+  /// reports all six as last active at the same second. The backend decides it; see
+  /// `TranscriptMeta::last_active` in usage.rs.
+  last_active: number;
   repo_root: string | null;   // the repo's main worktree — see histProject
 }
 

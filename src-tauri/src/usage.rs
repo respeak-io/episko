@@ -8,8 +8,9 @@
 //   `ai-title` record — *last occurrence wins* — falling back `ai-title` ->
 //   `last-prompt` -> the first user message. Only the 512KB tail is scanned. An
 //   entry with no transcript is dropped: a session launched but never prompted
-//   writes none. `read_transcript` mirrors one read-only, decoding the cwd -> <enc>
-//   path scheme.
+//   writes none. **"Last active" comes out of the records, never off the file** —
+//   see `TranscriptMeta::last_active`. `read_transcript` mirrors one read-only,
+//   decoding the cwd -> <enc> path scheme.
 // - **The token ledger.** `scan_usage` folds every project's `.jsonl` into per-day
 //   totals by model family, and it deduplicates on `message.id`, because **a line is
 //   not a request**: Claude Code writes one line per *content block* (text, thinking,
@@ -79,7 +80,9 @@ pub(crate) struct PastSession {
     session_id: String,
     title: String,
     last_prompt: String,
-    mtime: u64,
+    /// Epoch seconds — the transcript's own newest record, NOT the file's mtime.
+    /// See `TranscriptMeta::last_active`.
+    last_active: u64,
 }
 
 /// Enumerate the transcripts Claude has written for `workdir`, newest first, so
@@ -91,6 +94,10 @@ pub(crate) struct PastSession {
 /// chain: `ai-title` → `last-prompt` → first user message → "" (caller labels it).
 /// Only the tail is scanned — `ai-title` recurs throughout the file, so a bounded
 /// read reliably catches the latest one without paying for a 4MB transcript.
+///
+/// Newest first by `last_active`, which is what the records inside the transcript
+/// say rather than what its mtime says. That distinction is the whole point of the
+/// field; see `TranscriptMeta::last_active`.
 #[tauri::command(async)]
 pub(crate) fn list_past_sessions(workdir: String) -> Result<Vec<PastSession>, String> {
     let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
@@ -125,22 +132,121 @@ fn list_past_sessions_in(base: &Path, workdir: &str) -> Result<Vec<PastSession>,
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let (title, last_prompt) = match transcript_meta(&path) {
+        let meta = match transcript_meta(&path) {
             Some(m) => m,
             None => continue,
         };
-        out.push(PastSession { session_id, title, last_prompt, mtime });
+        let last_active = meta.last_active_or(mtime);
+        out.push(PastSession {
+            session_id,
+            title: meta.title,
+            last_prompt: meta.last_prompt,
+            last_active,
+        });
     }
 
     // newest first (Reverse, because sort_by_key sorts ascending)
-    out.sort_by_key(|s| std::cmp::Reverse(s.mtime));
+    out.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(out)
 }
 
-/// Pull `(title, last_prompt)` out of one transcript. Split out of
+/// What one tail scan recovers from a transcript: how to label it, and when it was
+/// last actually used.
+#[derive(Default)]
+struct TranscriptMeta {
+    title: String,
+    last_prompt: String,
+    /// The newest instant the records themselves claim, in epoch seconds, or 0 when
+    /// the scanned window held none.
+    ///
+    /// **This is deliberately not the file's mtime, and the two disagree by hours.**
+    /// Claude appends untimestamped bookkeeping records (`mode`, `permission-mode`,
+    /// `ai-title`, `last-prompt`) when a session starts and again when it goes away,
+    /// so every transcript that was open when a machine shut down is stamped with the
+    /// *shutdown*, to the second. On the report that found this, four sessions last
+    /// worked at 08:08, 10:30, 12:50 and 15:50 all read "6h ago" — one 03:41 Windows
+    /// update reboot, four identical mtimes — and the same collapse files a whole
+    /// day's sessions into the wrong day in the Trail. Ordering suffers too: a
+    /// transcript untouched for a month climbs to the top of History merely by having
+    /// been open at the wrong moment.
+    last_active: u64,
+}
+
+impl TranscriptMeta {
+    /// The transcript's own answer, or the file's mtime when it had none. The
+    /// fallback is not a nicety: a session that never completed a turn (or a future
+    /// Claude that stops writing `timestamp`) has nothing to read, and an mtime is
+    /// still better than 1970.
+    fn last_active_or(&self, mtime: u64) -> u64 {
+        if self.last_active > 0 {
+            self.last_active
+        } else {
+            mtime
+        }
+    }
+}
+
+/// Days since 1970-01-01 for a civil date — Howard Hinnant's `days_from_civil`. The
+/// only calendar arithmetic this crate needs, and not worth a `chrono` dependency.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = y - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `2026-08-17T08:08:18.686Z` -> epoch seconds. Strict about the shape, and `None` for
+/// anything else, because the caller's fallback (the file mtime) is a sane answer and
+/// a misparsed date is not. Claude writes these in UTC; the fraction and the trailing
+/// `Z` are ignored rather than interpreted, so a future non-UTC offset would be read
+/// as UTC — hours out at worst, where guessing could be days out.
+fn iso_epoch_secs(ts: &str) -> Option<u64> {
+    let b = ts.as_bytes();
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> { ts.get(r)?.parse::<i64>().ok() };
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, s) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
+        return None;
+    }
+    u64::try_from(days_from_civil(y, mo, d) * 86_400 + h * 3_600 + mi * 60 + s).ok()
+}
+
+/// The newest `"timestamp"` anywhere in one transcript line, as epoch seconds.
+///
+/// A substring scan rather than a parse: this runs on every line of every tail
+/// window, including the assistant prose and tool traffic the metadata scan below
+/// deliberately skips, and turning those into a `serde_json::Value` is exactly the
+/// cost that skip exists to avoid. Every occurrence in the line is considered — a
+/// tool result can carry nested ones — and the newest wins, so where the field sits
+/// in the record never matters.
+fn line_timestamp(line: &str) -> u64 {
+    const NEEDLE: &str = "\"timestamp\":\"";
+    let mut best = 0;
+    for (i, _) in line.match_indices(NEEDLE) {
+        let rest = &line[i + NEEDLE.len()..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        if let Some(t) = iso_epoch_secs(&rest[..end]) {
+            best = best.max(t);
+        }
+    }
+    best
+}
+
+/// Pull one transcript's `TranscriptMeta` out of its tail. Split out of
 /// `list_past_sessions` so it can be tested against a fixture file without
 /// touching `$HOME` (which the parallel test threads share).
-fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
+fn transcript_meta(path: &std::path::Path) -> Option<TranscriptMeta> {
     // Two-step, and the result is identical to always reading CAP_FULL.
     //
     // Measured over a real 244-transcript corpus, the newest `ai-title` / `last-prompt`
@@ -152,19 +258,19 @@ fn transcript_meta(path: &std::path::Path) -> Option<(String, String)> {
     // cheap path is taken only where it cannot change the answer.
     const CAP_FAST: u64 = 64 * 1024;
     const CAP_FULL: u64 = 512 * 1024;
-    let (title, last_prompt, found) = transcript_meta_within(path, CAP_FAST)?;
+    let (meta, found) = transcript_meta_within(path, CAP_FAST)?;
     if found {
-        return Some((title, last_prompt));
+        return Some(meta);
     }
-    let (title, last_prompt, _) = transcript_meta_within(path, CAP_FULL)?;
-    Some((title, last_prompt))
+    Some(transcript_meta_within(path, CAP_FULL)?.0)
 }
 
-/// One pass over the last `cap` bytes. The third field is "both recurring records
-/// were seen in this window", which is exactly the condition under which reading
-/// further back cannot change either output: each is a last-occurrence-wins record, so
-/// once one is in range the newest one is too.
-fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(String, String, bool)> {
+/// One pass over the last `cap` bytes. The bool is "this window answered everything",
+/// which is exactly the condition under which reading further back cannot change any
+/// of the three outputs: the two recurring records are last-occurrence-wins, so once
+/// one is in range the newest one is too, and a timestamp seen here can only be beaten
+/// by a later one, which is nearer EOF and so also in range.
+fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(TranscriptMeta, bool)> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
@@ -184,11 +290,17 @@ fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(String, S
     // 244 real transcripts were labelled with the prompt instead of the title before
     // this was tightened.
     let (mut saw_title, mut saw_prompt) = (false, false);
+    let mut last_active: u64 = 0;
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
+        // Above the gate below, and on purpose: the newest timestamp rides on the
+        // ordinary assistant and tool records the gate throws away, not on the three
+        // record types the labels come from. `line_timestamp` never parses JSON, so
+        // reading every line here costs a substring scan, not a deserialize.
+        last_active = last_active.max(line_timestamp(line));
         // Substring gate before the parse. Only three record types can change the
         // outcome, and once a user turn has been seen only two can — the rest of a
         // 512KB tail is assistant prose and tool traffic. Skipping their parse is
@@ -232,7 +344,10 @@ fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(String, S
     if title.chars().count() > 120 {
         title = title.chars().take(120).collect::<String>() + "…";
     }
-    Some((title, last_prompt, saw_title && saw_prompt))
+    Some((
+        TranscriptMeta { title, last_prompt, last_active },
+        saw_title && saw_prompt && last_active > 0,
+    ))
 }
 
 /// The `(cwd, git_branch)` a transcript was recorded under, read from the HEAD of
@@ -280,7 +395,10 @@ pub(crate) struct HistorySession {
     branch: String,
     title: String,
     last_prompt: String,
-    mtime: u64,
+    /// Epoch seconds — the transcript's own newest record, NOT the file's mtime, and
+    /// what every "last active" and every day bucket in the app is built on. See
+    /// `TranscriptMeta::last_active`.
+    last_active: u64,
     bytes: u64,
     exists: bool, // its folder is still there — a resume into a deleted worktree fails
     // The repo's MAIN worktree, so every worktree of one repo groups under it — the
@@ -304,7 +422,15 @@ pub(crate) struct HistorySession {
 /// entries picks the newest `limit` files *before* anything is read, and only those
 /// get the tail scan for a title. So `limit` caps the I/O, not the row count — a
 /// transcript with no recoverable cwd is dropped afterwards and the result can come
-/// back shorter. Like `token_usage_by_day` this is the heavy path, so it runs on a
+/// back shorter.
+///
+/// The **rows** are ranked by `last_active` (what the records say), the **files** by
+/// mtime (what the filesystem says), and the two are not the same order — see
+/// `TranscriptMeta::last_active`. Ranking the cheap pass by mtime is still sound,
+/// because an mtime is never earlier than the newest record under it: a genuinely
+/// recent session always has a recent file. What the mismatch can cost is a slot,
+/// when `limit` files have had their mtimes bumped past a transcript with newer
+/// content — which is why the final sort is redone on the honest figure. Like `token_usage_by_day` this is the heavy path, so it runs on a
 /// blocking thread — a synchronous command would hold the main thread and freeze the
 /// UI for the length of the scan.
 #[tauri::command]
@@ -391,7 +517,7 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
         // identity, and on Windows it only touches the drive letter and separators,
         // which the case-insensitive filesystem and the `<enc>` scheme both absorb.
         let cwd = norm_path(&cwd);
-        let (title, last_prompt) = transcript_meta(&path).unwrap_or_default();
+        let meta = transcript_meta(&path).unwrap_or_default();
         let project = cwd
             .rsplit(['/', '\\'])
             .find(|s| !s.is_empty())
@@ -407,19 +533,24 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
                 (true, repo_root_of(&cwd))
             })
             .clone();
+        let last_active = meta.last_active_or(mtime);
         out.push(HistorySession {
             session_id,
             cwd,
             project,
             branch,
-            title,
-            last_prompt,
-            mtime,
+            title: meta.title,
+            last_prompt: meta.last_prompt,
+            last_active,
             bytes,
             exists,
             repo_root,
         });
     }
+    // Pass 1 ordered by mtime, which is only an approximation of this. The frontend
+    // does not re-sort — History, the Trail and the dashboard all render in the order
+    // they are handed — so the honest order has to be established here.
+    out.sort_by_key(|h| std::cmp::Reverse(h.last_active));
     out
 }
 
@@ -958,9 +1089,16 @@ mod tests {
     #[test]
     fn transcript_meta_widens_when_the_title_is_out_of_the_fast_window() {
         let dir = scratch_dir();
+        // Timestamped, like every real assistant record — and load-bearing for the
+        // `fast.1` assertion below, since a window with no timestamp in it is not
+        // conclusive either.
         let filler = format!(
             "{}\n",
-            serde_json::json!({ "type": "assistant", "message": { "content": "x".repeat(4000) } })
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2026-01-02T03:04:05.000Z",
+                "message": { "content": "x".repeat(4000) },
+            })
         );
 
         // ai-title far back, last-prompt near EOF: only the full read sees both.
@@ -972,14 +1110,15 @@ mod tests {
         body.push_str("{\"type\":\"last-prompt\",\"lastPrompt\":\"do the thing\"}\n");
         std::fs::write(&split, &body).unwrap();
         assert!(body.len() > 64 * 1024, "fixture must exceed the fast window");
+        let got = transcript_meta(&split).unwrap();
         assert_eq!(
-            transcript_meta(&split).unwrap(),
-            ("The summary Claude wrote".to_string(), "do the thing".to_string()),
+            (got.title.as_str(), got.last_prompt.as_str()),
+            ("The summary Claude wrote", "do the thing"),
             "the title must win over the prompt even when only the prompt is in fast range",
         );
         // …and that is exactly what a single full-cap read says.
-        let full = transcript_meta_within(&split, 512 * 1024).map(|(t, l, _)| (t, l));
-        assert_eq!(Some(transcript_meta(&split).unwrap()), full);
+        let full = transcript_meta_within(&split, 512 * 1024).unwrap().0;
+        assert_eq!((full.title, full.last_prompt), (got.title, got.last_prompt));
 
         // Both records near EOF: the fast pass is final, and still agrees with the full read.
         let near = dir.join("near.jsonl");
@@ -990,9 +1129,10 @@ mod tests {
         body.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Close enough\"}\n");
         body.push_str("{\"type\":\"last-prompt\",\"lastPrompt\":\"the latest\"}\n");
         std::fs::write(&near, &body).unwrap();
-        let fast = transcript_meta_within(&near, 64 * 1024).unwrap();
-        assert!(fast.2, "both records are in range, so the fast read is final");
-        assert_eq!((fast.0, fast.1), transcript_meta(&near).unwrap());
+        let (fast, final_) = transcript_meta_within(&near, 64 * 1024).unwrap();
+        assert!(final_, "both records and a timestamp are in range, so the fast read is final");
+        let whole = transcript_meta(&near).unwrap();
+        assert_eq!((fast.title, fast.last_prompt), (whole.title, whole.last_prompt));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1036,7 +1176,7 @@ mod tests {
     /// no row without a resumable cwd, a worktree resolved back to its repo, and a
     /// folder that's gone flagged rather than hidden (a deleted worktree still reads).
     #[test]
-    fn scan_history_ranks_by_mtime_and_drops_what_cannot_resume() {
+    fn scan_history_ranks_by_last_active_and_drops_what_cannot_resume() {
         let dir = scratch_dir();
         let base = dir.join("claude");
         let root = base.join("projects");
@@ -1335,9 +1475,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let (title, last) = transcript_meta(&path).unwrap();
-        assert_eq!(title, "What it settled on");
-        assert_eq!(last, "the latest prompt");
+        let meta = transcript_meta(&path).unwrap();
+        assert_eq!(meta.title, "What it settled on");
+        assert_eq!(meta.last_prompt, "the latest prompt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1357,12 +1497,12 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(transcript_meta(&a).unwrap().0, "what I asked most recently");
+        assert_eq!(transcript_meta(&a).unwrap().title, "what I asked most recently");
 
         // Neither → the first user message stands in.
         let b = dir.join("b.jsonl");
         std::fs::write(&b, "{\"type\":\"user\",\"message\":{\"content\":\"opening message\"}}\n").unwrap();
-        assert_eq!(transcript_meta(&b).unwrap().0, "opening message");
+        assert_eq!(transcript_meta(&b).unwrap().title, "opening message");
 
         // Garbage lines are skipped, not fatal — a torn write must not lose the title.
         let c = dir.join("c.jsonl");
@@ -1371,12 +1511,12 @@ mod tests {
             concat!("not json at all\n", r#"{"type":"ai-title","aiTitle":"Survived"}"#, "\n", "{\"truncated\":"),
         )
         .unwrap();
-        assert_eq!(transcript_meta(&c).unwrap().0, "Survived");
+        assert_eq!(transcript_meta(&c).unwrap().title, "Survived");
 
         // An empty transcript yields an empty title (the frontend labels it).
         let d = dir.join("d.jsonl");
         std::fs::write(&d, "").unwrap();
-        assert_eq!(transcript_meta(&d).unwrap().0, "");
+        assert_eq!(transcript_meta(&d).unwrap().title, "");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1402,7 +1542,7 @@ mod tests {
         std::fs::write(&path, &body).unwrap();
 
         assert!(body.len() as u64 > 512 * 1024, "fixture must exceed the tail cap");
-        assert_eq!(transcript_meta(&path).unwrap().0, "Fresh tail title");
+        assert_eq!(transcript_meta(&path).unwrap().title, "Fresh tail title");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1480,7 +1620,7 @@ mod tests {
     /// The restorable-sessions list: newest first, labelled by the fallback chain, and
     /// nothing in the folder that isn't a transcript.
     #[test]
-    fn list_past_sessions_orders_by_mtime_and_ignores_non_transcripts() {
+    fn list_past_sessions_orders_by_last_active_and_ignores_non_transcripts() {
         let cwd = "/Users/tim/dev/proj";
         let (base, proj) = fixture(cwd);
 
@@ -1504,7 +1644,7 @@ mod tests {
         assert_eq!(out[0].title, "no title, so this", "falls back to last-prompt");
         assert_eq!(out[1].session_id, "older");
         assert_eq!(out[1].title, "The older one");
-        assert!(out[0].mtime > out[1].mtime);
+        assert!(out[0].last_active > out[1].last_active);
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1515,6 +1655,97 @@ mod tests {
     fn list_past_sessions_is_empty_for_an_unknown_project() {
         let base = scratch_dir();
         assert!(list_past_sessions_in(&base, "/never/seen").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The one piece of calendar arithmetic in the crate, against dates whose answers
+    /// are fixed: the epoch itself, a leap day, a century that is not a leap year, and
+    /// the instants the regression test below is built on.
+    #[test]
+    fn iso_timestamps_parse_to_epoch_seconds() {
+        assert_eq!(iso_epoch_secs("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(iso_epoch_secs("2026-08-17T08:08:18.686Z"), Some(1_786_954_098));
+        assert_eq!(iso_epoch_secs("2024-02-29T12:00:00Z"), Some(1_709_208_000));
+        assert_eq!(iso_epoch_secs("2100-03-01T00:00:00Z"), Some(4_107_542_400));
+
+        // Anything off-shape is None, so the caller falls back to the mtime rather
+        // than inventing a date out of a format Claude Code changed under us.
+        assert_eq!(iso_epoch_secs(""), None);
+        assert_eq!(iso_epoch_secs("2026-08-17"), None);
+        assert_eq!(iso_epoch_secs("2026/08/17T08:08:18Z"), None);
+        assert_eq!(iso_epoch_secs("20xx-08-17T08:08:18Z"), None);
+        assert_eq!(iso_epoch_secs("2026-13-17T08:08:18Z"), None);
+        assert_eq!(iso_epoch_secs("2026-08-17T25:08:18Z"), None);
+        assert_eq!(iso_epoch_secs("1969-12-31T23:59:59Z"), None, "pre-epoch has no u64");
+
+        // One line, whatever the field's position and however many it carries: the
+        // newest wins, and a nested tool-result timestamp counts like any other.
+        assert_eq!(
+            line_timestamp(r#"{"timestamp":"2026-08-17T08:08:18.686Z","type":"assistant"}"#),
+            1_786_954_098
+        );
+        assert_eq!(
+            line_timestamp(
+                r#"{"timestamp":"2026-08-17T08:08:18Z","r":{"timestamp":"2026-08-17T09:00:00Z"}}"#
+            ),
+            1_786_957_200
+        );
+        assert_eq!(line_timestamp(r#"{"type":"mode","mode":"normal"}"#), 0);
+        assert_eq!(line_timestamp(r#"{"timestamp":"not a date"}"#), 0);
+    }
+
+    /// The regression this field exists for.
+    ///
+    /// A machine that shuts down with several sessions open has Claude append
+    /// untimestamped bookkeeping records to every one of their transcripts, so their
+    /// mtimes all become the moment of the shutdown — identical to the second. Four
+    /// sessions last worked at 08:08, 10:30, 12:50 and 15:50 then read as one 03:41
+    /// timestamp on every row, in an order that means nothing. The records inside know
+    /// better, and are the only thing that does.
+    #[test]
+    fn last_active_survives_a_shutdown_that_touches_every_transcript() {
+        let cwd = "/Users/tim/dev/proj";
+        let (base, proj) = fixture(cwd);
+
+        // Two sessions, one worked on long after the other …
+        let write = |name: &str, ts: &str| {
+            let body = format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"message\":{{\"content\":\"done\"}}}}\n\
+                 {{\"type\":\"ai-title\",\"aiTitle\":\"{name}\"}}\n\
+                 {{\"type\":\"mode\",\"mode\":\"normal\"}}\n\
+                 {{\"type\":\"permission-mode\",\"permissionMode\":\"auto\"}}\n"
+            );
+            std::fs::write(proj.join(format!("{name}.jsonl")), body).unwrap();
+        };
+        // The three records after the assistant turn are what Claude actually appends
+        // on the way out, and none of them carries a timestamp: they are precisely
+        // what bumps an mtime while saying nothing about when the work happened.
+        write("morning", "2026-08-17T08:08:18.686Z");
+        write("evening", "2026-08-17T15:50:15.525Z");
+
+        // … and one shutdown that stamps both files, in the order that would put the
+        // WRONG session first if the mtime were believed.
+        let reboot = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_787_200_000);
+        set_mtime(&proj.join("evening.jsonl"), reboot);
+        set_mtime(&proj.join("morning.jsonl"), reboot + std::time::Duration::from_secs(2));
+
+        let out = list_past_sessions_in(&base, cwd).expect("a project with transcripts");
+        let by = |id: &str| out.iter().find(|s| s.session_id == id).unwrap().last_active;
+        assert_eq!(by("morning"), 1_786_954_098, "08:08, not the reboot");
+        assert_eq!(by("evening"), 1_786_981_815, "15:50, not the reboot");
+        assert_eq!(out[0].session_id, "evening", "ordered by the work, not by the shutdown");
+
+        // A transcript with nothing timestamped in it at all still has to say
+        // something, and the mtime is the only thing left to say.
+        std::fs::write(proj.join("blank.jsonl"), "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
+        set_mtime(&proj.join("blank.jsonl"), reboot);
+        let out = list_past_sessions_in(&base, cwd).unwrap();
+        assert_eq!(
+            out.iter().find(|s| s.session_id == "blank").unwrap().last_active,
+            1_787_200_000,
+            "no record to read, so the file is all that is left",
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 
