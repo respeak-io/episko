@@ -12,6 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.21.0 — 2026-08-21
+
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you
 can open to see exactly what ran and what came back. The project overview learned to push
 and switch branch, the status bar became yours to arrange, and every dialog is Episko's own.
