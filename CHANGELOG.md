@@ -13,6 +13,41 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A tool call's output can no longer land on another call's row.** Pairing a call's
+  start and end by `tool_use_id` fell back to matching by tool name whenever the id
+  matched nothing — not only when the payload carried none — so a reply whose opening row
+  had already aged out of the twelve the session keeps would close the oldest *other* open
+  call of that tool and staple its output, its latency and its failure onto it. Under
+  parallel subagents running many `Bash` calls at once that is routine, and a row saying
+  it ran something it never ran is worse than a row with no output at all. Two smaller
+  things on the same card: a tool answering with a JSON list (an MCP tool's content
+  blocks, a search's matches) said *(nothing returned)* for a call that returned plenty,
+  and a patch with no lines in it drew a bare `@@ … @@` header instead of falling back to
+  the line count.
+
+! **The explorer stops showing a project as it was the first time you opened it.** The
+  index is cached for thirty seconds, but a cache *hit* restarted the clock, so anyone
+  who reopens ⌘P more often than that never got a second read — a file an agent created
+  ten minutes ago was simply missing from browse and find. It also now marks the files
+  inside a newly created folder: git collapses those into a single `new dir/` entry
+  unless asked otherwise, so every file in the newest folder in the project arrived with
+  no mark and the `Changed` chip filtered them all out.
+
+! **One file, one letter.** The explorer's row marks and the new-session dialog's file
+  list read git's two-character status by opposite rules, so a file staged and then
+  edited showed `M` in one and `A` in the other, and a staged rename `M` against `R`.
+  They now share the one parser, which keeps the index half — `A` and `R` say something
+  `M` doesn't, since every uncommitted file is modified.
+
+! **Smaller repairs.** A symlinked folder in a non-repo project was listed as though it
+  were a file (and the guard meant to stop the walk following it could never fire); the
+  explorer's "some files not shown" warning could appear for a project that fitted
+  exactly and, worse, stay silent for one that genuinely didn't; hiding *Session count*
+  in Settings › Footer left the status bar opening with a stray divider; the guided
+  tour's card was rebuilt on every repaint, which can swallow a click on **Next** while
+  an agent is running; and a second confirmation raised from the first one's answer now
+  asks in the order the caller meant.
+
 + **A first run now offers a guided tour, and a release can offer a short intro to what it
   added.** The welcome card leads into a picker: `Quick start` is required, five chapters are
   optional and remembered one at a time, so you can take one now and three next month —

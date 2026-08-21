@@ -163,6 +163,30 @@ describe("outputText — what came back", () => {
   });
 });
 
+describe("outputText — the shapes that used to read as nothing", () => {
+  it("dumps an array response instead of claiming nothing came back", () => {
+    // Neither a scalar nor a record, so it reached neither `scalar` nor `fieldsText` and
+    // fell out as "" — which the sheet renders as "(nothing returned)" for a call that
+    // returned plenty. An MCP tool's content blocks are exactly this shape.
+    const out = outputText([{ type: "text", text: "first" }, { type: "text", text: "second" }], null);
+    expect(out).toContain("first");
+    expect(out).toContain("second");
+    expect(out).not.toBe("");
+  });
+  it("keeps an empty array distinguishable from nothing at all", () => {
+    expect(outputText([], null)).toBe("[]");
+    expect(outputText(null, null)).toBe("");
+  });
+  it("falls back to the line count when a patch has no hunk lines", () => {
+    // Every hunk string carries a newline after its `@@` header whether or not anything
+    // follows, so the old `.includes("\n")` filter passed an empty hunk through and the
+    // truthy `body` blocked the `N lines` fallback underneath it.
+    const out = outputText({ type: "create", content: "a\nb\nc\n", structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, lines: [] }] }, null);
+    expect(out).not.toContain("@@");
+    expect(out).toContain("4 lines");
+  });
+});
+
 describe("actClipText — what Copy hands over", () => {
   const act = (o: Partial<Act> = {}): Act => ({
     tool: "Bash", arg: "pnpm test", time: "14:22", startMs: 0, durMs: 120,

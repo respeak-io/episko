@@ -184,7 +184,8 @@ export function startChapter(id: string) {
   const at = read().at;
   if (at?.ch === c.id) {
     si = Math.min(Math.max(0, at.step), c.steps.length - 1);
-    if (!stepApplies(c.steps[si], world())) { const n = neighbour(si, 1); si = n >= 0 ? n : firstIndex(); }
+    const w0 = world();
+    if (!stepApplies(c.steps[si], w0)) { const n = neighbour(si, 1, w0); si = n >= 0 ? n : firstIndex(); }
   }
   seed();
   enter();
@@ -243,11 +244,10 @@ function allSteps(): TourStep[] { return chapter()?.steps ?? []; }
  */
 let seenCh = "";
 const seenIdx = new Set<number>();
-function counted(): TourStep[] {
+function counted(w: TourWorld = world()): TourStep[] {
   const c = chapter();
   if (!c) return [];
   if (seenCh !== c.id) { seenCh = c.id; seenIdx.clear(); }
-  const w = world();
   const out: TourStep[] = [];
   c.steps.forEach((s, i) => { if (stepApplies(s, w)) seenIdx.add(i); if (seenIdx.has(i)) out.push(s); });
   return out;
@@ -260,8 +260,8 @@ function step(): TourStep | null { return allSteps()[si] ?? null; }
  * points into the full list, so a predicate flipping while a step is on screen changes
  * what comes next and never what you are looking at.
  */
-function neighbour(from: number, dir: 1 | -1): number {
-  const list = allSteps(); const w = world();
+function neighbour(from: number, dir: 1 | -1, w: TourWorld = world()): number {
+  const list = allSteps();
   for (let i = from + dir; i >= 0 && i < list.length; i += dir) if (stepApplies(list[i], w)) return i;
   return -1;
 }
@@ -416,7 +416,7 @@ export function tourTick() {
   // footer are all rebuilt from scratch under us (so the node the hole was measured
   // against is routinely gone), and the card's own content is live too — a satisfied
   // wait drops its chip, and the stuck affordance appears on a clock.
-  renderStep();
+  renderStep(w);
 }
 
 // ---------- painting ----------
@@ -489,12 +489,23 @@ const KEYS: [RegExp, string][] = [
   ...(IS_MAC ? [] : ([[/⌘/g, "Ctrl"], [/⇧/g, "Shift"]] as [RegExp, string][])),
 ];
 const keys = (t: string) => KEYS.reduce((a, [re, to]) => a.replace(re, to), t);
+/// Guarded, like every other `innerHTML` surface on `renderAll`'s path.
+///
+/// `tourTick` is the last thing `renderAllNow` does, so while a chapter is open this
+/// runs on every paint — and during `quickstart` an agent is live, which means a paint
+/// per telemetry event. An assignment destroys the node under the pointer, so a click
+/// landing between mousedown and mouseup is silently dropped: exactly how a permission
+/// *Allow* was lost once, and here the buttons are Next and the chapter rows.
+let cardHtml = "";
 const shell = (cls: string, eyebrow: string, count: string, inner: string) => {
   const card = $("tourCard");
   card.className = `tour-card show ${cls}`;
-  card.innerHTML = `<div class="tc-top"><span class="tc-ch">${eyebrow}</span>`
+  const html = `<div class="tc-top"><span class="tc-ch">${eyebrow}</span>`
     + (count ? `<span class="tc-count">${count}</span>` : "")
     + `<button class="tc-x" data-tour="end" title="End the tour" aria-label="End the tour">✕</button></div>${inner}`;
+  if (html === cardHtml) return;
+  cardHtml = html;
+  card.innerHTML = html;
 };
 
 function renderWelcome() {
@@ -547,19 +558,25 @@ function renderDone() {
   centreHole($("tourHole"));
 }
 
-function renderStep() {
+/// Takes the pass's world rather than building its own.
+///
+/// Four builds per paint is the obvious cost — each one spreads the session map and
+/// sorts the needs-you set — but the correctness half matters more: `tourTick` folds the
+/// `permAnswered` latch into its snapshot, and a `world()` built here would not carry it.
+/// The chip saying a step is still waiting could then disagree with the tick that had
+/// already decided the step was satisfied.
+function renderStep(w: TourWorld = world()) {
   const c = chapter(); const s = step();
   if (!c || !s) return;
-  const w = world();
   const blocked = stepBlocked(s, w);
   const stuck = blocked && waitingSince > 0 && Date.now() - waitingSince > STUCK_MS;
   // The dots count the steps that apply, and `si` indexes all of them — so the position
   // is a lookup, not the index. A step standing on a `when` that has just gone false is
   // not in the list at all; it keeps the first dot rather than losing the row.
-  const list = counted();
+  const list = counted(w);
   const pos = Math.max(0, list.indexOf(s));
   const dots = list.map((_, i) => `<i class="${i === pos ? "on" : i < pos ? "past" : ""}"></i>`).join("");
-  const lastStep = neighbour(si, 1) < 0;
+  const lastStep = neighbour(si, 1, w) < 0;
   const lastCh = ci === plan.length - 1;
   const nextLabel = !lastStep ? "Next" : lastCh ? "Finish" : "Next chapter ▸";
 

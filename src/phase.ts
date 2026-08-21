@@ -74,8 +74,14 @@ function openActivity(s: Sess, tool: string, arg: string, id: string, inp: strin
   if (s.activity.length > ACT_CAP) s.activity.length = ACT_CAP;
 }
 function closeActivity(s: Sess, tool: string, id: string, inp: string, desc: string, out: string, failed: boolean) {
-  const a = (id && s.activity.find((x) => x.id === id))
-    || s.activity.find((x) => x.tool === tool && x.durMs == null);
+  // A ternary, never `||`: with an id that matches nothing — its Pre row aged out past
+  // ACT_CAP, or never opened — falling through to the name match closes the oldest
+  // *other* open call of the same tool and staples this output onto it. Under parallel
+  // subagents that is routine, and a row that says it ran something it didn't is worse
+  // than a row with no output. The name match exists for a payload carrying no id.
+  const a = id
+    ? s.activity.find((x) => x.id === id)
+    : s.activity.find((x) => x.tool === tool && x.durMs == null);
   if (!a) return;
   a.durMs = Date.now() - a.startMs;
   a.out = out;

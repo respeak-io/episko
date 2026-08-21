@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename } from "./format";
@@ -57,8 +58,15 @@ export function openTerminalIn(project: string, dir: string) {
   if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
   void launchShell(project, dir, { colorKey: dir });
 }
+/// The one copy-a-path in the app: the project menu's row, the Context card and the
+/// explorer's ⌥↵ all land here.
+///
+/// Through the Tauri plugin rather than `navigator.clipboard`, which is the same reason
+/// the terminal panes use it: the web API raises an OS permission prompt in a webview,
+/// and a prompt is a strange answer to "copy this path". Two back-ends for one verb is
+/// also how the wording and the failure path drift apart.
 export async function copyPath(dir: string) {
-  try { await navigator.clipboard.writeText(dir); toast("Path copied"); }
+  try { await writeText(dir); toast("Path copied"); }
   catch { toast(dir); } // clipboard denied — at least show what it was
 }
 
