@@ -160,11 +160,12 @@ export function densePerDay(days: TrailDay[], span: number, now: number): number
   return out;
 }
 
-// ---------- pulling ----------
+// ---------- pulling, pushing, switching ----------
 
 /**
- * Which checkout the dashboard's ⇣ Pull acts on: **the repo's main worktree**, never
- * whichever folder happens to be highlighted.
+ * Which checkout the dashboard's git verbs act on: **the repo's main worktree**, never
+ * whichever folder happens to be highlighted. ⇣ Pull, ⇡ Push and ⇄ Switch branch all
+ * read it, and all three mean the same folder by it.
  *
  * A dashboard is keyed by the repo root (`repoRoot ?? path`), so in the ordinary case
  * this is the root itself and the lookup changes nothing. It exists for the case where
@@ -182,27 +183,40 @@ export function mainCheckout(heads: WtHead[], root: string): string {
   return heads.find((h) => h.is_main && h.exists)?.path || root;
 }
 
+/// Which of the two remote verbs is meant. The switch is not one of them: it changes
+/// what HEAD points at rather than trading commits with a remote, and it is the ⑃
+/// dialog's card that runs it.
+export type SyncOp = "pull" | "push";
+
 /**
- * What a pull would find, **as of the last fetch** — which on a dashboard may be very
- * old indeed, and that is the whole reason this is a state rather than a boolean.
+ * Where the main checkout stands against its upstream, **as of the last fetch** — which
+ * on a dashboard may be very old indeed, and that is the whole reason this is a state
+ * rather than a boolean. One reading, read by both ⇣ Pull and ⇡ Push.
  *
  * Nothing on a dashboard runs git on a schedule (that is the pane's one invariant), so
  * `behind: 0` here does not mean "up to date", it means "nothing has looked recently".
- * So `level` is **not** a reason to grey the button out, unlike the session inspector's
+ * So `level` is **not** a reason to grey a button out, unlike the session inspector's
  * pull, which sits beside a fetch button and a working set that the dirty poll keeps
- * fresh. The dashboard's verb fetches first for the same reason.
+ * fresh. The dashboard's verbs fetch first for the same reason.
  *
  * `no-upstream` and `diverged` are likewise states to *say*, not to disable on: those
  * are exactly the cases `git_action` refuses with the command that would work, and the
  * refusal hands over a prefilled terminal. Disabling them would amputate the useful half.
+ *
+ * **`ahead` is its own state rather than a flavour of `level`**, because the two verbs
+ * read this one number in opposite directions: unpushed commits with nothing incoming
+ * are the quiet case for ⇣ Pull and the entire point of ⇡ Push, and a single word
+ * covering both would have to be wrong for one of them. It stayed folded into `level`
+ * for exactly as long as pulling was the only thing this pane could do.
  */
-export type PullState = "unknown" | "no-upstream" | "diverged" | "behind" | "level";
+export type SyncState = "unknown" | "no-upstream" | "diverged" | "behind" | "ahead" | "level";
 
-export function pullState(g: DiffStat | null | undefined): PullState {
+export function syncState(g: DiffStat | null | undefined): SyncState {
   if (!g) return "unknown";
   if (!g.upstream) return "no-upstream";
   if (g.ahead > 0 && g.behind > 0) return "diverged";
-  return g.behind > 0 ? "behind" : "level";
+  if (g.behind > 0) return "behind";
+  return g.ahead > 0 ? "ahead" : "level";
 }
 
 /// How many days back the dashboard looks. A preference, because "how far back is

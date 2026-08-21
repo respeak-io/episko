@@ -10,7 +10,7 @@ import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
 // renderer calls, and ./dom is the shared leaf everything may import (it touches no DOM
 // at module scope, which is what keeps it safe in vitest's node environment).
 import { FILE_MANAGER } from "./dom";
-import { pullState, type Pulse, type ProjectFacts, type ProjectTier } from "./dash";
+import { syncState, type Pulse, type ProjectFacts, type ProjectTier, type SyncOp } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { DiffStat, WtHead } from "./types";
@@ -290,6 +290,155 @@ export function checkoutsCard(
   return card("checkouts", "Checkouts", String(heads.length), rows);
 }
 
+// ---------- the Repository card ----------
+// The main checkout's git state and the five verbs that act on it, in the overview
+// column rather than in the inspector's list. They were rows there, and a verb in a
+// twelve-row menu is a verb you have to go looking for: the pane is called an overview,
+// so where the repo stands belongs on it. It is also why this card carries state at all
+// — a row of buttons with no branch and no counts above them answers nothing.
+
+/**
+ * What the main checkout's git verbs are about to do, from its last-known upstream
+ * state. `g` is null until the probe answers — and stays null for a folder git could not
+ * read — which `syncState` renders as the plainest wording rather than as an absence:
+ * the buttons work either way, because they fetch before deciding anything.
+ */
+export interface DashSync {
+  /// The branch on the main checkout's HEAD: what is being fast-forwarded, pushed, or
+  /// switched away from. Also the only place this pane says which branch that is — the
+  /// header has no branch chip and the Checkouts card doesn't draw for a lone checkout.
+  branch: string;
+  /// Where that branch sat against its upstream **at the last fetch**, which on a
+  /// dashboard is as old as the last time anything ran git in that folder.
+  g: DiffStat | null;
+  /// The op in flight, or `""`. The one state that greys these buttons — see `syncState`
+  /// for why none of the others do — and it greys **both** of them, because the lock is
+  /// one per app: the second verb would run against counts the first one's fetch is
+  /// still in the middle of changing.
+  busy: SyncOp | "";
+}
+
+/// The tooltip on ⇣ Pull: what *this* button would do with the state the card states
+/// above it. Every wording says what it is reading and how fresh that is, because the
+/// number is the part a reader would otherwise assume is live.
+function pullSub(p: DashSync): string {
+  if (p.busy === "pull") return "fetching, then fast-forwarding…";
+  const g = p.g;
+  const b = p.branch || "the main checkout";
+  switch (syncState(g)) {
+    case "no-upstream": return `${b} tracks no upstream`;
+    case "diverged": return `diverged · ${g!.ahead} ahead, ${g!.behind} behind`;
+    case "behind": return `${g!.behind} behind ${g!.upstream} at the last fetch`;
+    // Unpushed commits are the *quiet* answer for this verb, and saying only "level"
+    // would drop the one number the button beside it exists for.
+    case "ahead": return `nothing to pull at the last fetch · ${g!.ahead} unpushed`;
+    case "level": return `level with ${g!.upstream} at the last fetch`;
+    default: return `fetch, then fast-forward ${b}`;
+  }
+}
+
+/// The tooltip on ⇡ Push, reading the same `syncState` from the other side. The two
+/// cases worth the wording are the ones where "behind" means different things: with no
+/// commits of our own there is simply nothing to send (the backend says so and runs no
+/// git), while commits on both sides is a *diverged* branch, which it refuses with
+/// `git pull --rebase && git push` for a prefilled terminal.
+function pushSub(p: DashSync): string {
+  if (p.busy === "push") return "fetching, then pushing…";
+  const g = p.g;
+  const b = p.branch || "the main checkout";
+  switch (syncState(g)) {
+    case "no-upstream": return `${b} tracks no upstream`;
+    case "diverged": return `diverged · ${g!.ahead} ahead, ${g!.behind} behind`;
+    case "behind": return `nothing to push · ${g!.behind} behind ${g!.upstream}`;
+    case "ahead": return `${g!.ahead} unpushed to ${g!.upstream} at the last fetch`;
+    case "level": return "nothing to push at the last fetch";
+    default: return `fetch, then push ${b}`;
+  }
+}
+
+/// The tooltip on ⇄ Switch branch. It says the branch rather than the upstream, because
+/// the verb is about which branch the folder is *on* — and it says the dirty tree when
+/// there is one, since that is the single thing that turns this click into a terminal
+/// rather than a switch (git would carry uncommitted changes across, so Episko declines).
+function switchSub(p: DashSync): string {
+  const dirty = p.g && p.g.dirty > 0 ? p.g.dirty : 0;
+  if (dirty) {
+    return `${dirty} uncommitted file${dirty === 1 ? "" : "s"} here, so this hands you a terminal`;
+  }
+  return p.branch
+    ? `on ${p.branch} · every worktree keeps its own`
+    : "move the main checkout to another branch";
+}
+
+/// The upstream with the branch's own name trimmed off when the tracking ref merely
+/// repeats it (`main` tracking `origin/main` reads "origin"). The card's header already
+/// says the branch, and a long branch name printed twice one line apart is one fact
+/// filling the card. A tracking ref with a *different* name is a real difference, and
+/// stays spelled out in full.
+function upName(g: DiffStat, branch: string): string {
+  const u = g.upstream ?? "";
+  const tail = `/${branch}`;
+  return branch && u.endsWith(tail) ? u.slice(0, -tail.length) : u;
+}
+
+/**
+ * The one sentence the card states before any button is read, and it states the position
+ * ONCE: each button's own tooltip says what *it* would do with it. Two sentences saying
+ * the same numbers differently is how the pull row and the push row would drift apart.
+ *
+ * The staleness is part of the sentence rather than a footnote, because the numbers are
+ * the part a reader assumes is live and nothing on this pane makes them so.
+ */
+function syncLine(p: DashSync): string {
+  if (p.busy) return p.busy === "pull" ? "fetching, then fast-forwarding…" : "fetching, then pushing…";
+  const g = p.g;
+  const up = g ? esc(upName(g, p.branch)) : "";
+  const old = ` <span class="dim">as of the last fetch</span>`;
+  // Uncommitted work is not about the remote at all. It is on this line because it is
+  // the one thing that changes what a click here does: ⇄ Switch is refused on a dirty
+  // tree, and ⇣ Pull's fast-forward is refused by git itself when it would clobber.
+  const un = g && g.dirty > 0 ? ` <span class="un">· ${g.dirty} uncommitted</span>` : "";
+  const ah = `<span class="ah">↑${g?.ahead}</span>`, bh = `<span class="bh">↓${g?.behind}</span>`;
+  switch (syncState(g)) {
+    case "no-upstream": return `${esc(p.branch || "the main checkout")} tracks no upstream${un}`;
+    case "diverged": return `${ah} ${bh} diverged from ${up}${old}${un}`;
+    case "behind": return `${bh} behind ${up}${old}${un}`;
+    case "ahead": return `${ah} unpushed to ${up}${old}${un}`;
+    case "level": return `in sync with ${up}${old}${un}`;
+    // git could not read the folder, or the probe has not answered. Not an error worth a
+    // warning: every verb below fetches before it decides, so it is a thing not known
+    // yet rather than a thing that went wrong.
+    default: return `<span class="dim">not read yet · every verb here fetches first</span>`;
+  }
+}
+
+/**
+ * `known` is `factsKnown`: whether `project_facts` has answered for the project on
+ * screen. The three states are genuinely different and the card must not merge them —
+ * unknown gets a skeleton, a folder that is no repo gets nothing at all (`missingCard`
+ * says that once, in full), and a repo gets the card whether or not its counts have
+ * landed yet.
+ */
+export function repoCard(sync: DashSync | null, known = true): string {
+  if (!known) return cardSkeleton(2);
+  if (!sync) return "";
+  const busy = !!sync.busy;
+  const gb = (a: string, label: string, title: string, wide = false, off = false) =>
+    `<button class="gitb${wide ? " wide" : ""}" data-dashact="${a}"${off ? " disabled" : ""}`
+    + ` title="${esc(title)}">${label}</button>`;
+  const body = `<div class="gsub">${syncLine(sync)}</div>
+    <div class="gbts">
+      ${gb("pull", sync.busy === "pull" ? "⇣ Pulling…" : "⇣ Pull", pullSub(sync), false, busy)}
+      ${gb("push", sync.busy === "push" ? "⇡ Pushing…" : "⇡ Push", pushSub(sync), false, busy)}
+      ${gb("switch", "⇄ Switch branch…", switchSub(sync), true)}
+      ${gb("graph", "⑂ Commit graph…", "history, branches, merges")}
+      ${gb("cleanup", "⌥ Branches…", "clean up merged and orphaned ones")}
+    </div>`;
+  // The branch is the header's count slot: it is the headline fact about a checkout, and
+  // on a repo with no worktrees this card is the only place the dashboard says it.
+  return card("repo", "Repository", sync.branch ? `⌂ ${sync.branch}` : "", body, false);
+}
+
 function noteRow(n: Note): string {
   return `<div class="nt" data-dashnote="${esc(n.id)}">
     <span class="ntx"><span class="tx">${esc(n.text)}</span>
@@ -356,38 +505,6 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
 
 // ---------- the inspector: the project's context menu, standing open ----------
 
-/**
- * What the ⇣ Pull verb is about to do, from the main checkout's last-known upstream
- * state. `g` is null until the probe answers — and stays null for a folder git could not
- * read — which `pullState` renders as the plainest wording rather than as an absence:
- * the button works either way, because it fetches before it decides anything.
- */
-export interface DashPull {
-  /// The branch on the main checkout's HEAD — the thing being fast-forwarded.
-  branch: string;
-  /// Where that branch sat against its upstream **at the last fetch**, which on a
-  /// dashboard is as old as the last time anything ran git in that folder.
-  g: DiffStat | null;
-  /// A pull in flight. The one state that greys the button — see `pullState` for why
-  /// none of the others do.
-  busy: boolean;
-}
-
-/// The subtitle under ⇣ Pull. Every wording says what it is reading and how fresh that
-/// is, because the number is the part a reader would otherwise assume is live.
-function pullSub(p: DashPull): string {
-  if (p.busy) return "fetching, then fast-forwarding…";
-  const g = p.g;
-  const b = p.branch || "the main checkout";
-  switch (pullState(g)) {
-    case "no-upstream": return `${b} tracks no upstream`;
-    case "diverged": return `diverged · ${g!.ahead} ahead, ${g!.behind} behind`;
-    case "behind": return `${g!.behind} behind ${g!.upstream} at the last fetch`;
-    case "level": return `level with ${g!.upstream} at the last fetch`;
-    default: return `fetch, then fast-forward ${b}`;
-  }
-}
-
 /// `known` is whether `project_facts` has answered *for this project yet*. It is not the
 /// same question as "is anything loading": a range change reloads the timeline without
 /// putting the tier back in doubt, and blanking the repo verbs for it would be a flicker
@@ -396,7 +513,7 @@ function pullSub(p: DashPull): string {
 export function dashInspector(
   root: string, tier: ProjectTier, f: ProjectFacts | null,
   live: { id: string; label: string; glyph: string; cls: string; ctx: string }[],
-  shared: boolean, known = true, pull: DashPull | null = null,
+  shared: boolean, known = true,
 ): string {
   const act = (a: string, ic: string, lb: string, sb = "", cls = "", off = false) =>
     `<button class="ia ${cls}" data-dashact="${a}"${off ? " disabled" : ""}><span class="ic">${ic}</span>`
@@ -420,10 +537,6 @@ export function dashInspector(
       ${act("terminal", "❯", "Open terminal here", "a plain shell, no Claude")}
       ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
       <div class="ip-sep"></div>
-      ${repo && pull ? act("pull", "⇣", pull.busy ? "Pulling…" : "Pull",
-        pullSub(pull), "", pull.busy) : ""}
-      ${repo ? act("graph", "⑂", "Commit graph…", "history, branches, merges") : ""}
-      ${repo ? act("cleanup", "⌥", "Branches…", "clean up merged and orphaned ones") : ""}
       ${act("history", "◷", "History…", "reopen a session you closed")}
       ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
       ${act("copypath", "⧉", "Copy path", "the full path, to the clipboard")}
@@ -442,7 +555,6 @@ export function dashInspector(
 export function dashStrip(
   accent: string, initial: string, tier: ProjectTier,
   live: { id: string; glyph: string; cls: string; label: string }[], known = true,
-  pull: DashPull | null = null,
 ): string {
   const b = (a: string, ic: string, t: string, cls = "", off = false) =>
     `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}"${off ? " disabled" : ""}>${ic}</button>`;
@@ -457,9 +569,6 @@ export function dashStrip(
     ${b("terminal", "❯", "Open terminal here")}
     ${b("run", "▶", "Run a task…")}
     <span class="isep"></span>
-    ${repo && pull ? b("pull", "⇣", `Pull · ${pullSub(pull)}`, "", pull.busy) : ""}
-    ${repo ? b("graph", "⑂", "Commit graph…") : ""}
-    ${repo ? b("cleanup", "⌥", "Branches…") : ""}
     ${b("history", "◷", "History…")}
     ${b("folder", "⌂", "Open project folder")}
     ${b("copypath", "⧉", "Copy path")}`;

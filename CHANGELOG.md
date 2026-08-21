@@ -13,6 +13,40 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The project overview gets a Repository card.** Where the main checkout stands, and
+  the five verbs that act on it, in the overview column instead of buried in the
+  inspector's list: the branch, whether it is ahead, behind, diverged or tracking
+  nothing, how many files are uncommitted, and ⇣ Pull · ⇡ Push · ⇄ Switch branch ·
+  ⑂ Commit graph · ⌥ Branches. Pull used to be a row in a list twelve rows long, which
+  is a verb you have to go looking for; the other four are new here or were only
+  reachable from elsewhere. The card states the position once and each button's tooltip
+  says what that button would do with it.
+
++ **Push, and it fetches first, the same as the pull does.** Nothing on that pane runs
+  git on a schedule, so without the fetch the ahead/behind it knows is as old as the last
+  time anything happened in that folder, and a push would go out against a `behind` it
+  had no reason to believe and come back as a raw non-fast-forward rejection rather than
+  as "diverged, 2 ahead, 3 behind" with the terminal already prefilled. The unpushed
+  count is now shown as its own state too, where it used to be folded into "level with
+  origin/main" and shown to nobody.
+
++ **⇄ Switch branch… reaches the main checkout from the project overview.** It opens the
+  worktree dialog straight onto its switch card, the same one the ⑃ cluster menu's row
+  reaches, so every guard arrives with it: it holds off while a task is running in that
+  folder or an agent is mid-turn, refuses a branch another worktree already holds, hands
+  a dirty tree to a terminal instead of quietly carrying uncommitted changes across, and
+  cuts a local branch tracking `origin/…` for a colleague's branch you don't have yet.
+  A switch that lands re-reads the pane, since its timeline is a `git log` on the folder
+  that just moved.
+
+! **A push Episko refuses now hands over a command that works.** A branch with commits on
+  both sides was declined with `git pull --ff-only && git push`, which cannot
+  fast-forward a branch that has moved on locally: the handoff failed one command after
+  the button did. It is refused as diverged, with the rebase, the same way a pull already
+  was. And a branch that is merely behind with nothing of its own now answers "nothing to
+  push" instead of predicting a rejection that could not happen and opening a terminal
+  for it.
+
 + **A tool call on the inspector's Tools tab opens to show what ran and what came back.**
   A row was a tool name, one abbreviated argument and a latency bar, so a `Bash` heredoc
   showed its first 64 characters and nothing a tool returned was kept at all. Click a row
