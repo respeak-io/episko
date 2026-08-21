@@ -262,6 +262,22 @@ describe("applyHook — the lifecycle state machine", () => {
       hook(s, "PostToolUse", { tool_name: "Grep" });
       expect(s.activity).toHaveLength(0);
     });
+    it("drops a Post whose id matches nothing rather than closing another call's row", () => {
+      // The id is present and unknown — its Pre row aged out past ACT_CAP, or never
+      // opened. Falling back to the tool name here would close the oldest still-open
+      // Bash and staple this output onto it, which under parallel subagents is routine
+      // and is a row claiming it ran something it did not. The name match is for a
+      // payload with NO id; it is not a second chance for one that missed.
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "ls" } });
+      vi.setSystemTime(NOW_MS + 400);
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "gone", tool_response: { stdout: "not mine" } });
+      expect(s.activity.map((a) => [a.arg, a.durMs])).toEqual([["ls", null]]);
+      expect(s.activity[0].out).toBe("");
+      // The right id still closes it.
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_response: { stdout: "mine" } });
+      expect(s.activity[0].durMs).toBe(400);
+    });
   });
 
   // What was executed and what came back, kept on the row so the inspector can expand it.

@@ -23,11 +23,10 @@
 // ./explore instead.
 
 import { invoke } from "@tauri-apps/api/core";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, dropScrim, FILE_MANAGER, toast } from "./dom";
+import { $, dropScrim, FILE_MANAGER } from "./dom";
 import { basename, esc, escAttr } from "./format";
 import { sessions } from "./state";
-import { openTouchedFile, revealTouchedFile } from "./actions";
+import { copyPath, openTouchedFile, revealTouchedFile } from "./actions";
 import { openDiff } from "./diffview";
 import {
   browseRows, crumbs, findRows, parentDir, rowAction, scopeKeep, touchIndex,
@@ -100,7 +99,11 @@ export async function openExplorer(dir: string, label?: string) {
   if (!explorerOpen || root !== dir) return; // closed, or moved on, while reading
   loading = false;
   if (idx) {
-    indexCache.set(dir, { at: Date.now(), idx });
+    // Only a real read restarts the clock. Re-stamping on a cache *hit* would let every
+    // reopen inside the window extend it, so a project you glance at every half-minute
+    // would never be re-read at all and a file an agent made ten minutes ago would stay
+    // missing — the opposite of what CACHE_MS is for.
+    if (idx !== fresh) indexCache.set(dir, { at: Date.now(), idx });
     paths = idx.files;
     truncated = idx.truncated;
     isRepo = idx.repo;
@@ -241,7 +244,7 @@ $("expIn").addEventListener("keydown", (e) => {
     // ⌘↵ and ⌥↵ are the row's other two verbs, and both apply to a folder as well as a
     // file — revealing a directory is exactly what you want when you are looking at one.
     if (e.metaKey || e.ctrlKey) { closeExplorer(); void revealTouchedFile(abs(r.path)); }
-    else if (e.altKey) { void writeText(abs(r.path)).then(() => toast("Path copied")).catch((err) => toast(String(err))); }
+    else if (e.altKey) { void copyPath(abs(r.path)); }
     else activate(sel);
   } else if (e.key === "Backspace" && !($("expIn") as HTMLInputElement).value && cwd) {
     // Only when the field is empty: inside a query, ⌫ is editing text.

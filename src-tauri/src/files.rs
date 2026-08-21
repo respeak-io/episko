@@ -46,8 +46,7 @@ pub(crate) struct FileIndex {
 /// project contains, and there is no second round trip per folder you step into.
 #[tauri::command(async)]
 pub(crate) fn project_files(root: String) -> FileIndex {
-    if let Some(files) = git_index(&root) {
-        let truncated = files.len() >= MAX_FILES;
+    if let Some((files, truncated)) = git_index(&root) {
         return FileIndex { files, truncated, repo: true };
     }
     let (files, truncated) = walk_index(std::path::Path::new(&root));
@@ -56,7 +55,14 @@ pub(crate) fn project_files(root: String) -> FileIndex {
 
 /// `git ls-files`, or None when this is not a repo (or git is unavailable, which is the
 /// same thing from here: the walk is the answer either way).
-fn git_index(root: &str) -> Option<Vec<String>> {
+///
+/// Returns whether the list was cut, decided at the cut rather than measured afterwards:
+/// `.take(MAX_FILES)` happens before the sort/dedup, so a post-dedup `len() >= MAX_FILES`
+/// both claims truncation for a repo of exactly MAX_FILES files and — mid-merge, where
+/// `--cached` lists a conflicted path once per stage — misses a genuine cut that
+/// deduplicated back under the line. The second is the one that matters: it hands the
+/// explorer a partial project and lets it present it as the whole thing.
+fn git_index(root: &str) -> Option<(Vec<String>, bool)> {
     let out = sys_command("git")
         .env("LC_ALL", "C")
         .arg("-C").arg(root)
@@ -68,17 +74,16 @@ fn git_index(root: &str) -> Option<Vec<String>> {
     }
     // `-z` rather than lines: a path may contain anything but NUL, and this is the one
     // place a quoted or newline-bearing filename would silently split into two rows.
-    let mut files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .take(MAX_FILES)
-        .map(|s| s.to_string())
-        .collect();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut it = text.split('\0').filter(|s| !s.is_empty());
+    let mut files: Vec<String> = it.by_ref().take(MAX_FILES).map(|s| s.to_string()).collect();
+    // Whether anything was left behind, asked of the iterator we stopped pulling from.
+    let truncated = it.next().is_some();
     // `--cached` lists a conflicted path once per stage, so the same name can arrive
     // three times mid-merge.
     files.sort();
     files.dedup();
-    Some(files)
+    Some((files, truncated))
 }
 
 /// The non-repo fallback: a bounded, breadth-limited walk that skips what no file
@@ -100,15 +105,23 @@ fn walk_index(root: &std::path::Path) -> (Vec<String>, bool) {
                 continue;
             }
             let Ok(ft) = e.file_type() else { continue };
+            // Tested BEFORE `is_dir`, and this is the whole of the fix: `file_type()`
+            // never follows a link, so a symlink to a directory answers `is_dir() ==
+            // false` and `is_symlink() == true`. The old guard sat inside the `is_dir`
+            // arm where it could never be false — dead code — and, because `is_dir` was
+            // false, the link fell through to the file arm below and `vendor ->
+            // ../shared` was listed as a file. Skipping it outright keeps the walk
+            // bounded (a link can point at an ancestor) and keeps the list to real files.
+            if ft.is_symlink() {
+                continue;
+            }
             if ft.is_dir() {
                 if SKIP_DIRS.contains(&name.as_str()) {
                     continue;
                 }
-                // A symlinked directory is not descended into: it is the one way a
-                // bounded walk still becomes an unbounded one.
-                if depth + 1 < MAX_DEPTH && !ft.is_symlink() {
+                if depth + 1 < MAX_DEPTH {
                     stack.push((e.path(), depth + 1));
-                } else if depth + 1 >= MAX_DEPTH {
+                } else {
                     truncated = true;
                 }
             } else if let Ok(rel) = e.path().strip_prefix(root) {

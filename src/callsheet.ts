@@ -56,7 +56,11 @@ export function openCallSheet(sessionId: string, key: string) {
 }
 
 export function closeCallSheet() {
-  if (!sid) return;
+  // `sid === null`, not `!sid`: `callSheetOpen()` asks the first question and these ask
+  // the second, so an empty-string id would answer "open" there and "closed" here — the
+  // dialog and its scrim would show, paint nothing, and refuse to close. No call site
+  // passes `""` today; the guards disagreeing is what makes one able to.
+  if (sid === null) return;
   sid = null;
   sel = null;
   $("callDlg").classList.remove("show");
@@ -64,7 +68,7 @@ export function closeCallSheet() {
 }
 
 export function selectCall(key: string) {
-  if (!sid || key === sel) return;
+  if (sid === null || key === sel) return;
   sel = key;
   renderCallSheet();
 }
@@ -123,7 +127,7 @@ let lastDetail = "";
  * match and skip.
  */
 export function renderCallSheet(force = false) {
-  if (!sid) return;
+  if (sid === null) return;
   const s = sessions.get(sid);
   // The pane went away under the sheet (closed, or the session ended and was swept).
   // Nothing left to show and no honest way to show it, so step out.

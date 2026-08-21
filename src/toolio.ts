@@ -157,14 +157,20 @@ function patchText(o: Record<string, unknown>): string {
   // patch, which is the same claim `update` makes.
   const head = o.type === "create" ? "created"
     : o.type === "update" || hunks.length ? "updated" : "wrote";
+  // Drop an empty hunk on its `lines`, not on the joined string: every element built
+  // below carries a literal newline after the `@@` header whether or not anything
+  // follows it, so a `.includes("\n")` filter is always true and a hunk with no lines
+  // survives as a bare header — with `body` then truthy, the `N lines` fallback under
+  // it can never fire.
   const body = hunks
     .map((h) => {
       const g = isObj(h) ? h : {};
       const lines = Array.isArray(g.lines) ? g.lines.map((l) => String(l)) : [];
       const n = (v: unknown) => (typeof v === "number" ? v : 0);
-      return `@@ -${n(g.oldStart)},${n(g.oldLines)} +${n(g.newStart)},${n(g.newLines)} @@\n${lines.join("\n")}`;
+      return { head: `@@ -${n(g.oldStart)},${n(g.oldLines)} +${n(g.newStart)},${n(g.newLines)} @@`, lines };
     })
-    .filter((h) => h.includes("\n"))
+    .filter((h) => h.lines.length > 0)
+    .map((h) => `${h.head}\n${h.lines.join("\n")}`)
     .join("\n");
   if (body) return `${head}\n${body}`;
   // A fresh file has no hunks to show, and its content is already on the input side.
@@ -189,7 +195,12 @@ export function outputText(resp: unknown, error: unknown): string {
   if (resp == null) return "";
   if (!isObj(resp)) {
     const s = scalar(resp);
-    return s ? clip(s) : "";
+    if (s) return clip(s);
+    // An array is neither a scalar nor a record, so it reaches neither `scalar` nor
+    // `fieldsText` — and returning "" here made the sheet say "(nothing returned)" for a
+    // call that returned plenty (an MCP tool's content blocks, a search's matches). The
+    // generic dump is exactly what the header promises for a shape we don't model.
+    return Array.isArray(resp) ? clip(json(resp)) : "";
   }
   // Order matters: a Write response carries `type`, `content` AND `structuredPatch`, so
   // the patch has to win before the generic dump prints the whole file back at you.

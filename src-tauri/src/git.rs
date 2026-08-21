@@ -2164,9 +2164,9 @@ pub(crate) struct ChangedPath {
     /// Repo-relative, forward slashes — the same shape the explorer's index uses, so the
     /// two join on the string without either side normalising.
     path: String,
-    /// One letter: `M` modified, `A` added, `D` deleted, `R` renamed, `U` unmerged,
-    /// `?` untracked. The worktree half of git's XY wins over the index half, because a
-    /// file staged-then-edited is, to a reader looking at their tree, edited.
+    /// One letter, from the same `v2_code` the new-session dialog's file list uses, so
+    /// the two lists cannot call one file two things. See that function for which half
+    /// of git's XY wins and why.
     status: String,
 }
 
@@ -2174,8 +2174,9 @@ pub(crate) struct ChangedPath {
 ///
 /// A sibling of `git_diffstat` rather than a field on it: the stat is polled every 15s
 /// for every open folder and must stay a handful of integers, while this is asked for
-/// once, by one overlay, when it opens. Same single `status --porcelain=v2` walk either
-/// way, so the cost is one process and no diffing.
+/// once, by one overlay, when it opens. One `status --porcelain=v2` process either way
+/// and no diffing — but this one asks for `-uall` and the polled one must not, which is
+/// the second reason they are separate commands rather than one with a flag.
 ///
 /// Returns an empty list rather than an error when the folder is not a repo: the
 /// explorer works fine there (its index just comes from a walk instead), and a row with
@@ -2186,7 +2187,14 @@ pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
         .env("LC_ALL", "C")
         .arg("-C").arg(&workdir)
         .args(["-c", "core.quotePath=false"])
-        .args(["--no-optional-locks", "status", "--porcelain=v2"])
+        // `-uall`, not git's default `-unormal`. The default collapses a new folder into
+        // the single entry `? sub/`, so every file inside it reaches the explorer with no
+        // mark at all and the `Changed` chip filters out the newest files in the project
+        // — while the index beside it (`ls-files --others`) lists each one. That walk is
+        // already being done for this same overlay, so naming the files here costs
+        // nothing new. `working_set` keeps `-unormal` on purpose: it is polled every 15s
+        // and it *counts* the collapsed entry as one `new_dirs`.
+        .args(["--no-optional-locks", "status", "--porcelain=v2", "-uall"])
         .output();
     let Ok(out) = out else { return Vec::new() };
     if !out.status.success() {
@@ -2195,50 +2203,24 @@ pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut rows = Vec::new();
     for line in text.lines() {
-        // Every entry type puts its path LAST, after a fixed field count, so splitn on
-        // that count keeps a path with spaces in one piece. Rename entries then carry
-        // `<new>\t<old>`; the new name is the one a file list is about.
-        let (fields, xy) = match line.as_bytes().first() {
-            Some(b'1') => (9, line.get(2..4)),
-            Some(b'2') => (10, line.get(2..4)),
-            Some(b'u') => (11, Some("uu")),
-            Some(b'?') => (2, Some("??")),
-            _ => continue,
-        };
-        let Some(path) = line.splitn(fields, ' ').nth(fields - 1) else { continue };
-        let path = path.split('\t').next().unwrap_or(path);
+        // `v2_path`/`v2_code` rather than a second parse of the same format. This used to
+        // re-implement the per-kind field count inline (9/10/11/2 against their 8/9/10,
+        // both correct, both arrived at separately), which meant a fix to either had to
+        // be found twice — and the two disagreed about the status letter, so one file
+        // could be `M` here and `A` in the new-session dialog.
+        let Some(kind) = line.as_bytes().first().copied() else { continue };
+        if !matches!(kind, b'1' | b'2' | b'u' | b'?') {
+            continue;
+        }
+        let Some((path, _from)) = v2_path(line) else { continue };
         if path.is_empty() {
             continue;
         }
-        rows.push(ChangedPath { path: path.to_string(), status: status_letter(xy).to_string() });
+        let xy = line.split(' ').nth(1).unwrap_or("");
+        let code = if kind == b'?' { '?' } else { v2_code(kind, xy) };
+        rows.push(ChangedPath { path, status: code.to_string() });
     }
     rows
-}
-
-/// git's two-character XY (index, worktree) as the one letter a row shows.
-fn status_letter(xy: Option<&str>) -> &'static str {
-    let b = xy.unwrap_or("").as_bytes();
-    if b == b"??" {
-        return "?";
-    }
-    if b == b"uu" {
-        return "U";
-    }
-    // Worktree half first: a file staged as added and then edited still reads as `A`
-    // only if nothing has happened to it since, which is what taking `.` as "no news"
-    // gives us.
-    for c in [b.get(1).copied().unwrap_or(b'.'), b.first().copied().unwrap_or(b'.')] {
-        match c {
-            b'M' => return "M",
-            b'A' => return "A",
-            b'D' => return "D",
-            b'R' => return "R",
-            b'C' => return "C",
-            b'T' => return "T",
-            _ => {}
-        }
-    }
-    "M"
 }
 
 #[derive(serde::Serialize)]
@@ -3658,6 +3640,31 @@ canonicalizehostname false
         assert!(by("old name.txt").is_none(), "the old name is not a file any more: {:?}",
             rows.iter().map(|r| &r.path).collect::<Vec<_>>());
         assert_eq!(rows.len(), 4);
+
+        // A new *folder* is where `-unormal` used to give up: it reports `? sub/` as one
+        // entry, so both files below would reach the explorer unmarked while its index
+        // (`ls-files --others`) lists them individually — and the `Changed` chip would
+        // then filter out the newest files in the project.
+        std::fs::create_dir(dir.join("new dir")).unwrap();
+        std::fs::write(dir.join("new dir").join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("new dir").join("b.txt"), "b\n").unwrap();
+        let rows = git_changed(path.clone());
+        let by = |p: &str| rows.iter().find(|r| r.path == p).map(|r| r.status.clone());
+        assert_eq!(by("new dir/a.txt").as_deref(), Some("?"), "each file inside a new folder is named: {:?}",
+            rows.iter().map(|r| &r.path).collect::<Vec<_>>());
+        assert_eq!(by("new dir/b.txt").as_deref(), Some("?"));
+        assert!(by("new dir/").is_none(), "the collapsed folder entry is not a row");
+
+        // The index half of XY wins, and this is the case that says so: staged as added,
+        // then edited in the tree. `A` is the fact worth keeping — every dirty file is
+        // modified, only a new one is added — and the new-session dialog's list reads it
+        // the same way, which is the point of sharing `v2_code`.
+        std::fs::write(dir.join("staged then edited.txt"), "1\n").unwrap();
+        git(&dir, &["add", "staged then edited.txt"]);
+        std::fs::write(dir.join("staged then edited.txt"), "1\n2\n").unwrap();
+        let rows = git_changed(path.clone());
+        let by = |p: &str| rows.iter().find(|r| r.path == p).map(|r| r.status.clone());
+        assert_eq!(by("staged then edited.txt").as_deref(), Some("A"));
 
         // Not a repo: an empty list, not an error — the explorer still works there.
         let plain = scratch_dir();

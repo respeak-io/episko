@@ -76,16 +76,33 @@ function paintFootIo() {
 /// opens with one. The permanent three carry no divider and no entry in `FOOT_SEGS`,
 /// which is what keeps them permanent — see ./footprefs.
 ///
+/// The **first visible** segment drops its rule too, and that is not the same statement.
+/// `sessions` is the leftmost switchable segment and has no divider of its own in the
+/// markup, so hiding it used to promote `cost`'s rule up against the version block —
+/// a rule where the bar has never had one. Deciding it here rather than adding a
+/// `data-fdiv="sessions"` keeps the default appearance exactly as it is and survives
+/// whatever ends up leftmost next.
+///
 /// `hidden` rather than a class, because these are inline elements in a flex row and
 /// `hidden` is the one thing that removes them from the layout without a second rule to
 /// keep in sync.
+///
+/// Guarded on the switch state, because this runs from `renderFoot` on every `renderAll`
+/// pass and nothing but a Settings toggle can change the answer: without the guard it is
+/// fourteen DOM lookups a frame, forever, to rewrite a value that is already correct.
+let footPrefsKey = "";
 function applyFootPrefs() {
+  const key = FOOT_SEGS.map((s) => (footShown(footPrefs, s.id) ? "1" : "0")).join("");
+  if (key === footPrefsKey) return;
+  footPrefsKey = key;
+  let leading = true;
   for (const seg of FOOT_SEGS) {
     const on = footShown(footPrefs, seg.id);
     const el = document.getElementById(seg.el);
     if (el) (el as HTMLElement).hidden = !on;
     const div = document.querySelector<HTMLElement>(`[data-fdiv="${seg.id}"]`);
-    if (div) div.hidden = !on;
+    if (div) div.hidden = !on || leading;
+    if (on) leading = false;
   }
 }
 // Colour the footer % by its forecast (not its raw level), and show a muted

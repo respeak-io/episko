@@ -107,9 +107,16 @@ function settle(v: boolean) {
   restoreFocus?.focus();
   restoreFocus = null;
   r(v);
-  // Only after the resolver has run, so a caller that asks a second question from its
-  // own `.then` is the one that gets in next rather than racing the queue.
-  waiting.shift()?.();
+  // `r(v)` only *schedules* the caller's continuation — it does not run it — so draining
+  // synchronously here painted the queued question first and pushed the caller's own
+  // follow-up behind it, which is the opposite of what this comment used to claim. One
+  // microtask hop puts the drain after that continuation.
+  //
+  // The `settleOpen` test is what makes the hop safe: if the continuation asked its own
+  // question, it is on screen now and the queue must not overwrite it. That question's
+  // own `settle` drains the queue next, so nothing is stranded — the order just ends up
+  // caller-first, which is the intent.
+  queueMicrotask(() => { if (!settleOpen) waiting.shift()?.(); });
 }
 
 $("cfmYes").addEventListener("click", () => settle(true));
