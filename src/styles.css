@@ -745,10 +745,13 @@ html.win .wctl { display: flex; }
 .wset .sync.even, .wset .sync.none { color: var(--muted); opacity: .7; }
 /* fetch / pull / push — disabled with a title rather than hidden, so the row is
    the same shape whatever state the branch is in */
+/* Shared with the project dashboard's Repository card: a git button looks like a git
+   button wherever it is, and only the row (or grid) around it is each surface's own. */
+.gitb { height: 24px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.gitb:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--accent-ink); }
+.gitb:disabled { opacity: .38; cursor: default; }
 .gitrow { display: flex; gap: 6px; }
-.gitrow .gitb { flex: 1; height: 24px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
-.gitrow .gitb:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--accent-ink); }
-.gitrow .gitb:disabled { opacity: .38; cursor: default; }
+.gitrow .gitb { flex: 1; }
 .gitrow.busy { opacity: .6; }
 
 /* --- the project explorer (⌘P) --- */
@@ -2416,7 +2419,7 @@ select.in-ctl { cursor: pointer; }
 .ac { border-radius: var(--radius); border: 1px solid var(--hair); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); overflow: hidden; flex: none; }
 .ac-h { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--hair); }
 .ac-h .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
-.ac-h .n { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.ac-h .n { margin-left: auto; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ac-h .xb { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px; width: 19px; height: 19px; border-radius: 6px; display: grid; place-items: center; flex: none; }
 .ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
@@ -2431,6 +2434,17 @@ select.in-ctl { cursor: pointer; }
 .tag.ok { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 28%, transparent); }
 .tag.warn { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 28%, transparent); }
 .tag.acc { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+
+/* The Repository card: one state line, then the verbs. Padding rather than .ac-b's row
+   gaps, because this card's body is a paragraph and a button grid, not a list of rows. */
+.gsub { padding: 6px 7px 8px; font: 11px var(--font-mono); line-height: 1.5; color: var(--muted); }
+.gsub .dim { color: var(--muted-2); font-family: var(--font-ui); font-size: 10.5px; }
+.gsub .ah { color: var(--st-done); }
+.gsub .bh { color: var(--st-working); }
+.gsub .un { color: var(--st-working); }
+.gbts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 7px 7px; }
+.gbts .gitb { height: 26px; text-align: center; }
+.gbts .gitb.wide { grid-column: 1 / -1; }
 
 .nt-form { display: flex; gap: 5px; padding: 4px 4px 3px; }
 .nt-form input { flex: 1; min-width: 0; height: 25px; padding: 0 9px; border-radius: 7px; font: 11.5px var(--font-ui); color: var(--text); background: var(--bg-2); border: 1px solid var(--hair); }

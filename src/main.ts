@@ -59,8 +59,8 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
-  openBranchPop, setWtLaunch, setWtRefreshGit, setWtRenderAll,
+  closeBranchPop, closeWt, openWt, setWtCloseSession, setWtHandToTerminal,
+  openBranchPop, setWtLaunch, setWtOnBranchSwitched, setWtRefreshGit, setWtRenderAll,
   setWtSaveCmpBase, setWtSetActive,
 } from "./worktree";
 import {
@@ -78,8 +78,9 @@ import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } 
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import {
-  closeDashboard, dashEscape, dashLaunchHint, openDashboard, releaseClaimFor, renderDash,
-  renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
+  releaseClaimFor, renderDash, renderDashHeader, renderDashInspector, setDashHost,
+  wireDashboard,
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -255,6 +256,13 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // The ⑃ dialog, opened straight onto the root's switch card: `armSwitch` selects the
+  // repo row and paints it, so the branch picker is the next click. Every guard, the
+  // picker itself and the dirty-tree handoff live in that card, which is exactly why the
+  // dashboard hands over rather than growing its own copy of all three.
+  switchBranch: (project, repoDir, branch) => {
+    void openWt(project, repoDir, branch || null, { manage: true, armSwitch: true });
+  },
   // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
   // nests under the project rather than becoming a top-level group of its own.
   handToTerminal: (project, dir, cmd) => {
@@ -294,6 +302,10 @@ setWtRefreshGit(refreshGitViews);
 // The trunk a project's branches are measured against: a persisted preference, so the
 // write is actions.ts's — reached as a hook because the direct import would close a cycle.
 setWtSaveCmpBase(setCmpBase);
+// …and moving the root's HEAD invalidates a dashboard of that project outright: its
+// timeline, its ⇣ ⇡ rows and its Checkouts card are all read through the branch that
+// just changed, and nothing re-reads that folder on a schedule.
+setWtOnBranchSwitched(dashBranchSwitched);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------

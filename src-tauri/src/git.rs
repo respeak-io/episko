@@ -2426,18 +2426,26 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                     &format!("git push -u origin {branch}"),
                 );
             }
-            if behind > 0 {
-                return refuse(
-                    &format!("{behind} behind — push would be rejected"),
-                    "git pull --ff-only && git push",
-                );
-            }
+            // "Nothing to send" comes FIRST, and being behind does not change it: a
+            // push with no commits of our own is a no-op whatever the remote has done,
+            // and answering "push would be rejected" describes a rejection that could
+            // never happen while handing the user a terminal they did not need.
             if ahead == 0 {
                 return Ok(GitActionResult {
                     ok: true,
                     summary: "nothing to push".into(),
                     ..Default::default()
                 });
+            }
+            // Which leaves commits on both sides, and that is what diverged *means*, so
+            // the handoff has to be the one that resolves it. `git pull --ff-only` was
+            // offered here and cannot fast-forward a branch that has moved on locally:
+            // it fails exactly as surely as the push would, one command later.
+            if behind > 0 {
+                return refuse(
+                    &format!("diverged — {ahead} ahead, {behind} behind, so the push would be rejected"),
+                    "git pull --rebase && git push",
+                );
             }
             vec!["push"]
         }
@@ -3550,6 +3558,11 @@ canonicalizehostname false
         git(&other, &["push", "-q", "origin", "main"]);
         let r = git_action(path.clone(), "fetch".into()).unwrap();
         assert!(r.ok && r.summary == "fetched — 1 behind", "{}", r.summary);
+        // Behind with nothing of our own: the push has nothing to send, and says that
+        // rather than predicting a rejection that cannot happen and opening a terminal
+        // for it. Being behind only decides anything once there IS something to push.
+        let r = git_action(path.clone(), "push".into()).unwrap();
+        assert!(r.ok && r.summary == "nothing to push", "{}", r.summary);
         let r = git_action(path.clone(), "pull".into()).unwrap();
         assert!(r.ok && r.summary == "pulled 1 commit", "{}", r.summary);
 
@@ -3563,8 +3576,11 @@ canonicalizehostname false
         assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
         assert_eq!(r.suggest.as_deref(), Some("git pull --rebase"));
         let r = git_action(path.clone(), "push".into()).unwrap();
-        assert!(!r.ok && r.summary.contains("push would be rejected"), "{}", r.summary);
-        assert_eq!(r.suggest.as_deref(), Some("git pull --ff-only && git push"));
+        assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
+        // NOT `git pull --ff-only && git push`, which is what this used to offer: it
+        // cannot fast-forward a branch with commits of its own, so the handoff failed
+        // one command after the button did.
+        assert_eq!(r.suggest.as_deref(), Some("git pull --rebase && git push"));
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
