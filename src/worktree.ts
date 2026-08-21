@@ -14,11 +14,11 @@
 // a session, closing one, putting one on stage, repainting everything.
 
 import { invoke } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
+import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded } from "./types";
+import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
 // The one thing an external session's registry file says about what it is doing. A view
 // module, and mirror.ts already reaches for it from the render layer for the same reason:
 // "is that terminal busy?" has one answer and this is where it lives.
@@ -128,7 +128,10 @@ let wtGen = 0;                 // bumps on every open/refresh; stales in-flight 
 let wtAgeT: number | undefined;
 let wtLoadedAt = 0;
 const wtCommits = new Map<string, CommitInfo | null>();
-const wtDirty = new Map<string, DiffStat | null>();
+// Keyed by folder. The value is the whole working set rather than its counts,
+// because the pane names the files: "1 file uncommitted" answers how much, and the
+// question you actually walk in with is which.
+const wtDirty = new Map<string, WorkingSet | null>();
 
 /** Mirror of the backend's path scheme (`create_worktree`): every character git
  *  can't take becomes "-", then "/" does too. Lossy on purpose — and irreversibly
@@ -557,10 +560,14 @@ async function wtPrefetch(d: Dest | undefined) {
     jobs.push(invoke<CommitInfo | null>("git_commit_info", { dir, rev }).catch(() => null)
       .then((c) => { wtCommits.set(ck, c); }));
   }
-  // list_worktrees skips `dirty` for the main worktree, so the repo row needs its own.
-  if (d.kind === "repo" && !wtDirty.has(repoDir)) {
-    jobs.push(invoke<DiffStat | null>("git_diffstat", { workdir: repoDir }).catch(() => null)
-      .then((g) => { wtDirty.set(repoDir, g); }));
+  // Every row you can start a session in has a working tree to walk into, so both
+  // ask for one: list_worktrees skips `dirty` for the main worktree entirely, and for
+  // the others it is a bare boolean — true tells you there is uncommitted work without
+  // ever saying what. A folder that is gone has nothing to read.
+  const wsDir = d.kind === "repo" ? repoDir : d.kind === "wt" && d.wt!.exists ? d.dir : "";
+  if (wsDir && !wtDirty.has(wsDir)) {
+    jobs.push(invoke<WorkingSet | null>("git_working_set", { workdir: wsDir }).catch(() => null)
+      .then((g) => { wtDirty.set(wsDir, g); }));
   }
   if (!jobs.length) return;
   await Promise.all(jobs);
@@ -579,6 +586,48 @@ function wtCommitKey(d: Dest): string {
   // A remote-only row has no local ref to name, so ask about the remote-tracking one.
   if (d.kind === "remote") return `${wtCtx.repoDir}\n${d.br!.upstream}`;
   return "";
+}
+
+// The status letter's colour, shared with the diff viewer's file headers so one
+// letter means one thing across the app. An untracked file borrows `added`'s green:
+// it is new, git just hasn't been told yet.
+const WT_FCLASS: Record<string, string> = {
+  M: "s-mod", A: "s-add", "?": "s-add", D: "s-del", R: "s-ren", C: "s-ren", U: "s-del",
+};
+// How many files the pane lists before it stops and says how many are left. The pane
+// is a paragraph of facts, not a diff viewer — ten is enough to recognise the work in
+// a folder, and the rest is one honest line rather than a scroll.
+const WT_FILES_SHOWN = 10;
+
+/** One uncommitted file: what happened to it, where it is, and its own +/−. */
+function wtFileHtml(f: StatusFile): string {
+  const name = f.from
+    ? `<span class="from">${esc(f.from)}</span> → ${wtPathHtml(f.path)}`
+    : wtPathHtml(f.path);
+  const n = f.added || f.removed
+    ? `<span class="n"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>`
+    : "";
+  return `<li><span class="dstat ${WT_FCLASS[f.code] ?? "s-mod"}">${esc(f.code)}</span>`
+    + `<span class="p">${name}</span>${n}</li>`;
+}
+/** The "Working tree" fact: the counts, and then the files themselves.
+ *
+ *  `pending` is what to show until the fetch lands. The repo row has nothing better
+ *  than "reading…", but a worktree row already knows *whether* it is dirty from
+ *  `list_worktrees`, so it says so immediately and the list fills in underneath —
+ *  arriving at the same answer, never flashing the opposite one on the way. */
+function wtWorkHtml(dir: string, pending: string): string {
+  if (!wtDirty.has(dir)) return pending;
+  const g = wtDirty.get(dir);
+  // null is "not a repo, or no commits yet" — nothing to be dirty against.
+  if (!g || !g.dirty) return `<span class="good">clean</span>`;
+  const shown = g.entries.slice(0, WT_FILES_SHOWN);
+  const rest = g.dirty - shown.length;
+  return `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
+    + (g.added || g.removed ? ` <span class="dim">·</span> <span class="add">+${g.added}</span> <span class="del">−${g.removed}</span>` : "")
+    + (g.untracked ? ` <span class="dim">· ${g.untracked} new</span>` : "")
+    + (shown.length ? `<ul class="wt-files">${shown.map(wtFileHtml).join("")}</ul>` : "")
+    + (rest > 0 ? `<div class="wt-fmore">…and ${rest} more</div>` : "");
 }
 
 function wtFacts(pairs: [string, string][]) {
@@ -609,16 +658,13 @@ function wtDetailHtml(d: Dest | undefined): string {
   if (!d || !wtCtx) return `<div class="wt-empty">Nothing selected.</div>`;
 
   if (d.kind === "repo") {
-    const g = wtDirty.get(d.dir);
     const sess = wtSessionsIn(d.dir);
     if (wtArmed === d.dir) return wtSwitchHtml();
     return `<div class="wt-dhead"><span class="wt-dkind">The repo itself</span><span class="wt-dname">${wtPathHtml(d.dir)}</span></div>`
       + wtFacts([
         ["Branch", `<span class="em">${esc(wtRepoBranch || "—")}</span>`],
         ["HEAD", wtCommitHtml(d)],
-        ["Working tree", !wtDirty.has(d.dir) ? `<span class="dim">reading…</span>`
-          : g && g.dirty > 0 ? `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
-          : `<span class="good">clean</span>`],
+        ["Working tree", wtWorkHtml(d.dir, `<span class="dim">reading…</span>`)],
       ])
       + (sess.length ? `<dl class="wt-facts"><dt>Sessions</dt><dd>${wtSessHtml(sess)}</dd></dl>` : "")
       + `<div class="wt-acts"><button class="wt-go" type="button" data-wtact="go">Start session here</button>`
@@ -655,7 +701,8 @@ function wtDetailHtml(d: Dest | undefined): string {
       ["Folder", wtPathHtml(w.path)],
       ["Branch", w.branch && w.branch !== "(detached)" ? `<span class="em">${esc(w.branch)}</span>` : `<span class="warn">(detached)</span>`],
       ["HEAD", wtCommitHtml(d)],
-      ["Working tree", !w.exists ? `<span class="dim">—</span>` : w.dirty ? `<span class="warn">uncommitted changes</span>` : `<span class="good">clean</span>`],
+      ["Working tree", !w.exists ? `<span class="dim">—</span>`
+        : wtWorkHtml(w.path, w.dirty ? `<span class="warn">uncommitted changes</span>` : `<span class="good">clean</span>`)],
     ];
     if (w.branch && w.branch !== "(detached)") {
       facts.push(["Branch state", w.merged ? `<span class="good">merged into ${esc(wtRepoBranch || "the main branch")}</span>`
