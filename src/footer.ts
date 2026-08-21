@@ -12,18 +12,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
-import { esc, fmtUntil } from "./format";
+import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecast5h, forecast7d, rl, type Forecast } from "./rl";
 import { phaseText, statusKey, type Engine, type Sess } from "./types";
-import { costPopHtml, setTokenScanning, tokenScanning, usageRow } from "./usageview";
+import { costPopHtml, ioFigures, ioPopHtml, liveIo, setTokenScanning, tokenScanning, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
 import { renderSettings, setTab, settingsOpen } from "./settings";
 import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
 import { keyActionDef, shortcutRows } from "./keys";
+import { enginePopHtml, shortPopHtml, type ShortcutRow } from "./footerview";
+import { FOOT_SEGS, footShown } from "./footprefs";
 import {
-  availEngines, engineDef, keyPrefs, sessions, setTermEngine, termEngine,
+  availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, termEngine,
 } from "./state";
 import {
   daySpend, setTokenDays, todayKey, tokenDays, tokenScanAt, usage, usageDetail,
@@ -44,11 +46,47 @@ export function renderFoot() {
   $("fCost").textContent = "$" + total.toFixed(2);
   paintFootRl("fRl", "fRlReset", forecast5h());
   paintFootRl("fRl7", "fRl7Reset", forecast7d());
+  paintFootIo();
   $("fEngine").textContent = engineDef(termEngine).label;
+  applyFootPrefs();
   if ($("usagePop").classList.contains("show")) renderUsagePop();
   // Same rule as the usage popup: repaint only while it is actually on screen, so the
   // day's spend ticks up under the pointer instead of going stale the moment it opens.
   if ($("costPop").classList.contains("show")) renderCostPop();
+  if ($("ioPop").classList.contains("show")) renderIoPop();
+}
+
+/// Today's totals on the bar; every other window is in the popover.
+///
+/// Today rather than this run, because the bar is glanced at rather than studied and
+/// "what have my agents done to this disk today" is the question people actually have.
+/// It reads `–` until the `cc-io` rollup has written its first entry of the day — the
+/// same "no reading yet" the limits segment shows, and honest: a zero would claim the
+/// sessions had done nothing.
+function paintFootIo() {
+  const f = ioFigures("today");
+  $("fIoR").textContent = f.known ? fmtMb(f.r) : "–";
+  $("fIoW").textContent = f.known ? fmtMb(f.w) : "–";
+}
+
+/// Show or hide each switchable segment, and the divider that belongs to it.
+///
+/// A divider is named after the segment it sits *before* (`data-fdiv="io"`), so hiding a
+/// segment takes its leading rule with it and the bar never shows two rules in a row or
+/// opens with one. The permanent three carry no divider and no entry in `FOOT_SEGS`,
+/// which is what keeps them permanent — see ./footprefs.
+///
+/// `hidden` rather than a class, because these are inline elements in a flex row and
+/// `hidden` is the one thing that removes them from the layout without a second rule to
+/// keep in sync.
+function applyFootPrefs() {
+  for (const seg of FOOT_SEGS) {
+    const on = footShown(footPrefs, seg.id);
+    const el = document.getElementById(seg.el);
+    if (el) (el as HTMLElement).hidden = !on;
+    const div = document.querySelector<HTMLElement>(`[data-fdiv="${seg.id}"]`);
+    if (div) div.hidden = !on;
+  }
 }
 // Colour the footer % by its forecast (not its raw level), and show a muted
 // countdown to that window's reset beside it — see the forecast section above.
@@ -115,6 +153,29 @@ function openCostPop() {
 }
 export function closeCostPop() { $("costPop").classList.remove("show"); }
 
+// ---------- disk I/O (footer "disk") ----------
+// The card this replaces lived at the bottom of the inspector and cost ~120px of a
+// 296px column to show a figure that is app-wide, not per-session — see ./usageview's
+// `ioPopHtml` for the whole reasoning and the markup.
+let lastIoPop = "";
+function renderIoPop() {
+  const html = ioPopHtml(liveIo());
+  if (html === lastIoPop) return;
+  lastIoPop = html;
+  $("ioPop").innerHTML = html;
+}
+function openIoPop() {
+  const r = $("fIoSeg").getBoundingClientRect();
+  const pop = $("ioPop");
+  renderIoPop();
+  closeFootMenus("ioPop");
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + "px";
+  pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  pop.style.top = "auto";
+  pop.classList.add("show");
+}
+export function closeIoPop() { $("ioPop").classList.remove("show"); }
+
 
 // Scan the transcripts for token totals, at most once per 10 min (a full read of
 // the recent corpus). Async + cached, so the tab paints instantly from localStorage
@@ -137,7 +198,7 @@ export function closeFootMenus(keep?: string) {
   const menus: [string, () => void][] = [
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
-    ["costPop", closeCostPop],
+    ["costPop", closeCostPop], ["ioPop", closeIoPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }
@@ -152,11 +213,11 @@ export function closeFootMenus(keep?: string) {
 // genuinely differs: ⌘C/⌘V reach the WebView's native copy/paste on macOS, while
 // everywhere else Ctrl+C is the interrupt and Ctrl+V a dead key, so only the shifted
 // pair is left.
-const CLIPBOARD_ROW: { label: string; chords: string[][] } = {
+const CLIPBOARD_ROW: ShortcutRow = {
   label: "Copy / paste in a terminal",
   chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "⇧", "C"], ["Ctrl", "⇧", "V"]],
 };
-function shortcutList(): { label: string; chords: string[][] }[] {
+function shortcutList(): ShortcutRow[] {
   return [
     // `Reveal this folder` is the one label worth completing here: ./keys is a pure
     // module and cannot read which file manager this OS has.
@@ -166,17 +227,7 @@ function shortcutList(): { label: string; chords: string[][] }[] {
   ];
 }
 function renderShortPop() {
-  const rows = shortcutList().map((s) => {
-    const keys = s.chords
-      .map((c) => `<span class="sc-chord">${c.map((k) => `<kbd>${esc(k)}</kbd>`).join("")}</span>`)
-      .join(`<span class="sc-or">/</span>`);
-    return `<div class="sc-row"><span class="sc-desc">${esc(s.label)}</span><span class="sc-keys">${keys}</span></div>`;
-  }).join("");
-  // With the master switch off there are no rows but the clipboard one, so say why
-  // rather than showing a near-empty box that reads like a bug.
-  const off = keyPrefs.enabled ? "" :
-    `<div class="sc-off">Switched off in Settings › Keys. Esc still closes what is open, and a terminal keeps its own copy/paste.</div>`;
-  $("shortPop").innerHTML = `<div class="sc-h">Keyboard shortcuts</div>${off}${rows}`;
+  $("shortPop").innerHTML = shortPopHtml(shortcutList(), !keyPrefs.enabled);
 }
 function openShortPop() {
   const r = $("fShortSeg").getBoundingClientRect();
@@ -236,10 +287,7 @@ function openEnginePopover() {
   const r = seg.getBoundingClientRect();
   const pop = $("enginePop");
   closeFootMenus("enginePop");
-  pop.innerHTML = availEngines.map((id) => {
-    const d = engineDef(id);
-    return `<button class="mp-item ${id === termEngine ? "on" : ""}" data-engine="${id}"><span class="mp-ic">${id === "embedded" ? "▤" : "⧉"}</span><span class="mp-main"><span class="mp-l">${esc(d.label)}</span><span class="mp-s">${esc(d.sub)}</span></span><span class="mp-check">✓</span></button>`;
-  }).join("");
+  pop.innerHTML = enginePopHtml(availEngines, termEngine);
   pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 228)) + "px";
   pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
   pop.style.top = "auto";
@@ -265,4 +313,5 @@ $("attnBadge").addEventListener("click", () => {
 $("fEngineSeg").addEventListener("click", (e) => { e.stopPropagation(); $("enginePop").classList.contains("show") ? closeEnginePop() : openEnginePopover(); });
 $("fUsageSeg").addEventListener("click", (e) => { e.stopPropagation(); $("usagePop").classList.contains("show") ? closeUsagePop() : openUsagePop(); });
 $("fCostSeg").addEventListener("click", (e) => { e.stopPropagation(); $("costPop").classList.contains("show") ? closeCostPop() : openCostPop(); });
+$("fIoSeg").addEventListener("click", (e) => { e.stopPropagation(); $("ioPop").classList.contains("show") ? closeIoPop() : openIoPop(); });
 $("fShortSeg").addEventListener("click", (e) => { e.stopPropagation(); $("shortPop").classList.contains("show") ? closeShortPop() : openShortPop(); });
