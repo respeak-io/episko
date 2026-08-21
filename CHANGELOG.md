@@ -101,6 +101,51 @@ Markers: `+` new · `~` changed · `!` fixed
   everything else out of `episko.log` and the 🐞 console. Fixed in a patched build of the
   menu library, reported upstream, and reversible the day a fixed release exists.
 
++ **Find any file in the project, with ⌘P.** One field, two modes: leave it empty and it
+  browses the folder you are in, breadcrumb and all; start typing and it finds across the
+  whole project, ranked by the same matcher ⌘K already uses — so a file you keep opening
+  rises the way a command you keep running does. **Every row says what has been happening
+  to it**: an amber `M` where git sees a change, and the Context card's own `✦ ◆ ○` where
+  an agent created, edited or read it. That is the thing your editor's file finder cannot
+  tell you. Three chips narrow the same list to *Changed* or *Touched* rather than opening
+  a different screen. `↵` opens what you picked, `⌘↵` reveals it, `⌥↵` copies its path,
+  `⌫` steps up a folder, `esc` closes — and **a file git has something to say about opens
+  its diff** in the working-set viewer instead of leaving the app. The rule the whole
+  thing hangs on: the app shows you changes, your OS shows you contents. Nothing is
+  written, nothing is watched, and nothing stays on screen after you press escape.
+
+! **The working-set card stops arguing with itself.** A folder whose only change was one
+  new file read `+0 −0`, `0 files`, and — a line below, next to the branch — a `1 new`
+  chip, three figures for one file that had to be reconciled by the reader. The card now
+  states the working set once, as the number of files git calls dirty (`9 files · 2 new`,
+  or just `1 new file` when that is all there is), and the branch line is left to talk
+  about the branch.
+
+~ **A new file's lines are counted, so `+N −M` is never a pair of zeroes beside a tree
+  that plainly gained something.** `git diff` has nothing to say about a file that was
+  never committed, which is why the card used to read `+0 −0` while the diff viewer showed
+  `+37` for that very same file — one tree, two surfaces, two answers. The count is
+  bounded on purpose (it runs on a poll): a whole untracked *folder* stays one entry and
+  is never opened, and a file that is too large or looks binary adds nothing rather than
+  a guess.
+
+! **A tree with nothing deleted no longer draws a full-width deletion bar.** With no added
+  or removed lines to divide, the churn bar handed the whole width to its red half. No
+  churn, no split: the empty track says it.
+
+! **Seven ⌘K rows did nothing when you clicked them.** *Add a project folder*, *Open a
+  terminal*, *Reveal the current folder*, *Change the sidebar sort order*, both panel
+  toggles and *Toggle the theme* were wired to the palette's placeholder handlers — the
+  table is built when the module loads, which is before the real ones are installed, so
+  each row kept a copy of a function that does nothing. They all work now.
+
+~ **The diff viewer opens as a list of the files, not a wall of every hunk.** Click the
+  working-set card and you get one row per file — status, path, `+40 −12` — folded, so
+  the first thing you see is *what moved*. Open the one you care about, or `expand all`
+  if you want the lot. Each row carries the Context card's two buttons: **↗ opens the
+  file, ⌂ shows it in your file manager.** The card itself is unchanged in size and
+  stays a summary; it just looks like the button it always was.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

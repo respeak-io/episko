@@ -684,7 +684,7 @@ export async function refreshSessionStats(s: Sess) {
   // restarts no animation — so it is called unconditionally below rather than guarded.
   // The rates jitter every poll, which is exactly why the *inspector* could not be.
   const sig = (g: DiffStat | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
   const before = sig(s.git);
   await pollIo();
   renderFoot();

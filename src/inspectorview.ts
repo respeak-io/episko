@@ -190,26 +190,63 @@ export function driftHtml(s: Sess): string {
     <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">${cwdMove ? "Follow it here" : "Move session here"}</button></div>
   </div>`;
 }
+/// The clickable half of the working-set card — the counts, the churn bar, and the cue
+/// saying that both of them open the diff. Exported because ./mirror paints the same
+/// block for an external session's folder: the two were copies, and copies of a card
+/// this small drift in exactly the way the two bugs below did.
+///
+/// Two things it must never do again, both of which shipped:
+///
+/// - **Never split the bar when there is no churn.** `added + removed || 1` gave the
+///   deletion half 100% of the width whenever both were zero, so a tree whose only
+///   change is one new file drew a full-width red bar: the loudest possible rendering
+///   of nothing having been deleted. No churn, no split — the empty track says it.
+/// - **Never count only the tracked files.** `files` comes from `diff --numstat HEAD`,
+///   which a never-committed file is not in, so the card read `0 files` directly above
+///   a `1 new` chip and the two argued with each other. There is now one count, of
+///   everything git calls dirty, with the new ones named as a share of it rather than
+///   as a separate figure somewhere else in the card.
+///
+/// The `+N −M` pair is dropped entirely when nothing tracked changed, rather than
+/// printed as `+0 −0`: an untracked file has no line counts until it is added, and a
+/// pair of zeroes reads as "nothing happened" beside a count saying something did.
+export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
+  const churn = g.added + g.removed;
+  const aw = churn ? Math.round((g.added / churn) * 100) : 0;
+  // `dirty` is git's own porcelain line count, so it covers the entries numstat misses
+  // (untracked, unmerged, mode-only); the sum is the fallback for a stat that predates it.
+  const touched = g.dirty || g.files + g.untracked;
+  const plural = touched === 1 ? "" : "s";
+  // "1 file · 1 new" is true and still silly. When every dirty entry is a new file there
+  // is no share to name, so the count says what they are instead of what they aren't.
+  const count = g.untracked >= touched
+    ? `${touched} new file${plural}`
+    : `${touched} file${plural}${g.untracked ? ` · ${g.untracked} new` : ""}`;
+  const lines = churn ? `<span class="add">+${g.added}</span><span class="del">−${g.removed}</span>` : "";
+  const bar = churn
+    ? `<div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`
+    : `<div class="stackbar flat"></div>`;
+  return `<div class="wpeek" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" title="Review the working set — ${escAttr(count)}">
+      <div class="wtop">${lines}<span class="files${lines ? "" : " lone"}">${count}</span><span class="wpeek-cue">⤢</span></div>
+      ${bar}</div>`;
+}
 export function wsetHtml(s: Sess): string {
   const g = s.git!;
-  const tot = g.added + g.removed || 1;
-  const aw = Math.round((g.added / tot) * 100);
-  const newBadge = g.untracked ? `<span class="unc">${g.untracked} new</span>` : "";
   const dirty = g.files || g.untracked;
   // The diff half is only worth drawing when something is actually uncommitted —
   // a clean tree that's 5 behind still needs the branch/sync row below.
-  const diff = dirty
-    ? `<div class="wpeek" data-diff="${esc(s.workdir)}" data-difftitle="${esc(s.project + (s.branch ? " · " + s.branch : ""))}" title="Open the uncommitted diff">
-      <div class="wtop"><span class="add">+${g.added}</span><span class="del">−${g.removed}</span><span class="files">${g.files} file${g.files === 1 ? "" : "s"}</span><span class="wpeek-cue">⤢</span></div>
-      <div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div></div>`
-    : "";
+  const diff = dirty ? wpeekHtml(s.workdir, s.project + (s.branch ? " · " + s.branch : ""), g) : "";
   const sync = g.upstream
     ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
+  // The branch row is about the branch and nothing else. The untracked count used to
+  // sit on its right, where "1 new" a few pixels from a branch name and an ahead/behind
+  // pair reads as a new *commit* or a new *branch*; it belongs with the other file
+  // counts, and that is where `wpeekHtml` now puts it.
   return `<div class="wset">${diff}
-    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span>${newBadge}</div>
+    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span></div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
 // Fetch / pull / push for the session's workdir.
