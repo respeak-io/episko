@@ -13,6 +13,19 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A first run now offers a guided tour, and a release can offer a short intro to what it
+  added.** The welcome card leads into a picker: `Quick start` is required, five chapters are
+  optional and remembered one at a time, so you can take one now and three next month —
+  everything stays replayable from **Settings › Guide**. Quick start makes you launch a real
+  session, paste a real prompt and **answer its first permission**, then teaches the rail's
+  glyphs and colours against whatever you actually have running. It rides `renderAll()` rather
+  than a clock of its own, so a step advances the moment the app's state says it should, and
+  the lit control is the live control — the veil is `pointer-events:none` and the dark is one
+  box-shadow around a real hole. It opens on a genuine first run and **never after an update**:
+  a release that ships a chapter puts a *Show me →* button on its *What's new* entry instead.
+  A side effect worth having: the tour now claims first run, so the release notes stop opening
+  over an app nobody has looked at yet.
+
 ! **A session working through the shell no longer reports the branch it launched on.** An
   agent told to prefer Bash creates files with `cat > f` and edits them with an inline
   `python3` heredoc, so it never calls a write tool — and both things that notice a session

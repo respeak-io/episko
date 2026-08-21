@@ -368,5 +368,13 @@
       <span class="rt"><button class="act" id="clGh">↗ On GitHub</button></span>
     </div>
   </div>
+
+  <!-- The guided tour (src/tourui.ts). Its own z-index tier, deliberately NOT the shared
+       #scrim: it lights controls INSIDE the launcher, the project context menu and the
+       settings window, so it has to sit above all three and coexist with them. The veil
+       is pointer-events:none and the dark is one box-shadow spreading out of #tourHole,
+       so the lit control is the LIVE control. -->
+  <div class="tour-veil" id="tourVeil"><div class="tour-hole" id="tourHole"></div></div>
+  <div class="tour-card" id="tourCard" role="dialog" aria-label="Guided tour"></div>
   </body>
 </html>

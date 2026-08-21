@@ -12,6 +12,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import raw from "../CHANGELOG.md?raw";
 import { $, dropScrim } from "./dom";
 import { dlog } from "./debug";
+import { releaseChapter } from "./tour";
+import { startChapter } from "./tourui";
 import { esc } from "./format";
 import {
   grouped, inlineMd, MARK_GLYPH, MARK_LABEL, parseChangelog, parseSeen, recordSeen, releaseFor,
@@ -85,10 +87,16 @@ function render() {
   }).join("");
 
   const running = r.released && r.version === version;
+  // A release that ships a guided chapter offers it HERE and nowhere else. This dialog
+  // already opens itself once per version, so the ask costs no new interruption — and
+  // it is the one place the release is already being explained. Declining leaves the
+  // button sitting here for later; nothing re-asks.
+  const guide = releaseChapter(r.version);
   $("clMain").innerHTML =
     `<div class="cl-vh"><h4>${esc(r.released ? `Episko ${r.version}` : "Next release")}</h4>
       ${r.date ? `<span class="when">${esc(r.date)}</span>` : `<span class="when">not released yet</span>`}
-      ${running ? `<span class="chip ok">you're running this</span>` : ""}</div>`
+      ${running ? `<span class="chip ok">you're running this</span>` : ""}
+      ${guide ? `<button class="cl-guide" data-clstart="${esc(guide.id)}">Show me &rarr;</button>` : ""}</div>`
     // A lede carries the same markup an entry does — 0.10.0's and 0.11.0's both open on
     // a bold clause — so it goes through the same renderer rather than plain `esc`.
     + (r.lede ? `<p class="cl-lede">${inlineMd(r.lede)}</p>` : "")
@@ -105,10 +113,22 @@ function render() {
 const shortDate = (d: string) => (d ? d.slice(5).replace("-", "/") : "—");
 
 // ---------- wiring ----------
-export function initChangelog() {
+/**
+ * @param quiet The guided tour has claimed the screen (a genuine first run). Mark the
+ * running version read and do not announce.
+ *
+ * This is what finally retires the compromise `docs/releases.md` records: dropping the
+ * fresh-install guard meant "a first-time user sees their installed version's notes
+ * once", over an app they have not looked at yet. Now the tour is that introduction,
+ * and the notes wait until there is a *second* version to announce. Note this is not
+ * the old guard coming back: it keys on the tour having actually opened, not on the
+ * seen-record being absent, so it cannot misfire on the release that introduces a key.
+ */
+export function initChangelog(quiet = false) {
   getVersion().then((v) => {
     version = v;
     syncHandle();
+    if (quiet) { markSeen(); return; }
     // The one moment it opens by itself. Deliberately after the version resolves
     // rather than on a timer: opening over a half-painted app reads as a glitch.
     if (shouldAnnounce(v, seenVersions(), LOG)) {
@@ -124,6 +144,14 @@ export function initChangelog() {
     if (!v) return;
     sel = +v.dataset.clv!;
     render();
+  });
+  // The release-intro hand-off. Closing first is not tidiness: every anchor the chapter
+  // lights is behind this dialog.
+  $("clMain").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-clstart]");
+    if (!b) return;
+    closeChangelog();
+    startChapter(b.dataset.clstart!);
   });
   $("clGh").addEventListener("click", () => {
     const r = LOG[sel];
