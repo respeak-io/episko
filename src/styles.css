@@ -1410,6 +1410,18 @@ select.in-ctl { cursor: pointer; }
 .wt-facts dd .warn { color: var(--st-working); }
 .wt-facts dd .subj { display: block; color: var(--text); margin-top: 2px; font-size: 11px; line-height: 1.4; }
 
+/* the working-tree fact names its files, so it carries the diff viewer's vocabulary:
+   the same +/− colours and the same status letters (.dstat, defined with the viewer) */
+.wt-facts dd .add { color: var(--st-done); }
+.wt-facts dd .del { color: var(--st-attention); }
+.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
+.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
 .wt-warn b { color: var(--text); font: 600 10.5px var(--font-mono); }

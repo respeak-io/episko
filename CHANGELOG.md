@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The new-session dialog names the uncommitted files instead of counting them.**
+  Picking a checkout said "3 files uncommitted" and left the question you actually walk
+  in with — whose work, and where — for after you had started a session on top of it. The
+  pane now lists the files themselves, each with what happened to it and its own +/−,
+  renames showing both names and untracked files marked as new. An existing worktree gets
+  the same list, where before it managed only "uncommitted changes" with no count at all.
+  It costs what the count already cost: the same one-or-two git processes, for the
+  highlighted row alone.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the
