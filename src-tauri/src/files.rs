@@ -141,7 +141,8 @@ mod tests {
         std::fs::write(dir.join(".gitignore"), "ignored.txt\ntarget/\n").unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["add", "."]);
-        git(&dir, &["-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-q", "-m", "one"]);
+        git(&dir, &["-c", "user.email=t@e.st", "-c", "user.name=t",
+                    "-c", "commit.gpgsign=false", "commit", "-q", "-m", "one"]);
         // one untracked-but-visible file, and two git is told to ignore
         std::fs::write(dir.join("notes.md"), "hi\n").unwrap();
         std::fs::write(dir.join("ignored.txt"), "no\n").unwrap();
