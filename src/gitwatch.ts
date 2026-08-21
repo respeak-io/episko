@@ -46,8 +46,9 @@ export function gitMutates(cmd: unknown): boolean {
 // layout. Claude Code pins the session to its launch directory and actively undoes any
 // `cd` that leaves it ("Shell cwd was reset to …"), so `cwd` never moves; the session
 // that prompted this had 42 such resets and 622 records all naming the folder it had
-// already left. The transcript stays where it was. The only thing that names the new
-// checkout is a write's `file_path`, absolute on every payload.
+// already left. The transcript stays where it was. What names the new checkout is a
+// write's `file_path`, absolute on every payload — or, for an agent that calls no write
+// tool at all, the `cd` its Bash command ran under (`bashWroteIn`).
 //
 // **2. Into the project dir** — Claude Code's own `EnterWorktree` tool, which creates
 // `<repo>/.claude/worktrees/<name>`. Being inside the project dir, there is no reset:
@@ -154,14 +155,93 @@ function checkoutDrift(workdir: string, path: unknown, roster: readonly Checkout
   return { dir: target.path, branch: target.branch };
 }
 
+// ---------- the Bash arm: an agent that calls no write tool at all ----------
+//
+// A session can be told to prefer the shell for everything — `cat > f <<'EOF'` to create
+// a file, an inline `python3` heredoc to edit one — and then `WRITE_TOOLS` never fires.
+// Every hook says `Bash`, `tool_input.file_path` is absent, and `cwd` is pinned to the
+// launch dir by case 1, so **both** signals above are blind at once and the session
+// reports the branch it launched on for the rest of its life. Measured on the real
+// session that prompted this: 99 hooks, 99 of them `Bash`, 0 writes, drift never set.
+//
+// The evidence here is weaker than a write's `file_path` — a `cd` says where the shell
+// stood, not where the bytes went — so it is bounded on both sides: the command must
+// look like it wrote something, AND it must name exactly one absolute directory, AND
+// (via `checkoutDrift`, as always) the roster must already recognise that directory as a
+// checkout of this session's repo.
+
+/// One string field of the hook's `tool_input`, if it is usable.
+function field(input: unknown, key: "file_path" | "command"): string | null {
+  if (!input || typeof input !== "object") return null;
+  const v = (input as Record<string, unknown>)[key];
+  return typeof v === "string" && v.trim() ? v : null;
+}
+
+/// What makes a shell command look like it wrote a file. A short keyword list and
+/// deliberately not a parser: it decides only whether to *believe* the `cd`, and being
+/// wrong in the shy direction costs exactly what the status quo cost. Over the 99
+/// commands of that real session these three matched 27, and nothing else was needed.
+const BASH_WRITES = [
+  // A real output redirect (`> f`, `>> f`, `cat > f <<'EOF'`). Two guards, and both were
+  // put there by a false positive found in that session's own traffic rather than by
+  // taste. **Whitespace before the `>`**, or every `=>` in a TypeScript heredoc is a
+  // redirect (11 of the 99) and so is every `2>&1`. **A `.` or `/` in the target**, or
+  // `if (s.activity.length > 12)` — a comparison inside a heredoc *body* — redirects to
+  // `12`. Together they still matched all 6 genuine writes (`cat > src/toolio.ts`,
+  // `printf … > data.txt`, `cat > harness/tools.html`, …). `/dev/null` is not a file
+  // anyone is working in.
+  /(^|\s)>{1,2}\s*(?!&)(?!\/dev\/null\b)[^\s;&|<>]*[.\/][^\s;&|<>]*/,
+  // `python3 - <<'PY' … open(p,"w") … .write(s)`: the dominant edit shape once an agent
+  // has no Edit tool, and the one with no `>` anywhere in it. Printing is not writing,
+  // hence the two exclusions.
+  /open\([^)]*['"][wax]|(?<!stdout)(?<!stderr)\.write(_text|_bytes)?\(/,
+  // In-place stream editing: `sed -i`, `perl -pi -e`.
+  /\b(sed|perl)\s+(-[A-Za-z]+\s+)*-[A-Za-z]*i\b/,
+];
+
+// `cd` at a command position — string start, or after a separator or a newline. Quoted
+// and bare forms both. Only an **absolute** target is any use: a relative one resolves
+// against a cwd that case 1 has pinned to the launch dir, so it can only ever re-derive
+// the answer we already have.
+const CD_TARGET = /(?:^|[\n;&|(])\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/g;
+
+function isAbs(p: string): boolean {
+  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/// The directory a write-shaped Bash command ran in, when the command names exactly one.
+///
+/// **Exactly one** is the fail-closed half. `cd a && … && cd b` genuinely does not have
+/// an answer, and neither does a `cd` sitting in a heredoc *body* next to the one that
+/// set the command up — so both cases answer nothing rather than guessing, the same rule
+/// `checkoutDrift` follows when it cannot place the session's own folder.
+function bashWroteIn(cmd: string | null): string | null {
+  if (!cmd || !BASH_WRITES.some((re) => re.test(cmd))) return null;
+  const dirs = new Set<string>();
+  for (const m of cmd.matchAll(CD_TARGET)) {
+    const d = m[1] ?? m[2] ?? m[3];
+    if (d && isAbs(d)) dirs.add(norm(d));
+  }
+  return dirs.size === 1 ? [...dirs][0] : null;
+}
+
+/// Where this call's write landed, however the agent writes files: a write tool names
+/// the file, a Bash command names only the directory it ran under. `checkoutOf` resolves
+/// the two identically, which is what lets everything downstream stay one code path.
+function writeSite(tool: string, input: unknown): string | null {
+  if (WRITE_TOOLS.has(tool)) return field(input, "file_path");
+  return tool === "Bash" ? bashWroteIn(field(input, "command")) : null;
+}
+
 /// Which checkout an agent's *write* landed in, when that isn't the session's own.
 /// The signal for case 1 above — the only one that works when `cwd` is pinned.
+/// `input` is the hook's `tool_input` verbatim; which of its fields count is `writeSite`'s.
 export function driftTarget(
-  workdir: string, tool: string, filePath: unknown, roster: readonly Checkout[],
+  workdir: string, tool: string, input: unknown, roster: readonly Checkout[],
 ): Drift | null {
-  if (!WRITE_TOOLS.has(tool)) return null;
-  const d = checkoutDrift(workdir, filePath, roster);
-  return d && { ...d, via: "write" };
+  const site = writeSite(tool, input);
+  const d = site && checkoutDrift(workdir, site, roster);
+  return d ? { ...d, via: "write" } : null;
 }
 
 /// The session's drift after one hook — both signals, in order of standing.
@@ -173,12 +253,13 @@ export function driftTarget(
 /// one would delete the answer on the very next hook. It may retire only a drift `cwd`
 /// itself reported.
 ///
-/// Writes then latch, for case 1. A drift, once seen, holds until the agent writes home
-/// again — the act, and the only act, that means it came back. Anything else (a read
-/// anywhere, a write to a folder that is no checkout of this repo, a Bash call) leaves
-/// the answer alone.
+/// Writes then latch, for case 1 — where "a write" is whatever `writeSite` can place,
+/// so a shell-only agent's `cd` counts as one. A drift, once seen, holds until the agent
+/// writes home again: the act, and the only act, that means it came back. Anything else
+/// (a read anywhere, a write to a folder that is no checkout of this repo, a Bash call
+/// that wrote nothing or named no directory) leaves the answer alone.
 export function driftUpdate(
-  prev: Drift | null, workdir: string, tool: string, filePath: unknown, cwd: unknown,
+  prev: Drift | null, workdir: string, tool: string, input: unknown, cwd: unknown,
   roster: readonly Checkout[],
 ): Drift | null {
   const byCwd = checkoutDrift(workdir, cwd, roster);
@@ -187,13 +268,18 @@ export function driftUpdate(
   // reported. A `cwd` that names no checkout at all (a scratch dir, $HOME) says nothing.
   if (prev?.via === "cwd" && typeof cwd === "string" && checkoutOf(cwd, roster)) return null;
 
-  const byWrite = driftTarget(workdir, tool, filePath, roster);
-  if (byWrite) return byWrite;
+  // One `writeSite`, used twice: what sets a drift is what retires it, so a Bash write
+  // home clears exactly as an `Edit` home does. Letting the shell arm set but never
+  // clear would strand a Bash-first session on a stale card offering to move it into a
+  // checkout it had already come back from.
+  const site = writeSite(tool, input);
+  const byWrite = site && checkoutDrift(workdir, site, roster);
+  if (byWrite) return { ...byWrite, via: "write" };
   // Not drift. Only a write that landed squarely in the session's own checkout retires
   // one — and, as above, only when we can actually place that checkout. An unplaceable
   // home clears nothing rather than clearing everything.
-  if (!WRITE_TOOLS.has(tool) || typeof filePath !== "string" || !filePath.trim()) return prev;
+  if (!site) return prev;
   const home = checkoutOf(workdir, roster);
-  const wrote = checkoutOf(filePath, roster);
+  const wrote = checkoutOf(site, roster);
   return home && wrote && wrote.path === home.path ? null : prev;
 }

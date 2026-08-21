@@ -815,13 +815,14 @@ export function noteGitCommand(cmd: unknown) {
 // reporting the branch it left, forever and correctly.
 //
 // `driftUpdate` owns the rule (including which signal outranks which); this owns only
-// the repaint. Both fields it reads come off the same payload — `cwd` catches the moves
-// Claude Code makes itself, `file_path` the ones it doesn't know about.
+// the repaint. Everything it reads comes off the same payload — `cwd` catches the moves
+// Claude Code makes itself, `tool_input` the ones it doesn't know about (a write's
+// `file_path`, or the `cd` a Bash-first agent wrote under).
 export function noteDrift(s: Sess, tool: string, data: any) {
   if (!isAgent(s) || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
-  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input?.file_path, data?.cwd, roster);
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
   // All three fields, not just the identity of the checkout: the branch on a drifted-into
   // checkout can be switched underneath us, and it is what every drift surface spells out.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
