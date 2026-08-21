@@ -13,6 +13,72 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A tool call on the inspector's Tools tab opens to show what ran and what came back.**
+  A row was a tool name, one abbreviated argument and a latency bar, so a `Bash` heredoc
+  showed its first 64 characters and nothing a tool returned was kept at all. Click a row
+  and the call opens in a window of its own: the whole command, prompt or patch that was
+  submitted, and the whole of what came back — stdout and stderr, the file a `Read`
+  returned, the patch an `Edit` applied — beside a list of every call the session still
+  holds, so you can walk back through them without going anywhere. **A call that failed
+  says why on the row itself**, which is the half that had no surface anywhere in the app:
+  the reason Claude Code sends on a failure was being dropped on the floor. Both sides are
+  capped as they arrive and none of it is written to disk.
+
+  The list groups the calls under how long ago they ran — *Just now*, *Last 5 minutes*,
+  *Last hour* — with the time each one started, because the gap between two calls is
+  often the interesting thing about them. Copy takes the whole call, and each half has
+  its own copy button that takes just that half, unlabelled: a command you want back in
+  a shell and an error you want in a search box are both ruined by a header on top.
+
+  Claude's own one-line note on why it made the call — the `description` it sends beside
+  a `Bash` or a `Task` — is shown above the command instead of inside it. It reads the
+  same and copies very differently: a `description:` line in the middle of a block is the
+  difference between a command you can paste into a shell and one you have to edit first.
+  A tool where `description` is a real argument rather than a note about one keeps it.
+
+  It is a window rather than an unfolding row because the inspector is a 296px column —
+  about 38 characters of monospace — and a command, a diff or a compiler error is 80 to
+  120. At that width a four-line patch arrived as eleven, wrapped mid-word, with the
+  `+` and `−` that carry a diff's whole meaning broken off the lines they belong to.
+
++ **Disk I/O moved to the status bar, and the inspector got its space back.** It was a
+  card pinned to the bottom of the right-hand panel, where it cost about 120px of a 296px
+  column to show a figure that is **not about the session you are looking at** — it sums
+  every claude process Episko is running, so it read identically whichever pane was on
+  stage. The bar now carries today's read and write totals; clicking it opens the live
+  rates, all three windows (today, this run, everything recorded) and the notes explaining
+  why the numbers look the way they do. The scope-cycling row and the little `i` expander
+  are gone with the card: a popover can show all three windows at once.
+
++ **Settings › Footer chooses what the status bar shows.** A switch per segment — session
+  count, today's spend, usage limits, disk I/O, where new sessions open, Shortcuts, the
+  debug console. The repo link, the version and What's new have no switch and always stay,
+  so the bar can never end up empty and an update is not something to hide by accident.
+  **Each switch shows what it controls, in both states**: the chip as it sits on the bar,
+  and what opens when you click it. A label like "Usage limits" leaves two questions a
+  settings pane is a bad place to answer in prose — which of those things on my bar is
+  that, and what do I get when I click it — and a picture answers both. A segment you
+  have switched off shows its preview dimmed.
+
+~ **The inspector's Context card says what a row does.** Both its tabs are lists of
+  plain-looking rows that are all click targets, and neither said so — a file row opens
+  the file, and a tool row opens the call. One small line under the header now says which.
+
+~ **A tool call's timing lands on the call it belongs to.** Pairing the start and end of
+  a call by tool *name* picks the most recent open call so named, which is wrong whenever
+  two calls of one tool overlap — routine under parallel subagents. They are now paired by
+  the id Claude Code puts on both, so a fast call no longer takes a slow one's latency.
+
+! **A session working through the shell no longer reports the branch it launched on.** An
+  agent told to prefer Bash creates files with `cat > f` and edits them with an inline
+  `python3` heredoc, so it never calls a write tool — and both things that notice a session
+  has moved to another checkout read either a write's path or a `cwd` that Claude Code pins
+  to the launch directory. So the pane sat on `main` while every byte of its work went to a
+  worktree it had made itself. A shell command that wrote a file now counts as a write into
+  the directory it ran in, and the drift marker and *Move session here* appear as they do
+  for any other agent. It takes a command that really wrote, naming one checkout Episko
+  already knows, so an agent glancing into a sibling still moves nothing.
+
 ! **"Last active" now means the last thing the session did, not the last time its file
   was touched.** It was read off the transcript's mtime, and Claude appends untimestamped
   bookkeeping records whenever a session starts or goes away — so every conversation open

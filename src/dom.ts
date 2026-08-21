@@ -20,7 +20,7 @@ export function toast(m: string) { const el = $("toast"); el.textContent = m; el
 // Which overlays share the single #scrim backdrop. Dropping it is conditional
 // because several can be open at once (the palette over the settings window, say) —
 // the last one to close is the one that clears it.
-const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "graphDlg", "setDlg", "histDlg"];
+const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "graphDlg", "setDlg", "histDlg", "callDlg"];
 export function dropScrim() {
   if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
 }
