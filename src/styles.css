@@ -119,8 +119,51 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn-badge.react-error { --rc: var(--st-error); }
 .attn-badge.react-done { --rc: var(--st-done); }
 .attn-badge .bdot { width: 5px; height: 5px; border-radius: 50%; background: var(--rc, var(--st-attention)); }
-.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-family: var(--font-ui); font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
+
+/* Header glyph boxes (.ibtn and the caffeinate caret up here, the stage header's
+   .act verbs below). Every glyph in this header is a symbol no UI font carries, so
+   it comes from whatever fallback font does — Segoe UI Symbol on Windows, Apple
+   Symbols on macOS — with an advance width and an ink height of its own: ❯ is 5.6px
+   wide and 10px tall where ＋ is 11px wide and 5px tall. Loose in the button's text
+   node each one sets the line box for the whole button, so ❯ Terminal's label sat
+   half a pixel below ◷ History's, and the space in front of every label was a
+   different width. Boxed instead — a 1em square that the button's own `gap` spaces —
+   so the four labels start at the same offset and a glyph can only move its own
+   baseline. A button also has to be *told* the UI font (font-family does not
+   inherit into one), which is why .ibtn's glyphs sat on Arial's baseline while the
+   identical ◷ in `◷ History` sat on Segoe UI's. */
+.act .gl, .ibtn .gl, .caf-caret .gl { display: flex; align-items: center; justify-content: center; flex: none; width: 1em; height: 1em; line-height: 1; position: relative; }
+
+/* Centring the box is not centring the ink. A centred line box puts the baseline at
+   the button's middle + (ascent-descent)/2 whatever the box's height, so boxing on its
+   own moves nothing vertically; each glyph's ink then sits its own distance above that
+   baseline, and every one of these sat low — by two thirds of a pixel in the 27px
+   verbs, by one and a half in the 26px icon buttons. These are the measured corrections,
+   and they leave every glyph within a fifth of a pixel of its button's centre AND of
+   the others in its row, which is the half that shows: a row of glyphs agreeing with
+   each other reads as aligned even when they are all a hair off, and one glyph out of
+   step with its neighbours reads as broken even when it is the correct one.
+
+   Measured how matters, because the obvious method lies. A hairline drawn at `top:50%`
+   to eyeball against is thinner than a pixel, so it snaps DOWN to the pixel grid and
+   sits a pixel below the centre it claims to mark; glyphs judged against one are all
+   dragged a pixel low. So is a zoomed screenshot: under a `transform:scale()` the text
+   is positioned in the untransformed space and rounded there, which quantises exactly
+   the sub-pixel differences you zoomed in to see. The numbers below come from scanning
+   the ink rows of a rendered screenshot against the button's own
+   getBoundingClientRect centre, at 8x for whole-pixel offsets and 1x for halves.
+
+   ＋ takes a whole pixel because its ink genuinely sits higher above the baseline than
+   the rest (its 5px ink is half the height of ❯'s 10px). Windows values, from Segoe UI
+   + Segoe UI Symbol at the sizes used; macOS falls back to different fonts and wants
+   its own measured pass, so until it gets one it keeps the alignment it has today —
+   the box above is metric-neutral. */
+html.win .ibtn .gl { top: -1.5px; }
+html.win .caf-caret .gl { top: 1px; }
+html.win .act .gl { top: -.5px; }
+html.win .act .gl-plus { top: -1px; }
 
 /* The title bar, which is this header — there is no native one (see lib.rs).
    Two platforms, two halves of the job. macOS floats its real traffic lights
@@ -531,6 +574,8 @@ html.win .wctl { display: flex; }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
+/* The leading glyph rides in a .gl box — see the header glyph boxes up in the top
+   bar section, which the four verbs here share. */
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
 .act:disabled { opacity: .35; cursor: default; box-shadow: none; }

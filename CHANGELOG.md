@@ -44,6 +44,20 @@ Markers: `+` new · `~` changed · `!` fixed
   counters wiped; the name now comes from the persisted script's filename, and the
   description and phases survive when the pane launched the run itself.
 
+! **The header's icons sit on the middle of their buttons.** Every glyph up there — the
+  clock, the theme dial, the gear, the caffeinate caret, and the ◷ ❯ ▶ ＋ in front of the
+  stage verbs — comes from a fallback font with an advance width and a baseline of its
+  own, and each was left loose in its button's text node. So they sat between a pixel and
+  two above or below centre, ❯ Terminal's label rode lower than ◷ History's because the
+  chevron set the line box, and the space in front of each label was a different width in
+  every button. Each glyph now rides in a box of its own, the top bar's three no longer
+  render in the browser's default font (a button is not told the UI font unless you tell
+  it), and what was still off centre after that is corrected by a measured amount — ink
+  rows scanned out of a screenshot against the button's own centre, since a hairline
+  drawn at `top:50%` to eyeball against snaps a pixel low and takes every glyph judged
+  against it down with it. Each now sits within a fifth of a pixel of its button's
+  centre and of the others in its row.
+
 ## 0.20.0 — 2026-08-14
 A session that wants you lights up its own row, the "your turn" badge lets go of the
 ones you have opened, and the sidebar says which project dashboard is on screen.
