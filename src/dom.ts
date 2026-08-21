@@ -25,7 +25,7 @@ export function toast(m: string) { const el = $("toast"); el.textContent = m; el
 // *over* whichever of these asked the question, so it brings its own darker backdrop
 // (#cfmScrim) and leaves theirs standing. Listing it here would make the last close
 // clear a backdrop the dialog underneath still needs.
-const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "graphDlg", "setDlg", "histDlg"];
+const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "expDlg", "graphDlg", "setDlg", "histDlg", "callDlg"];
 export function dropScrim() {
   if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
 }

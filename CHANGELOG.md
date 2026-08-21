@@ -35,6 +35,173 @@ Markers: `+` new · `~` changed · `!` fixed
   It costs what the count already cost: the same one-or-two git processes, for the
   highlighted row alone.
 
++ **The project overview gets a Repository card.** Where the main checkout stands, and
+  the five verbs that act on it, in the overview column instead of buried in the
+  inspector's list: the branch, whether it is ahead, behind, diverged or tracking
+  nothing, how many files are uncommitted, and ⇣ Pull · ⇡ Push · ⇄ Switch branch ·
+  ⑂ Commit graph · ⌥ Branches. Pull used to be a row in a list twelve rows long, which
+  is a verb you have to go looking for; the other four are new here or were only
+  reachable from elsewhere. The card states the position once and each button's tooltip
+  says what that button would do with it.
+
++ **Push, and it fetches first, the same as the pull does.** Nothing on that pane runs
+  git on a schedule, so without the fetch the ahead/behind it knows is as old as the last
+  time anything happened in that folder, and a push would go out against a `behind` it
+  had no reason to believe and come back as a raw non-fast-forward rejection rather than
+  as "diverged, 2 ahead, 3 behind" with the terminal already prefilled. The unpushed
+  count is now shown as its own state too, where it used to be folded into "level with
+  origin/main" and shown to nobody.
+
++ **⇄ Switch branch… reaches the main checkout from the project overview.** It opens the
+  worktree dialog straight onto its switch card, the same one the ⑃ cluster menu's row
+  reaches, so every guard arrives with it: it holds off while a task is running in that
+  folder or an agent is mid-turn, refuses a branch another worktree already holds, hands
+  a dirty tree to a terminal instead of quietly carrying uncommitted changes across, and
+  cuts a local branch tracking `origin/…` for a colleague's branch you don't have yet.
+  A switch that lands re-reads the pane, since its timeline is a `git log` on the folder
+  that just moved.
+
+! **A push Episko refuses now hands over a command that works.** A branch with commits on
+  both sides was declined with `git pull --ff-only && git push`, which cannot
+  fast-forward a branch that has moved on locally: the handoff failed one command after
+  the button did. It is refused as diverged, with the rebase, the same way a pull already
+  was. And a branch that is merely behind with nothing of its own now answers "nothing to
+  push" instead of predicting a rejection that could not happen and opening a terminal
+  for it.
+
++ **A tool call on the inspector's Tools tab opens to show what ran and what came back.**
+  A row was a tool name, one abbreviated argument and a latency bar, so a `Bash` heredoc
+  showed its first 64 characters and nothing a tool returned was kept at all. Click a row
+  and the call opens in a window of its own: the whole command, prompt or patch that was
+  submitted, and the whole of what came back — stdout and stderr, the file a `Read`
+  returned, the patch an `Edit` applied — beside a list of every call the session still
+  holds, so you can walk back through them without going anywhere. **A call that failed
+  says why on the row itself**, which is the half that had no surface anywhere in the app:
+  the reason Claude Code sends on a failure was being dropped on the floor. Both sides are
+  capped as they arrive and none of it is written to disk.
+
+  The list groups the calls under how long ago they ran — *Just now*, *Last 5 minutes*,
+  *Last hour* — with the time each one started, because the gap between two calls is
+  often the interesting thing about them. Copy takes the whole call, and each half has
+  its own copy button that takes just that half, unlabelled: a command you want back in
+  a shell and an error you want in a search box are both ruined by a header on top.
+
+  Claude's own one-line note on why it made the call — the `description` it sends beside
+  a `Bash` or a `Task` — is shown above the command instead of inside it. It reads the
+  same and copies very differently: a `description:` line in the middle of a block is the
+  difference between a command you can paste into a shell and one you have to edit first.
+  A tool where `description` is a real argument rather than a note about one keeps it.
+
+  It is a window rather than an unfolding row because the inspector is a 296px column —
+  about 38 characters of monospace — and a command, a diff or a compiler error is 80 to
+  120. At that width a four-line patch arrived as eleven, wrapped mid-word, with the
+  `+` and `−` that carry a diff's whole meaning broken off the lines they belong to.
+
++ **Disk I/O moved to the status bar, and the inspector got its space back.** It was a
+  card pinned to the bottom of the right-hand panel, where it cost about 120px of a 296px
+  column to show a figure that is **not about the session you are looking at** — it sums
+  every claude process Episko is running, so it read identically whichever pane was on
+  stage. The bar now carries today's read and write totals; clicking it opens the live
+  rates, all three windows (today, this run, everything recorded) and the notes explaining
+  why the numbers look the way they do. The scope-cycling row and the little `i` expander
+  are gone with the card: a popover can show all three windows at once.
+
++ **Settings › Footer chooses what the status bar shows.** A switch per segment — session
+  count, today's spend, usage limits, disk I/O, where new sessions open, Shortcuts, the
+  debug console. The repo link, the version and What's new have no switch and always stay,
+  so the bar can never end up empty and an update is not something to hide by accident.
+  **Each switch shows what it controls, in both states**: the chip as it sits on the bar,
+  and what opens when you click it. A label like "Usage limits" leaves two questions a
+  settings pane is a bad place to answer in prose — which of those things on my bar is
+  that, and what do I get when I click it — and a picture answers both. A segment you
+  have switched off shows its preview dimmed.
+
+~ **The inspector's Context card says what a row does.** Both its tabs are lists of
+  plain-looking rows that are all click targets, and neither said so — a file row opens
+  the file, and a tool row opens the call. One small line under the header now says which.
+
+~ **A tool call's timing lands on the call it belongs to.** Pairing the start and end of
+  a call by tool *name* picks the most recent open call so named, which is wrong whenever
+  two calls of one tool overlap — routine under parallel subagents. They are now paired by
+  the id Claude Code puts on both, so a fast call no longer takes a slow one's latency.
+
+! **A session working through the shell no longer reports the branch it launched on.** An
+  agent told to prefer Bash creates files with `cat > f` and edits them with an inline
+  `python3` heredoc, so it never calls a write tool — and both things that notice a session
+  has moved to another checkout read either a write's path or a `cwd` that Claude Code pins
+  to the launch directory. So the pane sat on `main` while every byte of its work went to a
+  worktree it had made itself. A shell command that wrote a file now counts as a write into
+  the directory it ran in, and the drift marker and *Move session here* appear as they do
+  for any other agent. It takes a command that really wrote, naming one checkout Episko
+  already knows, so an agent glancing into a sibling still moves nothing.
+
+! **"Last active" now means the last thing the session did, not the last time its file
+  was touched.** It was read off the transcript's mtime, and Claude appends untimestamped
+  bookkeeping records whenever a session starts or goes away — so every conversation open
+  when a machine shut down was stamped with the shutdown, to the second. Four sessions
+  last worked at 08:08, 10:30, 12:50 and 15:50 all read "6h ago" after one 03:41 Windows
+  update reboot, in an order that meant nothing. Half of this machine's 352 transcripts
+  were wrong by more than ten minutes and some by weeks. The figure now comes from the
+  newest timestamp the records themselves carry, which fixes the dormant rows and the past
+  session's card, History's ordering and its buckets, and the day a session is filed under
+  in the Trail. A transcript with nothing timestamped in it still falls back to the file.
+
+! **Windows: the tray menu no longer stops updating after a day, and the log no longer
+  fills with a warning that says nothing went wrong.** Every session row in the tray menu
+  carries its status as a small coloured image, and the menu library was minting a fresh
+  Windows bitmap for each one on every rebuild without ever releasing it. A rebuild happens
+  whenever a row's wording changes, so a long-lived instance with a few panes eventually
+  hit the 10,000-handle limit Windows gives a process — after which no icon could be made
+  at all: the menu froze at whatever it last drew and the app logged
+  `The operation completed successfully.` roughly twice a second, for hours, crowding
+  everything else out of `episko.log` and the 🐞 console. Fixed in a patched build of the
+  menu library, reported upstream, and reversible the day a fixed release exists.
+
++ **Find any file in the project, with ⌘P.** One field, two modes: leave it empty and it
+  browses the folder you are in, breadcrumb and all; start typing and it finds across the
+  whole project, ranked by the same matcher ⌘K already uses — so a file you keep opening
+  rises the way a command you keep running does. **Every row says what has been happening
+  to it**: an amber `M` where git sees a change, and the Context card's own `✦ ◆ ○` where
+  an agent created, edited or read it. That is the thing your editor's file finder cannot
+  tell you. Three chips narrow the same list to *Changed* or *Touched* rather than opening
+  a different screen. `↵` opens what you picked, `⌘↵` reveals it, `⌥↵` copies its path,
+  `⌫` steps up a folder, `esc` closes — and **a file git has something to say about opens
+  its diff** in the working-set viewer instead of leaving the app. The rule the whole
+  thing hangs on: the app shows you changes, your OS shows you contents. Nothing is
+  written, nothing is watched, and nothing stays on screen after you press escape.
+
+! **The working-set card stops arguing with itself.** A folder whose only change was one
+  new file read `+0 −0`, `0 files`, and — a line below, next to the branch — a `1 new`
+  chip, three figures for one file that had to be reconciled by the reader. The card now
+  states the working set once, as the number of files git calls dirty (`9 files · 2 new`,
+  or just `1 new file` when that is all there is), and the branch line is left to talk
+  about the branch.
+
+~ **A new file's lines are counted, so `+N −M` is never a pair of zeroes beside a tree
+  that plainly gained something.** `git diff` has nothing to say about a file that was
+  never committed, which is why the card used to read `+0 −0` while the diff viewer showed
+  `+37` for that very same file — one tree, two surfaces, two answers. The count is
+  bounded on purpose (it runs on a poll): a whole untracked *folder* stays one entry and
+  is never opened, and a file that is too large or looks binary adds nothing rather than
+  a guess.
+
+! **A tree with nothing deleted no longer draws a full-width deletion bar.** With no added
+  or removed lines to divide, the churn bar handed the whole width to its red half. No
+  churn, no split: the empty track says it.
+
+! **Seven ⌘K rows did nothing when you clicked them.** *Add a project folder*, *Open a
+  terminal*, *Reveal the current folder*, *Change the sidebar sort order*, both panel
+  toggles and *Toggle the theme* were wired to the palette's placeholder handlers — the
+  table is built when the module loads, which is before the real ones are installed, so
+  each row kept a copy of a function that does nothing. They all work now.
+
+~ **The diff viewer opens as a list of the files, not a wall of every hunk.** Click the
+  working-set card and you get one row per file — status, path, `+40 −12` — folded, so
+  the first thing you see is *what moved*. Open the one you care about, or `expand all`
+  if you want the lot. Each row carries the Context card's two buttons: **↗ opens the
+  file, ⌂ shows it in your file manager.** The card itself is unchanged in size and
+  stays a summary; it just looks like the button it always was.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

@@ -8,6 +8,7 @@
 //   server — no global config mutation, no transcript parsing.
 
 mod external;
+mod files;
 mod git;
 mod github;
 mod icons;
@@ -520,6 +521,8 @@ pub fn run() {
             git::git_head,
             git::git_diffstat,
             git::git_working_set,
+            git::git_changed,
+            files::project_files,
             git::git_diff,
             git::git_graph,
             git::git_commit_message,

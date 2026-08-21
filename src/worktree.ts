@@ -65,6 +65,14 @@ export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = 
 // hook instead. Seam rule 2, and the reason `state.ts`'s bare setter is not called direct.
 let saveCmpBase: (repoDir: string, ref: string) => void = () => {};
 export function setWtSaveCmpBase(fn: typeof saveCmpBase) { saveCmpBase = fn; }
+// A root switch is the app moving HEAD itself, and `refreshGitViews` above covers only
+// what the poll would eventually have found anyway: session branch labels and the ⑃
+// roster. The project dashboard reads the same folder far more deeply (its whole
+// timeline is a `git log` there) and nothing re-reads it on a schedule by design, so it
+// is told outright. A hook rather than an import for the usual reason: this is a dialog,
+// and what a dashboard does with the news is not its business.
+let onBranchSwitched: (repoDir: string) => void = () => {};
+export function setWtOnBranchSwitched(fn: typeof onBranchSwitched) { onBranchSwitched = fn; }
 
 // Every answer to "where should this session run?" is a directory, so every answer
 // is a row: the repo itself, its worktrees, its branches, and whatever you type.
@@ -995,6 +1003,7 @@ async function wtDoSwitch() {
       return;
     }
     wtArmed = ""; wtSwitchTo = ""; wtRepoBranch = branch;
+    onBranchSwitched(repoDir);
     await wtLoad(true);
     // Sessions may now be sitting in this folder, and every one of them is showing the
     // branch it was launched on. `refreshBranches` would correct them within the 4s poll;

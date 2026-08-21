@@ -21,12 +21,12 @@ import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  attnPrefs, dashMirror, FAVORITES, IO_SCOPES, ioInfoAt, ioScope, keyPrefs, markWorkdirStale,
+  attnPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
   peekPrefs, permMode,
   permModeDef, projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
   setAttnPrefs as setAttnPrefsState,
-  setFavorites, setIoInfoAt, setIoScope, setKeyPrefs as setKeyPrefsState,
+  setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
   setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
@@ -34,6 +34,7 @@ import {
   cmpBase, setCmpBase as setCmpBaseState,
   type SortMode, type WtGroup,
 } from "./state";
+import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
   renameGroup, setCollapsed, type GroupStore,
@@ -263,14 +264,17 @@ export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) +
 /// Which window the inspector's read/written total covers. Persisted, because it is a
 /// preference — somebody who wants "this run" wants it on the next pane too, and having
 /// to re-pick it per session is what makes a cycling control annoying rather than handy.
-export function cycleIoScope() {
-  setIoScope(IO_SCOPES[(IO_SCOPES.indexOf(ioScope) + 1) % IO_SCOPES.length]);
-  localStorage.setItem("cc-io-scope", ioScope);
+/// Show or hide one status-bar segment.
+///
+/// Here rather than in ./state because a setter there assigns and nothing else: the
+/// persist and the repaint belong to the call site, and this is it. (A settings picker
+/// that called the state setter directly is how a preference shipped once that never
+/// survived a restart.)
+export function setFootSeg(id: FootSeg) {
+  setFootPrefs(toggleFootSeg(footPrefs, id));
+  localStorage.setItem("cc-foot", footPrefsJson(footPrefs));
   renderAll();
 }
-/// Open/close the I/O box's explanation. Nothing is persisted — see `ioInfoAt` in
-/// state.ts. Opening stamps the clock the expander animates against; closing zeroes it.
-export function toggleIoInfo() { setIoInfoAt(ioInfoAt ? 0 : Date.now()); renderAll(); }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is
 // unreachable from that header. **On the dashboard it collapses to a 44px icon rail
