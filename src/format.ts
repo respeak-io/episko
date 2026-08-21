@@ -19,6 +19,45 @@ export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 /// early and swallow the rest of the row's markup.
 export const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
 export const tilde = (p: string) => (HOME ? p.replace(HOME, "~") : p);
+
+/**
+ * A confirmation's prose → the markup the in-app dialog paints (./confirm).
+ *
+ * The messages this renders were written for the OS dialog `ask()` used to put them
+ * in, so they are plain text: a blank line between paragraphs, a bullet in front of a
+ * list item. They stay that way. Owning the box does not make the wording ours to
+ * re-punctuate, and a formatter that reads what is already written is one fewer place
+ * for the two halves to drift apart.
+ *
+ * Three things only, because three is what those messages use:
+ *   - a blank line starts a paragraph
+ *   - a run of bullet-led lines is a list (the bullet itself is dropped, since `<li>`
+ *     draws its own and two bullets on one row is the tell that a list was faked)
+ *   - backticked text is code, which is how a command or a path gets named mid-sentence
+ *
+ * Escaped FIRST, so nothing in a branch name, a path or an agent's task label can reach
+ * the DOM as markup. These strings are assembled from repo data, and a branch name is
+ * whatever somebody typed.
+ */
+export function dialogBody(text: string): string {
+  const code = (s: string) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+  const BULLET = /^[ \t]*[•\-*][ \t]+/;
+  return text
+    .split(/\r?\n[ \t]*\r?\n/)
+    .map((para) => {
+      const lines = para.split(/\r?\n/).filter((l) => l.trim());
+      if (!lines.length) return "";
+      // A paragraph is a list only when EVERY line is a bullet; a lead-in above them
+      // ("Held by:") is its own paragraph and keeps its own line.
+      if (lines.every((l) => BULLET.test(l))) {
+        return `<ul>${lines.map((l) => `<li>${code(l.replace(BULLET, ""))}</li>`).join("")}</ul>`;
+      }
+      // A single newline inside one paragraph is the author's own line break (a path
+      // on a line of its own), not the start of a new thought.
+      return `<p>${lines.map((l) => code(l.trim())).join("<br>")}</p>`;
+    })
+    .join("");
+}
 // Split on both separators so Windows paths (E:\proj\sub) collapse to the leaf,
 // not the whole string — otherwise the sidebar shows the full path as the name.
 export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }

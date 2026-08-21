@@ -9,8 +9,9 @@
 // the repaint are this layer's, exactly as PLAN's `setX`-per-variable decision says.
 
 import { invoke } from "@tauri-apps/api/core";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { $, toast } from "./dom";
+import { ask } from "./confirm";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";

@@ -13,6 +13,19 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Every confirmation is now Episko's own dialog, not the operating system's.** Asking
+  "remove this worktree?" or "quit with three sessions running?" used to pop a Windows
+  task dialog or a macOS sheet: system font, system chrome, the Windows ding, and two
+  identical grey buttons in whatever order the platform preferred — so the one that
+  deletes a checkout looked exactly like the one that doesn't. All ten questions now open
+  in the app's own panel, where the answer that destroys something is red and the one
+  that backs out isn't, and where a message written in paragraphs is read as paragraphs:
+  the list of processes holding a folder open is a list, and a command named mid-sentence
+  is set as code. ⏎ confirms, Esc cancels, and while a question is up the app's shortcuts
+  stand down instead of firing behind it. The one native dialog left is the file picker
+  for adding a project or choosing a logo, which is the OS's own file browser and better
+  than anything an app can imitate.
+
 + **The new-session dialog names the uncommitted files instead of counting them.**
   Picking a checkout said "3 files uncommitted" and left the question you actually walk
   in with — whose work, and where — for after you had started a session on top of it. The

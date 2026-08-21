@@ -339,6 +339,26 @@
       <div class="dbg-body" id="dbgBody"></div>
     </div>
 
+    <!--
+      The app's own confirmation, replacing the OS dialog `ask()` used to draw. Its own
+      backdrop rather than the shared #scrim: it opens *over* the new-session dialog and
+      the task manager, so it must not drop the backdrop those are standing on. See
+      ./confirm for the modality and the key handling.
+    -->
+    <div class="cfm-scrim" id="cfmScrim"></div>
+    <div class="cfm" id="cfmDlg" role="alertdialog" aria-modal="true" aria-labelledby="cfmTitle" aria-describedby="cfmBody">
+      <div class="cfm-head"><span class="cfm-ic" id="cfmIc" aria-hidden="true"></span><b id="cfmTitle"></b></div>
+      <div class="cfm-body" id="cfmBody"></div>
+      <div class="cfm-foot">
+        <!-- Generic verbs, not the button labels: ⏎ always fires the right-hand button
+             and esc the left, the two are named an inch away, and "⏎ Terminate & retry ·
+             esc Leave it" is wider than the footer has. Same wording as #inDlg's. -->
+        <span class="cfm-hint"><kbd>⏎</kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
+        <button class="cfm-btn ghost" id="cfmNo" type="button"></button>
+        <button class="cfm-btn go" id="cfmYes" type="button"></button>
+      </div>
+    </div>
+
     <div class="toast" id="toast"></div>
     <div class="menupop ctxmenu" id="ctxMenu"></div>
     <div class="colorpop" id="colorPop"></div>

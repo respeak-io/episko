@@ -14,8 +14,8 @@
 // a session, closing one, putting one on stage, repainting everything.
 
 import { invoke } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
+import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";

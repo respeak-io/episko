@@ -1891,6 +1891,61 @@ select.in-ctl { cursor: pointer; }
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* The app's own confirmation dialog (./confirm), which replaced the OS one.
+
+   z-index 90/91, above everything else the app can put on screen (the debug console is
+   the previous ceiling at 70) — and its OWN backdrop rather than the shared #scrim,
+   because these questions open on top of #wtDlg and #mgrDlg and must not take the
+   backdrop away from the dialog that asked. It is also darker than #scrim on purpose:
+   two stacked overlays with the same wash read as one, and the point is that the thing
+   underneath is now out of reach. */
+.cfm-scrim { position: fixed; inset: 0; background: rgba(6,5,10,.62); backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .14s; z-index: 90; }
+.cfm-scrim.show { opacity: 1; pointer-events: auto; }
+.cfm { visibility: hidden; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.97); width: min(420px, 92vw); z-index: 91; opacity: 0; pointer-events: none; transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s .14s; border-radius: var(--radius-lg); padding: 17px 18px 15px; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.08); }
+/* `visibility`, not just `opacity`: a closed dialog left at opacity 0 is still in the
+   tab order, and the button that would be under the cursor is "Remove worktree". The
+   0s delay on the way out is what lets the fade finish before it goes non-visible. */
+.cfm.show { visibility: visible; opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s; }
+
+.cfm-head { display: flex; align-items: center; gap: 9px; }
+.cfm-head b { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+/* A drawn box around a plain letter, not ⚠/ℹ️ — see the note in ./confirm: those two
+   land as colour emoji in half the fonts this app can be rendered with. */
+.cfm-ic { flex: none; width: 20px; height: 20px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); }
+.k-info .cfm-ic { color: var(--accent-ink); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.k-warning .cfm-ic { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-working) 38%, transparent); }
+.k-error .cfm-ic { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-error) 40%, transparent); }
+
+/* The body is `dialogBody`'s paragraphs and lists. Margins are set here rather than
+   left to the UA sheet, whose <p>/<ul> defaults are sized for a document. */
+.cfm-body { margin: 11px 0 0; font: 11.5px/1.55 var(--font-ui); color: var(--muted); max-height: 46vh; overflow-y: auto; }
+.cfm-body p { margin: 0 0 8px; }
+.cfm-body p:last-child, .cfm-body ul:last-child { margin-bottom: 0; }
+.cfm-body ul { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.cfm-body li { position: relative; padding-left: 13px; color: var(--text); }
+.cfm-body li::before { content: "•"; position: absolute; left: 2px; color: var(--muted-2); }
+.cfm-body code { font: 10.5px var(--font-mono); color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
+.cfm-body b { color: var(--text); font-weight: 650; }
+
+.cfm-foot { display: flex; align-items: center; gap: 7px; margin-top: 16px; }
+.cfm-hint { flex: 1; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cfm-hint kbd { flex: none; font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }
+.cfm-hint .cfm-dot { opacity: .5; margin: 0 2px; }
+.cfm-btn { flex: none; font: 600 11.5px var(--font-ui); padding: 7px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.cfm-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-line); }
+.cfm-btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.cfm-btn.ghost:hover { color: var(--text); border-color: var(--hair-strong); }
+.cfm-btn.go { border-color: transparent; color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); }
+.cfm-btn.go:hover { filter: brightness(1.08); }
+/* The whole reason for an in-app box: the answer that deletes something has to be
+   distinguishable from the one that doesn't. The native dialog gave two grey buttons. */
+.cfm-btn.danger { border-color: transparent; color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--st-error) 92%, white 8%), color-mix(in srgb, var(--st-error) 88%, black 12%)); }
+.cfm-btn.danger:hover { filter: brightness(1.08); }
+/* Focus lands on the confirming button (⏎ confirms), so its ring has to read against
+   its own fill rather than the panel behind it. */
+.cfm-btn.go:focus-visible, .cfm-btn.danger:focus-visible { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
+
+
 /* generic menu popover (terminal-engine picker) */
 .menupop { position: fixed; z-index: 60; display: none; flex-direction: column; gap: 2px; min-width: 210px; padding: 6px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(16px); border: 1px solid var(--hair-strong); box-shadow: 0 24px 60px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.08); }
 .menupop.show { display: flex; }

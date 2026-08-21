@@ -22,9 +22,9 @@
 // launches through: Run prefills and goes, ⋯ Run with parameters… always asks.
 
 import { invoke } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
+import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
 import type { Runnable } from "./types";
