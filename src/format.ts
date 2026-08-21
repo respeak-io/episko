@@ -119,6 +119,25 @@ export function fmtShort(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+/// A recency band, for grouping a list under time headers — the tool-call sheet's left
+/// column, where a dozen calls can span ten seconds or two hours and the gaps between
+/// them are the shape of the turn.
+///
+/// The bands are minutes wide rather than days, unlike the day buckets in ./history:
+/// this groups one session's calls, and "Today" over all twelve of them would be a
+/// divider that never divides anything. `ms` is an **age**, not a timestamp.
+///
+/// A row does drift from one band to the next while you watch it, which is correct and
+/// is why the sheet's list is repainted rather than frozen.
+export function ageBucket(ms: number): string {
+  const m = ms / 60000;
+  if (m < 1) return "Just now";
+  if (m < 5) return "Last 5 minutes";
+  if (m < 30) return "Last 30 minutes";
+  if (m < 60) return "Last hour";
+  return "Earlier";
+}
+
 // ---------- inline charts ----------
 // A mini area+line sparkline as an inline SVG. Fixed intrinsic size so the endpoint
 // dot stays round; scales down within its card. `lo`/`hi` pin the domain (context

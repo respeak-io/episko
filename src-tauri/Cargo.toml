@@ -81,3 +81,33 @@ windows-sys = { version = "0.61", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# ---------------------------------------------------------------------------
+# Temporary: a forked `muda` that does not leak a GDI handle per icon menu item.
+#
+# `WinIcon::to_hbitmap` mints a `CreateDIBSection` handle for every icon item
+# added to a menu and hands it to `SetMenuItemInfoW` as `hbmpItem`, which stores
+# it without taking ownership. Nothing ever deletes it. `update_tray` rebuilds
+# the whole tray menu whenever the sidebar's wording changes, so that is one
+# leaked handle per session row per rebuild — unbounded, and invisible until the
+# process hits Windows' default 10,000-per-process GDI quota. After that every
+# `CreateIcon` returns NULL, so every rebuild fails and the tray menu freezes at
+# whatever it last drew. Because `CreateIcon` does not set last-error on that
+# path, the failure reads as the nonsense `OS error when instantiating the icon:
+# Os { code: 0, message: "The operation completed successfully." }`, and
+# `tray.ts` retries on the next paint, so the log fills at ~1.5 lines/second.
+# Measured on a 37h-old instance with 10 panes: GDI 9994, peak 10001.
+#
+# The fork caches the bitmap on the icon and releases it in the `Drop` that
+# already calls `DestroyIcon`. Upstream issue: tauri-apps/muda#391.
+#
+# `[patch]` rather than a direct dependency because we do not depend on muda —
+# `tauri` and `tray-icon` do, and both want `^0.19`; this redirects theirs.
+# Cargo.lock pins the exact commit, so builds stay reproducible.
+#
+# **To go back**: delete this whole section and `cargo update -p muda`. Do that
+# once a release carrying the upstream fix exists. If upstream never takes it,
+# nothing needs doing — the fork is a branch off the `muda-v0.19.3` tag with one
+# commit on it, and it only has to keep satisfying `^0.19`.
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+muda = { git = "https://github.com/Blaxzter/muda.git", branch = "fix/windows-menu-item-bitmap-leak" }

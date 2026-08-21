@@ -152,10 +152,10 @@
           </button>
         </span>
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
-        <span class="fseg"><span id="fSessions">0</span> sessions</span>
-        <span class="fdiv"></span>
+        <span class="fseg" id="fSessionsSeg"><span id="fSessions">0</span> sessions</span>
+        <span class="fdiv" data-fdiv="cost"></span>
         <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
-        <span class="fdiv"></span>
+        <span class="fdiv" data-fdiv="limits"></span>
         <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast · click for detail">
           <span class="flabel">limits</span>
           <b id="fRl">–</b><span class="fsub">5h</span><span class="freset" id="fRlReset"></span>
@@ -163,7 +163,15 @@
           <b id="fRl7">–</b><span class="fsub">7d</span><span class="freset" id="fRl7Reset"></span>
           <span class="fcaret">▴</span>
         </span>
-        <span class="fdiv"></span>
+        <span class="fdiv" data-fdiv="io"></span>
+        <span class="fseg fclick" id="fIoSeg" title="What today's claude sessions have read and written · click for the live rates and every window recorded">
+          <span class="flabel">disk</span>
+          <b id="fIoR">–</b><span class="fsub">read</span>
+          <span class="fmid">·</span>
+          <b id="fIoW">–</b><span class="fsub">write</span>
+          <span class="fcaret">▴</span>
+        </span>
+        <span class="fdiv" data-fdiv="engine"></span>
         <span class="fseg fclick" id="fEngineSeg" title="Choose where new sessions open">new in <b id="fEngine">embedded</b> <span class="fcaret">▴</span></span>
         <span class="spacer"></span>
         <span class="fseg fclick" id="fShortSeg" title="Keyboard shortcuts"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>
@@ -288,9 +296,44 @@
       </div>
     </div>
 
+    <!--
+      The project explorer (⌘P). One field: empty it browses the folder in the
+      breadcrumb, typed it finds across the whole project. The scope chips are filters
+      over the same rows — the working set and the Context card's touches, which is why
+      this is one list rather than a fourth idea. Read-only throughout; see ./explorer.
+    -->
+    <div class="expdlg" id="expDlg" role="dialog" aria-modal="true" aria-label="Project files">
+      <div class="exp-top">
+        <span class="exp-mag" aria-hidden="true">⌕</span>
+        <input class="exp-in" id="expIn" type="text" placeholder="Find a file, or browse the project…"
+               aria-label="Find a file in this project" role="combobox" aria-expanded="true"
+               aria-controls="expList" aria-autocomplete="list" autocomplete="off" spellcheck="false">
+        <span class="exp-mode" id="expMode">browse</span>
+        <button class="exp-x" id="expClose" title="Close (Esc)" type="button">✕</button>
+      </div>
+      <div class="exp-bar" id="expBar">
+        <button class="exp-chip on" id="expScope-all" data-expscope="all" type="button">All</button>
+        <button class="exp-chip" id="expScope-changed" data-expscope="changed" type="button"
+                title="Only files git says have changed">Changed <i id="expCount-changed">0</i></button>
+        <button class="exp-chip" id="expScope-touched" data-expscope="touched" type="button"
+                title="Only files an agent has read, edited or created here">Touched <i id="expCount-touched">0</i></button>
+        <nav class="exp-crumb" id="expCrumb" aria-label="Folder"></nav>
+      </div>
+      <div class="exp-list" id="expList" role="listbox" aria-label="Project files"></div>
+      <div class="exp-foot">
+        <span class="exp-act" id="expAct"></span>
+        <span class="exp-keys">
+          <span id="expReveal"><kbd>⌘⏎</kbd> reveal</span>
+          <span><kbd>⌥⏎</kbd> copy path</span>
+          <span><kbd>⌫</kbd> up a folder</span>
+        </span>
+      </div>
+    </div>
+
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
+        <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
       <div class="diff-body" id="diffBody"></div>
@@ -314,6 +357,23 @@
       <!-- One commit, in full. Lives inside the dialog and covers its list, because the
            strip below can only ever show a subject and a commit message is prose. -->
       <div class="gcommit" id="graphCommit" tabindex="0" hidden></div>
+    </div>
+
+    <!--
+      One tool call, in full. Opened from a row in the inspector's Tools timeline,
+      which keeps only the summary: the rail is ~38 characters of mono wide and every
+      payload here is an 80-120 column artifact. List of the whole ring on the left,
+      the selected call on the right (callsheet.ts).
+    -->
+    <div class="calldlg" id="callDlg" role="dialog" aria-modal="true" aria-label="Tool call">
+      <div class="diff-head">
+        <div class="diff-title-wrap"><b id="callTitle"></b><span class="diff-sub" id="callSub"></span></div>
+        <button class="diff-x" id="callClose" title="Close (Esc)">&#10005;</button>
+      </div>
+      <div class="call-body">
+        <div class="call-list" id="callList"></div>
+        <div class="call-detail" id="callDetail"></div>
+      </div>
     </div>
 
     <div class="setdlg" id="setDlg" role="dialog" aria-modal="true" aria-label="Settings">
@@ -347,6 +407,7 @@
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop costpop" id="costPop"></div>
+    <div class="menupop iopop" id="ioPop"></div>
     <div class="menupop shortpop" id="shortPop"></div>
     <!-- branch chooser for the new-session dialog (worktree base / root switch target).
          Lives out here with its siblings, not inside #wtDlg: that dialog is

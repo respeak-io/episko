@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, phaseText, statusKey, type Sess,
+  actKey, apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, phaseText,
+  statusKey, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -9,6 +10,7 @@ import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
   permCmd, pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
 } from "../src/phase";
+import { DETAIL_CAP } from "../src/toolio";
 
 // clearPending releases a still-held blocking permission request through the
 // backend. `invoke` is `window.__TAURI_INTERNALS__.invoke`, so a recording stub is
@@ -216,6 +218,9 @@ describe("applyHook — the lifecycle state machine", () => {
       hook(s, "PostToolUse", { tool_name: "Bash" });
       expect(s.activity[0].durMs).toBe(250);
     });
+    // The next three drive the *fallback*: no payload here carries a `tool_use_id`, so
+    // pairing falls back to the tool name, which is what this did for every call before
+    // the id join existed. Kept as the fallback's spec, not as the preferred path.
     it("closes the most recent still-open call of that tool", () => {
       const s = sess();
       hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "a.ts" } });
@@ -256,6 +261,86 @@ describe("applyHook — the lifecycle state machine", () => {
       const s = sess();
       hook(s, "PostToolUse", { tool_name: "Grep" });
       expect(s.activity).toHaveLength(0);
+    });
+  });
+
+  // What was executed and what came back, kept on the row so the inspector can expand it.
+  //
+  // The pairing is the load-bearing half. Matching on the tool name picks the most
+  // recent open call so named, which is wrong the moment two calls of one tool overlap —
+  // the normal state of affairs under parallel subagents. That only ever misplaced a
+  // latency bar, so it went unnoticed for a year; hanging a command's *output* off the
+  // wrong row is a lie the card states in full, so `tool_use_id` — which Claude Code puts
+  // on both payloads of a call — is what joins them now.
+  describe("what a tool call ran and what it returned", () => {
+    it("pairs Pre with Post by tool_use_id, whatever order the answers arrive in", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "slow" } });
+      vi.setSystemTime(NOW_MS + 100);
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t2", tool_input: { command: "fast" } });
+      vi.setSystemTime(NOW_MS + 200);
+      // t2 answers first. The name match would have closed it too — and then put its
+      // output on t2 as well, because t2 is the newest open Bash. The id says otherwise.
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_response: { stdout: "from-slow" } });
+      expect(s.activity.map((a) => [a.arg, a.out, a.durMs])).toEqual([
+        ["fast", "", null],
+        ["slow", "from-slow", 200],
+      ]);
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t2", tool_response: { stdout: "from-fast" } });
+      expect(s.activity.map((a) => [a.arg, a.out])).toEqual([["fast", "from-fast"], ["slow", "from-slow"]]);
+    });
+    it("keeps the whole command, not the 64 characters the row label shows", () => {
+      const s = sess();
+      const cmd = "echo " + "x".repeat(300);
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: { command: cmd } });
+      expect(s.activity[0].arg).toHaveLength(64);
+      expect(s.activity[0].inp).toBe(cmd);
+    });
+    // A PostToolUseFailure carries no `tool_response` whatsoever — the reason is a plain
+    // string in `error`, and before this it had no surface anywhere in the app.
+    it("records a failure and its reason", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: { command: "cat nope" } });
+      hook(s, "PostToolUseFailure", {
+        tool_name: "Bash", tool_use_id: "t", tool_response: null,
+        error: "Exit code 1\ncat: nope: No such file or directory",
+      });
+      expect(s.activity[0]).toMatchObject({ failed: true, out: "Exit code 1\ncat: nope: No such file or directory" });
+    });
+    it("leaves a successful call unmarked", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: { command: "ls" } });
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t", tool_response: { stdout: "a" } });
+      expect(s.activity[0].failed).toBe(false);
+    });
+    // The cap belongs here rather than in the view: a Read response is an entire file,
+    // and a view-side truncation would keep the whole of it alive for all twelve rows.
+    it("caps both sides as they land, not when they are drawn", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: { command: "x".repeat(50_000) } });
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t", tool_response: { stdout: "y".repeat(50_000) } });
+      expect(s.activity[0].inp.length).toBeLessThan(DETAIL_CAP + 80);
+      expect(s.activity[0].out.length).toBeLessThan(DETAIL_CAP + 80);
+    });
+    it("fills an input the Pre hook lacked, and never overwrites one it had", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: {} });
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_use_id: "t", tool_input: { command: "ls" }, tool_response: { stdout: "" } });
+      expect(s.activity[0].inp).toBe("ls");
+
+      const s2 = sess();
+      hook(s2, "PreToolUse", { tool_name: "Bash", tool_use_id: "u", tool_input: { command: "as submitted" } });
+      hook(s2, "PostToolUse", { tool_name: "Bash", tool_use_id: "u", tool_input: {}, tool_response: { stdout: "" } });
+      expect(s2.activity[0].inp).toBe("as submitted");
+    });
+    // The expansion is addressed by key rather than by index: the ring shifts under a
+    // live session, and an index would move an open row onto whatever arrived next.
+    it("keys a row by its tool_use_id, falling back to when it started", () => {
+      const s = sess();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_abc", tool_input: { command: "a" } });
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_input: { command: "b" } });
+      expect(actKey(s.activity[1])).toBe("toolu_abc");
+      expect(actKey(s.activity[0])).toBe(`t${NOW_MS}`);
     });
   });
 

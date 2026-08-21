@@ -82,3 +82,82 @@ describe("the delegated click dispatcher", () => {
     expect(branches).toContain("dash");
   });
 });
+
+// The same failure class, one level down: the project dashboard's own dispatcher.
+//
+// `dashview.ts` writes `data-dashact="<verb>"` from two helpers (the inspector's rows
+// and the 44px rail ⌘I collapses to), and `dashboard.ts`'s `dashAction` is an if-chain
+// over the string. Nothing joins the two but the spelling. A row whose verb has no
+// branch is a button that does nothing when clicked, and a branch nobody emits is code
+// that cannot run — both invisible to `tsc`, to every other suite, and to a reader of
+// either file alone, which is precisely the shape that took the dashboard's own entry
+// point down for two releases.
+
+const DASHVIEW = readFileSync(new URL("../src/dashview.ts", import.meta.url), "utf8");
+const DASHBOARD = readFileSync(new URL("../src/dashboard.ts", import.meta.url), "utf8");
+
+/** The body of a top-level function, from its signature to the next unindented `}`. */
+function body(src: string, decl: string): string {
+  const start = src.indexOf(decl);
+  if (start < 0) throw new Error(`could not find ${decl}`);
+  const end = src.indexOf("\n}", start);
+  if (end < 0) throw new Error(`could not find the end of ${decl}`);
+  return src.slice(start, end);
+}
+
+/// Both surfaces build their markup through a one-line local helper whose FIRST argument
+/// is the verb, so the verb is read from the call rather than from the attribute: the
+/// attribute itself is `data-dashact="${a}"` in the helper and carries no literal.
+const verbs = (src: string, decl: string, helper: string): string[] => {
+  const re = new RegExp(`\\b${helper}\\("([a-z]+)"`, "g");
+  return [...new Set([...body(src, decl).matchAll(re)].map((m) => m[1]))];
+};
+
+describe("the project dashboard's verbs", () => {
+  const rows = verbs(DASHVIEW, "export function dashInspector(", "act");
+  const rail = verbs(DASHVIEW, "export function dashStrip(", "b");
+  // The third surface, and the reason this is worth a test rather than a convention:
+  // the git verbs live in a card in the overview column, dispatched by a *different*
+  // listener from the two above (`#dashPane`, not `#inspector`/`#dashStrip`) into the
+  // same if-chain. Three emitters, two listeners, one vocabulary.
+  const gcard = verbs(DASHVIEW, "export function repoCard(", "gb");
+  const offered = [...new Set([...rows, ...rail, ...gcard])];
+  const handled = [...new Set(
+    [...body(DASHBOARD, "function dashAction(act: string): void {")
+      .matchAll(/act === "([a-z]+)"/g)].map((m) => m[1]),
+  )];
+
+  it("finds all three surfaces and the if-chain to compare", () => {
+    expect(rows.length).toBeGreaterThan(5);
+    expect(rail.length).toBeGreaterThan(4);
+    expect(gcard.length).toBeGreaterThan(3);
+    expect(handled.length).toBeGreaterThan(5);
+  });
+
+  it("has no dead button — every verb any surface offers is dispatched", () => {
+    const dead = offered.filter((v) => !handled.includes(v));
+    expect(dead, `offered but never dispatched: ${dead.join(", ")}`).toEqual([]);
+  });
+
+  it("has no unreachable branch — every verb dispatched is offered somewhere", () => {
+    const orphan = handled.filter((v) => !offered.includes(v));
+    expect(orphan, `dispatched but on no surface: ${orphan.join(", ")}`).toEqual([]);
+  });
+
+  it("routes the card's clicks, which are not the inspector's listener", () => {
+    // `#inspector` and `#dashStrip` share one handler; the card is in `#dashPane`, whose
+    // handler is a different function in a different place. A card verb with no
+    // [data-dashact] branch there is five dead buttons that read as a broken git card.
+    const pane = DASHBOARD.slice(DASHBOARD.indexOf('$("dashPane").addEventListener'));
+    expect(pane.slice(0, pane.indexOf("\n  });"))).toContain('closest<HTMLElement>("[data-dashact]")');
+  });
+
+  it("keeps the rail inside the panel's verb set", () => {
+    // ⌘I collapses the dashboard's inspector to the rail rather than hiding it, because
+    // these verbs live nowhere else. So the rail may carry FEWER (it has room for a
+    // glyph and a tooltip, nothing more), never a verb the expanded panel lacks: a
+    // button reachable only while collapsed is a button nobody finds.
+    const railOnly = rail.filter((v) => !rows.includes(v));
+    expect(railOnly, `on the rail but not in the panel: ${railOnly.join(", ")}`).toEqual([]);
+  });
+});

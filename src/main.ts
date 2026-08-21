@@ -9,7 +9,8 @@ import { isAgent, isExited } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { updateTray } from "./tray";
 import {
-  closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeShortPop, closeUsagePop,
+  closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeIoPop, closeShortPop,
+  closeUsagePop,
   refreshTokens, renderAttn, renderFoot, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
@@ -18,15 +19,18 @@ import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
 import { renderInspector, setCtxMode, tickDwell, toggleFileGroup } from "./inspector";
+import {
+  callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
+} from "./callsheet";
 import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
 import {
-  addProject, addProjectPath, cycleIoScope, cycleSort, effectiveTheme, openProjectFolder,
+  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setKeyPrefs, setPeekPrefs,
   setPermMode,
-  setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
-  toggleIoInfo, toggleRail, toggleTheme,
+  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
+  toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
@@ -55,8 +59,8 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
-  openBranchPop, setWtLaunch, setWtRefreshGit, setWtRenderAll,
+  closeBranchPop, closeWt, openWt, setWtCloseSession, setWtHandToTerminal,
+  openBranchPop, setWtLaunch, setWtOnBranchSwitched, setWtRefreshGit, setWtRenderAll,
   setWtSaveCmpBase, setWtSetActive,
 } from "./worktree";
 import {
@@ -67,6 +71,7 @@ import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
+import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
 // context menu (./projmenu) and owns its own handlers; this file only has to close it
 // with the shared scrim and Esc, like every other dialog.
@@ -74,8 +79,9 @@ import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from ".
 import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashEscape, dashLaunchHint, openDashboard, releaseClaimFor, renderDash,
-  renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
+  releaseClaimFor, renderDash, renderDashHeader, renderDashInspector, setDashHost,
+  wireDashboard,
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -201,10 +207,18 @@ setFooterCloseColorPop(closeColorPop);
 setFooterSetActive(setActive);
 // A palette row can do almost anything the app can do, so the ⌘K UI takes one host
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
+/// ⌘P — the explorer, on whatever owns the stage. Keyed by folder like the peek, and
+/// resolved through `activeCwd()` so a worktree session explores its own checkout
+/// rather than the repo it groups under — the same answer `❯ Terminal` gives.
+function openProjectFiles() {
+  const wd = activeCwd();
+  if (!wd) { toast("No project on screen"); return; }
+  void openExplorer(wd, basename(wd));
+}
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
-  revealActiveFolder, openProjectFolder,
+  revealActiveFolder, openProjectFolder, openProjectFiles,
 });
 // Same reasoning, seven callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
@@ -226,12 +240,13 @@ setActionsRenderAll(renderAll);
 setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
-// The settings window changes ten things it does not own; this is the whole of
+// The settings window changes fourteen things it does not own; this is the whole of
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
   setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
   startTour: startChapter,
+  setFootSeg,
 });
 // The tour drives the app the way a user would, so the two things it cannot do itself
 // are typing into a pane and opening the window it just told you about.
@@ -264,6 +279,13 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // The ⑃ dialog, opened straight onto the root's switch card: `armSwitch` selects the
+  // repo row and paints it, so the branch picker is the next click. Every guard, the
+  // picker itself and the dirty-tree handoff live in that card, which is exactly why the
+  // dashboard hands over rather than growing its own copy of all three.
+  switchBranch: (project, repoDir, branch) => {
+    void openWt(project, repoDir, branch || null, { manage: true, armSwitch: true });
+  },
   // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
   // nests under the project rather than becoming a top-level group of its own.
   handToTerminal: (project, dir, cmd) => {
@@ -286,6 +308,7 @@ setDashHost({
 wireDashboard();
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
+setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
@@ -302,6 +325,10 @@ setWtRefreshGit(refreshGitViews);
 // The trunk a project's branches are measured against: a persisted preference, so the
 // write is actions.ts's — reached as a hook because the direct import would close a cycle.
 setWtSaveCmpBase(setCmpBase);
+// …and moving the root's HEAD invalidates a dashboard of that project outright: its
+// timeline, its ⇣ ⇡ rows and its Checkouts card are all read through the branch that
+// just changed, and nothing re-reads that folder on a schedule.
+setWtOnBranchSwitched(dashBranchSwitched);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -457,6 +484,10 @@ function renderAllNow() {
     const s = activeId ? sessions.get(activeId) ?? null : null;
     renderInspector(s); renderHeader(s);
   }
+  // Live while it is open: a call landing on the session it is showing has to reach it.
+  // No-op when it is closed, and internally guarded so the block you are selecting text
+  // in is not reassigned under the pointer (see renderCallSheet).
+  renderCallSheet();
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
   // Last, and for the same reason syncAttn is first: the tour reads what this pass just
@@ -625,6 +656,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
+  if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that OPENS this popover must be spared here, or the same click that
@@ -639,7 +671,7 @@ document.addEventListener("click", (e) => {
   // for free — but only if its attribute is in this list. A data- attribute the
   // selector doesn't name resolves to the enclosing row instead, silently doing the
   // wrong thing: that is what makes this list load-bearing rather than bookkeeping.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-ioscope],[data-ioinfo],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -691,8 +723,14 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.fopen) void openTouchedFile(el.dataset.fopen);
   else if (el.dataset.fgroup) toggleFileGroup(el.dataset.fgroup);
   else if (el.dataset.fmode) setCtxMode(el.dataset.fmode);
-  else if (el.dataset.ioscope) cycleIoScope();
-  else if (el.dataset.ioinfo) toggleIoInfo();
+  // The Tools tab and the call sheet it opens. `tlsid` rather than `activeId`: the row
+  // carries the session it was rendered for, and markup outlives the state that produced
+  // it by however long it takes somebody to move the pointer. `callcopy` carries which
+  // block to copy (`inp` / `out` / `both`) — the sheet knows which call is selected, so
+  // the attribute never has to name one.
+  else if (el.dataset.tlrow) openCallSheet(el.dataset.tlsid || activeId || "", el.dataset.tlrow);
+  else if (el.dataset.callsel) selectCall(el.dataset.callsel);
+  else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);
 });
 
@@ -766,7 +804,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
 // What each bindable action does. The chords themselves are NOT here — they live in
 // `keyPrefs` (./state, from ./keys) so the user can change or switch them off in
 // Settings › Keys — and this map is only the verb each one runs. One entry per
@@ -782,6 +820,7 @@ const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
   terminal: openPlainTerminal,
   history: () => { histOpen() ? closeHistory() : void openHistory(true); },
+  files: () => { explorerOpen ? closeExplorer() : openProjectFiles(); },
   reveal: revealActiveFolder,
   buildTask: () => { void runDefaultTask("build"); },
   testTask: () => { void runDefaultTask("test"); },
@@ -805,7 +844,9 @@ window.addEventListener("keydown", (e) => {
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
   if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
+  else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
+  else if (e.key === "Escape" && callSheetOpen()) { e.preventDefault(); closeCallSheet(); }
   // graphEscape, not closeGraph: the panel can have a commit open over it, and Esc has to
   // step out of that first.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }

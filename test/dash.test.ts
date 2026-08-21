@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports (state.ts reads it at load)
 import {
   canShare, clampRange, dashDays, dashPulse, densePerDay, DASH_RANGE_DEFAULT,
-  mainCheckout, projectCost, projectTier, pullState, type ProjectFacts,
+  mainCheckout, projectCost, projectTier, syncState, type ProjectFacts,
 } from "../src/dash";
 import type { HistEntry } from "../src/history";
 import type { TrailCommit } from "../src/trail";
@@ -22,7 +22,7 @@ const dk = (back: number) => {
 
 const hist = (o: Partial<HistEntry> = {}): HistEntry => ({
   session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
-  title: "a session", last_prompt: "", mtime: NOW / 1000, bytes: 10, exists: true,
+  title: "a session", last_prompt: "", last_active: NOW / 1000, bytes: 10, exists: true,
   repo_root: "/w/epi", ...o,
 });
 const commit = (o: Partial<TrailCommit> = {}): TrailCommit =>
@@ -99,7 +99,7 @@ describe("dashDays — scoped before assembly, not after", () => {
 describe("dashPulse", () => {
   const days = dashDays(
     "/w/epi",
-    [hist({ session_id: "a" }), hist({ session_id: "b", mtime: (NOW - 86_400_000) / 1000 })],
+    [hist({ session_id: "a" }), hist({ session_id: "b", last_active: (NOW - 86_400_000) / 1000 })],
     [
       commit({ sha: "c1", author: "Tim" }),
       commit({ sha: "c2", author: "Frederic" }),
@@ -132,7 +132,7 @@ describe("densePerDay — the chart must not drop the quiet days", () => {
     // Two busy days a week apart render as two adjacent bars without this, which reads
     // as "constantly busy" — the exact opposite of the truth.
     const days = dashDays("/w/epi",
-      [hist({ mtime: NOW / 1000 }), hist({ session_id: "old", mtime: (NOW - 6 * 86_400_000) / 1000 })],
+      [hist({ last_active: NOW / 1000 }), hist({ session_id: "old", last_active: (NOW - 6 * 86_400_000) / 1000 })],
       [commit(), commit({ sha: "c2" }), commit({ sha: "c3", when: (NOW - 6 * 86_400_000) / 1000 })],
       [uday(dk(0)), uday(dk(6))], () => 0);
     expect(days).toHaveLength(2);          // the list keeps only the two real days…
@@ -143,7 +143,7 @@ describe("densePerDay — the chart must not drop the quiet days", () => {
   });
 });
 
-describe("mainCheckout — which folder ⇣ Pull acts on", () => {
+describe("mainCheckout — which folder ⇣ Pull, ⇡ Push and ⇄ Switch act on", () => {
   const head = (o: Partial<WtHead> = {}): WtHead =>
     ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
 
@@ -164,27 +164,39 @@ describe("mainCheckout — which folder ⇣ Pull acts on", () => {
   });
 });
 
-describe("pullState — the numbers are as old as the last fetch, and it says so", () => {
+describe("syncState — the numbers are as old as the last fetch, and it says so", () => {
   const ds = (o: Partial<DiffStat> = {}): DiffStat => ({
     added: 0, removed: 0, files: 0, untracked: 0, dirty: 0,
     upstream: "origin/main", ahead: 0, behind: 0, ...o,
   });
 
   it("is unknown before the probe answers, and for a folder git could not read", () => {
-    expect(pullState(null)).toBe("unknown");
-    expect(pullState(undefined)).toBe("unknown");
+    expect(syncState(null)).toBe("unknown");
+    expect(syncState(undefined)).toBe("unknown");
   });
   it("separates the two zeroes: no upstream is not up to date", () => {
     // Both read `behind: 0`, and conflating them swallows the one case that has a real
     // answer — the backend's refusal names the --set-upstream-to that fixes it.
-    expect(pullState(ds({ upstream: null }))).toBe("no-upstream");
-    expect(pullState(ds())).toBe("level");
+    expect(syncState(ds({ upstream: null }))).toBe("no-upstream");
+    expect(syncState(ds())).toBe("level");
   });
   it("calls a branch with work on both sides diverged, not behind", () => {
     // ff-only would fail; the backend refuses up front and hands over `git pull --rebase`.
-    expect(pullState(ds({ ahead: 2, behind: 3 }))).toBe("diverged");
-    expect(pullState(ds({ ahead: 2 }))).toBe("level");
-    expect(pullState(ds({ behind: 3 }))).toBe("behind");
+    expect(syncState(ds({ ahead: 2, behind: 3 }))).toBe("diverged");
+    expect(syncState(ds({ behind: 3 }))).toBe("behind");
+  });
+  it("gives unpushed-with-nothing-incoming its own answer, not `level`", () => {
+    // The quiet case for ⇣ Pull and the entire point of ⇡ Push, from one reading. Folded
+    // into `level` (which is what it was while pulling was all this pane could do), the
+    // push row would read "nothing to push" over commits waiting to go out.
+    expect(syncState(ds({ ahead: 2 }))).toBe("ahead");
+    expect(syncState(ds())).toBe("level");
+  });
+  it("does not call a branch with no upstream ahead, however many commits it has", () => {
+    // `git rev-list @{u}..` has nothing to count against, so ahead reads 0 anyway — but
+    // the state has to be the one that names the fix, not the one that says "nothing to
+    // push" about a branch that has never been published.
+    expect(syncState(ds({ upstream: null, ahead: 4 }))).toBe("no-upstream");
   });
 });
 

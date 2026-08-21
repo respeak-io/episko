@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  ageBucket, basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
   fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -322,5 +322,33 @@ describe("uDelta — period-over-period change", () => {
     expect(uDelta(50, 100)).toContain("▼");
     expect(uDelta(50, 100)).toContain("<b>50%</b>"); // magnitude, not signed
     expect(uDelta(100, 100)).toContain("▲");         // flat reads as up
+  });
+});
+
+describe("ageBucket — the sheet's time dividers", () => {
+  const min = (n: number) => n * 60_000;
+  it("bands an age, not a timestamp", () => {
+    expect(ageBucket(0)).toBe("Just now");
+    expect(ageBucket(min(0.9))).toBe("Just now");
+    expect(ageBucket(min(1))).toBe("Last 5 minutes");
+    expect(ageBucket(min(4.9))).toBe("Last 5 minutes");
+    expect(ageBucket(min(5))).toBe("Last 30 minutes");
+    expect(ageBucket(min(29))).toBe("Last 30 minutes");
+    expect(ageBucket(min(30))).toBe("Last hour");
+    expect(ageBucket(min(59))).toBe("Last hour");
+    expect(ageBucket(min(60))).toBe("Earlier");
+    expect(ageBucket(min(600))).toBe("Earlier");
+  });
+  // The bands have to stay in recency order for a list grouped by them to read top-down,
+  // which is only true if each boundary hands off to the next band and none overlap.
+  it("never goes backwards as an age grows", () => {
+    const order = ["Just now", "Last 5 minutes", "Last 30 minutes", "Last hour", "Earlier"];
+    let seen = 0;
+    for (let m = 0; m < 120; m += 0.5) {
+      const i = order.indexOf(ageBucket(min(m)));
+      expect(i).toBeGreaterThanOrEqual(seen);
+      seen = i;
+    }
+    expect(seen).toBe(order.length - 1);
   });
 });
