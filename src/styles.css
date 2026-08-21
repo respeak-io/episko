@@ -2881,6 +2881,116 @@ select.in-ctl { cursor: pointer; }
 .cl-foot { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 15px; border-top: 1px solid var(--hair); background: var(--bg-2); font: 10.5px var(--font-mono); color: var(--muted-2); }
 @media (max-width: 640px) { .cl-body { grid-template-columns: 1fr; } .cl-rail { display: none; } }
 
+/* ---------- the guided tour (src/tourui.ts) ----------
+   The dim is ONE box-shadow spreading outward from a small rounded div, so the hole is
+   a genuine gap: nothing overlays the lit control, and the veil is pointer-events:none,
+   so the click lands on the real button. Tier 80/81 — above the context menu (60) and
+   What's new (61), because the tour lights things inside both. */
+.tour-veil { position: fixed; inset: 0; z-index: 80; pointer-events: none; opacity: 0; transition: opacity .2s ease; }
+.tour-veil.show { opacity: 1; }
+.tour-hole {
+  position: absolute; border-radius: var(--radius-sm); pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(6,5,11,.72), 0 0 0 1.5px var(--accent), 0 0 22px 3px var(--accent-glow);
+  transition: top .3s cubic-bezier(.32,.72,0,1), left .3s cubic-bezier(.32,.72,0,1),
+              width .3s cubic-bezier(.32,.72,0,1), height .3s cubic-bezier(.32,.72,0,1);
+}
+/* A step with no anchor (the tray, a closing card) dims everything and shows no ring. */
+.tour-hole.centre { box-shadow: 0 0 0 9999px rgba(6,5,11,.82); }
+
+.tour-card {
+  position: fixed; z-index: 81; width: 300px; display: none; flex-direction: column; gap: 9px;
+  padding: 13px 14px 12px; border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 96%, transparent);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--hair-strong);
+  box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08);
+  transition: top .3s cubic-bezier(.32,.72,0,1), left .3s cubic-bezier(.32,.72,0,1);
+}
+.tour-card.show { display: flex; }
+.tour-card.wide { width: 366px; }
+.tc-top { display: flex; align-items: center; gap: 7px; }
+.tc-ch { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+.tc-count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.tc-x { width: 18px; height: 18px; display: grid; place-items: center; border: 0; background: none; border-radius: 5px; color: var(--muted-2); cursor: pointer; font-size: 12px; line-height: 1; }
+.tc-x:hover { background: var(--surface-2); color: var(--text); }
+.tc-t { font-size: 14.5px; font-weight: 650; letter-spacing: -.012em; line-height: 1.25; text-wrap: balance; }
+.tc-b { font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+.tc-b b { color: var(--text); font-weight: 600; }
+.tc-b code { font-family: var(--font-mono); font-size: 11px; background: var(--surface); border: 1px solid var(--hair); border-radius: 5px; padding: 1px 5px; color: var(--accent-ink); }
+.tc-b kbd { font-family: var(--font-mono); font-size: 10px; background: var(--surface-2); border: 1px solid var(--hair-strong); border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px; color: var(--text); }
+.tc-wait { display: flex; align-items: center; gap: 7px; font-size: 11.5px; padding: 6px 9px; border-radius: var(--radius-sm); background: var(--accent-wash); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.tc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; animation: tcPulse 1.35s ease-in-out infinite; }
+@keyframes tcPulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+.tc-act { align-self: flex-start; }
+.tc-foot { display: flex; align-items: center; gap: 7px; margin-top: 1px; }
+.tc-sp { margin-right: auto; }
+.tc-dots { display: flex; gap: 3px; margin-right: auto; }
+.tc-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--hair-strong); }
+.tc-dots i.on { background: var(--accent); }
+.tc-dots i.past { background: var(--accent-line); }
+
+.tour-btn { font: inherit; font-family: var(--font-ui); font-size: 11.5px; padding: 4px 11px; border-radius: var(--radius-sm); cursor: pointer; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
+.tour-btn:hover { background: var(--surface-2); color: var(--text); }
+.tour-btn.go { background: var(--accent); border-color: var(--accent); color: #160f28; font-weight: 650; }
+.tour-btn.go:hover { background: var(--accent-ink); }
+.tour-btn.ghost { background: none; border-color: transparent; }
+.tour-btn:disabled { opacity: .38; cursor: not-allowed; }
+.tour-btn:disabled:hover { background: var(--surface); color: var(--muted); }
+
+/* The rail legend the Quick start chapter teaches, as seven chips in the rail's own
+   colours — because a card that only *names* the colours is asking you to take its word
+   for the one thing you are about to have to read at a glance. The state class sits on
+   the CHIP, not on the glyph, so one `--lc` tints the fill, the hairline and the glyph
+   together, and the mapping stays the same `--st-*` variables the sidebar uses (a key
+   that could drift from the rail would be worse than none).
+   The `color` the old rule put on this wrapper is gone deliberately: it out-specified
+   the g-* classes below it in the file and greyed out the very glyphs this teaches. */
+.tr-legend { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 10px; }
+.tr-leg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--lc) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lc) 30%, transparent); }
+.tr-leg b { font-family: var(--font-mono); font-size: 13px; font-weight: 700; line-height: 1; min-width: 11px; text-align: center; }
+.tr-leg i { font-style: normal; font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.tr-leg.g-work{--lc:var(--st-working);} .tr-leg.g-done{--lc:var(--st-done);} .tr-leg.g-attn{--lc:var(--st-attention);}
+.tr-leg.g-bg{--lc:var(--st-bg);} .tr-leg.g-error{--lc:var(--st-error);} .tr-leg.g-idle{--lc:var(--st-idle);}
+.tr-leg.g-ended{--lc:var(--muted-2);}
+/* A card is not a live row. `.g-work`/`.g-attn`/`.g-bg` pulse wherever they appear,
+   which is right for a session that is doing something and wrong for a key and for the
+   two coloured words in a card's prose: seven glyphs blinking out of phase reads as a
+   rendering fault, not as a legend. */
+.tour-card .g-work, .tour-card .g-attn, .tour-card .g-bg, .tour-card .tr-leg { animation: none; }
+
+/* The chapter picker. */
+.tp-list { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 1px; }
+.tp-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); cursor: pointer; }
+.tp-row:hover { border-color: var(--hair-strong); }
+.tp-row.on, .tp-row.req { border-color: var(--accent-line); background: var(--accent-wash); }
+.tp-row.req { cursor: default; }
+.tp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tp-box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--hair-strong); flex: none; margin-top: 1px; display: grid; place-items: center; font-size: 9px; color: #160f28; }
+.tp-row.on .tp-box, .tp-row.req .tp-box { background: var(--accent); border-color: var(--accent); }
+.tp-main { flex: 1; min-width: 0; }
+.tp-nm { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 650; color: var(--text); }
+.tp-req, .tp-done { font-size: 8px; letter-spacing: .1em; text-transform: uppercase; border-radius: 4px; padding: 0 4px; }
+.tp-req { color: var(--accent-ink); border: 1px solid var(--accent-line); }
+.tp-done { color: var(--st-done); border: 1px solid color-mix(in srgb, var(--st-done) 40%, transparent); }
+.tp-sb { display: block; font-size: 10.5px; color: var(--muted-2); line-height: 1.4; }
+.tp-mn { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-2); flex: none; margin-top: 2px; }
+
+/* Settings › Guide: a row per chapter with its state and a replay. */
+.gd-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); }
+.gd-main { flex: 1; min-width: 0; }
+.gd-nm { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+.gd-sb { font-size: 11px; color: var(--muted-2); }
+.gd-mn { font-family: var(--font-mono); font-size: 10px; color: var(--muted-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-hole, .tour-card { transition: none; }
+  .tc-dot { animation: none; }
+}
+/* What's new: the release-intro hand-off, on any release that ships a chapter. */
+.cl-guide { margin-left: auto; font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 100px; cursor: pointer; background: var(--accent-wash); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.cl-guide:hover { background: var(--accent-glow); }
 /* --- Settings > Footer: the preview boxes ARE the popovers ---
    Each carries the real popover's classes (`menupop costpop`, `menupop usagepop`, …) and
    is filled by the real renderer, so a preview cannot drift from the thing it previews.

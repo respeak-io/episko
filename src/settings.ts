@@ -46,6 +46,7 @@ import {
   ALL_PROVIDERS, clearStopRule, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
   stopRules, taskPrefs, untrustProject, type Provider, type TaskPrefs,
 } from "./tasks";
+import { isDone, parseTourState, pickerChapters, TOUR_KEY } from "./tour";
 import { costPopHtml, ioPopHtml, usagePanelHtml, usageRow } from "./usageview";
 import { enginePopHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
@@ -54,6 +55,8 @@ import { setUsageRange } from "./usage";
 // What this dialog changes but does not own. Every entry is somebody else's
 // setter; main.ts hands them over at startup and until then they do nothing.
 export interface SettingsHost {
+  /** Replay a tour chapter. ./tourui owns the walking; this only asks for it. */
+  startTour: (chapterId: string) => void;
   setTheme: (t: "dark" | "light") => void;
   effectiveTheme: () => "dark" | "light";
   setSort: (m: SortMode, announce?: boolean) => void;
@@ -84,6 +87,7 @@ export interface SettingsHost {
   setFootSeg: (id: FootSeg) => void;
 }
 let host: SettingsHost = {
+  startTour: () => {},
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
@@ -122,6 +126,10 @@ type SetControl =
   // Prose with no control under it — a rule that governs the group below it and would
   // otherwise have to be repeated in every one of their hints.
   | { kind: "note"; label: string; hint: string }
+  // The guided tour: a row per chapter, its state, and a replay. One control rather
+  // than a `render` tab for the same reason `peek` is one — it is a single decision,
+  // and a `render` tab would also widen the dialog for four rows of text.
+  | { kind: "guide"; label: string; hint?: string }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
   | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string };
 // Most tabs are a list of declarative controls; a tab may instead supply `render`
@@ -369,6 +377,13 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
+    id: "guide", label: "Guide", glyph: "◇",
+    controls: () => [
+      { kind: "guide", label: "Guided tour",
+        hint: "Replay any chapter, any time. Nothing here opens by itself after the first run — when a release adds something worth showing, What's new offers it and you can say no." },
+    ],
+  },
+  {
     id: "usage", label: "Usage", glyph: "▦",
     controls: () => [],
     render: () => usagePanelHtml(),
@@ -378,6 +393,9 @@ const SET_TABS: SetTab[] = [
 export let setTab = "appearance";
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); renderSettings(); }
+/// Open on a named tab. `setTab` is a module-local `let`, and an ESM import of it is
+/// read-only, so a caller outside this file cannot set it — this is the seam.
+export function openSettingsOn(tab: string) { setTab = tab; openSettings(); }
 export function closeSettings() {
   // Disarm first: the recorder's listener is on `window`, so a row left armed would
   // go on swallowing every chord in the app with nothing on screen to say why.
@@ -874,6 +892,9 @@ function renderSetControl(c: SetControl): string {
       + `<button class="sw${attnPrefs.highlight ? " on" : ""}" data-setattn="highlight" role="switch"`
       + ` aria-checked="${attnPrefs.highlight}"></button></div>${renderAttnControl()}</div>`;
   }
+  if (c.kind === "guide") {
+    return `<div class="set-group">${head}${renderGuideControl()}</div>`;
+  }
   if (c.kind === "sound") {
     // Same shape as `peek` above: the master switch rides the label row, the panel it
     // governs sits under it, because they are one decision.
@@ -1075,6 +1096,28 @@ function demoAdvance(next: PeekState) {
 }
 function peekDemoReset() { demoHover = null; demoAdvance(PEEK_IDLE); }
 
+/**
+ * A row per chapter: what it covers, how long it takes, and whether you have taken it.
+ *
+ * Read fresh on every render rather than cached, for the same reason ./changelogui reads
+ * its seen-record fresh: a chapter finished while this window is open must not leave the
+ * row still offering to start something already done.
+ */
+function renderGuideControl(): string {
+  const st = parseTourState(localStorage.getItem(TOUR_KEY));
+  return `<div class="set-stack">` + pickerChapters().map((c) => {
+    const done = isDone(st, c);
+    // A chapter you walked out of halfway is neither done nor untouched, and ./tourui
+    // starts it where you left it — so the button has to say which of the three it is.
+    const held = st.at?.ch === c.id && !done;
+    return `<div class="gd-row">
+      <span class="gd-main"><span class="gd-nm">${esc(c.name)}${done ? `<span class="tp-done">done</span>` : ""}</span>
+        <span class="gd-sb">${esc(c.blurb)}</span></span>
+      <span class="gd-mn">${esc(c.mins)}</span>
+      <button class="tact" data-setguide="${esc(c.id)}">${held ? "Resume" : done ? "Replay" : "Start"}</button></div>`;
+  }).join("") + `</div>`;
+}
+
 function setFontFromSettings(cmd: string) {
   if (cmd === "reset") { setTermFontSize(12.5); host.applyFontSize(); toast("Terminal font 12.5px"); }
   else host.bumpFont(parseFloat(cmd));
@@ -1095,6 +1138,9 @@ $("setBody").addEventListener("click", (e) => {
   if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
   const at = (e.target as HTMLElement).closest<HTMLElement>("[data-setattn]");
   if (at) { applyAttnSetting(at.dataset.setattn!); return; }
+  // Starting a chapter closes this window: every anchor the tour lights is behind it.
+  const gd = (e.target as HTMLElement).closest<HTMLElement>("[data-setguide]");
+  if (gd) { closeSettings(); host.startTour(gd.dataset.setguide!); return; }
   // Clicking a preview row is the third way to replay it, after hovering it and moving
   // the stepper — the one gesture somebody reaches for when the first two are not
   // obvious. It changes nothing, so it does not fall through to a setting.
