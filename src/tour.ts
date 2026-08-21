@@ -37,16 +37,42 @@ export interface TourWorld {
   sessions: number;
   /** The active session's phase, or "" when nothing is on the stage. */
   phase: string;
+  /**
+   * A **claude** session is on the stage — not a shell pane, not a task, not the
+   * dashboard. Everything the inspector chapter teaches is about that pane, so the
+   * chapter opens by waiting for one instead of lighting cards that describe nothing.
+   */
+  agentOnStage: boolean;
   /** A permission is pending in *some* session — not necessarily the active one. */
   permPending: boolean;
   /** True once the user has answered at least one permission this run. */
   permAnswered: boolean;
+  /**
+   * The permission mode new sessions start in (Settings › Sessions).
+   *
+   * Three of the six modes answer for you, so **the card the quickstart is proudest of
+   * never appears** — and a step that waits for it strands you for its full 20s before
+   * offering a way past. The mode is the only thing that can say so in advance: a
+   * session that has not been asked anything is indistinguishable from one that never
+   * will be. See `permAsks`.
+   */
+  permMode: string;
+  /**
+   * How many sessions the reactor badge is counting right now (`needsYouSessions`).
+   *
+   * Not "has a session finished": the badge deliberately does **not** count the pane
+   * you are looking at (./attn's `attnSeen` treats the active session as seen), so on
+   * a first run — one session, on the stage — the only thing that ever lights it is a
+   * blocking permission. That is exactly when the tour teaches it, and this field is
+   * what lets the step know the badge is really there to point at.
+   */
+  attnCount: number;
   /** Which overlays are open right now; see `OPEN_IDS` for the vocabulary. */
   open: readonly string[];
+  /** Which Settings tab is showing, or "" when Settings is closed. */
+  settingsTab: string;
   /** What holds the stage. Mirrors ./dom's `Stage`, without importing it. */
   stage: string;
-  /** Files recorded against the active session (the inspector's Context card). */
-  files: number;
   /**
    * The inspector's Context card is showing its **Tools** tab.
    *
@@ -60,6 +86,20 @@ export interface TourWorld {
   caffeinated: boolean;
 }
 
+/**
+ * The permission modes under which a shell command still raises Episko's card.
+ *
+ * `Auto`, `Don't ask` and `Bypass` answer for you, and `Plan` runs nothing to be asked
+ * about — so under those the tour must not wait for a permission, and says what it would
+ * have shown instead. Duplicated from `ALL_PERM_MODES` in ./state rather than imported
+ * (this module holds rules, not app state, and `TourWorld` is primitives by design), so
+ * test/tour.test.ts checks the two against each other exactly as it does the rail legend.
+ */
+export const ASKING_MODES = ["default", "acceptEdits"] as const;
+/** Can a permission card still appear for what the quickstart asks Claude to run? */
+export const permAsks = (w: TourWorld): boolean =>
+  (ASKING_MODES as readonly string[]).includes(w.permMode);
+
 /** The overlay names `TourWorld.open` may carry. One place, so a predicate cannot typo. */
 export const OPEN_IDS = ["wt", "settings", "ctx", "run", "palette", "graph", "cost", "usage"] as const;
 export type OpenId = (typeof OPEN_IDS)[number];
@@ -72,6 +112,17 @@ const isOpen = (w: TourWorld, id: OpenId) => w.open.includes(id);
  */
 export type TourActId = "paste-first-prompt";
 export interface TourAct { label: string; id: TourActId }
+
+/**
+ * A panel the step's anchor lives inside, which the user may have collapsed.
+ *
+ * The tour lights real controls, so a control that is not on screen is not a missing
+ * anchor to step over — it is a panel to open. ⌘I takes the whole inspector away
+ * (`#app.insp-off`), which is where the permission buttons and every Context card
+ * live, and ⌘B does the same to the rail (`#app.rail-mini`), which is where the
+ * project rows and the ＋ live. ./tourui asks its host to open these before it paints.
+ */
+export type TourNeed = "rail" | "inspector";
 
 export interface TourStep {
   /**
@@ -96,8 +147,16 @@ export interface TourStep {
   wait?: string;
   /** Advance as soon as this is true. Evaluated on every `renderAll` pass. */
   done?: (w: TourWorld) => boolean;
-  /** Skip the step entirely when false — a non-git folder has no worktree to offer. */
+  /**
+   * Skip the step entirely when false — the reactor badge is not on screen to teach.
+   *
+   * Evaluated live, on every pass, and that is safe **only** because ./tourui indexes
+   * the chapter's full step list rather than the filtered one: a `when` that flipped
+   * under a filtered index would silently renumber every step after it.
+   */
   when?: (w: TourWorld) => boolean;
+  /** Panels this step's anchor lives in, opened before it paints; see `TourNeed`. */
+  needs?: readonly TourNeed[];
   /** An extra button; see `TourAct`. */
   act?: TourAct;
   /** Offer a "skip the rest of this chapter" out. Only where a step can cost money. */
@@ -141,8 +200,11 @@ export const RAIL_LEGEND: { glyph: string; cls: string; label: string }[] = [
   { glyph: "○", cls: "g-idle",  label: "idle" },
   { glyph: "·", cls: "g-ended", label: "ended" },
 ];
+// The state class goes on the chip rather than on the glyph: it carries the colour for
+// the glyph, the tint and the hairline at once (see `.tr-leg` in styles.css), so the key
+// SHOWS each state instead of naming its colour in prose.
 const legendHtml = () => RAIL_LEGEND
-  .map((l) => `<span class="tr-leg"><b class="${l.cls}">${l.glyph}</b>${l.label}</span>`).join("");
+  .map((l) => `<span class="tr-leg ${l.cls}"><b>${l.glyph}</b><i>${l.label}</i></span>`).join("");
 
 // ---------- the manifest ----------
 // Everything above is machinery; this is the content. Adding a chapter is adding an
@@ -150,67 +212,137 @@ const legendHtml = () => RAIL_LEGEND
 
 export const CHAPTERS: Chapter[] = [
   {
-    id: "quickstart", rev: 1, required: true,
+    // rev 2 — the first cut was written against a mock rather than against the app, and
+    // taught a launch flow that does not exist: it lit `＋ Session` and waited for the
+    // launcher, but with nothing on the stage that button has no project to act on and
+    // opens ⌘K instead (main.ts's `activeProjectCtx`), and even with one, `requestLaunch`
+    // only offers the dialog for a repo that already has a session in it. So the required
+    // chapter's second step could never be satisfied, and the user was left driving a
+    // palette the tour had never mentioned. Every step below now lights the control that
+    // the state left by the step before it actually responds to.
+    id: "quickstart", rev: 2, required: true,
     name: "Quick start", mins: "3 min",
     blurb: "Get an agent running, and learn to read the rail",
     steps: [
       {
-        anchor: "[data-add]",
+        anchor: "[data-add]", needs: ["rail"],
         title: "Add a project folder",
-        body: "Point Episko at any repo on your machine. It never writes inside your project without asking first.",
+        body: "Point Episko at any folder with code in it — <b>a git repo shows the most</b>. Your system's folder "
+          + "picker opens in front of this card.",
         wait: "Pick a folder to continue",
         done: (w) => w.projects > 0,
       },
       {
+        // The row, and not its ＋: a project with nothing running in it renders as
+        // `.phead.empty-p`, whose only affordance is "open →" — `.padd` is built for a
+        // project that already HAS a session (./sidebar's `projectHtml`), which on a
+        // first run is exactly what this one does not. Opening the page is also what
+        // gives ＋ Session a project to act on, one step below.
+        anchor: ".phead", dynamic: true, needs: ["rail"],
+        title: "Open the project",
+        body: "Click the row. A project opens as a <b>page</b> — what moved today, its issues, its scripts — and "
+          + "every way of starting a session hangs off it. There is a whole chapter on that page.",
+        wait: "Open it to continue",
+        done: (w) => w.stage === "dash",
+      },
+      {
+        // ＋ Session acts on whatever is on the stage, which is why the step above has
+        // to come first: with an empty stage this button opens ⌘K instead — a question
+        // the tour has just answered — and the first cut waited here for a launcher that
+        // therefore never opened.
         anchor: "#btnNew",
         title: "Start a session",
-        body: "Every session starts here. Episko wires up the instrumentation — you never configure a hook.",
-        wait: "Open the launcher",
-        done: (w) => isOpen(w, "wt"),
+        body: "This runs Claude Code in the project and instruments <em>that one launch</em> — a throwaway settings "
+          + "file, thrown away with the session. You never edit a hook, and nothing is written into your repo.",
+        wait: "Start one to continue",
+        // Two shapes, because the app has two: a git repo is asked *where* first, and
+        // anything else launches on the spot. The step after this covers the dialog and
+        // is skipped when there wasn't one.
+        done: (w) => isOpen(w, "wt") || w.sessions > 0,
       },
       {
         anchor: "#wtDlg",
+        when: (w) => isOpen(w, "wt"),
         title: "Pick where it runs",
-        body: "The repo itself, a worktree, or a branch. <b>Take the repo for now</b> — worktrees have a chapter of their own.",
+        body: "The repo itself, one of its worktrees, or any branch — one row each, <kbd>⏎</kbd> to launch. "
+          + "<b>Take the repo for now</b>; worktrees have a chapter of their own.",
         wait: "Launch it",
         done: (w) => w.sessions > 0 && !isOpen(w, "wt"),
       },
       {
-        anchor: "#iPill",
+        // The pane, not the status pill: this is where the typing goes. The first cut
+        // lit `#iPill` — the inspector's readout — which was the mock's idea of an
+        // input. A pane is most of the window, so ./tourui pins the card inside a hole
+        // this big rather than trying to sit beside it.
+        anchor: "#terminals",
         title: "Give it a first job",
-        body: "A read-only one, worth a couple of cents:<br><code>Run git status and tell me what's uncommitted.</code><br>"
-          + "It will ask permission before it runs anything — that is the next step, and the most important one here.",
+        body: "This pane <em>is</em> Claude Code. Ask it for something read-only, worth a couple of cents:<br>"
+          + "<code>Run git status and tell me what's uncommitted.</code>",
         act: { label: "Paste it for me", id: "paste-first-prompt" },
-        skip: "Skip the agent bit",
-        wait: "Send the prompt to continue",
-        done: (w) => w.phase === "working" || w.phase === "thinking" || w.permPending,
+        skip: "Skip the chapter",
+        wait: "Send it to continue",
+        // In an **asking** mode this deliberately does NOT release when the turn merely
+        // starts: the step after it points at the reactor badge, which for a single
+        // session on the stage only ever lights while a permission is pending (see
+        // TourWorld.attnCount). Holding until the ask lands is what puts the badge on
+        // screen in time to be taught.
+        //
+        // In a mode that answers for you there is nothing to hold for, and waiting would
+        // strand the user for the full 20s before the "Skip this step" out appears — so
+        // the turn starting is enough. Either way a turn that ends without ever asking
+        // releases it, because a prompt Claude answers from memory raises nothing.
+        done: (w) => w.permPending || w.permAnswered || w.phase === "done"
+          || (!permAsks(w) && (w.phase === "working" || w.phase === "thinking")),
       },
       {
-        anchor: ".attn-btns", dynamic: true,
-        title: "It stopped, and went pink",
-        body: `That <b class="g-attn">◆</b> means <b>blocked on you</b>. Claude is genuinely paused until you answer, `
-          + "and it is the only event with its own urgent sound.<br>"
-          + "<b>Allow</b> once, <b>Deny</b>, or hand it to a real terminal. How often it asks is yours, in Settings › Sessions.",
+        // Only while the badge is genuinely on screen. `.attn-badge` is display:none
+        // without `.show`, and ./attn deliberately does not count the pane you are
+        // looking at — so on a first run this is the one moment it exists at all. The
+        // old chapter lit it unconditionally, one step after the permission had been
+        // answered, and so skipped itself silently on every single run.
+        anchor: "#attnBadge",
+        when: (w) => w.attnCount > 0 || w.permPending,
+        title: "It wants you",
+        body: "The <b>reactor</b> counts every session waiting on you and sorts them by urgency — a permission always "
+          + "outranks a finished turn. Click it to jump straight to the one at the top. <b>This is why you can run ten "
+          + "of these.</b>",
+      },
+      {
+        anchor: ".attn-btns", dynamic: true, needs: ["inspector"],
+        // Only in a mode that can actually raise one. `permAsks` is a fact about the
+        // launch, so this resolves the moment the step is reached rather than after the
+        // user has stared at "Answer it — either way" for twenty seconds waiting for a
+        // card their permission mode had already promised never to show.
+        when: (w) => permAsks(w) || w.permPending || w.permAnswered,
+        title: "Blocked on you",
+        body: `<b>Bash is not auto-allowed</b>, so Claude stopped. That <b class="g-attn">◆</b> means it is genuinely `
+          + "paused until you answer — the only event with its own urgent sound.<br><b>Allow</b> once, <b>Deny</b>, "
+          + "or hand it to a real terminal.",
         wait: "Answer it — either way",
-        done: (w) => !w.permPending && w.permAnswered,
+        done: (w) => (w.permAnswered && !w.permPending) || (w.phase === "done" && !w.permPending),
       },
       {
-        anchor: "#projects",
-        title: "Read the rail",
+        // The other half of the pair: the same lesson for someone whose mode answers for
+        // them. It teaches rather than waits, because there is nothing coming to wait
+        // for — and skipping the subject entirely would drop the app's most consequential
+        // interaction from the one chapter everybody takes.
+        when: (w) => !permAsks(w) && !w.permPending && !w.permAnswered,
+        title: "What you are not being asked",
+        body: "Your permission mode answers for you, so Claude ran that without stopping. In <b>Manual</b> it stops "
+          + `instead: the row goes <b class="g-attn">pink ◆</b>, an urgent sound plays, and <b>Allow</b> / <b>Deny</b> / `
+          + "<b>In terminal</b> appear in this panel. That switch is in Settings › Sessions.",
+      },
+      {
+        anchor: "#projects", needs: ["rail"],
         // The one step that pays for the whole chapter, and the one the legend is
         // duplicated for. It teaches a key rather than painting a demo fleet: a
         // fabricated rail, in an app whose entire job is showing you real work, would
         // be the wrong first impression — so this sits beside whatever the user
         // actually has running, however little that is.
-        body: `<b>Eight glyphs, and the colour is the message.</b><div class="tr-legend">${legendHtml()}</div>`
+        title: "Read the rail",
+        body: `<b>Seven glyphs, and the colour is the message.</b><div class="tr-legend">${legendHtml()}</div>`
           + `A <b class="g-attn">pink</b> row is blocked on you; a <b class="g-done">green</b> one finished and wants you. `
           + "The wash fades after a few seconds; the glyph stays until you have been to it.",
-      },
-      {
-        anchor: "#attnBadge",
-        title: "Your turn",
-        body: "The badge counts every session waiting on you and orders them by urgency — a permission always outranks "
-          + "a finished turn. <b>This is why you can run ten of these.</b>",
       },
       {
         anchor: "#kbar",
@@ -222,118 +354,167 @@ export const CHAPTERS: Chapter[] = [
   },
 
   {
-    id: "unattended", rev: 1,
-    name: "Leave it running", mins: "70s",
+    id: "unattended", rev: 2,
+    name: "Leave it running", mins: "90s",
     blurb: "Caffeinate, sounds, and the menu bar",
     steps: [
       {
         anchor: "#caf",
         title: "Keep the machine awake",
-        body: "Five modes, but the one to know is <b>Until agents idle</b>: awake only while agents are actually working, "
-          + "then it lets go by itself. A sleeping Mac kills a twenty-minute run.",
-        wait: "Arm it",
+        // The cup arms whatever preset is stored, and the shipped default is "Keep
+        // display awake" — the mode this step is actually about lives behind the caret.
+        // Saying "arm it" and naming a different mode is how the first cut read.
+        body: "The cup arms it; the <b>▾</b> beside it picks from five modes. The one to know is <b>Until agents "
+          + "idle</b> — awake only while agents are working, then it lets go by itself. A machine that sleeps kills "
+          + "a twenty-minute run.",
+        wait: "Arm it to continue",
         done: (w) => w.caffeinated,
       },
       {
+        // Two steps, because it is two gestures. Lighting ⚙ and then asking for
+        // "Settings › Sounds" left the tab the user actually had to press sitting in
+        // the dark next to a hole still pointing at the button that had already been
+        // pressed. **The hole follows the gesture**: a step that opens a window hands
+        // over to a step inside it.
         anchor: "#setBtn",
-        title: "Tune what you hear",
-        body: "Settings › Sounds gives every event its own tone and switch, previewable in place. <b>Four ship switched "
-          + "off</b> — anything that fires on routine activity turns a fleet into a fruit machine.",
+        title: "Everything else is in here",
+        body: "Sounds, permission modes, keys, worktrees, and every day's usage — one window, and it is where the rest "
+          + "of this chapter lives.",
+        wait: "Open Settings",
+        done: (w) => isOpen(w, "settings"),
       },
       {
-        anchor: "#setBtn",
+        anchor: "[data-settab=\"sounds\"]", dynamic: true,
+        title: "Tune what you hear",
+        body: "Every event has its own tone and its own switch, previewable in place. <b>Four ship switched off</b> — "
+          + "anything that fires on routine activity turns a fleet into a fruit machine.",
+        wait: "Open the Sounds tab",
+        done: (w) => w.settingsTab === "sounds",
+      },
+      {
+        anchor: "#setBody",
         title: "The rule that stops the noise",
         body: "The same moment reaches Episko twice by design, so every play is gated. But a <b>more urgent</b> event "
           + "still cuts through the gap, which is the point: a permission always gets heard.",
       },
       {
         title: "It works with the window shut",
-        body: "The menu-bar icon mirrors the rail — the same glyphs, grouped by project. Click any session there to jump "
-          + "straight back into it.",
+        body: "<kbd>esc</kbd> closes Settings. The {tray} icon mirrors the rail — the same glyphs, grouped by project "
+          + "— so you can jump back into any session without the window at all.",
       },
     ],
   },
 
   {
-    id: "worktrees", rev: 1,
+    id: "worktrees", rev: 2,
     name: "Branches & worktrees", mins: "90s",
     blurb: "Right-click, peek, and a tree of its own",
     steps: [
       {
-        anchor: ".pgroup", dynamic: true,
+        // `.phead` and not `.pgroup`: the head is what carries `data-key`, which is what
+        // ./projmenu's contextmenu handler matches on. The group wrapper around it
+        // includes the session rows, so lighting it pointed at a target twice the size
+        // of the one that answers.
+        anchor: ".phead", dynamic: true, needs: ["rail"],
         title: "The project row has two hidden gestures",
-        body: "<b>Right-click</b> it for twelve verbs — grouping projects, its colour and logo, the commit graph, copy path."
-          + "<br><b>Rest on it</b> and the checkouts with nothing running in them come back. They collapse because a project "
-          + "with four worktrees should not spend four rows saying “no session”.",
+        body: "<b>Right-click</b> it for the project's own menu — a session, a worktree, the commit graph, grouping, "
+          + "its colour and logo.<br><b>Rest on it</b> and the checkouts with nothing running in them come back.",
         wait: "Right-click the project",
         done: (w) => isOpen(w, "ctx"),
       },
       {
         anchor: "[data-ctx=\"worktree\"]", dynamic: true,
         title: "A tree of its own",
-        body: "A second checkout on its own branch. The agent gets a whole tree to itself and <b>your editor never moves</b>.",
+        body: "A second checkout on its own branch. The agent gets a whole tree to itself and <b>your editor never "
+          + "moves</b>. (No such row means this folder is not a git repo with a branch on it.)",
         wait: "Open it",
         done: (w) => isOpen(w, "wt") || !isOpen(w, "ctx"),
       },
       {
-        anchor: "#projects",
+        // The step before this one opens the launcher OVER the rail, behind the scrim.
+        // The first cut's next step lit `#projects` anyway — a hole on a control the
+        // user could not reach. Every step from here stays inside the dialog until one
+        // of them asks for it to be closed.
+        anchor: "#wtDlg",
+        when: (w) => isOpen(w, "wt"),
+        title: "One dialog, every destination",
+        body: "The repo, each of its worktrees, then every branch — one row each, with what the highlighted one would "
+          + "cost you on the right. <kbd>⏎</kbd> launches; a name that does not exist yet offers to branch it.",
+      },
+      {
+        anchor: "#projects", needs: ["rail"],
         title: "Switching and removing",
-        body: "Right-click a checkout to switch its branch or remove it. Switching is <b>refused while a session is still "
-          + "working there</b>, and says so rather than going quietly grey.",
+        body: "<kbd>esc</kbd> closes that. Back in the rail, right-click a checkout to switch its branch or remove it "
+          + "— switching is <b>refused while a session is still working there</b>, and says so rather than going "
+          + "quietly grey.",
+        wait: "Close the dialog to continue",
+        done: (w) => !isOpen(w, "wt"),
       },
       {
         title: "The commit graph",
-        body: "One page at a time, lanes named by the branch that owns them. The fastest way to see where your worktrees "
-          + "actually sit relative to each other. It is in that same right-click menu.",
+        body: "One page at a time, lanes named by the branch that owns them. The fastest way to see where your "
+          + "worktrees actually sit relative to each other. It is in that same right-click menu.",
       },
     ],
   },
 
   {
-    id: "inspector", rev: 1,
+    id: "inspector", rev: 2,
     name: "Read what your agent did", mins: "60s",
     blurb: "Files, tools, and the diff it left",
     steps: [
       {
-        anchor: "#inspector",
+        // The chapter's precondition, said out loud rather than assumed: every card it
+        // describes is built by `renderInspector` for a claude pane, so with a shell,
+        // a task or the dashboard on the stage there is nothing here to light. Arriving
+        // with a session already up costs one click; arriving without one used to cost
+        // a step that sat on a dead anchor for twenty seconds.
+        anchor: "#inspector", needs: ["inspector"],
         title: "Files, as a set",
-        body: "Every file it touched, once each — <b>read</b>, <b>edited</b>, <b>created</b>. Not a log of calls: an agent "
-          + "re-reads what it just wrote constantly, so a file only ever climbs.",
+        body: "This panel is about whatever pane is on the stage. Its Context card lists every file the agent touched, "
+          + "once each — <b>read</b>, <b>edited</b>, <b>created</b>. Not a log of calls: an agent re-reads what it just "
+          + "wrote constantly, so a file only ever climbs.",
+        wait: "Put an agent on the stage",
+        done: (w) => w.agentOnStage,
       },
       {
-        anchor: "[data-fmode=\"tools\"]", dynamic: true,
+        anchor: "[data-fmode=\"tools\"]", dynamic: true, needs: ["inspector"],
         title: "Tools, and what came back",
-        body: "The same card flips to the running order of every tool call — searches and commands included, not just the "
-          + "ones that moved a file.",
+        body: "The same card flips to the running order of every tool call — searches and commands included, not just "
+          + "the ones that moved a file.",
         wait: "Switch to Tools",
         done: (w) => w.toolsTab,
       },
       {
-        anchor: "#inspector",
+        // `.wset` exists only for a session in a git repo, and a missing anchor on a
+        // step that is not waiting is stepped over by design — which is the right
+        // answer here: there is no working set to describe outside a repo.
+        anchor: ".wset", dynamic: true, needs: ["inspector"],
         title: "The working set",
-        body: "What git thinks changed, live, while the agent works. Click a file to read the diff without leaving the app.",
+        body: "What git thinks changed, live, while the agent works — plus how the branch sits against its upstream. "
+          + "Click a file to read the diff without leaving the app.",
       },
     ],
   },
 
   {
-    id: "project", rev: 1,
+    id: "project", rev: 2,
     name: "The project homepage", mins: "90s",
     blurb: "Issues, PRs, and your own scripts",
     steps: [
       {
-        anchor: "#projects",
+        anchor: "#projects", needs: ["rail"],
         title: "A project is a page, not a terminal",
-        body: "Clicking the project <em>name</em> opens its homepage. Three tiers, depending on whether it has GitHub, "
-          + "git, or neither.",
+        body: "The <b>＋</b> starts a session; clicking the project <em>name</em> opens its homepage. Three tiers, "
+          + "depending on whether it has GitHub, git, or neither.",
         wait: "Open a project",
         done: (w) => w.stage === "dash",
       },
       {
         anchor: "#dashSpine",
         title: "Dispatch an agent at an issue",
-        body: "Open issues and PRs, with a button on each row. It opens a worktree, briefs the session with the issue, and "
-          + "<b>claims it</b> so nobody on the team doubles up.",
+        body: "Open issues and PRs, with a button on each row. It opens a worktree, briefs the session with the issue, "
+          + "and <b>claims it</b> so nobody on the team doubles up.",
       },
       {
         anchor: "#dashPulse",
@@ -343,29 +524,30 @@ export const CHAPTERS: Chapter[] = [
       {
         anchor: "#btnRun",
         title: "Your scripts, without the terminal",
-        body: "<code>package.json</code>, Makefile targets, and anything in <code>.episko/tasks.toml</code> — found, not "
-          + "configured. <kbd>⌘</kbd><kbd>⇧</kbd><kbd>B</kbd> from anywhere.",
+        body: "<code>package.json</code>, Makefile targets, and anything in <code>.episko/tasks.toml</code> — found, "
+          + "not configured. <kbd>⌘</kbd><kbd>⇧</kbd><kbd>B</kbd> from anywhere.",
       },
     ],
   },
 
   {
-    id: "cost", rev: 1,
+    id: "cost", rev: 2,
     name: "What it costs", mins: "60s",
     blurb: "Today's spend and your limits",
     steps: [
       {
         anchor: "#fCostSeg",
         title: "Today, split",
-        body: "The footer number is a button. It opens the breakdown by project and by session, so you can see which agent "
-          + "is the expensive one.",
+        body: "The footer number is a button. It opens the breakdown by project and by session, so you can see which "
+          + "agent is the expensive one.",
         wait: "Open the split",
         done: (w) => isOpen(w, "cost"),
       },
       {
         anchor: "#fUsageSeg",
         title: "Both windows, with a forecast",
-        body: "Your 5-hour and weekly limits, plus the burn rate and <b>when you will actually hit them</b> at this pace.",
+        body: "Your 5-hour and weekly limits, plus the burn rate and <b>when you will actually hit them</b> at this "
+          + "pace. It reads your own transcripts; nothing is sent anywhere.",
         wait: "Open the forecast",
         done: (w) => isOpen(w, "usage"),
       },
@@ -466,9 +648,15 @@ export function shouldOfferRelease(version: string, st: TourState): Chapter | nu
 
 // ---------- walking a chapter ----------
 
-/** The steps that apply right now; a `when` that fails removes the step from the count. */
-export const visibleSteps = (c: Chapter, w: TourWorld): TourStep[] =>
-  c.steps.filter((s) => !s.when || s.when(w));
+/**
+ * Does this step apply to the app as it is right now?
+ *
+ * The one rule `when` has, exported rather than re-implemented in ./tourui, because the
+ * driver asks it three ways — what to advance to, what to go back to, and what to count
+ * — and three copies of "no `when` means yes" is three places to get it wrong.
+ */
+export const stepApplies = (s: TourStep, w: TourWorld): boolean => !s.when || s.when(w);
+
 
 /** Is Next disabled? A step waits only if it says so *and* its condition is unmet. */
 export const stepBlocked = (s: TourStep, w: TourWorld) => !!s.wait && !(s.done?.(w) ?? true);

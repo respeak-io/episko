@@ -956,11 +956,14 @@ function renderGuideControl(): string {
   const st = parseTourState(localStorage.getItem(TOUR_KEY));
   return `<div class="set-stack">` + pickerChapters().map((c) => {
     const done = isDone(st, c);
+    // A chapter you walked out of halfway is neither done nor untouched, and ./tourui
+    // starts it where you left it — so the button has to say which of the three it is.
+    const held = st.at?.ch === c.id && !done;
     return `<div class="gd-row">
       <span class="gd-main"><span class="gd-nm">${esc(c.name)}${done ? `<span class="tp-done">done</span>` : ""}</span>
         <span class="gd-sb">${esc(c.blurb)}</span></span>
       <span class="gd-mn">${esc(c.mins)}</span>
-      <button class="tact" data-setguide="${esc(c.id)}">${done ? "Replay" : "Start"}</button></div>`;
+      <button class="tact" data-setguide="${esc(c.id)}">${held ? "Resume" : done ? "Replay" : "Start"}</button></div>`;
   }).join("") + `</div>`;
 }
 

@@ -16,9 +16,13 @@ Markers: `+` new · `~` changed · `!` fixed
 + **A first run now offers a guided tour, and a release can offer a short intro to what it
   added.** The welcome card leads into a picker: `Quick start` is required, five chapters are
   optional and remembered one at a time, so you can take one now and three next month —
-  everything stays replayable from **Settings › Guide**. Quick start makes you launch a real
-  session, paste a real prompt and **answer its first permission**, then teaches the rail's
-  glyphs and colours against whatever you actually have running. It rides `renderAll()` rather
+  everything stays replayable from **Settings › Guide**, and a chapter you walk out of halfway
+  says *Resume* rather than *Start* when you come back to it. Quick start walks the launch the
+  app actually has — add a folder, open the project's page, start a session there — then makes
+  you paste a real prompt and **answer its first permission**, and teaches the rail's seven
+  states as a key in the rail's own colours, beside whatever you actually have running. It
+  reads your permission mode first: in a mode that answers for you it does not wait for a card
+  that is never coming, and explains what you are not being asked instead. It rides `renderAll()` rather
   than a clock of its own, so a step advances the moment the app's state says it should, and
   the lit control is the live control — the veil is `pointer-events:none` and the dark is one
   box-shadow around a real hole. It opens on a genuine first run and **never after an update**:

@@ -26,11 +26,13 @@
 
 import { $, IS_MAC } from "./dom";
 import { dlog } from "./debug";
-import { activeId, FAVORITES, sessions } from "./state";
+import { needsYouSessions } from "./grouping";
+import { activeId, FAVORITES, permMode, sessions } from "./state";
+import { isAgent } from "./types";
 import {
   type Chapter, CHAPTERS, chapterKey, isDone, parseTourState, pickerChapters, planFor,
-  recordDone, shouldOfferPicker, shouldOfferRelease, stepBlocked, stepSatisfied,
-  TOUR_KEY, type TourActId, type TourState, type TourStep, type TourWorld, visibleSteps,
+  recordDone, shouldOfferPicker, shouldOfferRelease, stepApplies, stepBlocked, stepSatisfied,
+  TOUR_KEY, type TourActId, type TourNeed, type TourState, type TourStep, type TourWorld,
 } from "./tour";
 
 /** Things the tour triggers but does not own. Set from main.ts; see setTourHost. */
@@ -39,9 +41,20 @@ export interface TourHost {
   pasteToActive: (text: string) => void;
   /** Open the settings window on a given tab (the Guide tab's Replay lands back here). */
   openSettingsAt: (tab: string) => void;
+  /**
+   * Make sure a collapsed panel is open before a step lights something inside it.
+   *
+   * The tour lights *real* controls, so a control the user has collapsed away is not a
+   * missing anchor to step over — the permission buttons and every Context card live in
+   * the inspector (⌘I), the project rows and their ＋ live in the rail (⌘B). Opening the
+   * panel is what a user would do; skipping the step would teach nothing.
+   */
+  ensure: (need: TourNeed) => void;
   renderAll: () => void;
 }
-let host: TourHost = { pasteToActive: () => {}, openSettingsAt: () => {}, renderAll: () => {} };
+let host: TourHost = {
+  pasteToActive: () => {}, openSettingsAt: () => {}, ensure: () => {}, renderAll: () => {},
+};
 export function setTourHost(h: TourHost) { host = h; }
 
 /** How long a waiting step goes unsatisfied before it offers a way past itself. */
@@ -55,8 +68,23 @@ const GAP = 14;
 // ---------- live position in the tour ----------
 let plan: Chapter[] = [];      // the chapters this run will walk, in order
 let ci = -1;                   // index into `plan`; -1 means nothing is running
-let si = 0;                    // index into the CURRENT chapter's *visible* steps
+// Index into the chapter's FULL step list, not its visible one. A `when` predicate is
+// evaluated live on every pass (that is the only way "only while the badge is on
+// screen" can work), and an index into the filtered list would silently renumber every
+// step after one that flipped — advancing past a step, or replaying one, with nothing
+// on screen to explain it. The filtered list is for the dots and the count.
+let si = 0;
 let waitingSince = 0;          // when the current step started waiting; 0 = not waiting
+/**
+ * Has this step been blocked at any point since we arrived at it?
+ *
+ * A waiting step only advances on the **falling edge**, exactly like the permission
+ * latch below. Arriving at a step whose condition is already true (every replay from
+ * Settings › Guide, and the badge step when the permission is still up) used to
+ * auto-advance on the first tick: the card flashed and the lesson went past unread.
+ * Now an already-satisfied step simply shows with Next enabled.
+ */
+let armed = false;
 let picked = new Set<string>();
 /** Set the first time a permission is answered while the tour runs; see TourWorld. */
 let sawPermAnswered = false;
@@ -95,17 +123,33 @@ function world(): TourWorld {
   if ($("costPop").classList.contains("show")) open.push("cost");
   if ($("usagePop").classList.contains("show")) open.push("usage");
 
+  const stage = !($("dashPane") as HTMLElement).hidden ? "dash"
+    : !($("extPane") as HTMLElement).hidden ? "ext"
+      : activeId ? "session" : "none";
+
   return {
     projects: FAVORITES.length,
     sessions: live.length,
     phase: act?.phase ?? "",
+    // A shell pane and a task pane are sessions too, and neither has any of the cards
+    // the inspector chapter is about — so this is `isAgent` and a stage check, not
+    // "is there a session".
+    agentOnStage: stage === "session" && !!act && isAgent(act),
     permPending: perm,
     permAnswered: sawPermAnswered,
+    // The preference new sessions launch with, which is the one the session this
+    // chapter just started is running under. A `Sess` does not carry its own mode, and
+    // this is the honest answer for the only session the tour is ever about.
+    permMode,
+    // Straight from the function the badge itself renders off, rather than a second
+    // opinion about what "needs you" means: a step that lights `#attnBadge` has to ask
+    // the same question the element does or it lights a `display:none` box.
+    attnCount: needsYouSessions().length,
     open,
-    stage: !($("dashPane") as HTMLElement).hidden ? "dash"
-      : !($("extPane") as HTMLElement).hidden ? "ext"
-        : activeId ? "session" : "none",
-    files: act?.files?.length ?? 0,
+    settingsTab: shown("setDlg")
+      ? document.querySelector<HTMLElement>("#setTabs .set-tab.on")?.dataset.settab ?? ""
+      : "",
+    stage,
     toolsTab: !!document.querySelector('[data-fmode="tools"].on'),
     caffeinated: $("caf").classList.contains("on"),
   };
@@ -135,7 +179,15 @@ export const tourForVersion = (v: string) => shouldOfferRelease(v, read());
 export function startChapter(id: string) {
   const c = CHAPTERS.find((x) => x.id === id);
   if (!c) return;
-  plan = [c]; ci = 0; si = 0;
+  plan = [c]; ci = 0; si = firstIndex();
+  // Left mid-chapter last time? Pick it back up where it stopped. That is the whole
+  // point of `at`, which until now was written on every exit and read by nothing — the
+  // Guide row says "Resume" on the strength of it.
+  const at = read().at;
+  if (at?.ch === c.id) {
+    si = Math.min(Math.max(0, at.step), c.steps.length - 1);
+    if (!stepApplies(c.steps[si], world())) { const n = neighbour(si, 1); si = n >= 0 ? n : firstIndex(); }
+  }
   seed();
   enter();
 }
@@ -152,22 +204,66 @@ function beginPlan() {
   if (!plan.length) { endTour(); return; }
   const st = read();
   write({ ...st, queue: plan.map((c) => c.id) });
-  ci = 0; si = 0;
+  ci = 0; si = firstIndex();
   enter();
 }
 
 // ---------- walking ----------
 
 function chapter(): Chapter | null { return plan[ci] ?? null; }
-function steps(): TourStep[] { const c = chapter(); return c ? visibleSteps(c, world()) : []; }
-function step(): TourStep | null { return steps()[si] ?? null; }
+/** Every step in the chapter, `when` or no `when` — what `si` indexes. */
+function allSteps(): TourStep[] { return chapter()?.steps ?? []; }
+/**
+ * What the dots and the "5 / 8" are drawn from: everything that applies now, **plus
+ * anything that applied earlier in this chapter**.
+ *
+ * A live `when` otherwise moves the denominator both ways — the reactor step appears
+ * when the permission lands and leaves again when it is answered, so the counter read
+ * "5 / 8" and then "6 / 7", which looks like the tour losing its place rather than a
+ * step ending. Remembering what has applied makes the total only ever grow.
+ */
+let seenCh = "";
+const seenIdx = new Set<number>();
+function counted(): TourStep[] {
+  const c = chapter();
+  if (!c) return [];
+  if (seenCh !== c.id) { seenCh = c.id; seenIdx.clear(); }
+  const w = world();
+  const out: TourStep[] = [];
+  c.steps.forEach((s, i) => { if (stepApplies(s, w)) seenIdx.add(i); if (seenIdx.has(i)) out.push(s); });
+  return out;
+}
+function step(): TourStep | null { return allSteps()[si] ?? null; }
+/**
+ * The next / previous step that applies, or -1.
+ *
+ * Navigation is what skips a `when` that fails, rather than the index doing it: `si`
+ * points into the full list, so a predicate flipping while a step is on screen changes
+ * what comes next and never what you are looking at.
+ */
+function neighbour(from: number, dir: 1 | -1): number {
+  const list = allSteps(); const w = world();
+  for (let i = from + dir; i >= 0 && i < list.length; i += dir) if (stepApplies(list[i], w)) return i;
+  return -1;
+}
 
-/** Enter the current step: reset the wait clock, paint, and skip a dead anchor. */
+/** Enter the current step: reset the wait clock, open what it needs, paint. */
 function enter() {
   waitingSince = 0;
   show();
   const s = step();
   if (!s) { nextChapter(); return; }
+  // Arm HERE, from the state we are arriving in, and not from the first tick that sees
+  // the step blocked — because that tick may never come. A step is usually entered from
+  // inside `tourTick` (the change that satisfied the step before it), and nothing else
+  // then happens until the change that satisfies THIS one, which arrives already
+  // satisfied and would look exactly like "it was satisfied when I got here". Same
+  // no-clock trap as the permission latch below, one level up.
+  armed = stepBlocked(s, world());
+  // Before anything is measured: a panel the user has collapsed is not a missing
+  // anchor, it is a panel to open (⌘I takes the whole inspector, and with it the
+  // permission buttons; ⌘B takes the rail, and with it every project row).
+  for (const n of s.needs ?? []) host.ensure(n);
   // A missing (or boxless) anchor never freezes the tour. Deferred a frame because
   // arriving at the step may itself be what causes the element to exist.
   //
@@ -192,15 +288,28 @@ function enter() {
 }
 
 function advance() {
-  const list = steps();
-  if (si + 1 < list.length) { si++; enter(); return; }
+  const i = neighbour(si, 1);
+  if (i >= 0) { si = i; enter(); return; }
   finishChapter();
 }
 
 function back() {
-  if (si > 0) { si--; enter(); return; }
-  if (ci > 0) { ci--; si = Math.max(0, steps().length - 1); enter(); return; }
+  const i = neighbour(si, -1);
+  if (i >= 0) { si = i; enter(); return; }
+  if (ci > 0) { ci--; si = lastIndex(); enter(); return; }
   openWelcome();
+}
+
+/** The first / last step of a chapter that applies at all — where entering it lands. */
+function firstIndex(): number {
+  const w = world();
+  const i = allSteps().findIndex((s) => stepApplies(s, w));
+  return i < 0 ? 0 : i;
+}
+function lastIndex(): number {
+  const list = allSteps(); const w = world();
+  for (let i = list.length - 1; i >= 0; i--) if (stepApplies(list[i], w)) return i;
+  return 0;
 }
 
 /** Mark the chapter done and move to the next one the user picked. */
@@ -211,7 +320,7 @@ function finishChapter() {
 }
 
 function nextChapter() {
-  if (ci + 1 < plan.length) { ci++; si = 0; enter(); return; }
+  if (ci + 1 < plan.length) { ci++; si = firstIndex(); enter(); return; }
   ci = -1;
   renderDone();
 }
@@ -230,10 +339,30 @@ export function endTour() {
 }
 
 // ---------- the tick ----------
+
 /**
- * Called from `renderAllNow`, exactly like `syncAttn()`. Everything the tour reacts to
- * already ends in a `renderAll()`, so this needs no clock of its own: a telemetry burst
- * from ten sessions still costs one evaluation, and there is no interval to leak.
+ * Tick after a user gesture the app does not repaint for.
+ *
+ * `tourTick` hangs off `renderAllNow` because *most* of what the tour reacts to ends in
+ * a `renderAll()` — a session, a phase, a permission, a stage change. **A dialog does
+ * not**: `openWt`, `openCostPop`, `openCtxMenu` and the Settings tab switch all just add
+ * a class, and four steps wait on exactly those. They sat on a satisfied condition until
+ * some unrelated poller happened to repaint, which reads as a click doing nothing.
+ *
+ * Still not a clock: it fires on the gestures the user is making anyway, at most once a
+ * frame, and not at all while the tour is idle.
+ */
+let tickQueued = false;
+function pokeTick() {
+  if (ci < 0 || tickQueued) return;
+  tickQueued = true;
+  requestAnimationFrame(() => { tickQueued = false; if (ci >= 0) tourTick(); });
+}
+
+/**
+ * Called from `renderAllNow`, exactly like `syncAttn()` — and from `pokeTick` above for
+ * the gestures that repaint nothing. Either way it needs no clock of its own: a
+ * telemetry burst from ten sessions still costs one evaluation, and nothing leaks.
  */
 export function tourTick() {
   if (ci < 0) return;
@@ -255,9 +384,14 @@ export function tourTick() {
   const s = step();
   if (!s) { nextChapter(); return; }
 
+  // The falling edge, and only the falling edge. A step that is already satisfied when
+  // you arrive at it (a replay from Settings › Guide, the badge step while the
+  // permission it is about is still up) must not advance out from under the card that
+  // has just appeared — it shows with Next enabled instead, and the user leaves it when
+  // they have read it. `armed` is what tells the two apart.
   if (s.wait) {
-    if (stepSatisfied(s, w)) { advance(); return; }
-    if (!waitingSince) waitingSince = Date.now();
+    if (stepBlocked(s, w)) { armed = true; if (!waitingSince) waitingSince = Date.now(); }
+    else if (armed && stepSatisfied(s, w)) { advance(); return; }
   }
   // Re-render every pass, not just re-measure: the sidebar, the inspector and the
   // footer are all rebuilt from scratch under us (so the node the hole was measured
@@ -302,7 +436,16 @@ function paint() {
   let cx: number, cy: number;
   if (x + w + GAP + cw <= vw - 10) { cx = x + w + GAP; cy = y + h / 2 - chh / 2; }
   else if (x - GAP - cw >= 10) { cx = x - GAP - cw; cy = y + h / 2 - chh / 2; }
-  else { cx = x + w / 2 - cw / 2; cy = y > vh / 2 ? y - GAP - chh : y + h + GAP; }
+  // Neither side fits. Below it, above it, or — when the hole is a whole pane and
+  // there is no outside left — *inside* it, near the top. Clamping to the bottom edge
+  // (which is what this did) put the card over the terminal's input line: the one row
+  // the step was asking the user to type into.
+  else {
+    cx = x + w / 2 - cw / 2;
+    cy = y + h + GAP + chh <= vh - 10 ? y + h + GAP
+      : y - GAP - chh >= 10 ? y - GAP - chh
+        : y + GAP;
+  }
   card.style.left = Math.round(Math.min(Math.max(10, cx), vw - cw - 10)) + "px";
   card.style.top = Math.round(Math.min(Math.max(10, cy), vh - chh - 10)) + "px";
 }
@@ -320,7 +463,12 @@ function centreCard(card: HTMLElement) {
 // The manifest is a logic module and cannot read `navigator`, so the chords in it are
 // written macOS-style and rewritten here. Display only — every handler already
 // accepts both modifiers.
-const KEYS: [RegExp, string][] = IS_MAC ? [] : [[/⌘/g, "Ctrl"], [/⇧/g, "Shift"]];
+// `{tray}` is the same trick for a word rather than a glyph: the thing it names is a
+// menu bar on one OS and a system tray on the other.
+const KEYS: [RegExp, string][] = [
+  [/\{tray\}/g, IS_MAC ? "menu-bar" : "system-tray"],
+  ...(IS_MAC ? [] : ([[/⌘/g, "Ctrl"], [/⇧/g, "Shift"]] as [RegExp, string][])),
+];
 const keys = (t: string) => KEYS.reduce((a, [re, to]) => a.replace(re, to), t);
 const shell = (cls: string, eyebrow: string, count: string, inner: string) => {
   const card = $("tourCard");
@@ -381,17 +529,22 @@ function renderDone() {
 }
 
 function renderStep() {
-  const c = chapter(); const list = steps(); const s = list[si];
+  const c = chapter(); const s = step();
   if (!c || !s) return;
   const w = world();
   const blocked = stepBlocked(s, w);
   const stuck = blocked && waitingSince > 0 && Date.now() - waitingSince > STUCK_MS;
-  const dots = list.map((_, i) => `<i class="${i === si ? "on" : i < si ? "past" : ""}"></i>`).join("");
-  const lastStep = si === list.length - 1;
+  // The dots count the steps that apply, and `si` indexes all of them — so the position
+  // is a lookup, not the index. A step standing on a `when` that has just gone false is
+  // not in the list at all; it keeps the first dot rather than losing the row.
+  const list = counted();
+  const pos = Math.max(0, list.indexOf(s));
+  const dots = list.map((_, i) => `<i class="${i === pos ? "on" : i < pos ? "past" : ""}"></i>`).join("");
+  const lastStep = neighbour(si, 1) < 0;
   const lastCh = ci === plan.length - 1;
   const nextLabel = !lastStep ? "Next" : lastCh ? "Finish" : "Next chapter ▸";
 
-  shell("", c.name, `${si + 1} / ${list.length}`, `
+  shell("", c.name, `${pos + 1} / ${list.length}`, `
     <div class="tc-t">${s.title}</div>
     <div class="tc-b">${keys(s.body)}</div>
     ${blocked ? `<div class="tc-wait"><span class="tc-dot"></span>${s.wait}</div>` : ""}
@@ -445,6 +598,12 @@ function wire() {
     e.preventDefault();
     r.click();
   });
+  // Capture phase, and on the document, so a gesture that opens something is seen
+  // however the target handles it — and `contextmenu` is here because the project menu
+  // (a whole chapter's first step) opens on a right-click, which fires no click at all.
+  for (const ev of ["click", "contextmenu", "keydown"]) {
+    document.addEventListener(ev, pokeTick, true);
+  }
   // A window resize is the one thing that moves an anchor without any state changing,
   // so it is the one case `renderAll` cannot catch for us.
   window.addEventListener("resize", () => { if (ci >= 0) paint(); });

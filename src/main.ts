@@ -238,9 +238,20 @@ setSettingsHost({
 setTourHost({
   pasteToActive: (text) => {
     const s = activeId ? sessions.get(activeId) : null;
-    if (s) void invoke("write_pty", { sessionId: s.id, data: text }).catch(() => {});
+    if (!s) return;
+    // An external engine has no PTY of ours to write into — the REPL is in Ghostty or
+    // Terminal — so say where the prompt has to go rather than failing silently.
+    if (s.external) { toast("This session runs in your terminal — type it there"); return; }
+    void invoke("write_pty", { sessionId: s.id, data: text }).catch(() => {});
   },
   openSettingsAt: openSettingsOn,
+  // The two panels a step's anchor can be hiding inside. Toggling rather than setting a
+  // class, so the button state and the dashboard's 44px variant stay ./actions' problem.
+  ensure: (need) => {
+    const app = $("app");
+    if (need === "rail" && app.classList.contains("rail-mini")) toggleRail();
+    if (need === "inspector" && (app.classList.contains("insp-off") || app.classList.contains("insp-mini"))) toggleInsp();
+  },
   renderAll,
 });
 // "Why was there no noise?" is otherwise unanswerable from outside the player.
@@ -603,6 +614,11 @@ document.addEventListener("click", (e) => {
   // A reorder just ended: eat the click a pointerup may have synthesised (see initProjectDnD).
   if (performance.now() < reorderGuardUntil) { setReorderGuard(0); return; }
   const t = e.target as HTMLElement;
+  // A click on the tour's own card is not an outside-click. Every closer below reads
+  // "did this land outside me?", and the card is drawn over all of them — so pressing
+  // **Next** used to close the context menu, the cost split or the usage forecast that
+  // the step underneath was about, one frame before the next step lit it.
+  if (t.closest("#tourCard")) return;
   if (!t.closest("#colorPop, #ctxMenu, .pdot, .rm-dot")) closeColorPop();
   if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();

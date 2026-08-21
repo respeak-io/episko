@@ -2646,11 +2646,28 @@ select.in-ctl { cursor: pointer; }
 .tour-btn:disabled { opacity: .38; cursor: not-allowed; }
 .tour-btn:disabled:hover { background: var(--surface); color: var(--muted); }
 
-/* The rail legend the Quick start chapter teaches. The glyph colours are the SAME
-   variables the sidebar's own g-* classes use, so the key cannot drift from the rail. */
-.tr-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 7px 0 8px; }
-.tr-leg { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
-.tr-leg b { font-family: var(--font-mono); font-size: 12px; font-weight: 400; }
+/* The rail legend the Quick start chapter teaches, as seven chips in the rail's own
+   colours — because a card that only *names* the colours is asking you to take its word
+   for the one thing you are about to have to read at a glance. The state class sits on
+   the CHIP, not on the glyph, so one `--lc` tints the fill, the hairline and the glyph
+   together, and the mapping stays the same `--st-*` variables the sidebar uses (a key
+   that could drift from the rail would be worse than none).
+   The `color` the old rule put on this wrapper is gone deliberately: it out-specified
+   the g-* classes below it in the file and greyed out the very glyphs this teaches. */
+.tr-legend { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 10px; }
+.tr-leg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--lc) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lc) 30%, transparent); }
+.tr-leg b { font-family: var(--font-mono); font-size: 13px; font-weight: 700; line-height: 1; min-width: 11px; text-align: center; }
+.tr-leg i { font-style: normal; font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.tr-leg.g-work{--lc:var(--st-working);} .tr-leg.g-done{--lc:var(--st-done);} .tr-leg.g-attn{--lc:var(--st-attention);}
+.tr-leg.g-bg{--lc:var(--st-bg);} .tr-leg.g-error{--lc:var(--st-error);} .tr-leg.g-idle{--lc:var(--st-idle);}
+.tr-leg.g-ended{--lc:var(--muted-2);}
+/* A card is not a live row. `.g-work`/`.g-attn`/`.g-bg` pulse wherever they appear,
+   which is right for a session that is doing something and wrong for a key and for the
+   two coloured words in a card's prose: seven glyphs blinking out of phase reads as a
+   rendering fault, not as a legend. */
+.tour-card .g-work, .tour-card .g-attn, .tour-card .g-bg, .tour-card .tr-leg { animation: none; }
 
 /* The chapter picker. */
 .tp-list { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 1px; }
