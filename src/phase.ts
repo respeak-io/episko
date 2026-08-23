@@ -14,6 +14,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
+import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
@@ -292,6 +293,15 @@ export function applyHook(s: Sess, data: any) {
       // appear on the strength of a Read that errored.
       bumpTally(s.tally, tool);
       if (ev === "PostToolUse") applyTouch(s.files, tool, data.tool_input, data.tool_response, Date.now());
+      // The dev servers an agent starts and leaves running. Recorded on Post for the
+      // same reason the file set is: the *response* is what carries `backgroundTaskId`,
+      // and there is no shell to point at until the tool has actually spawned one. A
+      // failed call is skipped — a background shell that errored started nothing.
+      //
+      // `transcript_path` travels with the record rather than being read back later:
+      // the log lives under the session directory Claude owned at *this* moment, and
+      // /clear, /compact and /resume each mint a new one (see `BgServer` in ./types).
+      if (ev === "PostToolUse") applyBg(s.servers, tool, data.tool_input, data.tool_response, data.transcript_path, Date.now());
       onSessionTouched(s, tool, data);
       if (!bg()) setPhase(s, ev === "PostToolUse" ? "working" : "error");
       break;

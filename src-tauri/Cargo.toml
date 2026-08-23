@@ -53,6 +53,19 @@ tauri-plugin-log = "2"
 # spawning `ps`/`tasklist` — one in-process snapshot, same code on every OS.
 # 0.38 (not latest) because newer sysinfo raises MSRV past our rustc.
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+# "Which ports are our sessions listening on" — the ground truth behind the header's
+# running-server list, where a parsed log line is only ever a guess about somebody
+# else's output format. Native APIs on every platform (GetExtendedTcpTable, libproc,
+# /proc), so this stays spawn-free like `ProcTable` beside it, and it needs no bindgen
+# (netstat2, the obvious alternative, drags in bindgen + clang-sys and so a system
+# LLVM on both CI runners).
+#
+# The cost, and it is a real one: on Windows this resolves `windows` 0.62 alongside
+# the 0.61 tauri already uses — a second copy of a large binding crate, which is
+# exactly what the windows-sys note below avoids. Taken deliberately: the alternative
+# is hand-written libproc FFI for macOS, unverifiable from a Windows machine, in the
+# one place where a wrong answer means the app reports a port that does not exist.
+listeners = "0.6"
 
 # `SetThreadExecutionState` for the keep-awake control — Windows' answer to
 # macOS `caffeinate` — the window APIs behind `focus_external_session`

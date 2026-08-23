@@ -517,6 +517,8 @@ pub fn run() {
             pty::kill_session,
             pty::live_sessions,
             pty::read_scrollback,
+            pty::read_bg_log,
+            external::session_ports,
             git::git_branch,
             git::git_head,
             git::git_diffstat,
