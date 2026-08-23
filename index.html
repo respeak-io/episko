@@ -332,7 +332,10 @@
 
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
-        <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
+        <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span>
+          <!-- findings about the change rather than about any one file in it: said once,
+               here, rather than repeated on every source row -->
+          <span class="diff-sethealth" id="diffSetHealth" hidden></span></div>
         <button class="diff-fold" id="diffMode" hidden>side by side</button>
         <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>

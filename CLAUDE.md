@@ -50,9 +50,9 @@ Three hard constraints shape this code:
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
-## Backend (`src-tauri/src/`): fourteen modules
+## Backend (`src-tauri/src/`): fifteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the thirteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the fourteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
 
 | Module | What |
 | --- | --- |
@@ -68,7 +68,8 @@ Three hard constraints shape this code:
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
-| `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else |
+| `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else; `index_of` is the in-crate half, so `health.rs` measures exactly the files the explorer lists |
+| `health.rs` | what a change did to the shape of the code: code lines with comments stripped, function spans, nesting, approximate cognitive complexity, and the cross-file duplicate index. Facts only — which of them earn a chip is `health.ts`'s |
 | `testutil.rs` | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
@@ -87,13 +88,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 66 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 67 modules
 
-**No framework, and no longer one file.** 66 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 67 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty-nine, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -104,6 +105,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
+| `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
 | `toolio.ts` | what a tool call *was* and what came back: the three response shapes worth modelling by hand, the generic dump for everything else, the cap both sides are cut to as they land, and what Copy hands over |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
@@ -135,7 +137,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 66 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 67 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -202,6 +204,21 @@ And the things that hold however the files are arranged:
   wrong and then offsets the rest of the run), and the word marks inside a pair are
   dropped entirely below a similarity floor, because a rewritten comment lit up in nine
   fragments says less than the row's own colour already did.
+- **Code health is a signal, never a gate, and it never delays the diff.** The chips on a
+  changed file (`health.rs` measures, ./health decides, ./patchview draws) land on a
+  *second* pass: `project_health` reads every file in the project to build its duplicate
+  index, so the overlay paints the patch first and `applyChips` inserts into the DOM that
+  is already there rather than repainting it — a repaint would reset every fold, lose
+  where you had scrolled to, and destroy the node under the pointer. Three rules hold
+  whatever else changes. **The backend answers facts and the frontend owns thresholds**
+  (`p90_code_lines` is the one project-wide number, because "big" is relative or it is
+  nothing), so a `[health]` table in `.episko/episko.toml` changes behaviour without a
+  rebuild — and `clampHealth` refuses a 0 at the boundary, since a threshold of 0 fires on
+  every file. **`measured: false` must never render as clean**: a file the backend could
+  not read carries a row of zeroes and every one of them is meaningless. And **a rule that
+  fires on ordinary code is worse than no rule** — `.unwrap()` was the obvious silenced-error
+  pattern and is deliberately absent, because it appears 156 times in `git.rs` alone and a
+  chip on every Rust change teaches you to ignore the row that matters.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, counted from `SubagentStart`/`Stop`, with no disk and no backend), `statusKey` answers `"background"` for it, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.

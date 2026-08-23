@@ -19,6 +19,7 @@
 
 import { alignHunk, type DiffCell, type DiffFile, type DiffHunk, type DiffMode, type Span } from "./diff";
 import { esc, escAttr } from "./format";
+import type { Chip } from "./health";
 
 /// The letter and colour class for each status, shared with the working-set peek's own
 /// file list (`.dstat` is defined once, with the viewer) so one file cannot be called
@@ -56,7 +57,10 @@ function hunkHead(h: DiffHunk): string {
 export function hunkHtml(h: DiffHunk): string {
   const rows = alignHunk(h).unified.map((c) => {
     const sign = c.line.kind === "add" ? "+" : c.line.kind === "del" ? "−" : "";
-    return `<div class="dline ${c.line.kind}"><span class="ln">${c.line.oldNo ?? ""}</span><span class="ln">${c.line.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${cellText(c)}</span></div>`;
+    // `data-ln` is the new-file line number, and it is what a health chip scrolls to.
+    // Only a line that still exists carries one — a deletion has nowhere to go.
+    const anchor = c.line.newNo ? ` data-ln="${c.line.newNo}"` : "";
+    return `<div class="dline ${c.line.kind}"${anchor}><span class="ln">${c.line.oldNo ?? ""}</span><span class="ln">${c.line.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${cellText(c)}</span></div>`;
   }).join("");
   return `<div class="dhunk">${hunkHead(h)}${rows}</div>`;
 }
@@ -71,7 +75,7 @@ export function splitHunkHtml(h: DiffHunk): string {
   const cell = (c: DiffCell | null, side: "del" | "add") => {
     const l = side === "del" ? " lft" : "";
     return c
-      ? `<span class="sn ${c.line.kind}">${(side === "del" ? c.line.oldNo : c.line.newNo) ?? ""}</span>`
+      ? `<span class="sn ${c.line.kind}"${side === "add" && c.line.newNo ? ` data-ln="${c.line.newNo}"` : ""}>${(side === "del" ? c.line.oldNo : c.line.newNo) ?? ""}</span>`
         + `<span class="sc${l} ${c.line.kind}">${cellText(c)}</span>`
       : `<span class="sn nil"></span><span class="sc${l} nil"></span>`;
   };
@@ -81,9 +85,32 @@ export function splitHunkHtml(h: DiffHunk): string {
   return `<div class="dhunk split">${hunkHead(h)}${rows}</div>`;
 }
 
+/// A row of health chips, above the first hunk. Clicking one goes to the line that
+/// earned it, which is what makes a finding actionable rather than decorative:
+/// `data-hline` carries that line, and 0 means the finding is about the file as a whole
+/// and there is nowhere better to be.
+export function chipsHtml(chips: Chip[], fi: number): string {
+  if (!chips.length) return "";
+  const one = (c: Chip) =>
+    `<button class="hchip ${c.sev}${c.line ? "" : " nowhere"}" data-hline="${c.line}" data-hfi="${fi}" title="${escAttr(c.title)}">${esc(c.text)}</button>`;
+  return `<div class="dhealth">${chips.map(one).join("")}</div>`;
+}
+
+/// The rail's summary of a file's chips: one pip per finding, worst first.
+///
+/// A rail row is ~230px and a chip's text does not fit in it — but the count and the
+/// severity do, and that is the half you need to decide which file to open first.
+export function pipsHtml(chips: Chip[]): string {
+  if (!chips.length) return "";
+  const order = { bad: 0, warn: 1, info: 2 } as const;
+  const pips = chips.slice().sort((a, b) => order[a.sev] - order[b.sev]).slice(0, 4)
+    .map((c) => `<i class="pip ${c.sev}"></i>`).join("");
+  return `<span class="dr-h">${pips}</span>`;
+}
+
 /// One file's section. `btns` is passed in rather than built here because the two
 /// buttons need the absolute path, which only ./diffview knows — the view stays pure.
-export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, btns: string): string {
+export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, btns: string, chips: Chip[] = []): string {
   const [glyph, cls] = DSTAT[f.status];
   const [dir, name] = splitPath(f.path);
   const label = f.status === "renamed" && f.oldPath
@@ -97,13 +124,13 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
     : f.hunks.map(draw).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
   return `<section class="dfile ${cls}${open ? "" : " collapsed"}" data-fi="${i}">
       <div class="dfhead" data-dtoggle="${i}"><span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${btns}</div>
-      <div class="dfbody">${body}</div></section>`;
+      <div class="dfbody">${chipsHtml(chips, i)}${body}</div></section>`;
 }
 
 /// The index down the left. One row a file, grouped under the folder it is in — which is
 /// free here (the files arrive sorted by path) and turns a flat list of twenty paths
 /// into the handful of areas the change actually touched.
-export function railHtml(files: DiffFile[], active: number): string {
+export function railHtml(files: DiffFile[], active: number, chips: Chip[][] = []): string {
   let dir: string | null = null;
   const rows = files.map((f, i) => {
     const d = dirOf(f.path);
@@ -114,7 +141,7 @@ export function railHtml(files: DiffFile[], active: number): string {
     const n = f.binary ? `<i class="d-bin">bin</i>`
       : `<i class="add">+${f.added}</i><i class="del">−${f.removed}</i>`;
     return `${head}<button class="dr-row${i === active ? " on" : ""}" data-drow="${i}" title="${escAttr(f.path)}">`
-      + `<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span><span class="dr-n">${n}</span></button>`;
+      + `<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span>${pipsHtml(chips[i] ?? [])}<span class="dr-n">${n}</span></button>`;
   }).join("");
   return rows;
 }

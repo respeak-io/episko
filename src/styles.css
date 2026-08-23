@@ -981,6 +981,45 @@ html.win .wctl { display: flex; }
 .dline.add .wch, .sc.add .wch { background: color-mix(in srgb, var(--st-done) 32%, transparent); }
 .dline.del .wch, .sc.del .wch { background: color-mix(in srgb, var(--st-attention) 30%, transparent); }
 
+/* --- what the change did to the shape of the code (./health) ---
+   Chips sit above a file's first hunk, not on its header: the header is sticky and has
+   to stay one line high, and a finding is something you read once on the way in rather
+   than something that follows you down the file. Three severities and no score — the
+   difference between them is whether you would want to know before merging, after, or
+   only as context. */
+.dhealth { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.hchip { display: inline-flex; align-items: center; font: 500 10.5px var(--font-mono); padding: 2px 7px; border-radius: 5px; line-height: 1.5; cursor: pointer; white-space: nowrap;
+  color: var(--sc, var(--muted)); border: 1px solid color-mix(in srgb, var(--sc, var(--muted)) 45%, transparent);
+  background: color-mix(in srgb, var(--sc, var(--muted)) 11%, transparent); }
+.hchip:hover { background: color-mix(in srgb, var(--sc, var(--muted)) 22%, transparent); }
+.hchip.bad  { --sc: var(--st-attention); }
+.hchip.warn { --sc: var(--st-working); }
+.hchip.info { --sc: var(--tool-read); }
+/* A finding about the file as a whole has no line to go to, so it must not offer one. */
+.hchip.nowhere { cursor: default; }
+.hchip.nowhere:hover { background: color-mix(in srgb, var(--sc, var(--muted)) 11%, transparent); }
+/* the whole-change findings, beside the totals in the head */
+.hchip.flat { cursor: default; }
+.diff-sethealth { display: flex; gap: 6px; flex: none; }
+.diff-sethealth[hidden] { display: none; }
+
+/* The rail cannot fit a chip's words — 230px is a filename and little else — but the
+   count and the severity fit, and that is the half that decides which file to open. */
+.dr-h { display: flex; gap: 3px; flex: none; margin-left: 2px; }
+.pip { width: 5px; height: 5px; border-radius: 1.5px; }
+.pip.bad { background: var(--st-attention); }
+.pip.warn { background: var(--st-working); }
+.pip.info { background: var(--tool-read); }
+
+/* Where a chip sent you. Fades out on its own: a permanent mark would still be there
+   the next time you scrolled past and would stop meaning "this one". */
+.dline.hlit, .sn.hlit { animation: hlit 1.6s ease-out; }
+@keyframes hlit {
+  0%, 40% { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+  100%    { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .dline.hlit, .sn.hlit { animation: none; box-shadow: inset 2px 0 0 var(--accent); } }
+
 /* --- the call sheet (modal): one tool call, in full ---
    Sized like Settings > Usage (.setdlg.wide), which is the app's "this needs the room"
    footprint. It needs it for one reason: the inspector rail is a fixed 296px column,

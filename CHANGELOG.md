@@ -13,6 +13,29 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The diff tells you what the change did to the code, not just what it says.** Every
+  changed file now carries a row of findings above its first hunk, and the index marks the
+  files that earned them, so you can see which one to open first. Click a finding to go to
+  the line that earned it.
+
+  Seven rules, and the one that matters most is **duplication**: six or more lines you just
+  added that already exist somewhere else in the project, named with the file and line they
+  are a copy of. It is the thing linters are not configured to look for and the thing that
+  most reliably goes wrong in generated code. Beside it: **silenced errors** (a new bare
+  `except:`, an empty `catch`, `as any`, `@ts-ignore`), the **complexity** and **nesting**
+  of the functions your change actually went into, a **long function**, a file that is now
+  **among the largest in this project** — measured against the project's own distribution
+  rather than a number somebody picked — and, once beside the totals, whether **no test
+  changed**.
+
+  Nothing here blocks anything, and nothing is a score. A file the measurement could not
+  read says nothing rather than showing zeroes, and comments and blank lines are stripped
+  before anything is counted, so a well-documented file is not mistaken for a big one.
+
++ **Thresholds are yours.** A `[health]` block in `.episko/episko.toml` sets `cognitive`,
+  `nesting`, `long_fn` and `size_add` for a project; anything you leave out keeps its
+  default. Committable, so a team's thresholds travel with the repo.
+
 ~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
   you the files back to back with nothing between them, so scrolling into the middle of one
   left nothing on screen saying which file you were in. There is now an **index down the

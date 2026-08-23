@@ -46,11 +46,22 @@ pub(crate) struct FileIndex {
 /// project contains, and there is no second round trip per folder you step into.
 #[tauri::command(async)]
 pub(crate) fn project_files(root: String) -> FileIndex {
-    if let Some((files, truncated)) = git_index(&root) {
-        return FileIndex { files, truncated, repo: true };
+    let (files, truncated, repo) = index_of(&root);
+    FileIndex { files, truncated, repo }
+}
+
+/// The same list, for callers inside the crate — `health.rs` measures every file in it.
+///
+/// Extracted rather than copied so there is exactly one answer to "what files does this
+/// project contain": the explorer's list and the one the duplicate index is built from
+/// must be the same set, or a block could be reported as duplicated against a file the
+/// explorer says is not in the project.
+pub(crate) fn index_of(root: &str) -> (Vec<String>, bool, bool) {
+    if let Some((files, truncated)) = git_index(root) {
+        return (files, truncated, true);
     }
-    let (files, truncated) = walk_index(std::path::Path::new(&root));
-    FileIndex { files, truncated, repo: false }
+    let (files, truncated) = walk_index(std::path::Path::new(root));
+    (files, truncated, false)
 }
 
 /// `git ls-files`, or None when this is not a repo (or git is unavailable, which is the

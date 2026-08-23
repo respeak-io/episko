@@ -26,8 +26,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, FILE_MANAGER } from "./dom";
 import { basename, esc, escAttr } from "./format";
 import { parsePatch, type DiffFile, type DiffMode } from "./diff";
-import { fileHtml, railHtml } from "./patchview";
+import { chipsHtml, fileHtml, railHtml } from "./patchview";
+import { clampHealth, fileChips, setChips, type Chip } from "./health";
 import { diffMode, setDiffMode } from "./state";
+import type { HealthReport } from "./types";
 
 // The footer/overlay menus are exclusive; opening this closes the rest.
 let closeFootMenus: (keep?: string) => void = () => {};
@@ -51,6 +53,20 @@ let focusPath = "";
 // Which file the rail is currently marking. Held so the spy can leave the DOM alone on
 // the great majority of scroll frames, where the answer has not changed.
 let activeFile = -1;
+// What the change did to the shape of the code, once `project_health` answers — and the
+// chips ./health derived from it, one list per file, positionally matching `files`.
+//
+// **The diff never waits for this.** The measurement reads every file in the project, so
+// it arrives a moment after the patch does; the overlay paints the diff first and the
+// chips land on the second pass. That ordering is the whole reason the cost is
+// affordable, and it is why `chips` starts empty rather than undefined: a file with no
+// chips and a file not yet measured render identically, which is correct — neither is
+// making a claim.
+let chips: Chip[][] = [];
+// Bumped by every open, and captured by the measurement in flight. An answer whose
+// generation is stale belongs to a diff that is no longer on screen: opening one folder,
+// closing it and opening another must not paint the first one's chips on the second.
+let gen = 0;
 
 // Keyed by folder (workdir/cwd), not session id, so the same viewer serves Episko's
 // own sessions and read-only external ones alike — both are just a git working tree.
@@ -60,7 +76,9 @@ export async function openDiff(workdir: string, title: string, focus?: string) {
   diffDir = workdir;
   focusPath = focus || "";
   files = [];
+  chips = [];
   activeFile = -1;
+  gen++;
   $("scrim").classList.add("show");
   $("diffDlg").classList.add("show");
   $("diffTitle").textContent = title || basename(workdir);
@@ -74,6 +92,7 @@ export async function openDiff(workdir: string, title: string, focus?: string) {
     const res = await invoke<{ patch: string; truncated: boolean } | null>("git_diff", { workdir });
     if (!diffOpen) return; // closed while the diff was loading
     renderDiffBody(res ? parsePatch(res.patch) : [], !!res?.truncated);
+    void measureHealth(workdir, gen);
   } catch (e) {
     if (!diffOpen) return;
     $("diffSub").textContent = "";
@@ -148,13 +167,88 @@ function renderDiffBody(parsed: DiffFile[], truncated: boolean) {
   if (i >= 0) revealFile(i);
 }
 
+/// Ask the backend what this change did to the shape of the code, and repaint when it
+/// answers.
+///
+/// Fired *after* the diff is on screen, never awaited before it. The measurement reads
+/// every file in the project to build its duplicate index, so it costs tens of
+/// milliseconds where the patch costs one process — and a review surface that waited for
+/// it would feel slow for a signal that is advisory. A failure is silent by design: no
+/// chips is exactly what a project it could not measure should look like, and an error
+/// banner over a diff you asked for would be the tail wagging the dog.
+async function measureHealth(workdir: string, mine: number) {
+  // A binary file has no lines to measure and a deleted one has nothing on disk; both
+  // would come back `measured: false`, so they are not worth the round trip.
+  const changed = files
+    .filter((f) => !f.binary && f.status !== "deleted")
+    .map((f) => ({
+      path: f.path,
+      // New-file line numbers of the added lines — the text stays here, since ./diff is
+      // the only patch parser and sending it back would make the backend a second one.
+      added: f.hunks.flatMap((h) => h.lines.filter((l) => l.kind === "add").map((l) => l.newNo ?? 0)).filter(Boolean),
+    }));
+  if (!changed.length) return;
+  let rep: HealthReport | null = null;
+  try {
+    rep = await invoke<HealthReport>("project_health", { workdir, changed });
+  } catch {
+    return;
+  }
+  // The overlay may have been closed, or reopened on another folder, while we measured.
+  if (!diffOpen || mine !== gen) return;
+  const byPath = new Map(rep.files.map((h) => [h.path, h]));
+  // The project's own thresholds when it set any, the defaults where it did not.
+  const prefs = clampHealth(rep.prefs);
+  chips = files.map((f) => fileChips(f, byPath.get(f.path), rep, prefs));
+  renderSetChips(rep);
+  applyChips();
+}
+
+/// Put the chips into the diff that is already on screen, rather than repainting it.
+///
+/// This arrives a beat *after* you started reading, so a repaint here is not a free
+/// redraw: it would reset every fold, throw away where you had scrolled to, and destroy
+/// whatever node the pointer was over — which is how a click gets silently dropped
+/// (`docs/architecture.md`). So the chips are inserted into each file's existing body and
+/// the rail is rebuilt in place with its scroll kept.
+function applyChips() {
+  const body = $("diffBody");
+  for (let i = 0; i < files.length; i++) {
+    const host = body.querySelector<HTMLElement>(`.dfile[data-fi="${i}"] > .dfbody`);
+    if (!host) continue;
+    const html = chipsHtml(chips[i] ?? [], i);
+    const had = host.querySelector<HTMLElement>(":scope > .dhealth");
+    if (!html) had?.remove();
+    else if (!had) host.insertAdjacentHTML("afterbegin", html);
+    else if (had.outerHTML !== html) had.outerHTML = html;
+  }
+  // The rail carries no fold state and nothing of yours lives in it, so rebuilding is
+  // safe — but it can be scrolled, and losing that would move the index under you.
+  const rail = $("diffRail");
+  const keep = rail.scrollTop;
+  rail.innerHTML = railHtml(files, activeFile, chips);
+  rail.scrollTop = keep;
+}
+
+/// The findings that are about the change rather than any one file in it, beside the
+/// totals. One line, not one per file: the same finding repeated five times reads as
+/// five findings.
+function renderSetChips(rep: HealthReport | null) {
+  const set = setChips(files, rep);
+  const el = $("diffSetHealth");
+  el.innerHTML = set
+    .map((c) => `<span class="hchip ${c.sev} flat" title="${escAttr(c.title)}">${esc(c.text)}</span>`)
+    .join("");
+  el.hidden = !set.length;
+}
+
 /// Paint the body and the rail from `files`. Called on load and on every mode switch;
 /// `truncated` is only known on load, so the note is read back off the DOM rather than
 /// stored twice.
 function paint(truncated: boolean) {
   const note = truncated ? `<div class="diff-trunc">Diff truncated: too large to show in full. Open a terminal for the complete diff.</div>` : "";
-  $("diffBody").innerHTML = files.map((f, i) => fileHtml(f, i, diffMode, allOpen, rowBtns(f))).join("") + note;
-  $("diffRail").innerHTML = railHtml(files, -1);
+  $("diffBody").innerHTML = files.map((f, i) => fileHtml(f, i, diffMode, allOpen, rowBtns(f), chips[i] ?? [])).join("") + note;
+  $("diffRail").innerHTML = railHtml(files, -1, chips);
   activeFile = -1;
   spy();
 }
@@ -166,6 +260,27 @@ function revealFile(i: number) {
   el.classList.remove("collapsed");
   el.scrollIntoView({ block: "start" });
   markRail(i);
+}
+
+/// Go to the line a chip is about, and mark it briefly so the eye lands on it.
+///
+/// `line` is a *new-file* line number, which is why only added and context rows carry a
+/// `data-ln` — a finding never points at a deletion, since there is nothing there to look
+/// at. A line the patch does not show (a complex function whose signature sits outside
+/// any hunk) falls back to the file, which is still the right neighbourhood.
+function gotoLine(fi: number, line: number) {
+  const sec = $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${fi}"]`);
+  if (!sec) return;
+  sec.classList.remove("collapsed");
+  const row = line ? sec.querySelector<HTMLElement>(`[data-ln="${line}"]`) : null;
+  (row ?? sec).scrollIntoView({ block: line && row ? "center" : "start" });
+  if (!row) return;
+  // The row the pointer is not on has to say "here"; a class the CSS animates off is
+  // enough, and it is removed rather than left behind so a second click re-fires it.
+  const hit = row.classList.contains("dline") || row.classList.contains("sn") ? row : row.parentElement;
+  hit?.classList.remove("hlit");
+  void hit?.offsetWidth; // restart the animation rather than letting a repeat no-op
+  hit?.classList.add("hlit");
 }
 
 /// Mark one rail row as current, and keep it in view when the spy moved it there.
@@ -256,6 +371,14 @@ syncModeLabel();
 $("diffBody").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   if (t.closest("[data-fopen],[data-freveal]")) return;
+  // A health chip: go to the line that earned it. Chips sit inside the file body rather
+  // than its header, so this cannot be confused with the fold — but it is tested first
+  // anyway, on the same inner-wins rule the rest of this listener follows.
+  const chip = t.closest<HTMLElement>("[data-hline]");
+  if (chip) {
+    gotoLine(+(chip.dataset.hfi ?? -1), +(chip.dataset.hline ?? 0));
+    return;
+  }
   const h = t.closest<HTMLElement>("[data-dtoggle]");
   if (!h) return;
   const sec = h.parentElement!;
