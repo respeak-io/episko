@@ -13,6 +13,24 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
+  you the files back to back with nothing between them, so scrolling into the middle of one
+  left nothing on screen saying which file you were in. There is now an **index down the
+  left** — one row a file, grouped by folder, marking whichever file you are currently
+  reading — and every **file header sticks** to the top while its file is under the pointer.
+  Click a row in the index to go straight there.
+
++ **Only the words that actually changed are highlighted.** A `-`/`+` pair is now matched up
+  and the difference marked inside the line, so a one-argument change reads as a one-argument
+  change instead of two whole red and green lines. A line that was rewritten rather than
+  edited is left plain, deliberately: marking nine fragments of it says less than the row's
+  colour already did.
+
++ **Side by side.** A **side by side** button in the diff's header puts the old and new
+  versions in two columns; the choice is remembered. Pairing is by similarity rather than by
+  position, which is what keeps a changed line opposite its real counterpart when an agent
+  added a few comment lines above it.
+
 ## 0.21.0 — 2026-08-21
 
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you

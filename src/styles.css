@@ -863,10 +863,14 @@ html.win .wctl { display: flex; }
 .exp-foot kbd { font: 10px var(--font-mono); border: 1px solid var(--hair-strong); border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px; color: var(--muted); background: var(--surface); }
 @media (max-width: 620px) { .exp-keys { display: none; } }
 
-/* --- working-set diff viewer (modal) --- */
-.diffdlg { position: fixed; top: 8vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985); width: min(1000px, 94vw); max-height: 82vh; z-index: 41; display: flex; flex-direction: column; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
+/* --- working-set diff viewer (modal) ---
+   A pull request's shape: an index on the left that is always on screen, and a stream
+   on the right whose file headers stick to the top edge while their file is under the
+   pointer. Both exist to answer one question the old single-column list could not —
+   "which file am I in" — without scrolling back up to find out. */
+.diffdlg { position: fixed; top: 6vh; left: 50%; transform: translateX(-50%) translateY(-8px) scale(.985); width: min(1340px, 95vw); max-height: 87vh; z-index: 41; display: flex; flex-direction: column; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
 .diffdlg.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
-.diff-head { display: flex; align-items: center; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--hair); flex: none; }
+.diff-head { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-bottom: 1px solid var(--hair); flex: none; }
 /* the title takes the slack, so the fold button and the ✕ stay together on the right
    whether or not the fold button is showing */
 .diff-title-wrap { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin-right: auto; }
@@ -877,24 +881,55 @@ html.win .wctl { display: flex; }
 .diff-x:hover { color: var(--text); border-color: var(--hair-strong); }
 .diff-fold { height: 24px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted); cursor: pointer; font: 10.5px var(--font-mono); flex: none; }
 .diff-fold:hover { color: var(--text); border-color: var(--hair-strong); }
-.diff-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
+.diff-main { flex: 1; min-height: 0; display: flex; }
+.diff-body { flex: 1; min-width: 0; overflow-y: auto; padding: 0 10px 10px; }
 .diff-empty, .diff-trunc { color: var(--muted); font-size: 12px; padding: 16px; text-align: center; }
 .diff-trunc { color: var(--st-working); }
 
-.dfile { border: 1px solid var(--hair); border-radius: var(--radius-sm); margin-bottom: 9px; overflow: hidden; background: var(--bg-2); }
-.dfile:last-child { margin-bottom: 0; }
-.dfhead { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; background: var(--surface); user-select: none; }
+/* the index. Its own scroller, so a forty-file working set still shows the stream at
+   full height beside it. */
+.diff-rail { width: 228px; flex: none; overflow-y: auto; padding: 4px 6px 12px; border-right: 1px solid var(--hair); background: color-mix(in srgb, var(--bg-2) 55%, transparent); }
+.diff-rail[hidden] { display: none; }
+.dr-dir { padding: 9px 8px 3px; font: 10px var(--font-mono); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-dir:first-child { padding-top: 4px; }
+.dr-row { display: flex; align-items: center; gap: 7px; width: 100%; padding: 4px 7px; border: 0; border-radius: 6px; background: none; cursor: pointer; text-align: left; color: var(--muted); font: 11.5px var(--font-mono); }
+.dr-row:hover { background: var(--surface-2); color: var(--text); }
+.dr-row.on { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--text); }
+.dr-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-n { flex: none; display: flex; gap: 5px; font-size: 9.5px; }
+.dr-n i, .dr-n .d-bin { font-style: normal; }
+.dr-n .add { color: var(--st-done); } .dr-n .del { color: var(--st-attention); }
+
+/* One file. No `overflow: hidden` here, deliberately: it would make the section its own
+   scrollport and the sticky header below would then stick to a box that never scrolls,
+   i.e. not at all. The rounded corners are drawn on the head and the last hunk instead. */
+.dfile { border: 1px solid var(--hair); border-left: 2px solid var(--hair-strong); border-radius: var(--radius-sm); margin: 10px 0 18px; background: var(--bg-2); }
+/* collapsed, the list is an index and wants to read as one; expanded, the gap between
+   two files is what says a file ended */
+.dfile.collapsed { margin: 7px 0; }
+.dfile:last-of-type { margin-bottom: 0; }
+.dfhead { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; user-select: none; border-radius: calc(var(--radius-sm) - 1px);
+  /* opaque, not a translucent surface: code scrolls underneath it */
+  background: var(--surface); }
 .dfhead:hover { background: var(--surface-2); }
-.dfile:not(.collapsed) .dfhead { border-bottom: 1px solid var(--hair); }
+.dfile.s-mod { border-left-color: var(--st-working); }
+.dfile.s-add { border-left-color: var(--st-done); }
+.dfile.s-del { border-left-color: var(--st-attention); }
+.dfile.s-ren { border-left-color: var(--tool-read); }
+.dfile:not(.collapsed) > .dfhead { border-bottom: 1px solid var(--hair); border-radius: calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0 0; }
 .dfile.collapsed .dfbody { display: none; }
 .dfile.collapsed .dchev { transform: rotate(-90deg); }
-.dchev { color: var(--muted-2); font-size: 9px; transition: transform .12s; width: 10px; flex: none; }
+.dfbody { border-radius: 0 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px); overflow: hidden; }
+.dchev { color: var(--muted-2); font-size: 10px; transition: transform .12s; width: 10px; flex: none; }
 .dstat { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; font: 700 10px var(--font-mono); flex: none; }
 .dstat.s-mod { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 16%, transparent); }
 .dstat.s-add { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 16%, transparent); }
 .dstat.s-del { color: var(--st-attention); background: color-mix(in srgb, var(--st-attention) 16%, transparent); }
 .dstat.s-ren { color: var(--tool-read); background: color-mix(in srgb, var(--tool-read) 16%, transparent); }
+/* the folder is context and the file name is the answer, so they are not drawn at one
+   weight — every row in this list starts with the same `src/` otherwise */
 .dpath { font: 12px var(--font-mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-dir { color: var(--muted-2); }
 .d-old { color: var(--muted); } .d-arr { color: var(--muted-2); margin: 0 5px; }
 .dcount { margin-left: auto; font: 11px var(--font-mono); flex: none; white-space: nowrap; }
 .dcount .add { color: var(--st-done); } .dcount .del { color: var(--st-attention); }
@@ -908,16 +943,43 @@ html.win .wctl { display: flex; }
 
 .dhunk { border-top: 1px solid var(--hair); }
 .dhunk:first-child { border-top: none; }
-.dhh { padding: 3px 10px; font: 10.5px var(--font-mono); color: var(--muted-2); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.dhh { padding: 4px 10px; font: 10.5px var(--font-mono); color: var(--muted-2); background: color-mix(in srgb, var(--accent) 6%, transparent); border-bottom: 1px solid var(--hair); }
+.dhh-at { opacity: .7; }
 .dhh-ctx { color: var(--muted); margin-left: 8px; }
-.dline { display: flex; font: 11.5px/1.55 var(--font-mono); }
-.dline .ln { flex: none; width: 40px; padding-right: 8px; text-align: right; color: var(--muted-2); opacity: .55; user-select: none; }
+
+/* --- unified rows --- */
+.dline { display: flex; font: 11.5px/1.6 var(--font-mono); }
+.dline .ln { flex: none; width: 38px; padding-right: 7px; text-align: right; color: var(--muted-2); opacity: .5; user-select: none; }
+/* the gutter reads as a gutter, which is most of what makes the code column pop */
+.dline .ln:first-child { padding-left: 8px; }
 .dsign { flex: none; width: 15px; text-align: center; color: var(--muted-2); user-select: none; }
 .lc { flex: 1; min-width: 0; padding-right: 10px; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dline.add { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
 .dline.add .dsign { color: var(--st-done); }
 .dline.del { background: color-mix(in srgb, var(--st-attention) 11%, transparent); }
 .dline.del .dsign { color: var(--st-attention); }
+
+/* --- side-by-side rows --- */
+/* Cells are grid children rather than rows-of-cells so both code columns share one
+   track sizing: a long line on the left cannot then push the right column out of line
+   with it, which is the whole reason to draw the two side by side. */
+.dhunk.split { display: grid; grid-template-columns: 42px minmax(0, 1fr) 42px minmax(0, 1fr); font: 11.5px/1.6 var(--font-mono); }
+.dhunk.split .dhh { grid-column: 1 / -1; }
+.sn { text-align: right; padding: 0 7px 0 8px; color: var(--muted-2); opacity: .5; user-select: none; }
+.sc { min-width: 0; padding-right: 10px; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sn.add, .sc.add { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
+.sn.del, .sc.del { background: color-mix(in srgb, var(--st-attention) 11%, transparent); }
+/* the empty half of a one-sided row: neither added nor removed, and it must not read as
+   context either */
+.sn.nil, .sc.nil { background: color-mix(in srgb, var(--muted-2) 7%, transparent); }
+.sc.lft { border-right: 1px solid var(--hair); }
+
+/* --- what actually changed inside a line --- */
+/* Only ever drawn on a `-`/`+` pair ./diff judged similar enough to mark; a whole-line
+   rewrite gets no marks, because marking all of it says nothing the row's colour didn't. */
+.lc .wch, .sc .wch { border-radius: 3px; padding: 0 1px; color: inherit; background: none; }
+.dline.add .wch, .sc.add .wch { background: color-mix(in srgb, var(--st-done) 32%, transparent); }
+.dline.del .wch, .sc.del .wch { background: color-mix(in srgb, var(--st-attention) 30%, transparent); }
 
 /* --- the call sheet (modal): one tool call, in full ---
    Sized like Settings > Usage (.setdlg.wide), which is the app's "this needs the room"

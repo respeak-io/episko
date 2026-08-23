@@ -333,10 +333,16 @@
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
+        <button class="diff-fold" id="diffMode" hidden>side by side</button>
         <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
-      <div class="diff-body" id="diffBody"></div>
+      <!-- The index and the stream, the two halves a pull request review has. The rail
+           is hidden for a single-file diff, where there is nothing to index. -->
+      <div class="diff-main">
+        <nav class="diff-rail" id="diffRail" hidden aria-label="Changed files"></nav>
+        <div class="diff-body" id="diffBody"></div>
+      </div>
     </div>
 
     <!--
