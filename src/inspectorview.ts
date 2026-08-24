@@ -20,7 +20,8 @@ import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveCount, liveFanout,
+  orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { sessions } from "./state";
@@ -103,7 +104,7 @@ export function vitalHtml(s: Sess): string {
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
   // While a fleet is up, the split of it — done vs still running — says more than the
   // bare "N subagents" chip this replaces, which only ever showed the live half.
-  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${s.subagents} running`] : [])]
+  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${liveCount(s)} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
@@ -131,11 +132,20 @@ export function fanoutHtml(s: Sess): string {
   const detail = f.detail ? `<div class="fo-detail">${esc(f.detail)}</div>` : "";
   const phases = f.phases.length
     ? `<div class="fo-phases">${f.phases.map((p) => `<span class="fo-ph">${esc(p)}</span>`).join("")}</div>` : "";
+  // The leftovers a newer fan-out inherited, named apart from this run's own agents
+  // instead of being folded into its total in silence — which is how "34 / 36" managed
+  // to look like arithmetic rather than a bug. They are counted (the total above is
+  // `done + running`, and a second workflow launched over a live one is real work), but
+  // they say whose they are, and they take themselves off this card when they expire.
+  const orph = orphanAgents(s);
+  const kinds = [...new Set(orph.map((a) => a.type).filter(Boolean))].slice(0, 3).join(", ");
+  const carried = orph.length
+    ? `<div class="fo-orph"><span class="fo-og">↩</span>${orph.length} still up from an earlier run${kinds ? ` · ${esc(kinds)}` : ""}</div>` : "";
   return `<div class="fanout">
     <div class="fo-h"><span class="fo-g">◐</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
     ${detail}
     <div class="fo-bar"><i style="width:${pct}%"></i></div>
-    ${phases}</div>`;
+    ${carried}${phases}</div>`;
 }
 export function gaugesHtml(s: Sess): string {
   const ctx = s.ctxPct;

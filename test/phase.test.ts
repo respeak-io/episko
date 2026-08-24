@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  actKey, apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, phaseText,
-  statusKey, type Sess,
+  actKey, apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, liveCount,
+  liveAgents, ORPHAN_DEAD_MS, orphanAgents, phaseText, statusKey, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -31,7 +31,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
@@ -367,9 +367,9 @@ describe("applyHook — the lifecycle state machine", () => {
     it("counts SubagentStart/Stop, never below zero", () => {
       const s = sess();
       hook(s, "SubagentStart"); hook(s, "SubagentStart");
-      expect(s.subagents).toBe(2);
+      expect(liveCount(s)).toBe(2);
       hook(s, "SubagentStop"); hook(s, "SubagentStop"); hook(s, "SubagentStop");
-      expect(s.subagents).toBe(0); // a Stop we never saw the Start for must not go negative
+      expect(liveCount(s)).toBe(0); // a Stop we never saw the Start for must not go negative
     });
     it("leaves the phase and the vital header alone while a subagent is running", () => {
       const s = sess({ phase: "thinking", curTool: "", curArg: "" });
@@ -462,12 +462,12 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       expect(s.fanout).toMatchObject({ name: "legal-launch-audit", started: 0, done: 0 });
       expect(s.fanout!.phases).toEqual(["Repo-Audit", "Verifikation"]);
     });
-    it("counts cumulatively while `subagents` stays the live count", () => {
+    it("counts cumulatively while the agent set stays the live one", () => {
       const s = sess();
       hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
       for (let i = 0; i < 3; i++) hook(s, "SubagentStart");
       hook(s, "SubagentStop");
-      expect(s.subagents).toBe(2);
+      expect(liveCount(s)).toBe(2);
       expect(s.fanout).toMatchObject({ started: 3, done: 1 });
     });
     it("mints an unnamed fleet for a plain Task burst", () => {
@@ -481,7 +481,7 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       const s = sess();
       hook(s, "SubagentStop"); hook(s, "SubagentStop");
       expect(s.fanout).toBeNull();      // a Stop alone is not a fan-out
-      expect(s.subagents).toBe(0);
+      expect(liveCount(s)).toBe(0);
       hook(s, "SubagentStart"); hook(s, "SubagentStop"); hook(s, "SubagentStop");
       expect(s.fanout).toMatchObject({ started: 1, done: 1 }); // done never passes started
     });
@@ -493,7 +493,7 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
         const s = sess();
         hook(s, "SubagentStart"); hook(s, "SubagentStart");
         hook(s, ev);
-        expect({ ev, n: s.subagents, f: s.fanout }).toEqual({ ev, n: 0, f: null });
+        expect({ ev, n: liveCount(s), f: s.fanout }).toEqual({ ev, n: 0, f: null });
       }
     });
     it("keeps the fleet across a prompt typed while it runs", () => {
@@ -505,7 +505,7 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       hook(s, "SubagentStart");
       hook(s, "UserPromptSubmit");
       expect(s.fanout).toMatchObject({ name: "legal-launch-audit", started: 1 });
-      expect(s.subagents).toBe(1);
+      expect(liveCount(s)).toBe(1);
     });
     it("names a resumed run from its script path, since a resume carries no script", () => {
       // Iterate/resume calls pass `scriptPath` + `resumeFromRunId` and no `script`;
@@ -604,12 +604,12 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
         expect(fanoutTally(s)).toBeNull();
       });
       it("zeroes the leaked count on the next event, so no later fleet inherits it", () => {
-        // fanoutTally's total is `done + subagents`: a ghost agent left in the count
-        // would put a fresh one-agent burst at 0/2 before it had done anything.
+        // fanoutTally's total is `done + running`: a ghost agent left in the set would
+        // put a fresh one-agent burst at 0/2 before it had done anything.
         const s = fleet();
         vi.setSystemTime(NOW_MS + FANOUT_DEAD_MS + 1000);
         hook(s, "UserPromptSubmit");
-        expect(s.subagents).toBe(0);
+        expect(liveCount(s)).toBe(0);
         hook(s, "SubagentStart");
         setPhase(s, "done");                              // the turn ends; the burst runs on
         expect(s.fanout).toMatchObject({ started: 1, done: 0 });
@@ -623,12 +623,135 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
         vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS * 2);   // the grace window passes
         hook(s, "SubagentStart");
         expect(s.fanout).toMatchObject({ name: "", started: 1, done: 0 });
-        expect(s.subagents).toBe(1);
+        expect(liveCount(s)).toBe(1);
       });
       it("says nothing about a session that never fanned out", () => {
         const s = sess({ phase: "done" });
         expect(statusKey(s)).toBe("done");
         expect(fanoutTally(s)).toBeNull();
+      });
+    });
+
+    // Both hooks carry `agent_id` and `agent_type`, so an agent is retired by name. The
+    // counter this replaced could only ever drift up, and every repair for it was a guess
+    // about a number; these are the things identity makes answerable outright.
+    it("ages an inherited agent faster than a live fleet, which is the whole point", () => {
+      // The hour is safe for a fleet only because a real event re-stamps `lastAt` and
+      // revives the readout. An orphan has no run left to report it, so the same hour
+      // is a ghost's life support. If these ever meet, the bug is back.
+      expect(ORPHAN_DEAD_MS).toBeLessThan(FANOUT_DEAD_MS);
+    });
+
+    describe("agents by id", () => {
+      it("retires the agent the Stop names, not whichever started first", () => {
+        const s = sess();
+        hook(s, "SubagentStart", { agent_id: "a1", agent_type: "Explore" });
+        hook(s, "SubagentStart", { agent_id: "a2", agent_type: "code-reviewer" });
+        hook(s, "SubagentStop", { agent_id: "a1", agent_type: "Explore" });
+        expect(liveAgents(s).map((a) => a.type)).toEqual(["code-reviewer"]);
+      });
+      it("ignores a Start replayed under an id already up", () => {
+        // A curl the CLI retried, or a POST that landed twice. A counter incremented
+        // twice and stayed one too high for the rest of the run with nothing to notice.
+        const s = sess();
+        hook(s, "SubagentStart", { agent_id: "a1" });
+        hook(s, "SubagentStart", { agent_id: "a1" });
+        expect(liveCount(s)).toBe(1);
+      });
+      it("falls back to the oldest agent when the payload carries no id", () => {
+        // An older CLI, or a hook shape we mis-read. The whole readout must not vanish
+        // on it: no id means a synthetic one in, and oldest-first out.
+        const s = sess();
+        hook(s, "SubagentStart"); hook(s, "SubagentStart");
+        expect(liveCount(s)).toBe(2);
+        hook(s, "SubagentStop");
+        expect(liveCount(s)).toBe(1);
+      });
+    });
+
+    // The bug this was written for, at the sizes it actually happened: four agents up
+    // when the machine slept, the user asking whether everything was done, the agent
+    // starting a FRESH 34-agent workflow — and the pane reading "34 / 36" with every one
+    // of that run's agents finished, because `startFanout` restarts the counters while
+    // the live count carried over whole. See `Agent.orphanedAt`.
+    describe("a fan-out that inherits the last one's agents", () => {
+      /// The interrupted burst, then the replacement run, then all of the replacement's
+      /// agents landing. `orphans` left behind; `total` agents in the new run.
+      const inherit = (orphans: number, total: number) => {
+        const s = sess({ phase: "working" });
+        hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } });
+        for (let i = 0; i < orphans; i++) hook(s, "SubagentStart", { agent_id: `old${i}`, agent_type: "Explore" });
+        hook(s, "PreToolUse", { tool_name: "Workflow", tool_input: { script: WF } }); // the restart
+        for (let i = 0; i < total; i++) hook(s, "SubagentStart", { agent_id: `new${i}`, agent_type: "general-purpose" });
+        for (let i = 0; i < total; i++) hook(s, "SubagentStop", { agent_id: `new${i}`, agent_type: "general-purpose" });
+        setPhase(s, "done");
+        return s;
+      };
+      it("keeps counting them while they could still be real", () => {
+        // Not dropped on sight: launching a second workflow over one still finishing is
+        // ordinary, and a bar that ignored the first fleet would read 34/34 with six
+        // agents demonstrably up. This is the state the report described.
+        const s = inherit(2, 34);
+        expect(fanoutTally(s)).toEqual({ done: 34, total: 36 });
+        expect(bgWaiting(s)).toBe(true);
+      });
+      it("names them apart from the run that inherited them", () => {
+        // The half that was missing: "36" was arithmetic nobody could check. An orphan
+        // says which run it is from and what kind of agent it is.
+        const s = inherit(2, 34);
+        expect(orphanAgents(s).map((a) => a.type)).toEqual(["Explore", "Explore"]);
+        expect(liveAgents(s)).toHaveLength(2);
+      });
+      it("does not credit their Stops to the run that inherited them", () => {
+        // A straggler from the old fleet landing must not read as progress on the new
+        // one — that is how "34 / 34 done" was reached with two of the Stops owed
+        // elsewhere. `done` is this run's agents and nobody else's.
+        const s = inherit(2, 34);
+        hook(s, "SubagentStop", { agent_id: "old0" });
+        expect(s.fanout).toMatchObject({ started: 34, done: 34 });
+        expect(orphanAgents(s)).toHaveLength(1);
+        expect(fanoutTally(s)).toEqual({ done: 34, total: 35 });
+      });
+      it("writes them off on their own clock, not the live run's", () => {
+        // The heart of it. The inheriting run keeps re-stamping `lastAt`, so the hour
+        // that guards a live fleet never elapses and the leftovers never expire: the
+        // real pane held "34 / 36" from 19:31 until it was restarted. An orphan has no
+        // run left to report it, so it ages from the moment it was inherited.
+        const s = inherit(2, 34);
+        vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS - 1000);
+        expect(fanoutTally(s)).toEqual({ done: 34, total: 36 });   // still believed…
+        vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS + 1000);
+        expect(orphanAgents(s)).toEqual([]);                       // …and now written off
+        expect(liveCount(s)).toBe(0);
+      });
+      it("hands the session back to you once they expire", () => {
+        // What the wrong number actually cost: `bgWaiting` suppresses the reactor badge,
+        // the tray title and the palette's "Needs you" group, so a finished session that
+        // wanted a human read as busy for as long as the ghosts survived.
+        const s = inherit(2, 34);
+        expect(statusKey(s)).toBe("background");
+        vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS + FANOUT_GRACE_MS);
+        expect(statusKey(s)).toBe("done");
+        expect(phaseText(s)).toBe("your turn");
+        expect(fanoutTally(s)).toBeNull();
+      });
+      it("sweeps the expired ones out of the set on the next event", () => {
+        // The read side applies the window, so the display is right with no hook at all;
+        // this is the state catching up, so a LATER fleet cannot inherit the ghosts in
+        // turn — which is how two of them survived a whole generation to begin with.
+        const s = inherit(2, 34);
+        vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS + 1000);
+        hook(s, "UserPromptSubmit");
+        expect(s.agents.size).toBe(0);
+      });
+      it("still counts a genuinely overlapping fleet", () => {
+        // The case the window must not break: a second workflow launched while the first
+        // is really running. Its agents report normally and are retired by name.
+        const s = inherit(3, 2);
+        expect(fanoutTally(s)).toEqual({ done: 2, total: 5 });
+        for (let i = 0; i < 3; i++) hook(s, "SubagentStop", { agent_id: `old${i}` });
+        expect(liveCount(s)).toBe(0);
+        expect(fanoutTally(s)).toEqual({ done: 2, total: 2 });
       });
     });
   });

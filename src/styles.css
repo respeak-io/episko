@@ -743,6 +743,13 @@ html.win .wctl { display: flex; }
 .fanout .fo-detail { font-size: 11.5px; line-height: 1.35; color: var(--muted); }
 .fanout .fo-bar { height: 5px; border-radius: 3px; background: var(--hair-strong); overflow: hidden; }
 .fanout .fo-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--st-bg); transition: width .4s ease; }
+/* Agents a NEWER fan-out inherited: still counted in the fraction above (a second
+   workflow launched over one still finishing is real work), but said out loud rather
+   than folded in, because a total that silently includes a previous run's leftovers is
+   unreadable — a killed agent read as "34 / 36" for hours. Muted and below the bar: it
+   qualifies the number, it is not a second number. */
+.fanout .fo-orph { display: flex; align-items: center; gap: 6px; font: 10px var(--font-mono); color: var(--muted-2); }
+.fanout .fo-orph .fo-og { flex: none; font-size: 10.5px; color: var(--muted-2); }
 /* The phases the run declared, in order — a list of what it set out to do. Nothing is
    ticked off: no hook says which phase a workflow has reached, and the bar above is the
    only progress the telemetry actually supports. */

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isExited, midFlight, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
+import {
+  isExited, midFlight, ORPHAN_DEAD_MS, type Agent, type ExtSession, type Restorable, type Sess, type WtHead,
+} from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
@@ -27,7 +29,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
@@ -37,8 +39,10 @@ function sess(o: Partial<Sess> = {}): Sess {
 /// The `Sess` fields of a session with a background fan-out up — `total` agents
 /// launched, `done` of them landed. Spelled out rather than driven through applyHook,
 /// which lives in a module this suite deliberately does not import.
+const agentsUp = (n: number, orphanedAt = 0): Map<string, Agent> =>
+  new Map(Array.from({ length: n }, (_, i) => [`a${i}${orphanedAt}`, { type: "Explore", since: 0, orphanedAt }]));
 const fleet = (total: number, done: number): Partial<Sess> => ({
-  subagents: total - done,
+  agents: agentsUp(total - done),
   fanout: { name: "wf", detail: "", phases: [], since: 0, started: total, done, lastAt: Date.now() },
 });
 // Sessions reach grouping through the state map, in insertion order.
@@ -864,6 +868,17 @@ describe("needsYou — is this pane waiting on the human", () => {
     expect(needsYou(sess({ phase: "done", ...fleet(13, 12) }))).toBe(false);
     expect(urgencyRank(sess({ phase: "done", ...fleet(13, 12) }))).toBe(3); // ranks with the work it is
   });
+  it("counts one whose fleet turns out to be a previous run's leftovers", () => {
+    // What the "34 / 36" bug actually cost. `startFanout` restarts the counters when a
+    // new workflow launches but the agents already up carry over, so an interrupted
+    // fleet's ghosts rode a finished run's tally — and `bgWaiting` kept the session out
+    // of the badge, the tray title and the palette's "Needs you" group for hours after
+    // it had finished. They age out on their own window now (`Agent.orphanedAt`).
+    const ghosts = sess({ phase: "done", ...fleet(34, 34), agents: agentsUp(2, NOW_MS) });
+    expect(needsYou(ghosts)).toBe(false);                    // believed, so still busy
+    vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS + 1000);
+    expect(needsYou(ghosts)).toBe(true);                     // written off: it is your turn
+  });
   it("still counts one that hit a permission or died mid-fleet", () => {
     // Both outrank the fan-out: Claude is blocked on you now, or the turn is not coming
     // back on its own. Neither resolves itself when the agents land.
@@ -904,7 +919,7 @@ describe("syncAttn — when each pane started wanting you", () => {
   });
   it("stamps a fan-out whose grace window has expired, which no event announces", () => {
     const [s] = open(sess({ id: "a", phase: "done", ...fleet(4, 4) }));
-    s.subagents = 0;
+    s.agents.clear();
     s.fanout!.lastAt = NOW_MS - 1000;   // still inside FANOUT_GRACE_MS
     syncAttn();
     expect(s.attnAt).toBe(0);           // the fleet is between stages, not finished

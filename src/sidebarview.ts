@@ -13,7 +13,8 @@
 
 import { basename, esc, relTime, tilde } from "./format";
 import {
-  apiErrText, fanoutTally, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
+  apiErrText, fanoutTally, liveCount, orphanAgents, statusKey, taskStateText, type ExtSession,
+  type Restorable, type Sess,
 } from "./types";
 import {
   accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId,
@@ -130,9 +131,12 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.
   const fan = fanoutTally(s);
+  // Named on the row too, not just in the card: the tooltip is where you check a tally
+  // that looks wrong, so it has to be able to say which agents aren't this run's.
+  const carried = fan ? orphanAgents(s).length : 0;
   const tip = s.phase === "error" && s.apiErr
     ? `${label} · ${apiErrText(s.apiErr)}`
-    : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${s.subagents} running`
+    : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${liveCount(s)} running${carried ? ` (${carried} from an earlier run)` : ""}`
       : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
   // The row stays under the checkout the session was *launched* in — that is its
   // identity, and where `--resume` goes. This is what says the agent's writes have

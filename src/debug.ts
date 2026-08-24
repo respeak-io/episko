@@ -21,6 +21,7 @@ import {
   activeId, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
   pastMirrorId, sessions, termEngine,
 } from "./state";
+import { liveCount, orphanAgents, type Sess } from "./types";
 
 // A lightweight in-app event log + live state snapshot, surfaced via the 🐞 button
 // (in the footer) and mirrored to a fixed file (episko-debug.json) so an external
@@ -53,18 +54,27 @@ export function renderDbgBadge() {
   (b as HTMLElement).hidden = n === 0;
   $("dbgBtn").classList.toggle("has-issues", n > 0);
 }
+// The inherited half of a fan-out, spelled out. A leftover a newer run absorbed is
+// invisible in `done/started` and shows up only as a total that won't close — which is
+// exactly the state that has to be readable from outside the app.
+function dbgFanout(s: Sess): string | null {
+  if (!s.fanout) return null;
+  const orph = orphanAgents(s);
+  const tail = orph.length ? `, ${orph.length} inherited (${orph.map((a) => a.type || "?").join("/")})` : "";
+  return `${s.fanout.name || "unnamed"} ${s.fanout.done}/${s.fanout.started} done, ${liveCount(s)} up${tail}`;
+}
 export function dbgSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
     version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl, telemetry: telem,
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
-      ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: s.subagents,
+      ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: liveCount(s),
       lastEvent: s.lastEvent, kind: s.kind, external: s.external, branch: s.branch, workdir: s.workdir,
       // The background fleet, if one is up. Both counts, not just the live one: "3
       // running" and "3 running, 47 done" are the same session at very different points,
       // and a fan-out that has stopped moving is only visible as the gap between them.
-      fanout: s.fanout ? `${s.fanout.name || "unnamed"} ${s.fanout.done}/${s.fanout.started} done, ${s.subagents} up` : null,
+      fanout: dbgFanout(s),
       // Where the agent's writes are actually landing, when that isn't `workdir`. In
       // the snapshot because the two disagreeing is precisely the state that needs
       // explaining from outside the app — the case this was written for looked, from

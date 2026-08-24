@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A finished session no longer hides behind a previous run's agents.** Launching a second
+  fan-out restarts the run's counters but inherited whatever the last one left running, so
+  agents an interrupt had killed rode the new run's tally — a pane read **34 / 36 with all
+  34 of that run finished**, and went on reading it, because every one of the new run's own
+  events refreshed the hour those leftovers were being measured against. The number was the
+  cheap half: a session that had been waiting on a human since 19:57 was reported as busy,
+  so it never reached the reactor badge, the tray title or the palette's *Needs you*. Agents
+  are now tracked by the `agent_id` the hooks carry rather than counted, so an inherited one
+  ages out on its own clock, its completion is credited to the run that actually spawned it,
+  and the fleet card, the row tooltip and the debug snapshot each say how many agents belong
+  to an earlier run and what kind they were.
+
 ## 0.21.0 — 2026-08-21
 
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you

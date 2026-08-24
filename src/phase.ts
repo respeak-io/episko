@@ -12,7 +12,7 @@
 // settable `setOnTurnEnd` hook. See test/phase.test.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
+import { liveCount, liveFanout, ORPHAN_DEAD_MS, type Agent, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
@@ -177,7 +177,38 @@ export function startFanout(s: Sess, input: any) {
       : { ...meta, name };
   }
   const now = Date.now();
+  // Whatever the last run left up belongs to a generation this call has just superseded.
+  // They stay counted — a second workflow launched over one still finishing is real, and
+  // dropping them would draw a bar past its own end — but from here they age on
+  // `ORPHAN_DEAD_MS` instead of riding the new run's `lastAt`, which never expires while
+  // the new run is alive. This line is the fix for "34 / 36": the four agents an
+  // interrupt killed were inherited by a 34-agent run and outlived it by hours.
+  for (const a of s.agents.values()) if (!a.orphanedAt) a.orphanedAt = now;
   s.fanout = { ...meta, since: now, started: 0, done: 0, lastAt: now };
+}
+// One agent in, by `agent_id`. A duplicate Start (a POST the CLI retried) must not add a
+// second entry under one id, which a counter had no way to notice.
+let anonSeq = 0;
+function startAgent(s: Sess, data: any) {
+  const id = typeof data.agent_id === "string" && data.agent_id ? data.agent_id : `anon-${++anonSeq}`;
+  const type = typeof data.agent_type === "string" ? abbr(data.agent_type, 32) : "";
+  if (!s.agents.has(id)) s.agents.set(id, { type, since: Date.now(), orphanedAt: 0 });
+}
+// One agent out, returning whichever it retired so the caller can tell whose run it
+// belonged to. Without an id — an older CLI, or a Stop whose Start we never saw — retire
+// the oldest agent outstanding (a Map iterates in insertion order, so that is the first
+// one), preferring the running fan-out's over an inherited one, since those are the
+// agents actually reporting. Same shape as the tool-call fallback: the id when there is
+// one, the oldest plausible match when there is not.
+function stopAgent(s: Sess, data: any): Agent | null {
+  const id = typeof data.agent_id === "string" ? data.agent_id : "";
+  const known = id ? s.agents.get(id) : undefined;
+  if (known) { s.agents.delete(id); return known; }
+  let pick: [string, Agent] | null = null;
+  for (const e of s.agents) { if (!e[1].orphanedAt) { pick = e; break; } pick ??= e; }
+  if (!pick) return null;
+  s.agents.delete(pick[0]);
+  return pick[1];
 }
 // The first `SubagentStart` of a plain `Task` burst mints an unnamed record, so the
 // counts and the elapsed work for a fan-out nobody wrote a script for.
@@ -242,13 +273,20 @@ export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";
   s.lastEvent = ev;
   s.lastActivity = Date.now(); // a lifecycle hook = the session did something (drives "sort by activity")
-  // The live count's one repair. `subagents` is differenced from fire-and-forget
-  // hooks, so a `SubagentStop` that never arrives leaves it high forever — and past
-  // `FANOUT_DEAD_MS` of silence `liveFanout` already answers "no fleet". Believe that
-  // answer in the state too, or the ghost count would poison `bg()` below and the
-  // *next* fleet's tally, whose total is `done + subagents`.
-  if (s.subagents > 0 && !liveFanout(s)) s.subagents = 0;
-  const bg = () => s.subagents > 0 || s.phase === "done";
+  // The live set's two repairs, in order of how sure we are. An agent is retired by its
+  // `SubagentStop`, and that Stop can genuinely never arrive, so both tiers exist to
+  // drop what nothing will ever retire. First the inherited ones past their own window
+  // — those have no run left to report them. Then, past `FANOUT_DEAD_MS` of silence,
+  // `liveFanout` already answers "no fleet", so believe that answer in the state too or
+  // the ghosts poison `bg()` below and the *next* fleet's `done + running` total.
+  //
+  // These are hygiene, not the mechanism: a session sitting `done` receives no hooks at
+  // all, so `liveAgents` applies the same windows on the read side, where the surfaces
+  // actually ask. Repairing only here is how the stale count survived in the first place.
+  const nowMs = Date.now();
+  for (const [id, a] of s.agents) if (a.orphanedAt && nowMs - a.orphanedAt >= ORPHAN_DEAD_MS) s.agents.delete(id);
+  if (s.agents.size && !liveFanout(s)) s.agents.clear();
+  const bg = () => liveCount(s) > 0 || s.phase === "done";
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
     // OR directly in the CLI), so reset the pending/attention state either way.
@@ -256,7 +294,7 @@ export function applyHook(s: Sess, data: any) {
     // in flight survives it, and a `SubagentStop` we will now never see would otherwise
     // leave the count stuck above zero forever, which reads as a fleet that never
     // finishes. The one place either field is reset without a matching event.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.subagents = 0; s.fanout = null; break;
+    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; break;
     case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";
@@ -315,7 +353,7 @@ export function applyHook(s: Sess, data: any) {
       s.apiErr = { kind: String(data.error ?? "unknown"), detail: abbr(String(data.error_details ?? data.message ?? "")), at: Date.now() };
       setPhase(s, "error"); clearPending(s); s.curTool = ""; s.curArg = "";
       break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; s.subagents = 0; s.fanout = null; break;
+    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; s.agents.clear(); s.fanout = null; break;
     case "Notification": {
       const nt: string = data.notification_type ?? "";
       const msg: string = typeof data.message === "string" ? data.message : "";
@@ -329,21 +367,28 @@ export function applyHook(s: Sess, data: any) {
     case "PermissionRequest": s.attention = `permission: ${data.tool_name ?? ""}`; s.pendingCmd = permCmd(data); s.pendRisk = riskLevel(data.tool_name, data.tool_input); break;
     // Every agent a fan-out spawns fires these on the PARENT, workflow fleets included
     // — which is what makes the whole background readout possible without a byte of
-    // disk. `subagents` stays the live count; the cumulative pair rides the record.
+    // disk. `s.agents` holds the ones still up; the cumulative pair rides the record.
     // A record `liveFanout` has already written off is history, not the burst starting
     // now: resuming it would put a finished run's counters under a fresh fleet ("12 of
     // 14 done" for two agents that just launched). Within the grace lull it is the
     // same run, and the record — with its name and phases — carries on.
     case "SubagentStart": {
-      if (!liveFanout(s)) s.fanout = null;
-      s.subagents++; const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break;
+      if (!liveFanout(s)) s.fanout = null;   // (the repair above has already cleared the set)
+      startAgent(s, data); const f = fanoutOf(s); f.started++; f.lastAt = Date.now(); break;
     }
     // No record means a Stop whose Start we never saw (a fan-out that predates the
     // pane, a rotated session). Counting it would invent a completion.
-    case "SubagentStop":
-      s.subagents = Math.max(0, s.subagents - 1);
-      if (s.fanout) { s.fanout.done = Math.min(s.fanout.started, s.fanout.done + 1); s.fanout.lastAt = Date.now(); }
+    // An inherited agent's Stop belongs to the run that spawned it, not to this one:
+    // counting it here is what let a 34-agent run read "34 / 34 done" with two of the
+    // Stops behind that figure owed to a previous fleet. The clamp stays for the case
+    // this cannot see (a Stop whose Start was dropped) — `done` never passes `started`.
+    case "SubagentStop": {
+      const a = stopAgent(s, data);
+      if (!s.fanout) break;
+      if (a && !a.orphanedAt) s.fanout.done = Math.min(s.fanout.started, s.fanout.done + 1);
+      s.fanout.lastAt = Date.now();
       break;
+    }
   }
 }
 export function pushHist(arr: number[], v: number, cap = 24) { arr.push(v); if (arr.length > cap) arr.splice(0, arr.length - cap); }
