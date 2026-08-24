@@ -262,6 +262,18 @@ function revealFile(i: number) {
   markRail(i);
 }
 
+/// The rendered line closest to `line` inside one file's section, or null when the file
+/// has no numbered rows at all (a binary or mode-only change).
+function nearestLine(sec: HTMLElement, line: number): HTMLElement | null {
+  let best: HTMLElement | null = null;
+  let gap = Infinity;
+  for (const el of sec.querySelectorAll<HTMLElement>("[data-ln]")) {
+    const d = Math.abs(+el.dataset.ln! - line);
+    if (d < gap) { gap = d; best = el; }
+  }
+  return best;
+}
+
 /// Go to the line a chip is about, and mark it briefly so the eye lands on it.
 ///
 /// `line` is a *new-file* line number, which is why only added and context rows carry a
@@ -272,8 +284,15 @@ function gotoLine(fi: number, line: number) {
   const sec = $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${fi}"]`);
   if (!sec) return;
   sec.classList.remove("collapsed");
-  const row = line ? sec.querySelector<HTMLElement>(`[data-ln="${line}"]`) : null;
-  (row ?? sec).scrollIntoView({ block: line && row ? "center" : "start" });
+  // ./health aims every finding at a line the change added, so the exact row is normally
+  // there. The fallback is for the case it cannot: a patch shows only its hunks, so a
+  // line outside one is simply not in the DOM — and scrolling to the file while flashing
+  // nothing is indistinguishable from a control that does not work. The nearest rendered
+  // line of the same file is at least in the right neighbourhood, and it flashes.
+  const row = line
+    ? sec.querySelector<HTMLElement>(`[data-ln="${line}"]`) ?? nearestLine(sec, line)
+    : null;
+  (row ?? sec).scrollIntoView({ block: row ? "center" : "start" });
   if (!row) return;
   // The row the pointer is not on has to say "here"; a class the CSS animates off is
   // enough, and it is removed rather than left behind so a second click re-fires it.

@@ -75,6 +75,20 @@ describe("silencedIn", () => {
     expect(silencedIn(file("a.ts", add("} catch (e) {} // eslint-disable-line", 7)))).toHaveLength(1);
   });
 
+  it("does not read a pattern inside a string literal as code doing it", () => {
+    // This module's own pattern table earned six chips on itself and its tests ten —
+    // every one of them the literal pattern sitting inside quotes.
+    const f = file("a.ts",
+      add(`const SILENCED = [{ re: /x/, what: "a bare \`except:\`" }];`, 4),
+      add(`t.push({ what: "\`as any\`" });`, 5));
+    expect(silencedIn(f)).toEqual([]);
+  });
+
+  it("still finds the real thing on a line that also carries a string", () => {
+    const f = file("a.py", add(`    except:  log("failed to parse")`, 7));
+    expect(silencedIn(f).map((s) => s.line)).toEqual([7]);
+  });
+
   it("keeps them in the order they appear, so the chip goes to the first", () => {
     const f = file("a.ts", add("const x = y as any;", 30), add("// @ts-ignore", 8));
     expect(silencedIn(f).map((s) => s.line)).toEqual([30, 8]);
@@ -127,6 +141,39 @@ describe("fileChips", () => {
 
   it("says nothing about a file that earned nothing", () => {
     expect(fileChips(clean, health(), report())).toEqual([]);
+  });
+
+  it("applies no code-shaped rule to something that is not code", () => {
+    // The CHANGELOG entry *announcing* the silenced-error rule earned a red chip for
+    // containing the word — the exact false positive that teaches you to stop reading.
+    const md = file("CHANGELOG.md", add("- a new bare `except:`, an empty `catch`", 25));
+    const big = health({ code_lines: 900, code_added: 400, max_nesting: 9, nesting_line: 3 });
+    expect(fileChips(md, big, report({ p90_code_lines: 100 }))).toEqual([]);
+  });
+
+  it("still reports a duplicated block in a file that is not code", () => {
+    // A copy-pasted CI job is a copy-pasted CI job. Only the code-shaped rules go away.
+    const yml = file(".github/workflows/ci.yml", add("      run: pnpm test", 12));
+    const h = health({ dups: [{ line: 12, other_path: ".github/workflows/release.yml", other_line: 30 }] });
+    expect(ids(fileChips(yml, h, report()))).toEqual(["dup"]);
+  });
+
+  it("points the complexity and length chips at a line the change added", () => {
+    // Their subject is a function, but its declaration can sit hundreds of lines above
+    // the hunk — and a patch renders only its hunks, so the click would scroll to
+    // nothing and flash nothing: indistinguishable from a control that does not work.
+    const f = file("src/a.ts", ctx("untouched", 100), add("  changed();", 260));
+    const fn = { name: "run", start: 10, end: 300, code_lines: 254, cognitive: 30 };
+    const chips = fileChips(f, health({ worst_fn: fn, longest_fn: fn }), report());
+    const cog = chips.find((c) => c.id === "cognitive")!;
+    expect(cog.line).toBe(260);
+    expect(cog.title).toContain("from line 10");
+  });
+
+  it("falls back to the declaration when the change added nothing inside the function", () => {
+    const f = file("src/a.ts", del("gone", 4));
+    const fn = { name: "run", start: 10, end: 300, code_lines: 254, cognitive: 30 };
+    expect(fileChips(f, health({ worst_fn: fn }), report()).find((c) => c.id === "cognitive")!.line).toBe(10);
   });
 
   it("still applies the patch-only rules while the measurement is missing", () => {

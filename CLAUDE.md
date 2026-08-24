@@ -218,7 +218,18 @@ And the things that hold however the files are arranged:
   not read carries a row of zeroes and every one of them is meaningless. And **a rule that
   fires on ordinary code is worse than no rule** — `.unwrap()` was the obvious silenced-error
   pattern and is deliberately absent, because it appears 156 times in `git.rs` alone and a
-  chip on every Rust change teaches you to ignore the row that matters.
+  chip on every Rust change teaches you to ignore the row that matters. Four more of that
+  last kind, each found by pointing the rules at real code rather than at a fixture:
+  **strip the visibility modifier before naming a function** (`pub(crate)` carries its own
+  parentheses, so the name search read `pub` for the whole Rust backend, and `pub(crate)
+  struct` slipped past the keyword rejection to register as a function); **blank string
+  literals and skip non-source paths before matching a silenced error** (the CHANGELOG entry
+  *announcing* the rule earned a red chip, and the pattern table earned six on itself);
+  **only a declaration can win the length chip** (a call with a trailing block keeps the
+  callee's name, so on every vitest file the longest "function" was the `describe`); and
+  **nesting is measured from the enclosing function in both families**, with the indent step
+  detected per file — absolute depth made one threshold mean two things, and a hard-coded
+  four columns made the rule silently *never fire* on 2-space Python or YAML.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, counted from `SubagentStart`/`Stop`, with no disk and no backend), `statusKey` answers `"background"` for it, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.

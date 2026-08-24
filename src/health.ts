@@ -109,6 +109,35 @@ const SILENCED: { re: RegExp; what: string; inComment: boolean }[] = [
 /// only has to stop a prose line mentioning `as any` from being read as code doing it.
 const COMMENTISH = /^\s*(\/\/|\*|\/\*)/;
 
+/// Blank the contents of string literals, so a line that *documents* a pattern is not
+/// read as a line that *does* it.
+///
+/// This module's own pattern table earned six chips on itself and its tests earned ten,
+/// all of them the literal patterns sitting inside quotes. Mirrors `blank_literals` in
+/// `health.rs`, and has the same single-line limitation and the same failure mode: an
+/// unmatched quote (an apostrophe) blanks the rest of the line, which loses a finding
+/// rather than inventing one. Comment lines are never blanked — prose is full of
+/// apostrophes, and the patterns that legitimately live in a comment are matched raw.
+function blankLiterals(line: string): string {
+  let out = "";
+  let quote: string | null = null;
+  let esc = false;
+  for (const c of line) {
+    if (quote) {
+      out += " ";
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+      out += " ";
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 /// The silencings this change introduced, in the order they appear.
 ///
 /// Added lines only. A file that already had a bare `except:` before you opened it is not
@@ -120,8 +149,9 @@ export function silencedIn(f: DiffFile): { line: number; what: string }[] {
     for (const l of h.lines) {
       if (l.kind !== "add") continue;
       const comment = COMMENTISH.test(l.text);
+      const probe = comment ? l.text : blankLiterals(l.text);
       for (const s of SILENCED) {
-        if ((s.inComment || !comment) && s.re.test(l.text)) {
+        if ((s.inComment || !comment) && s.re.test(probe)) {
           out.push({ line: l.newNo ?? 0, what: s.what });
           break; // one finding a line; the first match is the one that describes it
         }
@@ -167,6 +197,19 @@ export function noTestChanged(files: DiffFile[]): boolean {
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
+/// The one finding that applies to any file, whatever it is written in — which is why it
+/// is lifted out: a copy-pasted block is a copy-pasted block in prose and in config too.
+function dupChip(h: FileHealth): Chip {
+  const where = h.dups.map((d) => `${d.other_path}:${d.other_line}`);
+  return {
+    id: "dup",
+    sev: "bad",
+    text: h.dups.length === 1 ? "duplicate block" : `dup ×${h.dups.length}`,
+    title: `Six or more lines added here already exist in:\n${where.join("\n")}`,
+    line: h.dups[0].line,
+  };
+}
+
 /// Every chip one changed file has earned, worst first.
 ///
 /// `h` is absent while the measurement is still in flight, or when the backend could not
@@ -174,6 +217,23 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /// the patch-only rules still apply and the rest is simply not claimed. A missing
 /// measurement must never look like a clean one, which is why nothing here substitutes a
 /// zero for an unknown.
+/// The first line this change *added* inside a span, or 0.
+///
+/// What the complexity and length chips point at. Their finding is about a function, and
+/// the obvious target is its declaration — but for a change deep inside a long function
+/// that line is nowhere near a hunk, so it is not rendered, and the click scrolls to
+/// nothing and flashes nothing: indistinguishable from a dead control. A line the change
+/// added is always on screen, and is a better answer anyway — it is the part of the
+/// function you are actually being asked about.
+function firstAddedIn(f: DiffFile, start: number, end: number): number {
+  for (const h of f.hunks) {
+    for (const l of h.lines) {
+      if (l.kind === "add" && l.newNo && l.newNo >= start && l.newNo <= end) return l.newNo;
+    }
+  }
+  return 0;
+}
+
 export function fileChips(
   f: DiffFile,
   h: FileHealth | undefined,
@@ -181,6 +241,14 @@ export function fileChips(
   prefs: HealthPrefs = DEFAULT_HEALTH,
 ): Chip[] {
   const out: Chip[] = [];
+
+  // Documentation, config and lockfiles get one rule and no more. They are not code, so
+  // the code-shaped findings do not apply to them — and `silenced` in particular read the
+  // CHANGELOG entry *announcing* the rule as a swallowed error, which is exactly the kind
+  // of false positive that teaches you to stop reading the row.
+  if (!isSourcePath(f.path)) {
+    return h?.measured && h.dups.length ? [dupChip(h)] : [];
+  }
 
   const silenced = silencedIn(f);
   if (silenced.length) {
@@ -196,16 +264,7 @@ export function fileChips(
 
   if (!h?.measured) return out;
 
-  if (h.dups.length) {
-    const where = h.dups.map((d) => `${d.other_path}:${d.other_line}`);
-    out.push({
-      id: "dup",
-      sev: "bad",
-      text: h.dups.length === 1 ? "duplicate block" : `dup ×${h.dups.length}`,
-      title: `Six or more lines added here already exist in:\n${where.join("\n")}`,
-      line: h.dups[0].line,
-    });
-  }
+  if (h.dups.length) out.push(dupChip(h));
 
   // Size is only ever relative — a fixed number would flag half of one project and
   // nothing at all in another — and it is only worth saying when this change is what
@@ -228,9 +287,9 @@ export function fileChips(
       id: "cognitive",
       sev: "warn",
       text: `cognitive ${w.cognitive}`,
-      title: `\`${w.name}\` scores ${w.cognitive} — at or above the threshold of ${prefs.cognitive}.\n`
+      title: `\`${w.name}\` (from line ${w.start}) scores ${w.cognitive} — at or above the threshold of ${prefs.cognitive}.\n`
         + `An approximation of Cognitive Complexity: branches cost more the deeper they nest.`,
-      line: w.start,
+      line: firstAddedIn(f, w.start, w.end) || w.start,
     });
   }
 
@@ -242,8 +301,8 @@ export function fileChips(
       id: "longfn",
       sev: "warn",
       text: `${g.code_lines}-line fn`,
-      title: `\`${g.name}\` is ${plural(g.code_lines, "code line")} long — about ${Math.round(g.code_lines / 30)} screens.`,
-      line: g.start,
+      title: `\`${g.name}\` (from line ${g.start}) is ${plural(g.code_lines, "code line")} long — about ${Math.round(g.code_lines / 30)} screens.`,
+      line: firstAddedIn(f, g.start, g.end) || g.start,
     });
   }
 

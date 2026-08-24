@@ -73,6 +73,24 @@ pub(crate) fn family_of(path: &str) -> Family {
     }
 }
 
+/// Whether a path is code, as opposed to documentation, config or data.
+///
+/// Not the same question as [`family_of`], which asks how to *parse* a file: `.toml` and
+/// `.yml` are indent-shaped but they are not code, and `.md` is neither. Only this set
+/// contributes to the size distribution.
+///
+/// **The frontend keeps the same list** (`isSourcePath` in `./health`), because it has to
+/// answer the question for files this side never measured. Two lists on two sides of an
+/// IPC boundary is the cost of that; keep them in step.
+fn is_code_file(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().unwrap_or(""),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "rs" | "go" | "py" | "rb" | "java"
+            | "c" | "h" | "cc" | "cpp" | "hpp" | "cs" | "swift" | "kt" | "kts" | "scala"
+            | "php" | "dart" | "sh" | "bash" | "css" | "scss"
+    )
+}
+
 /// Whether a line carries code, once comments and blanks are taken out.
 ///
 /// Counting raw lines is the metric everyone reaches for first and it is the wrong one
@@ -163,6 +181,16 @@ pub(crate) struct FnSpan {
     /// here — and it is used only to answer "is this function much harder than the ones
     /// around it", which it does well enough for a warning.
     pub cognitive: u32,
+    /// Whether somebody *declared* this function, as opposed to handing a callback to a
+    /// call. `describe("…", () => {` opens a block worth scoring, but the name on it is
+    /// the callee's — so on any vitest file the longest "function" in the file is the
+    /// `describe`, and a "90-line fn" chip pointing at it is a chip nobody wants. Only
+    /// declarations can win `longest_fn`; complexity still counts a fat callback, because
+    /// that one is worth knowing wherever it lives.
+    ///
+    /// Internal: the frontend gets the consequence, not the flag.
+    #[serde(skip)]
+    pub decl: bool,
 }
 
 #[derive(Debug, Default)]
@@ -203,6 +231,9 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
     // and common shape and flattening it would attribute the closure's complexity to
     // whatever came after it.
     let mut open: Vec<(usize, i32)> = Vec::new();
+    // Read once, before the walk: the indent family's levels are only meaningful in the
+    // file's own step.
+    let unit = if fam == Family::Indent { indent_unit(src) } else { 4 };
 
     for (i, raw) in src.lines().enumerate() {
         let n = (i + 1) as u32;
@@ -212,12 +243,19 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
 
         let here = match fam {
             Family::Brace => depth.max(0) as u32,
-            // Four columns to a level is the convention everywhere it matters; a tab is
-            // one level by definition.
-            Family::Indent => indent_level(raw),
+            Family::Indent => leading_cols(raw) / unit,
             Family::Plain => 0,
         };
-        m.depth.push(here);
+        // **Depth is reported relative to the enclosing function, in both families**, and
+        // that is what makes one threshold mean one thing. Absolute depth does not: in a
+        // brace file a function body is already level 1 and a class method level 2, while
+        // an indented file counts from nothing — so `nesting: 5` asked for four real
+        // levels in one language and five in another, and the two were never comparable.
+        // Level 1 is now "a statement in the function body" wherever you are.
+        m.depth.push(match open.last() {
+            Some(&(_, base)) => (here as i32 - base + 1).max(1) as u32,
+            None => here,
+        });
         if code {
             m.code_lines += 1;
         }
@@ -248,7 +286,7 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
                 let delta = brace_delta(raw);
                 if let Some(name) = fn_name(t) {
                     // The body starts one level in from where the signature sits.
-                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0 });
+                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0, decl: is_decl(t) });
                     open.push((m.fns.len() - 1, depth.max(0) as u32 as i32 + 1));
                 }
                 depth += delta;
@@ -272,7 +310,8 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
                     }
                 }
                 if let Some(name) = def_name(t) {
-                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0 });
+                    // `def` is always a declaration; there is no callback form here.
+                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0, decl: true });
                     open.push((m.fns.len() - 1, here as i32 + 1));
                 }
             }
@@ -287,7 +326,7 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
     m
 }
 
-fn indent_level(raw: &str) -> u32 {
+fn leading_cols(raw: &str) -> u32 {
     let mut cols = 0u32;
     for c in raw.chars() {
         match c {
@@ -296,7 +335,37 @@ fn indent_level(raw: &str) -> u32 {
             _ => break,
         }
     }
-    cols / 4
+    cols
+}
+
+/// The file's own indentation step, in columns.
+///
+/// Hard-coding 4 was wrong in a way that made the rule *quiet* rather than noisy, which
+/// is worse: a 2-space Python file, shell script or GitHub workflow reported half its
+/// real depth and simply never tripped the threshold. Taking the most common positive
+/// jump between consecutive non-blank lines is what editors do, and it costs one pass.
+/// Ties and empty files fall back to 4, and the range is clamped: a 1-column "step" is a
+/// continuation line, not a style.
+fn indent_unit(src: &str) -> u32 {
+    let mut hist = [0u32; 9];
+    let mut prev = 0u32;
+    let mut started = false;
+    for l in src.lines() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        let w = leading_cols(l);
+        if started && w > prev {
+            hist[((w - prev).min(8)) as usize] += 1;
+        }
+        prev = w;
+        started = true;
+    }
+    // 2 before 4 before 8 on a tie only because the smaller step is the safer guess: it
+    // over-reports depth rather than under-reporting it, and a rule that says too much is
+    // fixable from the outside while one that says nothing is invisible.
+    let best = (2..=8).max_by_key(|&d| hist[d as usize]).unwrap_or(4);
+    if hist[best as usize] == 0 { 4 } else { best }
 }
 
 fn brace_delta(raw: &str) -> i32 {
@@ -332,6 +401,31 @@ fn flow_score(t: &str, fam: Family) -> (u32, u32) {
     (flow, flat)
 }
 
+/// Drop a leading Rust visibility modifier.
+///
+/// This is not cosmetic. `pub(crate)` carries its own parentheses, and both tests below
+/// read the *first* `(` and the *first* word — so unfixed, every function in a codebase
+/// that spells visibility this way is named `pub`, and `pub(crate) struct Foo {` slips
+/// past the keyword rejection to register as a function too, where it can win the
+/// longest-function chip and point it at a struct. This crate is `pub(crate)` throughout,
+/// so it was wrong for essentially the whole backend.
+fn strip_vis(code: &str) -> &str {
+    let Some(rest) = code.strip_prefix("pub") else { return code };
+    // `pub(crate)`, `pub(super)`, `pub(in crate::a)` — take the balanced group, if any.
+    let rest = match rest.strip_prefix('(') {
+        Some(inner) => match inner.find(')') {
+            Some(i) => &inner[i + 1..],
+            None => return code, // unbalanced; leave the line alone rather than guess
+        },
+        None => rest,
+    };
+    // `pubwhatever` is an identifier that merely starts with the keyword.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return code;
+    }
+    rest.trim_start()
+}
+
 /// The name of the function a brace-family line declares, or None.
 ///
 /// Loose by design: it has to catch `function f(`, `const f = (` , `pub async fn f(`,
@@ -340,7 +434,7 @@ fn flow_score(t: &str, fam: Family) -> (u32, u32) {
 /// what the keyword rejection below is for.
 fn fn_name(t: &str) -> Option<String> {
     let clean = blank_literals(t);
-    let code = clean.split("//").next().unwrap_or("").trim();
+    let code = strip_vis(clean.split("//").next().unwrap_or("").trim());
     if !code.ends_with('{') || !code.contains('(') {
         return None;
     }
@@ -350,6 +444,7 @@ fn fn_name(t: &str) -> Option<String> {
     const NOT_FN: &[&str] = &[
         "if", "for", "while", "switch", "match", "catch", "else", "do", "try", "with",
         "struct", "enum", "impl", "class", "interface", "namespace", "union", "return",
+        "trait", "extern", "unsafe", "mod",
     ];
     if NOT_FN.contains(&w) {
         return None;
@@ -376,6 +471,23 @@ fn fn_name(t: &str) -> Option<String> {
     // A call with a trailing block (`items.forEach(x => {`) is not a declaration we can
     // name usefully, but it *is* a body worth scoring, so it keeps the callee's name.
     Some(name)
+}
+
+/// Whether the block a line opens belongs to a function somebody declared.
+///
+/// The discriminator is the arrow: a line ending `=> {` hands its block to a lambda, so
+/// the name `fn_name` captured is whatever was *called* — `describe`, `forEach`, `it`.
+/// Unless the arrow is itself being named (`const f = (a) => {`), in which case it is a
+/// declaration like any other. Everything that does not end in an arrow — a `fn`, a
+/// `function`, a bare method signature — is a declaration.
+fn is_decl(t: &str) -> bool {
+    let clean = blank_literals(t);
+    let code = strip_vis(clean.split("//").next().unwrap_or("").trim()).trim_end();
+    if !code.ends_with("=> {") {
+        return true;
+    }
+    // `const f = (a) => {` names the arrow; `describe("x", () => {` does not.
+    code.split('(').next().unwrap_or("").contains('=')
 }
 
 fn def_name(t: &str) -> Option<String> {
@@ -621,8 +733,14 @@ pub(crate) fn project_health(workdir: String, changed: Vec<ChangedFile>) -> Heal
         let Ok(src) = std::fs::read_to_string(&full) else { continue };
         let fam = family_of(rel);
         indexed += 1;
-        let mut in_block = false;
-        sizes.push(src.lines().filter(|l| is_code(l, fam, &mut in_block)).count() as u32);
+        // The percentile is over *code* files only. Every file gets indexed for
+        // duplicates — a copy-pasted CI job is still a copy — but markdown and JSON in the
+        // distribution move the threshold for reasons that have nothing to do with code:
+        // a docs-heavy repo made the rule quieter and a config-heavy one noisier.
+        if is_code_file(rel) {
+            let mut in_block = false;
+            sizes.push(src.lines().filter(|l| is_code(l, fam, &mut in_block)).count() as u32);
+        }
         for (h, line) in windows_of(&sig_lines(&src, fam)) {
             index
                 .entry(h)
@@ -698,7 +816,10 @@ fn measure_change(
         .filter(|f| c.added.iter().any(|&n| n >= f.start && n <= f.end))
         .collect();
     out.worst_fn = touched.iter().max_by_key(|f| f.cognitive).map(|f| (*f).clone());
-    out.longest_fn = touched.iter().max_by_key(|f| f.code_lines).map(|f| (*f).clone());
+    // Declarations only: on any vitest file the longest block is the `describe`, and the
+    // name on it is the callee's rather than a function anybody could shorten. Complexity
+    // keeps counting callbacks — a fat one is worth knowing wherever it lives.
+    out.longest_fn = touched.iter().filter(|f| f.decl).max_by_key(|f| f.code_lines).map(|f| (*f).clone());
 
     // Duplicates: only blocks that *start* on an added line, so an untouched copy that
     // has been sitting in the file for a year is not reported as something you just did.
@@ -768,6 +889,35 @@ mod tests {
         assert_eq!(m.fns[0].end, 4, "the closing brace ends it: {:?}", m.fns);
     }
 
+    /// A visibility modifier carries its own parentheses, and the name search reads the
+    /// identifier before the *first* `(`. Unfixed, that is `pub` — for every function in
+    /// a codebase whose convention is `pub(crate)`, which is this one's.
+    #[test]
+    fn a_visibility_modifier_does_not_become_the_function_name() {
+        let m = brace("pub(crate) fn measure(src: &str) -> FileMetrics {\n  x();\n}\n");
+        assert_eq!(m.fns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["measure"]);
+        for src in ["pub fn plain(a: u32) {\n}\n", "pub(super) fn up() {\n}\n", "pub(in crate::a) fn deep() {\n}\n"] {
+            let m = brace(src);
+            assert_eq!(m.fns.len(), 1, "{src:?}");
+            assert_ne!(m.fns[0].name, "pub", "{src:?}");
+        }
+    }
+
+    /// The same shape defeats the keyword rejection: `NOT_FN` tests the first word, which
+    /// for `pub(crate) struct Foo {` is `pub`. The declaration then registers as a
+    /// function and can win `longest_fn` — a "N-line fn" chip pointing at a struct.
+    #[test]
+    fn a_public_type_declaration_is_not_a_function() {
+        for src in [
+            "pub(crate) struct Foo {\n  a: u32,\n}\n",
+            "pub enum Bar {\n  A,\n}\n",
+            "pub(crate) trait Baz {\n  fn go(&self);\n}\n",
+        ] {
+            let m = brace(src);
+            assert!(m.fns.iter().all(|f| f.name != "pub"), "{src:?} -> {:?}", m.fns);
+        }
+    }
+
     #[test]
     fn control_flow_is_not_mistaken_for_a_function() {
         let src = "function real(a) {\n  if (a) {\n    while (a) {\n      a--;\n    }\n  }\n}\n";
@@ -815,6 +965,76 @@ mod tests {
         let m = brace("function f() {\n  if (a) {\n    deep();\n  }\n}\n");
         assert_eq!(m.depth[1], 0);
         assert_eq!(m.depth[3], 2, "inside if inside function: {:?}", m.depth);
+    }
+
+    /// The chip on a vitest file used to read "`describe` is 90 code lines long", every
+    /// time, because a call with a trailing block keeps the callee's name and a describe
+    /// wraps the file. Complexity still counts such a block; only the length chip is
+    /// restricted to functions somebody declared.
+    #[test]
+    fn a_describe_block_cannot_win_the_longest_function() {
+        let src = "describe(\"a suite\", () => {\n  if (a) { x(); }\n  const helper = (n) => {\n    y();\n  };\n});\n";
+        let m = brace(src);
+        let by = |n: &str| m.fns.iter().find(|f| f.name == n).unwrap_or_else(|| panic!("{n} missing in {:?}", m.fns));
+        assert!(!by("describe").decl, "a callback handed to a call is not a declaration");
+        assert!(by("helper").decl, "an arrow that is being named is");
+        assert!(by("describe").cognitive > 0, "it still carries the complexity inside it");
+    }
+
+    #[test]
+    fn a_method_and_a_keyword_form_are_both_declarations() {
+        for src in ["fn go(a: u32) {\n}\n", "function go(a) {\n}\n", "  render(props) {\n  }\n"] {
+            let m = brace(src);
+            assert_eq!(m.fns.len(), 1, "{src:?} -> {:?}", m.fns);
+            assert!(m.fns[0].decl, "{src:?}");
+        }
+    }
+
+    /// Hard-coding four columns made the rule *quiet* on 2-space files rather than noisy,
+    /// which is the worse failure: it simply never fired and nothing said so.
+    #[test]
+    fn indentation_is_read_in_the_files_own_step() {
+        assert_eq!(indent_unit("def a():\n  if x:\n    y()\n"), 2);
+        assert_eq!(indent_unit("def a():\n    if x:\n        y()\n"), 4);
+        assert_eq!(indent_unit("\t\tdeep()\n"), 4, "a file with no step falls back");
+        assert_eq!(indent_unit(""), 4);
+
+        // The same shape at two step sizes has to report the same depth.
+        let two = measure("def a():\n  if x:\n    if y:\n      z()\n", Family::Indent);
+        let four = measure("def a():\n    if x:\n        if y:\n            z()\n", Family::Indent);
+        assert_eq!(two.depth[4], four.depth[4], "2-space and 4-space must agree");
+        assert_eq!(two.depth[4], 3, "body, if, if -> three levels inside the function");
+    }
+
+    /// One threshold has to mean one thing, and absolute depth never did: a brace
+    /// function body starts at 1 and a class method at 2, while an indented file counts
+    /// from nothing.
+    #[test]
+    fn depth_is_measured_from_the_enclosing_function_in_both_families() {
+        let br = brace("function f() {\n  if (a) {\n    deep();\n  }\n}\n");
+        let py = measure("def f():\n    if a:\n        deep()\n", Family::Indent);
+        assert_eq!(br.depth[3], 2, "brace: body, if");
+        assert_eq!(py.depth[3], 2, "indent: body, if — the same shape, the same number");
+
+        // A method sits one brace deeper than a free function and must not report deeper.
+        let meth = brace("class C {\n  m() {\n    if (a) {\n      deep();\n    }\n  }\n}\n");
+        assert_eq!(meth.depth[4], 2, "a method's body is still level 1: {:?}", meth.depth);
+    }
+
+    #[test]
+    fn the_percentile_ignores_documentation_and_config() {
+        let dir = crate::testutil::scratch_dir();
+        // One small code file, and a pile of long markdown that would drag p90 up.
+        std::fs::write(dir.join("a.ts"), "x();\n".repeat(10)).unwrap();
+        for i in 0..9 {
+            std::fs::write(dir.join(format!("doc{i}.md")), "prose\n".repeat(500)).unwrap();
+        }
+        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
+        crate::testutil::git(&dir, &["add", "-A"]);
+        let rep = project_health(dir.to_string_lossy().to_string(), vec![]);
+        assert_eq!(rep.p90_code_lines, 10, "only a.ts counts toward the distribution");
+        assert!(rep.indexed >= 10, "…but everything is still indexed for duplicates");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

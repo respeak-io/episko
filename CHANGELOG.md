@@ -36,6 +36,17 @@ Markers: `+` new · `~` changed · `!` fixed
   `nesting`, `long_fn` and `size_add` for a project; anything you leave out keeps its
   default. Committable, so a team's thresholds travel with the repo.
 
+! **The findings say what they mean.** Pointing the rules at real code rather than at test
+  fixtures turned up five things they got wrong, all now fixed: a Rust function was named
+  after its visibility keyword rather than itself (`pub`, for the whole backend); a
+  changelog entry *describing* a swallowed error was flagged as one, along with the pattern
+  list itself; the complexity and length findings could point at a line the diff does not
+  show, so clicking them did nothing visible; on a test file the longest "function" was
+  always the `describe` wrapping it; and nesting was counted differently in braced and
+  indented languages — 2-space Python and YAML reported half their real depth and so never
+  tripped it at all. Depth is now "levels inside this function" in both, and file size is
+  compared against the project's *code* rather than against its documentation.
+
 ~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
   you the files back to back with nothing between them, so scrolling into the middle of one
   left nothing on screen saying which file you were in. There is now an **index down the
