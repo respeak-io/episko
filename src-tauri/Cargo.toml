@@ -1,7 +1,7 @@
 [package]
 name = "episko"
 version = "0.1.0"
-description = "A launcher/manager for many Claude Code sessions"
+description = "A launcher/manager for many coding-agent sessions"
 authors = ["Respeak"]
 edition = "2021"
 

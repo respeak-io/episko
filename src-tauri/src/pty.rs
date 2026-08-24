@@ -852,18 +852,20 @@ pub(crate) struct AgentInfo {
     /// Features supplied by this provider adapter. The generic launcher is a
     /// terminal-only fallback; integrated adapters opt into these without teaching
     /// shared frontend surfaces provider names.
-    capabilities: &'static [&'static str],
+    capabilities: Vec<String>,
 }
 
-const CODEX_CAPABILITIES: &[&str] = &[
-    "session-state", "activity", "context", "usage", "permissions", "resume", "history",
-];
+#[derive(serde::Deserialize)]
+struct ProviderManifestEntry {
+    capabilities: Vec<String>,
+}
 
-fn agent_capabilities(id: &str) -> &'static [&'static str] {
-    match id {
-        "codex" => CODEX_CAPABILITIES,
-        _ => &[],
-    }
+/// The one capability matrix shared with the TypeScript provider registry. Keeping
+/// this as checked-in JSON lets Rust advertise the exact promises the frontend gates
+/// on without maintaining a second Codex/Claude list in another language.
+fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntry> {
+    serde_json::from_str(include_str!("../../src/providers/manifest.json"))
+        .expect("src/providers/manifest.json must be valid provider metadata")
 }
 
 /// The whole catalogue, each entry saying whether it is installed — **not** a filtered
@@ -882,9 +884,20 @@ fn agent_capabilities(id: &str) -> &'static [&'static str] {
 /// makes it inert); what this owes it is the fact and the binary name.
 #[tauri::command]
 pub(crate) fn list_agents() -> Vec<AgentInfo> {
+    let providers = provider_manifest();
     AGENTS
         .iter()
-        .map(|a| AgentInfo { id: a.id, label: a.label, mark: a.mark, bin: a.bin, path: resolve_cli(a.bin), capabilities: agent_capabilities(a.id) })
+        .map(|a| AgentInfo {
+            id: a.id,
+            label: a.label,
+            mark: a.mark,
+            bin: a.bin,
+            path: resolve_cli(a.bin),
+            capabilities: providers
+                .get(a.id)
+                .map(|p| p.capabilities.clone())
+                .unwrap_or_default(),
+        })
         .collect()
 }
 
@@ -933,18 +946,15 @@ pub(crate) fn spawn_agent(
     // script hit before `argv_command` existed. Codex keeps its real TUI while an
     // independent App Server client feeds Episko's inspector; other providers retain
     // this path's terminal-only fallback until they gain an adapter.
-    let remote = if spec.id == "codex" {
-        Some(agent::start_codex(app.clone(), &state, &session_id, &workdir, &bin)?)
-    } else {
-        None
-    };
-    let args = remote.as_ref().map(|endpoint| {
-        let mut args = vec!["--remote".to_string(), endpoint.clone(), "-C".to_string(), workdir.clone()];
-        if let Some(thread) = resume.as_ref() {
-            args.extend(["resume".to_string(), thread.clone()]);
-        }
-        args
-    }).unwrap_or_default();
+    let args = agent::start_provider(
+        spec.id,
+        app.clone(),
+        &state,
+        &session_id,
+        &workdir,
+        &bin,
+        resume.as_deref(),
+    )?;
     let mut cmd = argv_command(&bin, args);
     cmd.cwd(&workdir);
     for (k, v) in std::env::vars() {
@@ -2247,6 +2257,32 @@ mod tests {
             agent_spec("claude").is_none() && !AGENTS.iter().any(|a| a.bin == "claude"),
             "claude belongs to spawn_claude, which instruments it — see the AGENTS comment"
         );
+    }
+
+    #[test]
+    fn provider_manifest_names_real_agents_and_known_capabilities() {
+        const KNOWN: &[&str] = &[
+            "session-state", "activity", "context", "usage", "permissions", "resume",
+            "history", "external-terminal",
+        ];
+        let providers = provider_manifest();
+        for (id, provider) in &providers {
+            assert!(
+                id == "claude" || agent_spec(id).is_some(),
+                "provider manifest names {id:?}, which is absent from AGENTS"
+            );
+            assert!(
+                provider.capabilities.is_empty()
+                    || provider.capabilities.iter().any(|c| c == "session-state"),
+                "integrated provider {id:?} must advertise session-state"
+            );
+            for capability in &provider.capabilities {
+                assert!(
+                    KNOWN.contains(&capability.as_str()),
+                    "provider {id:?} advertises unknown capability {capability:?}"
+                );
+            }
+        }
     }
 
     #[test]

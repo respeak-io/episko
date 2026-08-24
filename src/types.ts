@@ -8,6 +8,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
+import providerManifest from "./providers/manifest.json";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -177,15 +178,30 @@ export type SessKind = "agent" | "shell" | "task";
 // intentionally user-facing capabilities, not transport names: Claude hooks, the
 // Codex App Server and a future OpenCode server can all produce `session-state`
 // without the UI knowing which protocol delivered it.
-export type AgentCapability =
-  | "session-state"
-  | "activity"
-  | "context"
-  | "usage"
-  | "permissions"
-  | "resume"
-  | "history"
-  | "external-terminal";
+export const AGENT_CAPABILITIES = [
+  "session-state", "activity", "context", "usage", "permissions", "resume",
+  "history", "external-terminal",
+] as const;
+export type AgentCapability = typeof AGENT_CAPABILITIES[number];
+
+type ProviderManifestEntry = { capabilities: string[] };
+const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
+const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
+
+/**
+ * The checked-in provider matrix is shared with Rust's CLI catalogue. Validate it
+ * here as it crosses into typed frontend state: a misspelled capability must fail at
+ * startup/tests rather than quietly turning a feature off in half of the app.
+ */
+export function providerCapabilities(id: string): AgentCapability[] {
+  const capabilities = PROVIDER_MANIFEST[id]?.capabilities ?? [];
+  for (const capability of capabilities) {
+    if (!AGENT_CAPABILITY_SET.has(capability)) {
+      throw new Error(`unknown capability ${capability} for provider ${id}`);
+    }
+  }
+  return [...capabilities] as AgentCapability[];
+}
 // One coding-agent CLI Episko knows about, as `list_agents` reports it — the whole
 // catalogue, installed or not. `path` is where it is, or **null** for "this machine
 // hasn't got it": those rows are shown, greyed and inert, rather than dropped, because
@@ -231,10 +247,7 @@ export const agentInstalled = (a: AgentCli) => a.path !== null;
 // once here instead. `path` is empty because nothing probes for it: `resolve_claude`
 // is the app's own binary lookup and never reports "not installed" — if claude is
 // missing, Episko has bigger problems than a greyed-out row.
-export const CLAUDE_CAPABILITIES: AgentCapability[] = [
-  "session-state", "activity", "context", "usage", "permissions", "resume",
-  "history", "external-terminal",
-];
+export const CLAUDE_CAPABILITIES: AgentCapability[] = providerCapabilities("claude");
 export const CLAUDE_CLI: AgentCli = {
   id: "claude", label: "Claude Code", mark: "Cc", bin: "claude", path: "",
   capabilities: CLAUDE_CAPABILITIES,

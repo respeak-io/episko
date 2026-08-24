@@ -1,0 +1,25 @@
+{
+  "claude": {
+    "capabilities": [
+      "session-state",
+      "activity",
+      "context",
+      "usage",
+      "permissions",
+      "resume",
+      "history",
+      "external-terminal"
+    ]
+  },
+  "codex": {
+    "capabilities": [
+      "session-state",
+      "activity",
+      "context",
+      "usage",
+      "permissions",
+      "resume",
+      "history"
+    ]
+  }
+}

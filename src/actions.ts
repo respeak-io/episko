@@ -47,6 +47,7 @@ import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
 import type { PermMode } from "./types";
+import { resolveProviderPermission } from "./providers/control";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
@@ -125,9 +126,11 @@ export function removeFavorite(path: string) {
 }
 export function resolvePermission(id: string, behavior: string) {
   const owner = [...sessions.values()].find((s) => s.pendingPermId === id);
-  if (owner && owner.provider !== "claude") {
-    invoke("resolve_agent_request", { sessionId: owner.id, requestId: id, behavior }).catch(() => {});
+  if (owner) {
+    resolveProviderPermission(owner, id, behavior).catch(() => {});
   } else {
+    // An unrouted Claude hook can still be held open in the backend. There is no
+    // session object to dispatch through, so release that legacy transport directly.
     invoke("resolve_permission", { id, behavior }).catch(() => {});
   }
   if (owner) { owner.pendingPermId = null; owner.attention = null; owner.pendingCmd = ""; owner.pendRisk = null; }
@@ -264,9 +267,9 @@ export function setDefaultAgent(id: string) {
   setDefaultAgentState(id);
   localStorage.setItem("cc-agent", defaultAgent);
   const a = agentDef(defaultAgent);
-  toast(a && a.id !== "claude"
+  toast(a
     ? `New sessions run ${a.label}${a.capabilities.includes("session-state") ? " — inspector connected" : " — terminal only"}`
-    : "New sessions run Claude Code");
+    : "New sessions use the available default agent");
   renderSettings();
 }
 // The per-project override, set from a project's own menu. `null` clears it, which is

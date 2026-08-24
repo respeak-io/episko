@@ -7,16 +7,16 @@
 // Everything here reads and writes a `Sess` and nothing else — no DOM, no
 // `renderAll()`. The caller renders; this decides *what* to render. Two things it
 // needs live upstairs and reach it the way PLAN.md's seam rules prescribe:
-// `resolve_permission` (a plain backend call, so it just imports `invoke`) and the
-// run-on-stop rule, which owns panes and task discovery and so arrives as the
+// provider permission routing (through the control-plane boundary) and the run-on-stop
+// rule, which owns panes and task discovery and so arrives as the
 // settable `setOnTurnEnd` hook. See test/phase.test.ts.
 
-import { invoke } from "@tauri-apps/api/core";
 import { liveFanout, type Fanout, type Phase, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
+import { resolveProviderPermission } from "./providers/control";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
 // agent's work — but launching that run means task discovery, dependency chains and
@@ -221,11 +221,7 @@ export function riskLevel(tool: string, input: any): Risk {
 // blocking request is still held server-side, release it so it doesn't leak.
 export function clearPending(s: Sess) {
   if (s.pendingPermId) {
-    const cmd = s.provider === "claude" ? "resolve_permission" : "resolve_agent_request";
-    const args = s.provider === "claude"
-      ? { id: s.pendingPermId, behavior: "terminal" }
-      : { sessionId: s.id, requestId: s.pendingPermId, behavior: "terminal" };
-    invoke(cmd, args).catch(() => {});
+    resolveProviderPermission(s, s.pendingPermId, "terminal").catch(() => {});
   }
   s.attention = null; s.pendingPermId = null; s.pendingCmd = ""; s.pendRisk = null;
 }

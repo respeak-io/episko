@@ -21,7 +21,9 @@ import { renderFoot } from "./footer";
 import { wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
-import { codexHistoryEntries, codexHistoryMessages } from "./providers/codex";
+import {
+  providerAdapter, readProviderHistory, reconcileProviderRestorables,
+} from "./providers";
 import { dormantBusy, orderedSessions } from "./grouping";
 import {
   hasAgentCapability, isAgent, providerSessionKey,
@@ -209,8 +211,7 @@ export function openDormant(id: string) {
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  if (d.provider === "codex") loadCodexTranscriptInto(d.resumeId, () => pastMirrorId() === id);
-  else loadTranscriptInto(d.workdir, d.resumeId, true, () => pastMirrorId() === id);
+  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id);
 }
 export function renderPastHeader(d: Restorable) {
   ($("btnClose") as HTMLButtonElement).hidden = true;
@@ -259,8 +260,7 @@ export function forgetDormant(id: string) {
   flushRoster();
   renderAll();
 }
-// On boot: reconcile Claude roster entries against its on-disk transcripts and Codex
-// entries against the App Server's public thread list.
+// On boot, let each provider reconcile roster entries against its durable history.
 // Titles are refreshed from disk too: `ai-title` beats our in-memory OSC title and,
 // unlike it, exists for sessions launched into an external terminal. So is "last
 // active", and that one is the transcript's newest *record*, not its mtime — a
@@ -271,43 +271,15 @@ export async function loadDormants() {
   try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
   if (!Array.isArray(roster) || !roster.length) return;
   const live = new Set([...sessions.keys()]);
-  const byDir = new Map<string, Restorable[]>();
-  const codex: Restorable[] = [];
-  const found: Restorable[] = [];
+  const candidates: Restorable[] = [];
   for (const r of roster) {
     if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
     if (live.has(r.id)) continue;
     if (!r.resumeId) r.resumeId = r.id;
     if (!r.provider) r.provider = "claude"; // roster written before provider support
-    if (r.provider === "codex") { codex.push(r); continue; }
-    if (r.provider !== "claude") { found.push(r); continue; }
-    const arr = byDir.get(r.workdir);
-    if (arr) arr.push(r); else byDir.set(r.workdir, [r]);
+    candidates.push(r);
   }
-  await Promise.all([...byDir.entries()].map(async ([workdir, entries]) => {
-    const past = await invoke<{ session_id: string; title: string; last_active: number }[]>("list_past_sessions", { workdir }).catch(() => []);
-    const byId = new Map(past.map((p) => [p.session_id.toLowerCase(), p]));
-    for (const r of entries) {
-      const hit = byId.get(r.resumeId.toLowerCase());
-      if (!hit) continue; // no transcript → nothing to resume
-      found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.last_active ? hit.last_active * 1000 : r.lastActivity });
-    }
-  }));
-  if (codex.length) {
-    const raw = await invoke<any>("agent_history", { provider: "codex", threadId: null, limit: 300 }).catch(() => null);
-    if (raw == null) {
-      // An upgrade or PATH change can make the history reader temporarily
-      // unavailable. Retain the roster rather than turning that into data loss.
-      found.push(...codex);
-    } else {
-      const byId = new Map(codexHistoryEntries(raw).map((h) => [h.session_id.toLowerCase(), h]));
-      for (const r of codex) {
-        const hit = byId.get(r.resumeId.toLowerCase());
-        if (!hit) continue;
-        found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.last_active ? hit.last_active * 1000 : r.lastActivity });
-      }
-    }
-  }
+  const found = await reconcileProviderRestorables(candidates);
   found.sort((a, b) => b.lastActivity - a.lastActivity);
   setDormants(found);
   if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
@@ -332,13 +304,16 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
   }
 }
 
-async function loadCodexTranscriptInto(sessionId: string, stillCurrent: () => boolean) {
+async function loadProviderTranscriptInto(
+  provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean,
+) {
+  const label = providerAdapter(provider)?.label ?? provider;
   try {
-    const raw = await invoke<any>("agent_history", { provider: "codex", threadId: sessionId, limit: 80 });
+    const msgs = await readProviderHistory(provider, sessionId, cwd, 80);
     if (!stillCurrent()) return;
-    renderTranscript(codexHistoryMessages(raw, 80), true, "Codex");
+    renderTranscript(msgs, true, label);
   } catch (err) {
-    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this Codex conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
+    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
   }
 }
 function renderTranscript(msgs: { role: string; text: string }[], initial: boolean, agent = "Claude") {

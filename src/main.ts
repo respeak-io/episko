@@ -6,7 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
 import { applyAgentEvent, type ProviderEvent } from "./agents";
-import { codexEvents } from "./providers/codex";
+import { providerAdapter } from "./providers";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -636,7 +636,7 @@ listen<ProviderEvent>("agent-event", (e) => {
     dlog("warn", `${raw.provider} event for unrouted session ${raw.sessionId?.slice(0, 8) || "?"}: dropped`);
     return;
   }
-  const adapter = raw.provider === "codex" ? codexEvents : null;
+  const adapter = providerAdapter(raw.provider)?.events;
   if (!adapter) { dlog("warn", `no event adapter for provider ${raw.provider}`); return; }
   const events = adapter(raw); if (!events.length) return;
   telem.rx++; telem.routed++;

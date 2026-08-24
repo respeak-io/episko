@@ -522,9 +522,39 @@ fn observer_loop(
     }
 }
 
+/// Provider control-plane registry. `pty.rs` owns the generic PTY and deliberately
+/// knows no vendor command shape; a future integrated provider adds its sidecar and
+/// launch arguments here, while an unlisted provider keeps the terminal-only path.
+pub(crate) fn start_provider(
+    provider: &str,
+    app: AppHandle,
+    state: &AppState,
+    session_id: &str,
+    workdir: &str,
+    bin: &str,
+    resume: Option<&str>,
+) -> Result<Vec<String>, String> {
+    match provider {
+        "codex" => {
+            let endpoint = start_codex(app, state, session_id, workdir, bin)?;
+            let mut args = vec![
+                "--remote".to_string(),
+                endpoint,
+                "-C".to_string(),
+                workdir.to_string(),
+            ];
+            if let Some(thread) = resume {
+                args.extend(["resume".to_string(), thread.to_string()]);
+            }
+            Ok(args)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// Start the loopback App Server and Episko observer. The returned endpoint is passed
 /// to the real Codex TUI; both clients then share the same thread and approvals.
-pub(crate) fn start_codex(
+fn start_codex(
     app: AppHandle,
     state: &AppState,
     session_id: &str,

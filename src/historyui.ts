@@ -10,14 +10,14 @@
 // constraints: resume must run in the session's ORIGINAL cwd (hence `entry.cwd` and
 // the `exists` guard), and a live session must not be resumed twice (`histBusy`).
 
-import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { abbr } from "./phase";
 import { activeProjectCtx, launch } from "./panes";
 import { accentFor, availAgents } from "./state";
-import { codexHistoryEntries, codexHistoryMessages } from "./providers/codex";
+import { historyProviders, readProviderHistory } from "./providers";
+import { providerSessionKey } from "./types";
 import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
@@ -32,7 +32,7 @@ let histLoading = false;
 // The preview is keyed by session id and re-checked on arrival: arrow keys move the
 // selection faster than a transcript read returns, and a late reply must not paint
 // over the row the user has already moved to.
-let histPreview: { id: string; msgs: { role: string; text: string }[] } | null = null;
+let histPreview: { key: string; msgs: { role: string; text: string }[] } | null = null;
 const HIST_LIMIT = 300;
 const HIST_TTL = 60000;           // re-scan on reopen if the last one is older
 
@@ -66,17 +66,11 @@ export async function loadHistory(force: boolean) {
   histLoading = true;
   histRender();
   try {
-    const wantsCodex = availAgents.some((a) => a.id === "codex" && a.path && a.capabilities.includes("history"));
-    const [claude, codex] = await Promise.all([
-      invoke<Omit<HistEntry, "provider">[]>("list_session_history", { limit: HIST_LIMIT }).catch(() => []),
-      wantsCodex
-        ? invoke<any>("agent_history", { provider: "codex", threadId: null, limit: HIST_LIMIT }).catch(() => null)
-        : Promise.resolve(null),
-    ]);
-    histAll = [
-      ...claude.map((h) => ({ ...h, provider: "claude" })),
-      ...codexHistoryEntries(codex),
-    ].sort((a, b) => b.last_active - a.last_active).slice(0, HIST_LIMIT);
+    const batches = await Promise.all(historyProviders(availAgents).map(async (provider) => {
+      try { return await provider.history!.list(HIST_LIMIT); }
+      catch (e) { dlog("warn", `${provider.id} history scan failed: ${e}`); return []; }
+    }));
+    histAll = batches.flat().sort((a, b) => b.last_active - a.last_active).slice(0, HIST_LIMIT);
     histLoadedAt = Date.now();
   } catch (e) {
     dlog("warn", `history scan failed: ${e}`);
@@ -177,7 +171,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Provider sessions must resume in their original directory, so this one can only be read.</div>`
     : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
        <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
-  const preview = histPreview?.id === h.session_id
+  const preview = histPreview?.key === providerSessionKey(h.provider, h.session_id)
     ? (histPreview.msgs.length
         ? `<div class="hist-tv">${histPreview.msgs.map((m) => {
             const user = m.role === "user";
@@ -198,17 +192,19 @@ function histDetailHtml(h: HistEntry | undefined): string {
 // Lazily mirror the selected provider conversation, just a few messages inline in
 // the detail column.
 async function histLoadPreview(h: HistEntry | undefined) {
-  if (!h || histPreview?.id === h.session_id) return;
+  if (!h) return;
   const id = h.session_id;
+  const key = providerSessionKey(h.provider, id);
+  if (histPreview?.key === key) return;
   try {
-    const msgs = h.provider === "codex"
-      ? codexHistoryMessages(await invoke<any>("agent_history", { provider: "codex", threadId: id, limit: 8 }), 8)
-      : await invoke<{ role: string; text: string }[]>("read_transcript", { cwd: h.cwd, sessionId: id, limit: 8 });
-    if (!histOpen() || histSelected()?.session_id !== id) return;
-    histPreview = { id, msgs };
+    const msgs = await readProviderHistory(h.provider, id, h.cwd, 8);
+    const selected = histSelected();
+    if (!histOpen() || !selected || providerSessionKey(selected.provider, selected.session_id) !== key) return;
+    histPreview = { key, msgs };
   } catch {
-    if (!histOpen() || histSelected()?.session_id !== id) return;
-    histPreview = { id, msgs: [] };
+    const selected = histSelected();
+    if (!histOpen() || !selected || providerSessionKey(selected.provider, selected.session_id) !== key) return;
+    histPreview = { key, msgs: [] };
   }
   histPaintDetail();
 }
