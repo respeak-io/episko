@@ -119,8 +119,51 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .attn-badge.react-error { --rc: var(--st-error); }
 .attn-badge.react-done { --rc: var(--st-done); }
 .attn-badge .bdot { width: 5px; height: 5px; border-radius: 50%; background: var(--rc, var(--st-attention)); }
-.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.ibtn { width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; font-family: var(--font-ui); font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .ibtn:hover { color: var(--text); border-color: var(--hair-strong); }
+
+/* Header glyph boxes (.ibtn and the caffeinate caret up here, the stage header's
+   .act verbs below). Every glyph in this header is a symbol no UI font carries, so
+   it comes from whatever fallback font does — Segoe UI Symbol on Windows, Apple
+   Symbols on macOS — with an advance width and an ink height of its own: ❯ is 5.6px
+   wide and 10px tall where ＋ is 11px wide and 5px tall. Loose in the button's text
+   node each one sets the line box for the whole button, so ❯ Terminal's label sat
+   half a pixel below ◷ History's, and the space in front of every label was a
+   different width. Boxed instead — a 1em square that the button's own `gap` spaces —
+   so the four labels start at the same offset and a glyph can only move its own
+   baseline. A button also has to be *told* the UI font (font-family does not
+   inherit into one), which is why .ibtn's glyphs sat on Arial's baseline while the
+   identical ◷ in `◷ History` sat on Segoe UI's. */
+.act .gl, .ibtn .gl, .caf-caret .gl { display: flex; align-items: center; justify-content: center; flex: none; width: 1em; height: 1em; line-height: 1; position: relative; }
+
+/* Centring the box is not centring the ink. A centred line box puts the baseline at
+   the button's middle + (ascent-descent)/2 whatever the box's height, so boxing on its
+   own moves nothing vertically; each glyph's ink then sits its own distance above that
+   baseline, and every one of these sat low — by two thirds of a pixel in the 27px
+   verbs, by one and a half in the 26px icon buttons. These are the measured corrections,
+   and they leave every glyph within a fifth of a pixel of its button's centre AND of
+   the others in its row, which is the half that shows: a row of glyphs agreeing with
+   each other reads as aligned even when they are all a hair off, and one glyph out of
+   step with its neighbours reads as broken even when it is the correct one.
+
+   Measured how matters, because the obvious method lies. A hairline drawn at `top:50%`
+   to eyeball against is thinner than a pixel, so it snaps DOWN to the pixel grid and
+   sits a pixel below the centre it claims to mark; glyphs judged against one are all
+   dragged a pixel low. So is a zoomed screenshot: under a `transform:scale()` the text
+   is positioned in the untransformed space and rounded there, which quantises exactly
+   the sub-pixel differences you zoomed in to see. The numbers below come from scanning
+   the ink rows of a rendered screenshot against the button's own
+   getBoundingClientRect centre, at 8x for whole-pixel offsets and 1x for halves.
+
+   ＋ takes a whole pixel because its ink genuinely sits higher above the baseline than
+   the rest (its 5px ink is half the height of ❯'s 10px). Windows values, from Segoe UI
+   + Segoe UI Symbol at the sizes used; macOS falls back to different fonts and wants
+   its own measured pass, so until it gets one it keeps the alignment it has today —
+   the box above is metric-neutral. */
+html.win .ibtn .gl { top: -1.5px; }
+html.win .caf-caret .gl { top: 1px; }
+html.win .act .gl { top: -.5px; }
+html.win .act .gl-plus { top: -1px; }
 
 /* The title bar, which is this header — there is no native one (see lib.rs).
    Two platforms, two halves of the job. macOS floats its real traffic lights
@@ -531,6 +574,8 @@ html.win .wctl { display: flex; }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
+/* The leading glyph rides in a .gl box — see the header glyph boxes up in the top
+   bar section, which the four verbs here share. */
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
 .act:disabled { opacity: .35; cursor: default; box-shadow: none; }
@@ -745,10 +790,13 @@ html.win .wctl { display: flex; }
 .wset .sync.even, .wset .sync.none { color: var(--muted); opacity: .7; }
 /* fetch / pull / push — disabled with a title rather than hidden, so the row is
    the same shape whatever state the branch is in */
+/* Shared with the project dashboard's Repository card: a git button looks like a git
+   button wherever it is, and only the row (or grid) around it is each surface's own. */
+.gitb { height: 24px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.gitb:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--accent-ink); }
+.gitb:disabled { opacity: .38; cursor: default; }
 .gitrow { display: flex; gap: 6px; }
-.gitrow .gitb { flex: 1; height: 24px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
-.gitrow .gitb:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--accent-ink); }
-.gitrow .gitb:disabled { opacity: .38; cursor: default; }
+.gitrow .gitb { flex: 1; }
 .gitrow.busy { opacity: .6; }
 
 /* --- the project explorer (⌘P) --- */
@@ -1545,6 +1593,18 @@ select.in-ctl { cursor: pointer; }
 .wt-facts dd .warn { color: var(--st-working); }
 .wt-facts dd .subj { display: block; color: var(--text); margin-top: 2px; font-size: 11px; line-height: 1.4; }
 
+/* the working-tree fact names its files, so it carries the diff viewer's vocabulary:
+   the same +/− colours and the same status letters (.dstat, defined with the viewer) */
+.wt-facts dd .add { color: var(--st-done); }
+.wt-facts dd .del { color: var(--st-attention); }
+.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
+.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
 .wt-warn b { color: var(--text); font: 600 10.5px var(--font-mono); }
@@ -1971,6 +2031,61 @@ select.in-ctl { cursor: pointer; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* The app's own confirmation dialog (./confirm), which replaced the OS one.
+
+   z-index 90/91, above everything else the app can put on screen (the debug console is
+   the previous ceiling at 70) — and its OWN backdrop rather than the shared #scrim,
+   because these questions open on top of #wtDlg and #mgrDlg and must not take the
+   backdrop away from the dialog that asked. It is also darker than #scrim on purpose:
+   two stacked overlays with the same wash read as one, and the point is that the thing
+   underneath is now out of reach. */
+.cfm-scrim { position: fixed; inset: 0; background: rgba(6,5,10,.62); backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .14s; z-index: 90; }
+.cfm-scrim.show { opacity: 1; pointer-events: auto; }
+.cfm { visibility: hidden; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.97); width: min(420px, 92vw); z-index: 91; opacity: 0; pointer-events: none; transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s .14s; border-radius: var(--radius-lg); padding: 17px 18px 15px; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.08); }
+/* `visibility`, not just `opacity`: a closed dialog left at opacity 0 is still in the
+   tab order, and the button that would be under the cursor is "Remove worktree". The
+   0s delay on the way out is what lets the fade finish before it goes non-visible. */
+.cfm.show { visibility: visible; opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s; }
+
+.cfm-head { display: flex; align-items: center; gap: 9px; }
+.cfm-head b { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+/* A drawn box around a plain letter, not ⚠/ℹ️ — see the note in ./confirm: those two
+   land as colour emoji in half the fonts this app can be rendered with. */
+.cfm-ic { flex: none; width: 20px; height: 20px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); }
+.k-info .cfm-ic { color: var(--accent-ink); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.k-warning .cfm-ic { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-working) 38%, transparent); }
+.k-error .cfm-ic { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-error) 40%, transparent); }
+
+/* The body is `dialogBody`'s paragraphs and lists. Margins are set here rather than
+   left to the UA sheet, whose <p>/<ul> defaults are sized for a document. */
+.cfm-body { margin: 11px 0 0; font: 11.5px/1.55 var(--font-ui); color: var(--muted); max-height: 46vh; overflow-y: auto; }
+.cfm-body p { margin: 0 0 8px; }
+.cfm-body p:last-child, .cfm-body ul:last-child { margin-bottom: 0; }
+.cfm-body ul { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.cfm-body li { position: relative; padding-left: 13px; color: var(--text); }
+.cfm-body li::before { content: "•"; position: absolute; left: 2px; color: var(--muted-2); }
+.cfm-body code { font: 10.5px var(--font-mono); color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
+.cfm-body b { color: var(--text); font-weight: 650; }
+
+.cfm-foot { display: flex; align-items: center; gap: 7px; margin-top: 16px; }
+.cfm-hint { flex: 1; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cfm-hint kbd { flex: none; font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }
+.cfm-hint .cfm-dot { opacity: .5; margin: 0 2px; }
+.cfm-btn { flex: none; font: 600 11.5px var(--font-ui); padding: 7px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
+.cfm-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-line); }
+.cfm-btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.cfm-btn.ghost:hover { color: var(--text); border-color: var(--hair-strong); }
+.cfm-btn.go { border-color: transparent; color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); }
+.cfm-btn.go:hover { filter: brightness(1.08); }
+/* The whole reason for an in-app box: the answer that deletes something has to be
+   distinguishable from the one that doesn't. The native dialog gave two grey buttons. */
+.cfm-btn.danger { border-color: transparent; color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--st-error) 92%, white 8%), color-mix(in srgb, var(--st-error) 88%, black 12%)); }
+.cfm-btn.danger:hover { filter: brightness(1.08); }
+/* Focus lands on the confirming button (⏎ confirms), so its ring has to read against
+   its own fill rather than the panel behind it. */
+.cfm-btn.go:focus-visible, .cfm-btn.danger:focus-visible { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
+
 
 /* generic menu popover (terminal-engine picker) */
 .menupop { position: fixed; z-index: 60; display: none; flex-direction: column; gap: 2px; min-width: 210px; padding: 6px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 96%, transparent); backdrop-filter: blur(16px); border: 1px solid var(--hair-strong); box-shadow: 0 24px 60px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.08); }
@@ -2427,7 +2542,7 @@ select.in-ctl { cursor: pointer; }
 .ac { border-radius: var(--radius); border: 1px solid var(--hair); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); overflow: hidden; flex: none; }
 .ac-h { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--hair); }
 .ac-h .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
-.ac-h .n { margin-left: auto; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.ac-h .n { margin-left: auto; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ac-h .xb { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px; width: 19px; height: 19px; border-radius: 6px; display: grid; place-items: center; flex: none; }
 .ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
@@ -2442,6 +2557,17 @@ select.in-ctl { cursor: pointer; }
 .tag.ok { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 28%, transparent); }
 .tag.warn { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 28%, transparent); }
 .tag.acc { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+
+/* The Repository card: one state line, then the verbs. Padding rather than .ac-b's row
+   gaps, because this card's body is a paragraph and a button grid, not a list of rows. */
+.gsub { padding: 6px 7px 8px; font: 11px var(--font-mono); line-height: 1.5; color: var(--muted); }
+.gsub .dim { color: var(--muted-2); font-family: var(--font-ui); font-size: 10.5px; }
+.gsub .ah { color: var(--st-done); }
+.gsub .bh { color: var(--st-working); }
+.gsub .un { color: var(--st-working); }
+.gbts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 7px 7px; }
+.gbts .gitb { height: 26px; text-align: center; }
+.gbts .gitb.wide { grid-column: 1 / -1; }
 
 .nt-form { display: flex; gap: 5px; padding: 4px 4px 3px; }
 .nt-form input { flex: 1; min-width: 0; height: 25px; padding: 0 9px; border-radius: 7px; font: 11.5px var(--font-ui); color: var(--text); background: var(--bg-2); border: 1px solid var(--hair); }
@@ -2766,6 +2892,116 @@ select.in-ctl { cursor: pointer; }
 .cl-foot { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 15px; border-top: 1px solid var(--hair); background: var(--bg-2); font: 10.5px var(--font-mono); color: var(--muted-2); }
 @media (max-width: 640px) { .cl-body { grid-template-columns: 1fr; } .cl-rail { display: none; } }
 
+/* ---------- the guided tour (src/tourui.ts) ----------
+   The dim is ONE box-shadow spreading outward from a small rounded div, so the hole is
+   a genuine gap: nothing overlays the lit control, and the veil is pointer-events:none,
+   so the click lands on the real button. Tier 80/81 — above the context menu (60) and
+   What's new (61), because the tour lights things inside both. */
+.tour-veil { position: fixed; inset: 0; z-index: 80; pointer-events: none; opacity: 0; transition: opacity .2s ease; }
+.tour-veil.show { opacity: 1; }
+.tour-hole {
+  position: absolute; border-radius: var(--radius-sm); pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(6,5,11,.72), 0 0 0 1.5px var(--accent), 0 0 22px 3px var(--accent-glow);
+  transition: top .3s cubic-bezier(.32,.72,0,1), left .3s cubic-bezier(.32,.72,0,1),
+              width .3s cubic-bezier(.32,.72,0,1), height .3s cubic-bezier(.32,.72,0,1);
+}
+/* A step with no anchor (the tray, a closing card) dims everything and shows no ring. */
+.tour-hole.centre { box-shadow: 0 0 0 9999px rgba(6,5,11,.82); }
+
+.tour-card {
+  position: fixed; z-index: 81; width: 300px; display: none; flex-direction: column; gap: 9px;
+  padding: 13px 14px 12px; border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 96%, transparent);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--hair-strong);
+  box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08);
+  transition: top .3s cubic-bezier(.32,.72,0,1), left .3s cubic-bezier(.32,.72,0,1);
+}
+.tour-card.show { display: flex; }
+.tour-card.wide { width: 366px; }
+.tc-top { display: flex; align-items: center; gap: 7px; }
+.tc-ch { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+.tc-count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.tc-x { width: 18px; height: 18px; display: grid; place-items: center; border: 0; background: none; border-radius: 5px; color: var(--muted-2); cursor: pointer; font-size: 12px; line-height: 1; }
+.tc-x:hover { background: var(--surface-2); color: var(--text); }
+.tc-t { font-size: 14.5px; font-weight: 650; letter-spacing: -.012em; line-height: 1.25; text-wrap: balance; }
+.tc-b { font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+.tc-b b { color: var(--text); font-weight: 600; }
+.tc-b code { font-family: var(--font-mono); font-size: 11px; background: var(--surface); border: 1px solid var(--hair); border-radius: 5px; padding: 1px 5px; color: var(--accent-ink); }
+.tc-b kbd { font-family: var(--font-mono); font-size: 10px; background: var(--surface-2); border: 1px solid var(--hair-strong); border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px; color: var(--text); }
+.tc-wait { display: flex; align-items: center; gap: 7px; font-size: 11.5px; padding: 6px 9px; border-radius: var(--radius-sm); background: var(--accent-wash); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.tc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; animation: tcPulse 1.35s ease-in-out infinite; }
+@keyframes tcPulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+.tc-act { align-self: flex-start; }
+.tc-foot { display: flex; align-items: center; gap: 7px; margin-top: 1px; }
+.tc-sp { margin-right: auto; }
+.tc-dots { display: flex; gap: 3px; margin-right: auto; }
+.tc-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--hair-strong); }
+.tc-dots i.on { background: var(--accent); }
+.tc-dots i.past { background: var(--accent-line); }
+
+.tour-btn { font: inherit; font-family: var(--font-ui); font-size: 11.5px; padding: 4px 11px; border-radius: var(--radius-sm); cursor: pointer; background: var(--surface); border: 1px solid var(--hair); color: var(--muted); }
+.tour-btn:hover { background: var(--surface-2); color: var(--text); }
+.tour-btn.go { background: var(--accent); border-color: var(--accent); color: #160f28; font-weight: 650; }
+.tour-btn.go:hover { background: var(--accent-ink); }
+.tour-btn.ghost { background: none; border-color: transparent; }
+.tour-btn:disabled { opacity: .38; cursor: not-allowed; }
+.tour-btn:disabled:hover { background: var(--surface); color: var(--muted); }
+
+/* The rail legend the Quick start chapter teaches, as seven chips in the rail's own
+   colours — because a card that only *names* the colours is asking you to take its word
+   for the one thing you are about to have to read at a glance. The state class sits on
+   the CHIP, not on the glyph, so one `--lc` tints the fill, the hairline and the glyph
+   together, and the mapping stays the same `--st-*` variables the sidebar uses (a key
+   that could drift from the rail would be worse than none).
+   The `color` the old rule put on this wrapper is gone deliberately: it out-specified
+   the g-* classes below it in the file and greyed out the very glyphs this teaches. */
+.tr-legend { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 10px; }
+.tr-leg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--lc) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lc) 30%, transparent); }
+.tr-leg b { font-family: var(--font-mono); font-size: 13px; font-weight: 700; line-height: 1; min-width: 11px; text-align: center; }
+.tr-leg i { font-style: normal; font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.tr-leg.g-work{--lc:var(--st-working);} .tr-leg.g-done{--lc:var(--st-done);} .tr-leg.g-attn{--lc:var(--st-attention);}
+.tr-leg.g-bg{--lc:var(--st-bg);} .tr-leg.g-error{--lc:var(--st-error);} .tr-leg.g-idle{--lc:var(--st-idle);}
+.tr-leg.g-ended{--lc:var(--muted-2);}
+/* A card is not a live row. `.g-work`/`.g-attn`/`.g-bg` pulse wherever they appear,
+   which is right for a session that is doing something and wrong for a key and for the
+   two coloured words in a card's prose: seven glyphs blinking out of phase reads as a
+   rendering fault, not as a legend. */
+.tour-card .g-work, .tour-card .g-attn, .tour-card .g-bg, .tour-card .tr-leg { animation: none; }
+
+/* The chapter picker. */
+.tp-list { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 1px; }
+.tp-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); cursor: pointer; }
+.tp-row:hover { border-color: var(--hair-strong); }
+.tp-row.on, .tp-row.req { border-color: var(--accent-line); background: var(--accent-wash); }
+.tp-row.req { cursor: default; }
+.tp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tp-box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--hair-strong); flex: none; margin-top: 1px; display: grid; place-items: center; font-size: 9px; color: #160f28; }
+.tp-row.on .tp-box, .tp-row.req .tp-box { background: var(--accent); border-color: var(--accent); }
+.tp-main { flex: 1; min-width: 0; }
+.tp-nm { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 650; color: var(--text); }
+.tp-req, .tp-done { font-size: 8px; letter-spacing: .1em; text-transform: uppercase; border-radius: 4px; padding: 0 4px; }
+.tp-req { color: var(--accent-ink); border: 1px solid var(--accent-line); }
+.tp-done { color: var(--st-done); border: 1px solid color-mix(in srgb, var(--st-done) 40%, transparent); }
+.tp-sb { display: block; font-size: 10.5px; color: var(--muted-2); line-height: 1.4; }
+.tp-mn { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-2); flex: none; margin-top: 2px; }
+
+/* Settings › Guide: a row per chapter with its state and a replay. */
+.gd-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); }
+.gd-main { flex: 1; min-width: 0; }
+.gd-nm { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+.gd-sb { font-size: 11px; color: var(--muted-2); }
+.gd-mn { font-family: var(--font-mono); font-size: 10px; color: var(--muted-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-hole, .tour-card { transition: none; }
+  .tc-dot { animation: none; }
+}
+/* What's new: the release-intro hand-off, on any release that ships a chapter. */
+.cl-guide { margin-left: auto; font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 100px; cursor: pointer; background: var(--accent-wash); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.cl-guide:hover { background: var(--accent-glow); }
 /* --- Settings > Footer: the preview boxes ARE the popovers ---
    Each carries the real popover's classes (`menupop costpop`, `menupop usagepop`, …) and
    is filled by the real renderer, so a preview cannot drift from the thing it previews.

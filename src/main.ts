@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { isClaude, isExited, type AgentCli } from "./types";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
+import { ask } from "./confirm";
 import { updateTray } from "./tray";
 import {
   closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeIoPop, closeShortPop,
@@ -59,8 +59,8 @@ import {
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import {
-  closeBranchPop, closeWt, setWtCloseSession, setWtHandToTerminal,
-  openBranchPop, setWtLaunch, setWtRefreshGit, setWtRenderAll,
+  closeBranchPop, closeWt, openWt, setWtCloseSession, setWtHandToTerminal,
+  openBranchPop, setWtLaunch, setWtOnBranchSwitched, setWtRefreshGit, setWtRenderAll,
   setWtSaveCmpBase, setWtSetActive,
 } from "./worktree";
 import {
@@ -77,16 +77,18 @@ import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } 
 // with the shared scrim and Esc, like every other dialog.
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
+import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashEscape, dashLaunchHint, openDashboard, releaseClaimFor, renderDash,
-  renderDashHeader, renderDashInspector, setDashHost, wireDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
+  releaseClaimFor, renderDash, renderDashHeader, renderDashInspector, setDashHost,
+  wireDashboard,
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
-  closeSettings, keyRecording, openSettings, renderSettings, setSettingsHost, setTab,
+  closeSettings, keyRecording, openSettings, openSettingsOn, renderSettings, setSettingsHost, setTab,
   settingsOpen,
 } from "./settings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
@@ -243,7 +245,29 @@ setMirrorRenderAll(renderAll);
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  startTour: startChapter,
   setFootSeg,
+});
+// The tour drives the app the way a user would, so the two things it cannot do itself
+// are typing into a pane and opening the window it just told you about.
+setTourHost({
+  pasteToActive: (text) => {
+    const s = activeId ? sessions.get(activeId) : null;
+    if (!s) return;
+    // An external engine has no PTY of ours to write into — the REPL is in Ghostty or
+    // Terminal — so say where the prompt has to go rather than failing silently.
+    if (s.external) { toast("This session runs in your terminal — type it there"); return; }
+    void invoke("write_pty", { sessionId: s.id, data: text }).catch(() => {});
+  },
+  openSettingsAt: openSettingsOn,
+  // The two panels a step's anchor can be hiding inside. Toggling rather than setting a
+  // class, so the button state and the dashboard's 44px variant stay ./actions' problem.
+  ensure: (need) => {
+    const app = $("app");
+    if (need === "rail" && app.classList.contains("rail-mini")) toggleRail();
+    if (need === "inspector" && (app.classList.contains("insp-off") || app.classList.contains("insp-mini"))) toggleInsp();
+  },
+  renderAll,
 });
 // "Why was there no noise?" is otherwise unanswerable from outside the player.
 setSoundLogger(dlog);
@@ -255,6 +279,13 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
+  // The ⑃ dialog, opened straight onto the root's switch card: `armSwitch` selects the
+  // repo row and paints it, so the branch picker is the next click. Every guard, the
+  // picker itself and the dirty-tree handoff live in that card, which is exactly why the
+  // dashboard hands over rather than growing its own copy of all three.
+  switchBranch: (project, repoDir, branch) => {
+    void openWt(project, repoDir, branch || null, { manage: true, armSwitch: true });
+  },
   // Keyed to the repo root, not to `dir`, so a shell opened for a refused git command
   // nests under the project rather than becoming a top-level group of its own.
   handToTerminal: (project, dir, cmd) => {
@@ -294,6 +325,10 @@ setWtRefreshGit(refreshGitViews);
 // The trunk a project's branches are measured against: a persisted preference, so the
 // write is actions.ts's — reached as a hook because the direct import would close a cycle.
 setWtSaveCmpBase(setCmpBase);
+// …and moving the root's HEAD invalidates a dashboard of that project outright: its
+// timeline, its ⇣ ⇡ rows and its Checkouts card are all read through the branch that
+// just changed, and nothing re-reads that folder on a schedule.
+setWtOnBranchSwitched(dashBranchSwitched);
 // The drag guard and the reorder click guard moved with the sidebar into ./sidebar.
 
 // ---------- model ----------
@@ -455,6 +490,11 @@ function renderAllNow() {
   renderCallSheet();
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
+  // Last, and for the same reason syncAttn is first: the tour reads what this pass just
+  // painted (a session appeared, a permission cleared, a dialog opened) and re-measures
+  // the element it is pointing at, which the renderers above have just replaced. No-op
+  // unless a chapter is actually running.
+  tourTick();
 }
 
 // The debug console moved to ./debug — it owns its panel, its ring buffer and
@@ -608,6 +648,11 @@ document.addEventListener("click", (e) => {
   // A reorder just ended: eat the click a pointerup may have synthesised (see initProjectDnD).
   if (performance.now() < reorderGuardUntil) { setReorderGuard(0); return; }
   const t = e.target as HTMLElement;
+  // A click on the tour's own card is not an outside-click. Every closer below reads
+  // "did this land outside me?", and the card is drawn over all of them — so pressing
+  // **Next** used to close the context menu, the cost split or the usage forecast that
+  // the step underneath was about, one frame before the next step lit it.
+  if (t.closest("#tourCard")) return;
   if (!t.closest("#colorPop, #ctxMenu, .pdot, .rm-dot")) closeColorPop();
   if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
@@ -1013,7 +1058,10 @@ void refreshGitViews(); // seed the roster so the first paint isn't a checkout s
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
 initSidebarPeek();
-initChangelog();
+// Order matters, and it is the whole of the hand-off: the tour goes first because on a
+// genuine first run it takes the screen, and the release notes must then stay quiet
+// rather than opening on top of it. `initTour` says whether it did.
+initChangelog(initTour());
 initFileDrop();
 // caffeinate always starts off — the assertion is bound to the last run's process
 // (`-w <pid>` on macOS, the parked thread on Windows) and died with it; renderAll's

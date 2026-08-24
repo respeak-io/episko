@@ -166,15 +166,20 @@ function checkoutDrift(workdir: string, path: unknown, roster: readonly Checkout
 //
 // The evidence here is weaker than a write's `file_path` — a `cd` says where the shell
 // stood, not where the bytes went — so it is bounded on both sides: the command must
-// look like it wrote something, AND it must name exactly one absolute directory, AND
-// (via `checkoutDrift`, as always) the roster must already recognise that directory as a
-// checkout of this session's repo.
+// look like it wrote something, AND it must name exactly one directory this can place,
+// AND (via `checkoutDrift`, as always) the roster must already recognise that directory
+// as a checkout of this session's repo.
+
+/// A hook field as a usable string, or nothing. `cwd` arrives as `unknown` for the same
+/// reason `tool_input` does: it is whatever the payload carried.
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v : null;
+}
 
 /// One string field of the hook's `tool_input`, if it is usable.
 function field(input: unknown, key: "file_path" | "command"): string | null {
   if (!input || typeof input !== "object") return null;
-  const v = (input as Record<string, unknown>)[key];
-  return typeof v === "string" && v.trim() ? v : null;
+  return str((input as Record<string, unknown>)[key]);
 }
 
 /// What makes a shell command look like it wrote a file. A short keyword list and
@@ -200,13 +205,45 @@ const BASH_WRITES = [
 ];
 
 // `cd` at a command position — string start, or after a separator or a newline. Quoted
-// and bare forms both. Only an **absolute** target is any use: a relative one resolves
-// against a cwd that case 1 has pinned to the launch dir, so it can only ever re-derive
-// the answer we already have.
+// and bare forms both.
 const CD_TARGET = /(?:^|[\n;&|(])\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/g;
 
 function isAbs(p: string): boolean {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/// `a/b/../c` → `a/c`, on an already-`norm`ed path. A `..` that would climb past the
+/// root stops there, as every filesystem does.
+function collapse(p: string): string {
+  const segs: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "." || (seg === "" && segs.length)) continue;   // a leading "" is the root
+    if (seg === "..") { if (segs.length > 1) segs.pop(); continue; }
+    segs.push(seg);
+  }
+  return segs.join("/");
+}
+
+/// A `cd` target as an absolute, normalised path, resolved against the directory the
+/// command ran in when it is relative.
+///
+/// **The relative form is the one that matters**, and this arm shipped without it. The
+/// reasoning that dropped it — a relative target resolves against a cwd case 1 has
+/// pinned to the launch dir, so it can only re-derive the answer we already have — holds
+/// for `cd src` and is exactly wrong for `cd ../tour`. `..` is the one form that escapes
+/// the pin, and it is what the sibling layout produces: `git worktree add ../tour`, then
+/// `cd ../tour && cat > src/tour.ts <<'EOF'`. Measured on the session that found this:
+/// 25 write-shaped commands, every one of them a relative `cd`, against a single
+/// absolute `cd` in 61 commands — so the absolute-only rule threw away the whole signal.
+///
+/// Resolving is safe because `checkoutDrift` still decides: `cd src` lands inside the
+/// session's own checkout and is no drift, `cd ../tour` lands on a sibling the roster
+/// knows, and anything only a shell could expand (`~/x`, `$WT`) lands on a path no
+/// checkout contains and answers nothing.
+function resolveDir(target: string, cwd: string | null): string | null {
+  if (isAbs(target)) return collapse(norm(target));
+  if (!cwd || !isAbs(cwd)) return null;      // nothing to resolve against
+  return collapse(`${norm(cwd)}/${norm(target)}`);
 }
 
 /// The directory a write-shaped Bash command ran in, when the command names exactly one.
@@ -214,13 +251,19 @@ function isAbs(p: string): boolean {
 /// **Exactly one** is the fail-closed half. `cd a && … && cd b` genuinely does not have
 /// an answer, and neither does a `cd` sitting in a heredoc *body* next to the one that
 /// set the command up — so both cases answer nothing rather than guessing, the same rule
-/// `checkoutDrift` follows when it cannot place the session's own folder.
-function bashWroteIn(cmd: string | null): string | null {
+/// `checkoutDrift` follows when it cannot place the session's own folder. A target
+/// `resolveDir` cannot place at all (a relative `cd` on a payload carrying no `cwd`)
+/// counts the same way: it may well be a *second* directory, and the whole point of the
+/// rule is not to guess which one the bytes went to.
+function bashWroteIn(cmd: string | null, cwd: string | null): string | null {
   if (!cmd || !BASH_WRITES.some((re) => re.test(cmd))) return null;
   const dirs = new Set<string>();
   for (const m of cmd.matchAll(CD_TARGET)) {
     const d = m[1] ?? m[2] ?? m[3];
-    if (d && isAbs(d)) dirs.add(norm(d));
+    if (!d) continue;
+    const abs = resolveDir(d, cwd);
+    if (!abs) return null;
+    dirs.add(abs);
   }
   return dirs.size === 1 ? [...dirs][0] : null;
 }
@@ -228,18 +271,20 @@ function bashWroteIn(cmd: string | null): string | null {
 /// Where this call's write landed, however the agent writes files: a write tool names
 /// the file, a Bash command names only the directory it ran under. `checkoutOf` resolves
 /// the two identically, which is what lets everything downstream stay one code path.
-function writeSite(tool: string, input: unknown): string | null {
+/// `cwd` is the hook's own, and only the Bash arm reads it — to resolve a relative `cd`.
+function writeSite(tool: string, input: unknown, cwd: string | null): string | null {
   if (WRITE_TOOLS.has(tool)) return field(input, "file_path");
-  return tool === "Bash" ? bashWroteIn(field(input, "command")) : null;
+  return tool === "Bash" ? bashWroteIn(field(input, "command"), cwd) : null;
 }
 
 /// Which checkout an agent's *write* landed in, when that isn't the session's own.
 /// The signal for case 1 above — the only one that works when `cwd` is pinned.
 /// `input` is the hook's `tool_input` verbatim; which of its fields count is `writeSite`'s.
+/// `cwd` takes the same place as in `driftUpdate` — here it only resolves a relative `cd`.
 export function driftTarget(
-  workdir: string, tool: string, input: unknown, roster: readonly Checkout[],
+  workdir: string, tool: string, input: unknown, cwd: unknown, roster: readonly Checkout[],
 ): Drift | null {
-  const site = writeSite(tool, input);
+  const site = writeSite(tool, input, str(cwd));
   const d = site && checkoutDrift(workdir, site, roster);
   return d ? { ...d, via: "write" } : null;
 }
@@ -272,7 +317,7 @@ export function driftUpdate(
   // home clears exactly as an `Edit` home does. Letting the shell arm set but never
   // clear would strand a Bash-first session on a stale card offering to move it into a
   // checkout it had already come back from.
-  const site = writeSite(tool, input);
+  const site = writeSite(tool, input, str(cwd));
   const byWrite = site && checkoutDrift(workdir, site, roster);
   if (byWrite) return { ...byWrite, via: "write" };
   // Not drift. Only a write that landed squarely in the session's own checkout retires

@@ -19,10 +19,10 @@
 // own is the app-wide repaint.
 
 import { invoke } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { $, takeStage, toast } from "./dom";
+import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";

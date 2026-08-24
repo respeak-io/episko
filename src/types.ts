@@ -66,6 +66,17 @@ export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number;
 }
+// One uncommitted file, as `git_working_set` names it. `code` is the single letter
+// the pane shows (M/A/D/R/C/U, or `?` for untracked), `from` the path a rename came
+// from, and the line counts are that file's own — for an untracked file, the lines the
+// stat's own count read off disk, so the row and the total agree. 0/0 for a binary
+// file, and for an untracked one too large to read.
+export interface StatusFile {
+  path: string; code: string; from: string | null; added: number; removed: number;
+}
+// A DiffStat with the files behind it. `entries` is capped backend-side while `dirty`
+// is not, so `dirty - entries.length` is what a list says it left out.
+export interface WorkingSet extends DiffStat { entries: StatusFile[] }
 // One checkout of a repo as `worktree_heads` reports it — path, the branch on its
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.

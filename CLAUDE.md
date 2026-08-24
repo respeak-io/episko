@@ -29,7 +29,7 @@ Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`
 **Unit-only: there is no end-to-end harness**, though the suites are substantial: roughly 800 vitest + 180 cargo tests, run in CI on both OSes; `tsc` (strict) is the real linter. The render, view and DOM-owning modules on both sides are untested by design, since anything touching the DOM, PTYs or live telemetry is verified by running the app, and **`RELEASE.md` holds that manual checklist** plus the tag/verify steps. Coverage is a yardstick with no gate on it, deliberately (`docs/testing.md` for the numbers and the vitest reporter trap).
 
 - **vitest runs in the `node` environment**: no module a test can reach may touch a browser global at module scope: `document`, `window`, *or* `navigator`. Platform predicates live in `dom.ts` (`IS_MAC`, `IS_WIN`) behind a `typeof navigator` guard; import those.
-- Two **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector) and `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key). Both joins had silently broken in production before the tests existed.
+- Three **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector), `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key) and `tour.test.ts` (a tour step's anchor must resolve in `index.html`, the rail legend it teaches must match `GLYPH`/`GCLASS`, and a card that says *Settings › Sounds* must name a tab `settings.ts` ships). The first two joins had silently broken in production before the tests existed; the third is the same shape.
 - Rust tests are in-file `#[cfg(test)] mod tests`, several driving real `git` or the real `tiny_http` server; there is deliberately no `src-tauri/tests/` dir. Two `#[ignore]`d tests run against the real `claude` CLI via `cargo test -- --ignored`, which is a `RELEASE.md` step rather than a CI one.
 
 ## The core mechanism: per-launch instrumentation
@@ -87,9 +87,9 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 62 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 65 modules
 
-**No framework, and no longer one file.** 62 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 65 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
@@ -98,7 +98,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | Module | What |
 | --- | --- |
 | `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isClaude`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
-| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out |
+| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
@@ -125,16 +125,17 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
 | `keys.ts` | the bindable actions, a chord's parse/format/match, what happens when a rebind takes a chord somebody else had, and what the master switch turns off |
 | `footprefs.ts` | which segments the status bar shows: the table, the store, its repair, and why three of them have no switch |
+| `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `explorer` (⌘P, the project explorer), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 62 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 65 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -181,7 +182,8 @@ And the things that hold however the files are arranged:
   label. Both were how the handler, the cheat sheet and the hints drifted apart before.
   Matching is **exact**, so a shifted binding no longer has to be written above its
   unshifted twin to fire (the old chain's documented trap). Escape stays hard-coded: it
-  backs out of whichever dialog is open, so it is nine bindings, not one.
+  backs out of whichever dialog is open, so it is nine bindings, not one. A tenth lives
+  in `confirm.ts` and deliberately pre-empts all of them (see the rule below).
 - **Read a chord through `activeBind(keyPrefs, id)`, never `keyPrefs.binds[id]`.** That is
   the one place the master switch is applied, and `matchAction`/`shortcutRows` take the
   whole `KeyPrefs` so a caller cannot skip it. A display site that read `binds` directly
@@ -226,6 +228,24 @@ And the things that hold however the files are arranged:
   `renderAllNow` — never at the five events that can set it, and never from `phaseSince`,
   which a permission does not move. Don't fold the filter into `needsYou`: `syncAttn`
   asks that one, and the two would then flip each other every paint (`docs/architecture.md`).
+- **Every yes/no question goes through `ask` in `confirm.ts`, and nothing is ever asked
+  natively.** `ask()` from `@tauri-apps/plugin-dialog` draws an OS box — system font,
+  system button order, no way to mark which of the two answers deletes something, and
+  the message flattened to one blob — so all ten confirmations were moved into the app's
+  own skin. `confirm.ts` keeps the plugin's exact signature (`ask(message, { title, kind,
+  okLabel, cancelLabel })`), so a call site changes only its import. `kind` is not
+  decoration: `info` gets the accent button, `warning`/`error` get the red one. The
+  message stays plain text — `dialogBody` (./format) reads its blank lines, bullets and
+  backticks — so wording is edited where it is written, not in markup.
+  **`open` is the one native dialog left**, deliberately: that is the OS file browser,
+  and imitating it in-app would be strictly worse. `test/confirm.test.ts` fails if any
+  other export of that plugin comes back.
+  The dialog also owns the keyboard while it is up: a **capture-phase** `keydown`
+  registered at module scope (so it beats main.ts's, whose listeners are added later in
+  the same phase on the same target) calling **`stopImmediatePropagation`** — plain
+  `stopPropagation` leaves main.ts's own capture listener for `reveal` live behind the
+  modal. Esc, the cancel button and a backdrop click all resolve `false`; a second
+  question raised while one is up **queues** rather than replacing it.
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
 
 ## Deep dives (`docs/`)
@@ -240,7 +260,8 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
 - **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), and History.
-- **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas) and the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items).
+- **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas), the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items), and the OS dialogs Episko stopped drawing (`confirm.ts` — a native box cannot mark its destructive button; the file picker is the one that stays).
+- **`docs/tour.md`**: the guided tour. It opens on the *absence* of `cc-tour` and never after an update; a release intro is a chapter with a `since`, not a second mechanism; the veil is `pointer-events:none` so the lit control is the live one, and it must never join `SCRIM_DLGS`; a missing anchor skips a step **unless the step is waiting**, because a waiting step's anchor is usually what it is waiting for. **Write a step against the app, never against a mock, and walk it before you believe it** — every bug this feature has had was a card pointing confidently at something that was not there.
 - **`docs/explorer.md`**: the project explorer (⌘P). One index feeds both modes; the marks come from the other two file lists; `git ls-files` is why there is no ignore parser; nothing watches the filesystem, and this is not the feature that changes that.
 - **`docs/sounds.md`**: sound alerts. The hard part is playing one sound instead of six: the same moment reaches the frontend twice *by design*, so every play is gated, except that a more urgent event still gets through the burst window, which is the point. Anything that fires on routine activity ships switched off.
 

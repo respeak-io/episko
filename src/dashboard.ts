@@ -22,12 +22,13 @@ import { dlog } from "./debug";
 import {
   canShare, clampRange, DASH_RANGE_DEFAULT, dashDays, dashPulse, densePerDay,
   mainCheckout, projectCost, projectTier, type ProjectFacts, type ProjectTier,
+  type SyncOp,
 } from "./dash";
 import {
   branchesOverlay, cardSkeleton, checkoutsCard, checkoutsOverlay, closeSheet, dashInspector,
   dashStrip, dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay,
-  pulseHtml, pulseSkeleton, spineSkeleton, triageCard, triageOverlay, workCard,
-  workLogOffer, workOverlay, type DashPull,
+  pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
+  workLogOffer, workOverlay, type DashSync,
 } from "./dashview";
 import {
   chosenWorktrees, localCands, remoteCands, remoteFor, remotePicks, selectable, sweepPicks,
@@ -77,6 +78,13 @@ export interface DashHost {
   /// which is worse than not offering the verb. Needs a pane, which is panes.ts's
   /// business.
   handToTerminal: (project: string, dir: string, cmd: string) => void;
+  /// Move the repo's main checkout to another branch. This opens the ⑃ dialog on its
+  /// switch card rather than switching: every guard the verb needs already lives there
+  /// (work in flight in the folder, a branch some other worktree holds, the dirty-tree
+  /// refusal, the remote-only target that has to be cut from `origin/…` first) and a
+  /// second copy of all four would be a second thing to keep true. Same route the ⑃
+  /// cluster menu's *Switch branch…* row takes, deliberately.
+  switchBranch: (project: string, repoDir: string, branch: string) => void;
   openRun: (root: string) => void;
   openGraph: (root: string) => void;
   openHistory: (root: string) => void;
@@ -99,6 +107,7 @@ export interface DashHost {
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
+  switchBranch: () => {},
   openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, handToTerminal: () => {}, pickTrunk: () => {}, saveTrunk: () => {},
@@ -142,16 +151,17 @@ let tier: ProjectTier = "none";
 let days: TrailDay[] = [];
 let heads: WtHead[] = [];
 let hasDigest = false;
-/// Where the main checkout's branch sat against its upstream at the last fetch — the
-/// only thing ⇣ Pull says before it runs, and deliberately the *stale* number: see
-/// `pullState`. Null until the probe answers, and for a folder git could not read.
+/// Where the main checkout's branch sat against its upstream at the last fetch — all
+/// ⇣ Pull and ⇡ Push say before they run, and deliberately the *stale* number: see
+/// `syncState`. Null until the probe answers, and for a folder git could not read.
 let mainStat: DiffStat | null = null;
-/// The root of the pull in flight, if any — **a path, not a boolean**, so switching
-/// project mid-pull doesn't put "Pulling…" on a dashboard where nothing is. Not folded
-/// into `loading`: those are the reads that fill the pane, this is a write the user
-/// asked for, and it must not blank the timeline. One at a time app-wide, which is
-/// deliberate: two `git fetch`es at once on one machine buy nothing.
-let pulling: string | null = null;
+/// The remote op in flight, if any, and **the folder it is running in** — a path, not a
+/// boolean, so switching project mid-pull doesn't put "Pulling…" on a dashboard where
+/// nothing is. Not folded into `loading`: those are the reads that fill the pane, this
+/// is a write the user asked for, and it must not blank the timeline. One at a time
+/// app-wide, which is deliberate: two `git fetch`es at once on one machine buy nothing,
+/// and a push racing a pull's fetch would decide against counts that are still moving.
+let syncing: { root: string; op: SyncOp } | null = null;
 /**
  * The waits, and they are deliberately separate flags rather than one `isLoading` —
  * three here, plus `writing`/`stage` down with the summary queue. Each starts at a
@@ -352,7 +362,7 @@ async function loadGh(r: string, force = false): Promise<void> {
 }
 
 /**
- * Where the main checkout stands against its remote, for the ⇣ Pull verb.
+ * Where the main checkout stands against its remote, for the ⇣ Pull and ⇡ Push verbs.
  *
  * `git_diffstat` and not `upstream_state` because there is no command for the latter on
  * its own — and no reason to want one: the diffstat is a single `git status
@@ -370,78 +380,129 @@ async function loadSync(r: string): Promise<void> {
     .catch(() => null);
   if (root() !== r) return;   // the user moved on while this was in flight
   mainStat = g;
-  renderDashInspector();
+  // The aside, not the inspector: the Repository card is where these numbers are read.
+  renderDash();
 }
 
 /**
- * Pull the project's main checkout, from the dashboard — the routine half of git,
- * without opening a session or dropping to a shell for it.
+ * The main checkout's git state, as the Repository card takes it.
+ *
+ * Null until the tier is known, so the card never appears and then vanishes on a folder
+ * that turns out not to be a repo — the same `factsKnown` gate the inspector's repo
+ * verbs sit behind, passed as absence rather than as a second flag. `busy` is keyed to
+ * **this** project, so a fetch running in one repo cannot grey the buttons of another.
+ */
+function syncNow(): DashSync | null {
+  if (!factsKnown || tier === "none") return null;
+  return {
+    branch: heads.find((h) => h.is_main)?.branch ?? "",
+    g: mainStat,
+    busy: syncing?.root === root() ? syncing.op : "",
+  };
+}
+
+/**
+ * Pull or push the project's main checkout, from the dashboard — the routine half of
+ * git, without opening a session or dropping to a shell for it.
  *
  * **It fetches first, always, and that is the point.** Nothing on a dashboard runs git
  * on a schedule, so the ahead/behind this pane knows about is as old as the last time
- * anything happened in that folder — and `git_action("pull")` short-circuits on exactly
- * that stale count, answering "already up to date" without ever reaching the remote. A
- * button that reports success for doing nothing is worse than no button. So: fetch,
- * re-read, and only then decide.
+ * anything happened in that folder — and `git_action` short-circuits on exactly that
+ * stale count: a pull answers "already up to date" without ever reaching the remote, and
+ * a push runs against a `behind` it has no reason to believe, so the remote rejects it
+ * and the refusal arrives as a raw non-fast-forward instead of as the sentence that
+ * names the fix. A button that reports success for doing nothing is worse than no
+ * button, and one that fails for a reason it could have known is not much better. So:
+ * fetch, re-read, and only then decide, whichever verb was clicked.
  *
  * Everything unsafe stays refused by the backend, which is where the rule belongs: the
- * pull is `--ff-only`, a diverged or upstream-less branch is declined *before* git runs,
- * and the command that would work comes back as `suggest` for a prefilled terminal.
- * Nothing here can leave a working tree in a state this pane cannot explain — which
- * matters more here than in a session's inspector, because the main checkout is the one
- * folder you are least likely to be looking at while it changes.
+ * pull is `--ff-only`, a push never invents an upstream, a diverged or upstream-less
+ * branch is declined *before* git runs, and the command that would work comes back as
+ * `suggest` for a prefilled terminal. Nothing here can leave a working tree in a state
+ * this pane cannot explain — which matters more here than in a session's inspector,
+ * because the main checkout is the one folder you are least likely to be looking at
+ * while it changes.
  */
-async function pullMain(): Promise<void> {
+async function syncMain(op: SyncOp): Promise<void> {
   const r = root(), n = name();
-  if (!r || pulling || tier === "none") return;
+  if (!r || syncing || tier === "none") return;
   const dir = mainCheckout(heads, r);
-  pulling = r;
-  renderDashInspector();
+  syncing = { root: r, op };
+  renderDash();
   /// Set when the whole pane is being re-read, so the `finally` doesn't spend a second
   /// git process on the state `loadDash` is already on its way to reading.
   let reloading = false;
+  /// Set when `mainStat` already holds the post-op truth (the verb had nothing to do and
+  /// the fetch's re-read is the last word), for the same reason.
+  let settled = false;
   // A refusal is not an error: the backend declined a case it can't finish safely and
   // named the command that would, so hand that over rather than ending in a toast.
-  const report = (op: string, res: GitActionResult): boolean => {
-    dlog(res.ok ? "info" : "warn", `dash git ${op} · ${n} · ${res.summary}`);
-    if (res.ok) { toast(`${op}: ${res.summary}`); return true; }
+  // `verb` rather than `op`: the fetch every run starts with is reported under its own
+  // name, so this is not always the verb that was clicked.
+  const report = (verb: string, res: GitActionResult): boolean => {
+    dlog(res.ok ? "info" : "warn", `dash git ${verb} · ${n} · ${res.summary}`);
+    if (res.ok) { toast(`${verb}: ${res.summary}`); return true; }
     if (res.suggest) {
-      toast(`${op}: ${res.summary} → opening a terminal`);
+      toast(`${verb}: ${res.summary} → opening a terminal`);
       host.handToTerminal(n, dir, res.suggest);
-    } else toast(`${op}: ${res.summary}`);
+    } else toast(`${verb}: ${res.summary}`);
     return false;
   };
   try {
     if (!report("fetch", await invoke<GitActionResult>("git_action", { workdir: dir, op: "fetch" }))) return;
     // Now the counts mean something. `upstream` is what separates the two zeroes: a
-    // branch that tracks nothing also reads 0 behind, and calling that "up to date"
-    // would swallow the one case with a real answer — the backend's refusal names the
-    // `--set-upstream-to` that fixes it.
+    // branch that tracks nothing also reads 0 behind and 0 ahead, and calling that "up
+    // to date" or "nothing to push" would swallow the one case with a real answer — the
+    // backend's refusal names the `--set-upstream-to` that fixes it.
     const g = await invoke<DiffStat | null>("git_diffstat", { workdir: dir }).catch(() => null);
     if (root() !== r) return;
     mainStat = g;
-    if (g?.upstream && g.behind === 0) {
-      toast(`pull: already up to date with ${g.upstream}`);
+    if (g?.upstream && (op === "pull" ? g.behind === 0 : g.ahead === 0)) {
+      toast(op === "pull"
+        ? `pull: already up to date with ${g.upstream}`
+        : `push: nothing to send to ${g.upstream}`);
+      settled = true;
       return;
     }
-    if (!report("pull", await invoke<GitActionResult>("git_action", { workdir: dir, op: "pull" }))) return;
-    // New commits, and possibly a colleague's `.episko/digest.md` and notes with them —
-    // which is the whole payoff of pulling from here. Re-read rather than patch: this is
-    // the same reload a range change does, and the pane has no other way to be right.
-    if (root() === r) { reloading = true; void loadDash(); }
+    if (!report(op, await invoke<GitActionResult>("git_action", { workdir: dir, op }))) return;
+    // A pull brings new commits, and possibly a colleague's `.episko/digest.md` and notes
+    // with them — which is the whole payoff of pulling from here. Re-read rather than
+    // patch: this is the same reload a range change does, and the pane has no other way
+    // to be right. A push changes nothing the timeline reads, so it does not pay for one;
+    // the `finally` re-reads the counts and that is the whole of what moved.
+    if (op === "pull" && root() === r) { reloading = true; void loadDash(); }
   } catch (e) {
-    dlog("error", `dash pull failed: ${e}`);
-    toast(`git pull: ${e}`);
+    dlog("error", `dash ${op} failed: ${e}`);
+    toast(`git ${op}: ${e}`);
   } finally {
-    pulling = null;
+    syncing = null;
     if (root() === r) {
       // However it went, say where the branch stands now — a fetch that failed on a
       // dead remote leaves the pre-click numbers on screen otherwise, reading as though
       // the click never happened.
-      if (!reloading) void loadSync(r);
-      renderDashInspector();
+      if (!reloading && !settled) void loadSync(r);
+      renderDash();
     }
   }
+}
+
+/**
+ * The ⑃ dialog moved this project's main checkout to another branch.
+ *
+ * The switch itself runs over there — every guard it needs already lives in that card —
+ * but half of what this pane shows is read *through* HEAD: the timeline is a `git log`
+ * on the root, the ⇣ ⇡ rows name the branch and its upstream, and the Checkouts card
+ * lists what each folder is on. None of that is patchable from a branch name, so this is
+ * the same full re-read a landed pull does.
+ *
+ * Guarded on the project rather than on "is a dashboard open": the same dialog is
+ * reachable from the sidebar while a *different* project's dashboard holds the stage,
+ * and reloading that one because some other repo switched is a pane redrawing itself for
+ * no reason at all.
+ */
+export function dashBranchSwitched(repoDir: string): void {
+  if (!dashMirror() || root() !== repoDir) return;
+  void loadDash();
 }
 
 /**
@@ -720,9 +781,15 @@ export function renderDash(): void {
   // are already correct, and the jot box is the one thing here you might have opened the
   // project to type into. What is left in the loading branch is either unread or, in
   // `missingCard`'s case, a statement about a tier that hasn't been answered.
+  // The Repository card crosses the `loading` branch for the same reason the GitHub
+  // cards do: it answers from `factsKnown` and the heads probe, neither of which waits
+  // on the transcript scan, and a card that no longer needs the wait must not sit in it.
+  // First in the column, above even the GitHub half: it is the state of the thing every
+  // other card is about, and it is the shortest.
+  const repo = repoCard(syncNow(), factsKnown);
   paint("dashAside", loading
-    ? ghCards + cardSkeleton() + notesCard(noteList(root()))
-    : ghCards
+    ? repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
+    : repo + ghCards
       + checkoutsCard(heads, liveIn, folderDirty)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
@@ -782,15 +849,9 @@ export function renderDashInspector(): void {
     cls: GCLASS[statusKey(s)] ?? "g-idle",
     ctx: s.ctxPct != null ? `${Math.round(s.ctxPct)}%` : "",
   }));
-  // Null until the tier is known, so the verb never appears and then vanishes on a
-  // folder that turns out not to be a repo — the same `factsKnown` gate the rest of the
-  // repo verbs sit behind, passed as absence rather than as a fourth flag.
-  const pull: DashPull | null = factsKnown && tier !== "none"
-    ? { branch: heads.find((h) => h.is_main)?.branch ?? "", g: mainStat, busy: pulling === root() }
-    : null;
-  paint("inspector", dashInspector(root(), tier, facts, live, hasDigest, factsKnown, pull));
+  paint("inspector", dashInspector(root(), tier, facts, live, hasDigest, factsKnown));
   paint("dashStrip", dashStrip(accentFor(root()), (name()[0] || "?").toUpperCase(), tier,
-    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown, pull));
+    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown));
 }
 
 // ---------- open / close ----------
@@ -820,8 +881,8 @@ export function openDashboard(project: string, path: string): void {
     // one project's branches on the strength of another's merges.
     branchData = null; branchPrs = null; branchPrsLoading = false;
     branchPick = new Set(); branchRPick = new Set(); branchResult = null; branchBusy = false;
-    // `pulling` is NOT in this reset: it names the folder a real git process is running
-    // in, which switching project does not stop. Clearing it would re-enable the button
+    // `syncing` is NOT in this reset: it names the folder a real git process is running
+    // in, which switching project does not stop. Clearing it would re-enable the buttons
     // and let a second fetch start behind the first. Its own `finally` clears it.
     mainStat = null;
   }
@@ -861,6 +922,12 @@ export function wireDashboard(): void {
     const t = e.target as HTMLElement;
     const range = t.closest<HTMLElement>("[data-dashrange]");
     if (range) { setDashRange(+range.dataset.dashrange!); return; }
+
+    // The Repository card carries the same `data-dashact` verbs the inspector's rows do.
+    // One vocabulary, two hosts: `dashAction` does not care which surface a click came
+    // from, and a second spelling for the same five verbs is a second thing to keep true.
+    const gact = t.closest<HTMLElement>("[data-dashact]");
+    if (gact) { dashAction(gact.dataset.dashact!); return; }
 
     const more = t.closest<HTMLElement>("[data-dashopen]");
     if (more) {
@@ -1007,7 +1074,11 @@ function dashAction(act: string): void {
   if (act === "launch") host.requestLaunch(n, r, dashLaunchHint());
   else if (act === "terminal") host.openTerminal(r);
   else if (act === "run") host.openRun(r);
-  else if (act === "pull") void pullMain();
+  else if (act === "pull") void syncMain("pull");
+  else if (act === "push") void syncMain("push");
+  // The branch being left, seeded from the heads probe this pane already bought: the ⑃
+  // dialog's switch card otherwise reads "—" until its own git call lands.
+  else if (act === "switch") host.switchBranch(n, r, heads.find((h) => h.is_main)?.branch ?? "");
   else if (act === "graph") host.openGraph(r);
   else if (act === "cleanup") openBranchesView(n, r);
   else if (act === "history") host.openHistory(r);

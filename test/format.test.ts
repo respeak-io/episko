@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  ageBucket, basename, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  ageBucket, basename, dialogBody, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
   fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -156,6 +156,43 @@ describe("esc", () => {
   });
   it("double-escapes an already-escaped entity, as a text-node escaper should", () => {
     expect(esc("&amp;")).toBe("&amp;amp;");
+  });
+});
+
+describe("dialogBody — a confirmation's prose → the in-app dialog's markup", () => {
+  it("makes one paragraph per blank line, and keeps single newlines as breaks", () => {
+    expect(dialogBody("Move this session?\n\nThe conversation is kept.")).toBe(
+      "<p>Move this session?</p><p>The conversation is kept.</p>");
+    // The holders message puts the path on a line of its own inside one paragraph;
+    // that break is the author's and has to survive.
+    expect(dialogBody("still on disk:\nE:/repo/wt")).toBe("<p>still on disk:<br>E:/repo/wt</p>");
+  });
+  it("turns an all-bullet paragraph into a list, and drops the bullet character", () => {
+    // <li> draws its own marker; leaving the • in gives every row two of them.
+    expect(dialogBody("  • code (12): has a file open\n  • node (9): sitting here")).toBe(
+      "<ul><li>code (12): has a file open</li><li>node (9): sitting here</li></ul>");
+  });
+  it("does not swallow a lead-in sentence sitting above the bullets", () => {
+    // "Held by:" is not a list item, so the paragraph is prose, not a <ul>.
+    expect(dialogBody("Held by:\n• code (12)")).toBe("<p>Held by:<br>• code (12)</p>");
+  });
+  it("renders backticked text as code", () => {
+    expect(dialogBody("Episko will run `just --dump` inside it.")).toBe(
+      "<p>Episko will run <code>just --dump</code> inside it.</p>");
+  });
+  it("escapes BEFORE anything else, so a branch name can never be markup", () => {
+    // Branch names, task labels and paths all reach these strings unfiltered.
+    expect(dialogBody("Remove <img src=x onerror=alert(1)>?")).toBe(
+      "<p>Remove &lt;img src=x onerror=alert(1)>?</p>");
+    expect(dialogBody("a & b")).toBe("<p>a &amp; b</p>");
+    // …including inside the code span: the backticks decide the tag, the content
+    // stays inert.
+    expect(dialogBody("run `rm <x>`")).toBe("<p>run <code>rm &lt;x></code></p>");
+  });
+  it("drops blank runs rather than emitting an empty paragraph", () => {
+    expect(dialogBody("a\n\n\n\nb")).toBe("<p>a</p><p>b</p>");
+    expect(dialogBody("")).toBe("");
+    expect(dialogBody("\n \n")).toBe("");
   });
 });
 
