@@ -1,20 +1,19 @@
-// What Claude Code cost, and when. Two stores that answer different questions and
-// are deliberately kept apart:
+// What agent sessions used, and when. Cost and tokens are kept apart because their
+// providers expose different truth:
 //
 //   • the *rollup* (`cc-usage` / `cc-usage-detail`) — written here from telemetry,
 //     every time a statusLine reports a higher session cost. Authoritative for the
 //     daily $ total, and the only source for the per-model / per-project split.
-//   • the *token scan* (`cc-usage-tokens`) — read from Claude's own transcripts by
-//     the backend, so it carries full history including tokens and session counts,
-//     which telemetry can't give us. The scan itself needs `invoke`, so it stays in
-//     main.ts and hands its result down through `setTokenDays`.
+//   • token history — Claude's transcript scan (`cc-usage-tokens`) plus cumulative
+//     counters from live integrated providers (`cc-agent-usage-tokens`). The scan
+//     needs `invoke`, so main.ts hands its result down through `setTokenDays`.
 //
 // `usageWindow` is where the two meet: the last n calendar days, each joined to its
 // cost, its detail and its scanned tokens. Everything below it is arithmetic over
 // that join — no DOM, no Tauri — so it unit-tests in isolation, like ./rl.
 // See test/usage.test.ts.
 
-import { type InstallFile, isClaude, type Sess } from "./types";
+import { hasAgentCapability, type AgentTokenBreakdown, type AgentTokenUsage, type InstallFile, type Sess } from "./types";
 import { basename } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
@@ -103,7 +102,7 @@ export function addUsage(delta: number, s?: Sess) {
   usage[k] = (usage[k] || 0) + delta;
   trimDays(usage);
   localStorage.setItem("cc-usage", JSON.stringify(usage));
-  if (!s || !isClaude(s)) return;
+  if (!s || !hasAgentCapability(s, "usage")) return;
   // Attribute the cost delta to whichever model is active right now and to the
   // session's project — the closest honest split the statusLine data allows.
   const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {} });
@@ -172,7 +171,7 @@ export function daySpend(
 /// Bytes read and written per day, in MiB. **This is the only durable record of it.**
 ///
 /// `all_sessions_resources` reports a *run* figure — the kernel's per-process counters
-/// for every claude pid Episko owns, plus `io_retired` for the ones that have exited —
+/// for every embedded-session pid Episko owns, plus `io_retired` for the ones that have exited —
 /// and all of that lives in `AppState`, so quitting the app takes it with it. "Total
 /// read/written" therefore meant "since this Episko started", which is a window nobody
 /// chose and which reads as a lifetime figure sitting next to a lifetime-shaped label.
@@ -613,28 +612,93 @@ export function resetCostBaselines() { costBaseline.clear(); localStorage.remove
 
 // ---------- Usage analytics (the Usage settings tab) ----------
 // Money comes from the rollup above: full history for the daily *totals*, plus the
-// per-model / per-project split from cc-usage-detail (recorded going forward). Tokens
-// are the one figure telemetry can't give us, so they come from an async, cached scan
-// of Claude's transcripts (`token_usage_by_day`) and fill in the moment it returns —
-// the panel never blocks on the scan.
-// One day's transcript-scanned usage: token totals (by type and by model family),
-// distinct sessions active, and per-project token totals. Full history — unlike the
-// telemetry-only $ split, which records forward from install.
+// per-model / per-project split from cc-usage-detail (recorded going forward). Token
+// days combine Claude's async transcript scan with live provider deltas; the panel
+// never blocks on the scan.
+// One day's token usage: totals by type/model family, distinct sessions active, and
+// per-project totals. Claude has full transcript history; provider deltas record from
+// the first integrated session onward.
 export interface DayUsage {
   day: string; input: number; output: number; cache_read: number; cache_write: number;
   opus: number; sonnet: number; haiku: number; other: number;
   sessions: number; projects: Record<string, number>;
 }
 export type UDay = { key: string; cost: number; tok: number; u?: DayUsage };
-export let tokenDays: DayUsage[] = JSON.parse(localStorage.getItem("cc-usage-tokens") || "[]");
+interface LiveTokenDay extends DayUsage { session_ids: string[] }
+const scannedTokenDays: { value: DayUsage[] } = { value: JSON.parse(localStorage.getItem("cc-usage-tokens") || "[]") };
+const liveTokenDays: LiveTokenDay[] = JSON.parse(localStorage.getItem("cc-agent-usage-tokens") || "[]");
+function mergeTokenDays(scanned: DayUsage[], live: LiveTokenDay[]): DayUsage[] {
+  const by = new Map<string, DayUsage>();
+  const add = (d: DayUsage) => {
+    let x = by.get(d.day);
+    if (!x) {
+      x = { day: d.day, input: 0, output: 0, cache_read: 0, cache_write: 0, opus: 0, sonnet: 0, haiku: 0, other: 0, sessions: 0, projects: {} };
+      by.set(d.day, x);
+    }
+    for (const k of ["input", "output", "cache_read", "cache_write", "opus", "sonnet", "haiku", "other", "sessions"] as const) x[k] += d[k] || 0;
+    for (const [project, tokens] of Object.entries(d.projects || {})) x.projects[project] = (x.projects[project] || 0) + tokens;
+  };
+  scanned.forEach(add); live.forEach(add);
+  return [...by.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+export let tokenDays: DayUsage[] = mergeTokenDays(scannedTokenDays.value, liveTokenDays);
 export let tokenScanAt = +(localStorage.getItem("cc-usage-tokens-at") || 0);
 // The scan runs in main.ts (it needs `invoke`) but its result belongs to this
 // module, so the state and its persistence stay together rather than half here.
 export function setTokenDays(days: DayUsage[]) {
-  tokenDays = days;
+  scannedTokenDays.value = days;
+  tokenDays = mergeTokenDays(scannedTokenDays.value, liveTokenDays);
   tokenScanAt = Date.now();
-  localStorage.setItem("cc-usage-tokens", JSON.stringify(tokenDays));
+  localStorage.setItem("cc-usage-tokens", JSON.stringify(scannedTokenDays.value));
   localStorage.setItem("cc-usage-tokens-at", String(tokenScanAt));
+}
+
+// Live provider token counters are cumulative, just like Claude's cumulative dollar
+// counter. Persist the baseline by provider thread so a restart/resume cannot book the
+// whole conversation twice, then merge the deltas into the same analytics model as the
+// Claude transcript scan. Claude itself is excluded here because that scan is already
+// authoritative for its full history.
+const TOKEN_BASE_KEY = "cc-agent-token-base";
+interface TokenBase extends AgentTokenBreakdown { at: number }
+const tokenBase = new Map<string, TokenBase>(Object.entries(JSON.parse(localStorage.getItem(TOKEN_BASE_KEY) || "{}")) as [string, TokenBase][]);
+const tokenFields = ["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens"] as const;
+function tokenDiff(cur: AgentTokenBreakdown, prev?: TokenBase): AgentTokenBreakdown {
+  const reset = !!prev && tokenFields.some((k) => cur[k] < prev[k]);
+  const n = (k: typeof tokenFields[number]) => !prev || reset ? cur[k] : Math.max(0, cur[k] - prev[k]);
+  return {
+    totalTokens: n("totalTokens"), inputTokens: n("inputTokens"), cachedInputTokens: n("cachedInputTokens"),
+    cacheWriteInputTokens: n("cacheWriteInputTokens"), outputTokens: n("outputTokens"), reasoningOutputTokens: n("reasoningOutputTokens"),
+  };
+}
+export function addAgentTokenUsage(s: Sess, reading: AgentTokenUsage): void {
+  if (!s.provider || s.provider === "claude") return;
+  const id = `${s.provider}:${s.resumeId || s.id}`;
+  const prev = tokenBase.get(id);
+  const d = tokenDiff(reading.total, prev);
+  if (!prev || tokenFields.some((k) => prev[k] !== reading.total[k])) {
+    tokenBase.set(id, { ...reading.total, at: Date.now() });
+    localStorage.setItem(TOKEN_BASE_KEY, JSON.stringify(Object.fromEntries(tokenBase)));
+  }
+  if (!(d.totalTokens > 0 || d.inputTokens > 0 || d.outputTokens > 0)) return;
+  const day = todayKey();
+  let row = liveTokenDays.find((x) => x.day === day);
+  if (!row) {
+    row = { day, input: 0, output: 0, cache_read: 0, cache_write: 0, opus: 0, sonnet: 0, haiku: 0, other: 0, sessions: 0, projects: {}, session_ids: [] };
+    liveTokenDays.push(row);
+  }
+  // OpenAI input includes its cached subset; store the uncached remainder beside the
+  // cache bucket so `input + cache_read` still equals the provider's input total.
+  const input = Math.max(0, d.inputTokens - d.cachedInputTokens);
+  const processed = input + d.cachedInputTokens + d.cacheWriteInputTokens + d.outputTokens;
+  row.input += input; row.cache_read += d.cachedInputTokens; row.cache_write += d.cacheWriteInputTokens; row.output += d.outputTokens;
+  row.other += processed;
+  const project = s.project || basename(s.workdir) || "unknown";
+  row.projects[project] = (row.projects[project] || 0) + processed;
+  if (!row.session_ids.includes(id)) { row.session_ids.push(id); row.sessions++; }
+  liveTokenDays.sort((a, b) => a.day.localeCompare(b.day));
+  while (liveTokenDays.length > USAGE_MAX_DAYS) liveTokenDays.shift();
+  localStorage.setItem("cc-agent-usage-tokens", JSON.stringify(liveTokenDays));
+  tokenDays = mergeTokenDays(scannedTokenDays.value, liveTokenDays);
 }
 // How far back the analytics tab looks. A live binding: the range buttons call the
 // setter, every reader (here and in the render code) sees the new value.

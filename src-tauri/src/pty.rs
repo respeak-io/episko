@@ -38,6 +38,7 @@ use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::agent;
 #[cfg(not(windows))]
 use crate::platform::sh_quote;
 use crate::platform::{augmented_path, resolve_claude, sys_command};
@@ -190,7 +191,7 @@ pub(crate) fn spawn_claude(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", provider: Some("claude".into()), scrollback: scroll.clone(), win32_input: win32.clone() },
     );
 
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -430,6 +431,7 @@ fn stream_pty_session(
         log::info!("pty exit · {session_id} · code {code}");
         if let Some(st) = app.try_state::<AppState>() {
             st.sessions.lock().unwrap().remove(&session_id);
+            agent::stop_runtime(&st, &session_id);
             if let Some(p) = child_pid {
                 st.owned_pids.lock().unwrap().remove(&p);
             }
@@ -505,7 +507,7 @@ pub(crate) fn spawn_shell(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", provider: None, scrollback: scroll.clone(), win32_input: win32.clone() },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -692,7 +694,7 @@ pub(crate) fn spawn_task(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", provider: None, scrollback: scroll.clone(), win32_input: win32.clone() },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -739,11 +741,9 @@ struct AgentSpec {
 /// machine that has it — so these come from each vendor's own installer rather than
 /// from the product name.
 ///
-/// **Claude Code is deliberately absent.** `spawn_claude` launches it with the
-/// per-launch instrumentation this whole path has none of, and a second entry here
-/// would offer the same binary stripped of every reason to run it inside Episko — no
-/// phase, no cost, no context, no permission prompts — with nothing on the row to say
-/// which of the two you had picked.
+/// **Claude Code is deliberately absent.** Its dedicated launcher supplies hooks,
+/// statusLine telemetry and external-terminal support; a generic catalogue entry would
+/// offer the same binary while silently bypassing that provider adapter.
 const AGENTS: &[AgentSpec] = &[
     AgentSpec { id: "amp", label: "Amp", bin: "amp", mark: "Am" },
     AgentSpec { id: "antigravity", label: "Antigravity CLI", bin: "agy", mark: "Ag" },
@@ -793,7 +793,7 @@ fn agent_spec(id: &str) -> Option<&'static AgentSpec> {
 ///   stall on a Mac. `augmented_path()` already harvested that shell's PATH once for
 ///   the whole app run, so scanning it directly answers the same question for free.
 #[cfg(not(windows))]
-fn resolve_cli(bin: &str) -> Option<String> {
+pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
     let home = crate::platform::home_dir();
     // Where per-user installers land things the *process* PATH may not carry under
     // Finder. `augmented_path` already lists some of these; the overlap costs one
@@ -816,7 +816,7 @@ fn resolve_cli(bin: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn resolve_cli(bin: &str) -> Option<String> {
+pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
     // `win_resolve` walks PATHEXT across the augmented PATH, which is what "is this
     // installed?" means on Windows — and it is the same call `argv_command` makes at
     // launch, so detection and spawn cannot disagree about which file this is.
@@ -849,6 +849,21 @@ pub(crate) struct AgentInfo {
     bin: &'static str,
     /// Where it is, or `None` if this machine hasn't got it.
     path: Option<String>,
+    /// Features supplied by this provider adapter. The generic launcher is a
+    /// terminal-only fallback; integrated adapters opt into these without teaching
+    /// shared frontend surfaces provider names.
+    capabilities: &'static [&'static str],
+}
+
+const CODEX_CAPABILITIES: &[&str] = &[
+    "session-state", "activity", "context", "usage", "permissions", "resume", "history",
+];
+
+fn agent_capabilities(id: &str) -> &'static [&'static str] {
+    match id {
+        "codex" => CODEX_CAPABILITIES,
+        _ => &[],
+    }
 }
 
 /// The whole catalogue, each entry saying whether it is installed — **not** a filtered
@@ -869,23 +884,21 @@ pub(crate) struct AgentInfo {
 pub(crate) fn list_agents() -> Vec<AgentInfo> {
     AGENTS
         .iter()
-        .map(|a| AgentInfo { id: a.id, label: a.label, mark: a.mark, bin: a.bin, path: resolve_cli(a.bin) })
+        .map(|a| AgentInfo { id: a.id, label: a.label, mark: a.mark, bin: a.bin, path: resolve_cli(a.bin), capabilities: agent_capabilities(a.id) })
         .collect()
 }
 
-/// Run someone else's coding agent in an embedded PTY — the fourth kind of pane.
+/// Run a coding-agent provider in an embedded PTY — the fourth kind of pane.
 ///
-/// Uninstrumented, and that is the design rather than a gap to close later: the hooks
-/// and statusLine `write_instrument_settings` generates are Claude Code's own settings
-/// format, so there is no version of this that yields a phase, a cost or a permission
-/// prompt for `codex`. What an agent pane does get is everything Episko owns outright
-/// rather than infers from telemetry — its own worktree, a place in the project tree,
-/// the palette, the working-set card (which reads git, not hooks), and an exit that
-/// lands on its row.
+/// Provider capabilities decide the integration. Codex starts a loopback App Server
+/// beside the real TUI, so phase, activity, context, usage, approvals, history and
+/// resume arrive through its public protocol. Providers without an adapter keep the
+/// terminal-only fallback: worktree, project tree, palette, git working set and exit.
 ///
-/// The pid stays out of `owned_pids` for exactly the reason a shell's does: it is not
-/// a claude process, it never registers in `~/.claude/sessions`, and it must not be
-/// able to masquerade as an external session.
+/// The TUI pid stays out of `owned_pids`: that set exists specifically to exclude
+/// Episko-launched Claude processes from Claude's external-session registry. Provider
+/// runtimes have their own lifecycle in `agent.rs` instead.
+#[allow(clippy::too_many_arguments)] // Tauri command parameters are the frontend wire format.
 #[tauri::command]
 pub(crate) fn spawn_agent(
     app: AppHandle,
@@ -895,8 +908,12 @@ pub(crate) fn spawn_agent(
     agent: String,
     rows: u16,
     cols: u16,
+    resume: Option<String>,
 ) -> Result<(), String> {
     let spec = agent_spec(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("can't resume: {workdir} no longer exists"));
+    }
     // Resolve here rather than handing `argv_command` the bare name. The picker only
     // lists agents the probe found, so a miss at this point means it was uninstalled
     // between the poll and the click — and naming it beats a pane that opens onto a
@@ -913,8 +930,22 @@ pub(crate) fn spawn_agent(
     // Through `argv_command`, not `CommandBuilder::new`, and that is load-bearing on
     // Windows: most of these ship as an npm `.cmd` shim, which `CreateProcessW` cannot
     // start on its own (ERROR_BAD_EXE_FORMAT) — the same wall every `package.json`
-    // script hit before `argv_command` existed.
-    let mut cmd = argv_command(&bin, Vec::new());
+    // script hit before `argv_command` existed. Codex keeps its real TUI while an
+    // independent App Server client feeds Episko's inspector; other providers retain
+    // this path's terminal-only fallback until they gain an adapter.
+    let remote = if spec.id == "codex" {
+        Some(agent::start_codex(app.clone(), &state, &session_id, &workdir, &bin)?)
+    } else {
+        None
+    };
+    let args = remote.as_ref().map(|endpoint| {
+        let mut args = vec!["--remote".to_string(), endpoint.clone(), "-C".to_string(), workdir.clone()];
+        if let Some(thread) = resume.as_ref() {
+            args.extend(["resume".to_string(), thread.clone()]);
+        }
+        args
+    }).unwrap_or_default();
+    let mut cmd = argv_command(&bin, args);
     cmd.cwd(&workdir);
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
@@ -925,7 +956,13 @@ pub(crate) fn spawn_agent(
     apply_utf8_locale(&mut cmd);
 
     log::info!("spawn agent · {} · {session_id} · {workdir} · {bin}", spec.id);
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let child = match pair.slave.spawn_command(cmd) {
+        Ok(child) => child,
+        Err(e) => {
+            agent::stop_runtime(&state, &session_id);
+            return Err(e.to_string());
+        }
+    };
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -935,7 +972,7 @@ pub(crate) fn spawn_agent(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", provider: Some(spec.id.into()), scrollback: scroll.clone(), win32_input: win32.clone() },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -1232,6 +1269,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
     if let Some(mut s) = killed {
         log::info!("kill session · {session_id}");
         let _ = s.killer.kill();
+        agent::stop_runtime(&state, &session_id);
         if let Some(p) = s.pid {
             state.owned_pids.lock().unwrap().remove(&p);
         }
@@ -1243,6 +1281,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
 pub(crate) struct LiveSession {
     id: String,
     kind: &'static str,
+    provider: Option<String>,
     workdir: String,
 }
 
@@ -1261,7 +1300,7 @@ pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
         .lock()
         .unwrap()
         .iter()
-        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, workdir: s.workdir.clone() })
+        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, provider: s.provider.clone(), workdir: s.workdir.clone() })
         .collect()
 }
 

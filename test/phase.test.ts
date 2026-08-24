@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   actKey, apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, phaseText,
-  statusKey, type Sess,
+  statusKey, CLAUDE_CLI, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -33,9 +33,9 @@ function sess(o: Partial<Sess> = {}): Sess {
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [],
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
-    kind: "claude", external: false, ...o,
+    kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
   } as Sess;
 }
 const hook = (s: Sess, hook_event_name: string, extra: Record<string, unknown> = {}) =>

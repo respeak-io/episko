@@ -20,7 +20,10 @@
 
 import { basename } from "./format";
 import { checkoutDir } from "./gitwatch";
-import { bgWaiting, type ExtSession, type LiveSess, type Phase, type Restorable, type Sess } from "./types";
+import {
+  bgWaiting, hasSessionState, isAgent, providerSessionKey,
+  type ExtSession, type LiveSess, type Phase, type Restorable, type Sess,
+} from "./types";
 import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
@@ -164,31 +167,33 @@ export function allProjects(): ProjGroup[] {
   }
   return list;
 }
-// A session that's live right now must not be offered for restore: Claude doesn't
-// lock the transcript, so a second --resume of the same id silently interleaves
-// both conversations into one file. Three sources, because each sees sessions the
+// A session that's live right now must not be offered for restore. Claude can
+// interleave two resumes into one transcript, and other providers likewise own one
+// live thread at a time. Three sources, because each sees sessions the
 // others can't: the frontend map (our own panes), `backendLive` (a PTY the backend
 // still holds while the map has no pane for it — every pane after a webview reload,
 // #47; invisible as an external too, since `list_external_sessions` excludes owned
 // pids), and the externals list (another terminal entirely).
 export function dormantBusy(d: Restorable): boolean {
-  for (const s of sessions.values()) if (s.resumeId === d.resumeId || s.id === d.id) return true;
-  if (backendLive.has(d.id)) return true;
-  return externals.some((e) => e.session_id === d.resumeId);
+  for (const s of sessions.values()) {
+    if (s.provider === d.provider && (s.resumeId === d.resumeId || s.id === d.id)) return true;
+  }
+  if (backendLive.has(providerSessionKey(d.provider, d.id))) return true;
+  return d.provider === "claude" && externals.some((e) => e.session_id === d.resumeId);
 }
 // Which backend PTYs need a pane rebuilt after a webview reload, and under what
-// identity (#47 stage 2). Claude panes only: a shell is cheap to reopen and carries
-// no conversation, and a task pane's `run` metadata — label, chain, how its exit is
+// identity (#47 stage 2). Agent panes only: a shell is cheap to reopen and carries no
+// conversation, and a task pane's `run` metadata — label, chain, how its exit is
 // read — did not survive the reload, so a bare terminal claiming to be that task
 // would lie about everything but the bytes. The roster supplies the identity the
 // pane was launched under; an orphan the roster has no entry for still adopts with
 // `meta: null` — a running conversation is worth more than a tidy label, and the
 // caller derives one from `workdir`. Takes the roster as a parameter because it
 // runs at startup, BEFORE `loadDormants` has filtered it into `dormants`.
-export function orphanAdoptions(back: LiveSess[], roster: Restorable[]): { id: string; workdir: string; meta: Restorable | null }[] {
+export function orphanAdoptions(back: LiveSess[], roster: Restorable[]): { id: string; workdir: string; provider: string; meta: Restorable | null }[] {
   return back
-    .filter((b) => b.kind === "claude" && !sessions.has(b.id))
-    .map((b) => ({ id: b.id, workdir: b.workdir, meta: roster.find((r) => r?.id === b.id) ?? null }));
+    .filter((b) => b.kind === "agent" && !!b.provider && !sessions.has(b.id))
+    .map((b) => ({ id: b.id, workdir: b.workdir, provider: b.provider!, meta: roster.find((r) => r?.id === b.id) ?? null }));
 }
 export function projectList(): ProjGroup[] {
   const list = allProjects();
@@ -379,7 +384,7 @@ export function groupPhase(members: Sess[]): Phase {
 export function urgencyRank(s: Sess): number {
   // A shell and a third-party agent rank the same and for the same reason: neither
   // reports a phase, so neither can ever be more urgent than "it is open".
-  if (s.kind === "shell" || s.kind === "agent") return 6;
+  if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s))) return 6;
   if (s.kind === "task") return s.phase === "error" ? 1 : 6;
   if (s.attention) return 0;         // blocking permission — Claude is waiting on you
   if (s.phase === "error") return 1;
@@ -435,7 +440,7 @@ export function needsYou(s: Sess): boolean {
   // An agent pane never joins the set, and that is honesty rather than a gap: with no
   // hooks behind it nothing can say it is waiting on you, and a row that guessed would
   // put a badge on the tray title that no amount of looking could clear.
-  if (s.kind === "shell" || s.kind === "agent") return false;
+  if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s))) return false;
   if (s.kind === "task") return taskPrefs.attention && s.phase === "error";
   if (s.attention) return true;
   // A background fan-out ends the turn without ending the work, so `done` alone stopped

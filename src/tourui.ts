@@ -28,7 +28,7 @@ import { $, IS_MAC } from "./dom";
 import { dlog } from "./debug";
 import { needsYouSessions } from "./grouping";
 import { activeId, FAVORITES, permMode, sessions } from "./state";
-import { isClaude } from "./types";
+import { hasSessionState } from "./types";
 import {
   type Chapter, CHAPTERS, chapterKey, isDone, parseTourState, pickerChapters, planFor,
   recordDone, shouldOfferPicker, shouldOfferRelease, stepApplies, stepBlocked, stepSatisfied,
@@ -130,9 +130,10 @@ function world(): TourWorld {
     sessions: live.length,
     phase: act?.phase ?? "",
     // A shell pane and a task pane are sessions too, and neither has any of the cards
-    // the inspector chapter is about — so this is `isClaude` and a stage check, not
+    // the inspector chapter is about — so this is a capability and stage check, not
     // "is there a session".
-    agentOnStage: stage === "session" && !!act && isClaude(act),
+    agentOnStage: stage === "session" && !!act && hasSessionState(act),
+    provider: stage === "session" && act?.kind === "agent" ? act.provider ?? "" : "",
     permPending: perm,
     permAnswered: sawPermAnswered,
     // The preference new sessions launch with, which is the one the session this

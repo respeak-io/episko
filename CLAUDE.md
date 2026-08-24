@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Episko is a Tauri v2 desktop app (Rust backend + vanilla-TS frontend) that launches and manages many Claude Code sessions at once (each in its own PTY) and streams live status/cost/context telemetry back into the app. macOS-first; still an early spike.
+Episko is a Tauri v2 desktop app (Rust backend + vanilla-TS frontend) that launches and manages many coding-agent sessions at once (each in its own PTY) and streams provider capabilities such as status, context, usage and approvals back into the app. Claude Code and Codex are integrated providers; the remaining discovered CLIs use a terminal-only adapter. macOS-first; still an early spike.
 
 **The deep design notes live in `docs/`, one file per area, indexed at the bottom of this file. Read the matching doc before working on an area.** This file keeps the commands, the module maps, and the invariants that apply to almost any change.
 
@@ -32,7 +32,7 @@ Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`
 - Three **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector), `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key) and `tour.test.ts` (a tour step's anchor must resolve in `index.html`, the rail legend it teaches must match `GLYPH`/`GCLASS`, and a card that says *Settings › Sounds* must name a tab `settings.ts` ships). The first two joins had silently broken in production before the tests existed; the third is the same shape.
 - Rust tests are in-file `#[cfg(test)] mod tests`, several driving real `git` or the real `tiny_http` server; there is deliberately no `src-tauri/tests/` dir. Two `#[ignore]`d tests run against the real `claude` CLI via `cargo test -- --ignored`, which is a `RELEASE.md` step rather than a CI one.
 
-## The core mechanism: per-launch instrumentation
+## Claude's core mechanism: per-launch instrumentation
 
 This is the one idea that makes the whole app work; everything else hangs off it.
 
@@ -50,7 +50,7 @@ Three hard constraints shape this code:
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
-## Backend (`src-tauri/src/`): fourteen modules
+## Backend (`src-tauri/src/`): fifteen modules
 
 `main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the thirteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
 
@@ -61,6 +61,7 @@ Three hard constraints shape this code:
 | `tasks.rs` | runnable discovery; see docs/tasks.md |
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger; everything read out of `~/.claude` |
 | `pty.rs` | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
+| `agent.rs` | provider control planes beside a PTY: Codex App Server observer, approval routing and public history calls |
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
 | `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
@@ -78,18 +79,18 @@ Four conventions hold across them:
 - **`platform.rs`'s first half imports nothing from the crate.** That is exactly what lets every other module depend on it; the second half (the OS integrations) may, since `set_caffeinate` takes `State<AppState>`. **Don't let the first half grow a crate dependency.**
 - **A cfg-gated helper with a single consumer module belongs to *that* module** rather than to `platform.rs`. `apply_utf8_locale` and `interactive_shell` are `pty.rs`'s (`apply_utf8_locale` takes a `portable_pty::CommandBuilder`, and the leaf layer must not import `portable_pty`), `same_path` is `git.rs`'s.
 
-`AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `owned_pids` (see docs/sessions.md), `io_samples` (the previous disk-I/O reading per pid, which is what turns the kernel's lifetime byte counters into the status bar's rate) and `io_retired` (the bytes of sessions that have since exited, so the app-wide total doesn't fall when a pane closes), the held-open `pending` permission requests, and `caffeinate`.
+`AppState` holds the telemetry `port`, `sessions: HashMap<session_id, Session>` (each = PTY master + writer + child killer), `agent_runtimes` (provider control-plane child + control channel), `owned_pids` (Claude external-registry filtering; see docs/sessions.md), `io_samples`, `io_retired`, the held-open Claude `pending` permission requests, and `caffeinate`.
 
 The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-time, the `cc-io` rollup, `splitIo`, what the counters do and don't cover) is subtle and lives in `docs/architecture.md`; read it before touching any of it.
 
-- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns claude, and (via the shared `stream_pty_session` helper) starts two threads: a reader that base64-encodes output into `pty-output` events, and a reaper that removes the session and emits `pty-exit`. `write_pty` / `resize_pty` / `kill_session` operate by session_id. `spawn_shell` reuses the same path to run a plain login shell (no Claude, no instrumentation) in an embedded pane. The `❯ Terminal` button opens one when the launch engine is embedded (else it opens an external terminal via `open_terminal_here`). Shell panes carry `kind:"shell"` on the frontend `Sess` and skip telemetry/cost; `spawn_task` is the third entry point (see docs/tasks.md), and `spawn_agent` the fourth — somebody else's coding-agent CLI (`codex`, `opencode`, `gemini`…) in a pane, discovered by `available_agents` and uninstrumented by construction (docs/sessions.md).
+- **PTY** via `portable-pty`. `spawn_claude` opens a PTY, spawns Claude, and (via `stream_pty_session`) starts the reader/reaper pair. `write_pty` / `resize_pty` / `kill_session` operate by session id. `spawn_shell` runs a login shell; `spawn_task` runs a discovered task; `spawn_agent` runs a non-Claude provider. Codex first starts a loopback App Server in `agent.rs` and points the real TUI at it with `--remote`; terminal-only providers go straight through `argv_command`. The reaper stops any provider runtime before emitting `pty-exit` (docs/sessions.md).
 - **`write_pty` is the one place that decides what a child receives**, and on Windows that is not "the bytes we were given": ConPTY re-synthesizes a VT stream into key events, and a character it best-fits into the OEM code page arrives on a key-**up** record, where `_getwch` (Python's `getpass`, i.e. any script asking for a secret) never looks. So a non-ASCII character goes out as a win32 input record instead (`win32_input_encode`), exactly as Windows Terminal does. **ASCII and escape sequences are never rewritten.** Read docs/architecture.md before touching it; a hidden prompt makes every mistake here silent.
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 65 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 68 modules
 
-**No framework, and no longer one file.** 65 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 68 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
@@ -98,6 +99,8 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | Module | What |
 | --- | --- |
 | `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isClaude`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
+| `agents.ts` | provider-neutral agent events and the shared reducer that mutates `Sess`; adapters feed this rather than writing a second cockpit |
+| `providers/codex.ts` | Codex App Server methods/items → normalized events, plus public thread history mapping |
 | `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
@@ -135,7 +138,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 65 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 68 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -146,21 +149,19 @@ Four rules keep that graph honest. **There are no import cycles across the 65 mo
 
 And the things that hold however the files are arranged:
 
-- **`Sess.kind`** (`"claude" | "shell" | "task" | "agent"`) decides whether telemetry,
-  cost and git actions apply to a pane. Use the `isClaude(s)` helper rather than
-  re-testing the string — it is named for the binary because that is the question it
-  answers, and it was called `isAgent` until a pane could hold `codex`. It is orthogonal
-  to `Sess.external`, which means "the terminal lives in Ghostty/iTerm rather than an
-  embedded pane" and only ever applies to a claude session.
-- **Only `claude` panes have telemetry, and that is a property of Claude Code rather
-  than a gap.** `agent` panes run twenty-one other vendors' CLIs (`docs/sessions.md`);
-  the hooks and statusLine Episko generates are Claude Code's own settings format and
-  nothing else reads them, so an agent pane has no phase, cost, context or permission
-  prompt and every surface says so plainly instead of showing a dash. What it does get
-  is what Episko owns outright: the worktree, the project tree, the palette, the
-  working-set card (which reads git), and an exit on its row. **Never invent a phase for
-  one** — `needsYou`, `urgencyRank` and `midFlight` all answer "no" for `agent`, and a
-  badge nothing can clear is worse than no badge.
+- **`Sess.kind` is product shape, not vendor**: `"agent" | "shell" | "task"`.
+  Agent sessions carry a stable `provider` plus copied `capabilities`; shared surfaces
+  use `isAgent`, `hasAgentCapability` and `hasSessionState`. Use `isClaude` only where
+  the actual Claude protocol/launch flags matter. `Sess.external` is orthogonal and
+  only available to providers advertising `external-terminal` (Claude today).
+- **Provider adapters normalize; they do not fork the cockpit.** Claude hooks call
+  `applyHook`/`applyStatusline`; Codex App Server methods pass through
+  `providers/codex.ts` into `applyAgentEvent`. Phase, attention, inspector, files,
+  approvals, context, usage, roster and history then read the same `Sess`. A provider
+  with no adapter has no `session-state` capability and gets the explicit terminal-only
+  card; never invent a phase for it, because a badge nothing can clear is worse than no
+  badge. Add OpenCode by implementing the backend transport + provider adapter and
+  declaring only the capabilities its structured interface actually supplies.
 - **A pane glyph that isn't a phase lives in two tables that must move together**:
   `sidebarview.ts`'s (`❯` shell, `»` agent) and `tray.ts`'s `SHAPE` plus `icons.rs`'s
   `shape_sdf` (`chevron`, `dchevron`). The tray once spelled every kind of pane with the
@@ -199,8 +200,8 @@ And the things that hold however the files are arranged:
   time. Neither reaches Escape (nine dialogs rather than one action, and never bindable) or a
   terminal's own copy/paste (xterm's handler, below this layer), which is what makes
   either safe to leave on.
-- **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()`, so session ids are matched case-insensitively, so keep them lowercase.
-- `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
+- **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "agent-event" | "tray-select")` at the bottom of `main.ts`. Claude telemetry routes by stable launch id; provider events carry `sessionId` + `provider` and are rejected if either does not match the pane.
+- `applyHook` maps Claude lifecycle events and `applyStatusline` fills its model/context/cost/duration. `applyAgentEvent` maps normalized provider events onto the same state machine. Claude account limits remain in global `rl`; provider-specific limits live on `Sess.rateLimits` and must not be merged across accounts.
 - **The inspector's Context card is a *set of files*, not a log of tool calls** (`files.ts`, `contextHtml`). `Sess.files` holds one entry per path with a `kind` that only ever climbs read → edited → created, because an agent re-reads what it just wrote constantly and a last-verb-wins field would demote half the edited files seconds later. It is fed from **PostToolUse**, not the Pre hook the timeline opens on: `tool_response.type` is what distinguishes a `Write` that created from one that overwrote. **Bash is deliberately not modelled** — `touch`, `>` and `sed -i` reach us as a shell string, and what they did to the tree is already answered correctly by the working-set card that reads git; the non-file tools are summarised in one line instead. The old timeline is still there under the card's `Tools` tab, one line per call, and **a row opens ./callsheet** rather than unfolding: `tool_input` and `tool_response` as ./toolio renders them, capped at capture (4000 chars a side) because a `Read` response is an entire file, and held in memory only — a tool payload must never reach `localStorage`. **A payload does not go in the rail.** 296px is ~38 characters of 10.5px mono, and every one of these is an 80–120 column artifact, so the row unfolding two `<pre>`s into it rendered a four-line patch as eleven and (with the `overflow-wrap: anywhere` that width forces) broke a diff's `+`/`−` off the lines that carry their meaning. What stays on the row is what a rail is good at — which call, how long, and the **first line of a failure's reason**, the one payload promoted out of a click because it has no other surface in the app. Two joins there are load-bearing. **Pair a call's Pre and Post hooks by `tool_use_id`, never by tool name**: the name picks the most recent open call so named, which is wrong whenever two calls of one tool overlap, and hanging an output off the wrong row is a lie the card states in full (the name match survives only as the fallback for a payload with no id). And **a failure carries no `tool_response` at all** — `PostToolUseFailure` puts the reason in a plain-string `error` — so anything reading a result has to read both fields.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, counted from `SubagentStart`/`Stop`, with no disk and no backend), `statusKey` answers `"background"` for it, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
@@ -219,7 +220,7 @@ And the things that hold however the files are arranged:
   viewer of its own. Adding a fourth place that lists files means adding it to that join,
   not beside it (docs/explorer.md).
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
-- **Three orthogonal facts decide a launch, all preferences, all read at the launch site and never stored on a `Sess`**: `defaultAgent` (**what** runs — Claude Code by default, overridable per project via `agentByProject`; resolved by `pickAgent` in ./types), `termEngine` (**where** its terminal lives — embedded xterm / ghostty / Terminal / iTerm, with identical instrumentation for all four), and `permMode` (**how** it starts). `launch()` forks on the agent before it builds anything; a resume and the dashboard's issue dispatch pin Claude, and both for reasons rather than taste (`docs/sessions.md`).
+- **Three orthogonal facts decide a launch**: `defaultAgent` (**what** runs — Claude Code by default, overridable per project via `agentByProject`; resolved by `pickAgent` in ./types), `termEngine` (**where** its terminal lives), and `permMode` (**how Claude starts**). `launch()` forks on the provider before it builds anything; a resume carries its original provider, while new sessions and dashboard issue dispatch follow the project preference (`docs/sessions.md`).
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
   you have been to since it finished leaves the badge, the tray title, the palette's
   "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);

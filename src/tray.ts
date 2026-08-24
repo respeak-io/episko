@@ -18,7 +18,7 @@
 // names nothing.
 
 import { invoke } from "@tauri-apps/api/core";
-import { phaseText, statusKey, type Sess } from "./types";
+import { hasSessionState, isAgent, phaseText, statusKey, type Sess } from "./types";
 import { needsYouSessions, projectList, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
 import { dlog } from "./debug";
@@ -73,7 +73,7 @@ function classRgb(cls: string): [number, number, number] {
 // be changed together or the tray silently disagrees with the rail beside it.
 function rowIcon(s: Sess): { shape: string; cls: string } {
   const k = statusKey(s);
-  const bare = s.kind === "shell" ? "chevron" : s.kind === "agent" ? "dchevron" : "";
+  const bare = s.kind === "shell" ? "chevron" : isAgent(s) && !hasSessionState(s) ? "dchevron" : "";
   if (bare) {
     return s.phase === "ended" ? { shape: SHAPE.ended, cls: GCLASS.ended } : { shape: bare, cls: "g-idle" };
   }

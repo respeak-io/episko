@@ -4,7 +4,9 @@ import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { isClaude, isExited, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
+import { applyAgentEvent, type ProviderEvent } from "./agents";
+import { codexEvents } from "./providers/codex";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -577,12 +579,12 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     s.phase = "ended";
     // Name what actually exited. "claude exited" under a `codex` pane is a small lie
     // that costs a real minute when the pane is one of six on the stage.
-    const what = s.kind === "shell" ? "shell" : s.kind === "agent" ? (s.agent ?? "agent") : "claude";
+    const what = s.kind === "shell" ? "shell" : isAgent(s) ? (s.provider ?? "agent") : "task";
     s.term?.writeln(`\r\n\x1b[90m[${what} exited: code ${code}]\x1b[0m`);
-    // Reclaim an ended claude pane's scrollback the moment nobody is looking at it;
+    // Reclaim an ended resumable agent pane's scrollback the moment nobody is looking at it;
     // the pane you watched end keeps its buffer until it leaves the stage (setActive
-    // trims on the way off). See trimScrollback for why claude panes only.
-    if (isClaude(s) && activeId !== s.id) trimScrollback(s);
+    // trims on the way off). See trimScrollback for why provider-backed panes only.
+    if (hasSessionState(s) && activeId !== s.id) trimScrollback(s);
   }
   // A task's exit code is its verdict; anything else just stopped. After the branches
   // above so a task has its `exitCode` before this reads the kind, and in one place
@@ -621,6 +623,37 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   // branch above: one crossing, one chime, however many sessions report it.
   if (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null) playSound("limit");
   queueRosterSave();
+  renderAll();
+});
+// Integrated non-Claude providers arrive through one raw transport event and their
+// own small adapter. Everything after the adapter is the same shared session model,
+// sounds, roster persistence, inspector and tray that Claude's hook reducer drives.
+listen<ProviderEvent>("agent-event", (e) => {
+  const raw = e.payload;
+  const s = sessions.get(raw.sessionId);
+  if (!s || s.provider !== raw.provider) {
+    telem.dropped++;
+    dlog("warn", `${raw.provider} event for unrouted session ${raw.sessionId?.slice(0, 8) || "?"}: dropped`);
+    return;
+  }
+  const adapter = raw.provider === "codex" ? codexEvents : null;
+  if (!adapter) { dlog("warn", `no event adapter for provider ${raw.provider}`); return; }
+  const events = adapter(raw); if (!events.length) return;
+  telem.rx++; telem.routed++;
+  const before = soundSnap(s);
+  const limitsBefore = s.rateLimits.map((x) => ({ ...x }));
+  const resumeBefore = s.resumeId;
+  for (const event of events) applyAgentEvent(s, event);
+  if (s.resumeId !== resumeBefore) {
+    dlog("info", `${s.provider} session ${s.id.slice(0, 8)} thread → ${s.resumeId.slice(0, 8)}`);
+    flushRoster();
+  } else queueRosterSave();
+  const sound = hookSound(before, soundSnap(s));
+  if (sound) playSound(sound);
+  if (s.rateLimits.some((w) => limitCrossed(
+    limitsBefore.find((b) => b.windowMins === w.windowMins)?.usedPercent ?? null,
+    w.usedPercent,
+  ) !== null)) playSound("limit");
   renderAll();
 });
 // menu-bar (tray) menu → jump to the clicked session
@@ -925,13 +958,12 @@ listen("quit-requested", async () => {
   // isExited, not `phase !== "ended"`: a finished task's phase is done/error, so the
   // old test counted every failed run as "1 task still running" in the quit dialog.
   const live = [...sessions.values()].filter((s) => !isExited(s));
-  const agents = live.filter((s) => isClaude(s)).length;
+  const agents = live.filter(hasSessionState).length;
   const terms = live.filter((s) => s.kind === "shell").length;
   const runs = live.filter((s) => s.kind === "task").length;
-  // Counted apart from `agents`, which means instrumented claude sessions: quitting ends
-  // a codex pane just as dead, and a dialog that left it out of the tally would be
-  // understating what the button does.
-  const clis = live.filter((s) => s.kind === "agent").length;
+  // Counted apart from `agents`, which means sessions with structured state. Quitting
+  // ends a terminal-only pane too, and leaving it out would understate what the button does.
+  const clis = live.filter((s) => isAgent(s) && !hasSessionState(s)).length;
   const total = agents + terms + runs + clis;
   if (total === 0) { await invoke("confirm_quit"); return; }
   const parts: string[] = [];
@@ -1001,7 +1033,7 @@ setInterval(() => {
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
-  if (!s || !isClaude(s)) return;
+  if (!s || !hasSessionState(s)) return;
   tickDwell(s);
 }, 1000);
 

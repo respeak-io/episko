@@ -7,6 +7,7 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod agent;
 mod external;
 mod files;
 mod git;
@@ -47,11 +48,14 @@ pub(crate) struct Session {
     /// Working directory this session runs in. Lets `remove_worktree` refuse to
     /// delete a worktree that still has a live embedded session inside it.
     workdir: String,
-    /// Which spawner made this pane: "claude" | "shell" | "task". The frontend's
-    /// `Sess.kind` is the authority in normal operation; this copy exists for the
-    /// one state where the frontend has no `Sess` — a reload orphan — so adoption
-    /// can rebuild claude panes and leave shells and tasks alone (#47 stage 2).
+    /// Durable pane kind: "agent" | "shell" | "task". Agent identity lives in
+    /// `provider`, so adding a provider never grows another kind discriminator.
+    /// This backend copy exists for reload-orphan adoption (#47 stage 2).
     kind: &'static str,
+    /// Stable coding-agent provider id ("claude", "codex", ...), or `None` for a
+    /// shell/task. Kept beside kind so an orphaned PTY remains self-describing while
+    /// the frontend session map is being rebuilt.
+    provider: Option<String>,
     /// The recent raw output of this PTY (see `pty::ScrollBuf`), shared with the
     /// reader thread. What lets a pane rebuilt after a webview reload start with
     /// its scrollback instead of blank.
@@ -68,6 +72,11 @@ pub(crate) struct Session {
 pub(crate) struct AppState {
     port: u16,
     sessions: Mutex<HashMap<String, Session>>,
+    /// Provider sidecars and control channels keyed by Episko's stable pane id.
+    /// A Codex pane owns one loopback app-server beside its PTY; terminal-only
+    /// providers have no entry. Kept outside `Session` because its lifecycle also
+    /// owns an observer thread and JSON-RPC control plane, not just a child killer.
+    agent_runtimes: Mutex<HashMap<String, agent::AgentRuntime>>,
     /// PIDs of the `claude` processes Episko spawned in an embedded PTY. Matched
     /// against the on-disk session registry so our own sessions never masquerade
     /// as "external" — robust to the session id changing under /resume or /clear
@@ -317,6 +326,7 @@ pub fn run() {
             app.manage(AppState {
                 port,
                 sessions: Mutex::new(HashMap::new()),
+                agent_runtimes: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
                 io_samples: Mutex::new(HashMap::new()),
                 io_retired: Mutex::new((0, 0)),
@@ -531,6 +541,8 @@ pub fn run() {
             git::create_worktree,
             platform::set_caffeinate,
             telemetry::resolve_permission,
+            agent::resolve_agent_request,
+            agent::agent_history,
             git::list_worktrees,
             git::worktree_heads,
             git::remove_worktree,

@@ -15,7 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, stageGen } from "./dom";
 import { esc, tilde } from "./format";
-import { apiErrText, isClaude, phaseText, runElapsed, statusKey, type Sess } from "./types";
+import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
 import { activeId, sessions } from "./state";
 // The task card's three actions. They took a host object while they lived in
@@ -52,7 +52,7 @@ export function setCtxMode(m: string) {
 
 export function renderInspector(s: Sess | null) {
   if (s?.kind === "shell") { renderShellInspector(s); return; }
-  if (s?.kind === "agent") { renderAgentInspector(s); return; }
+  if (s && isAgent(s) && !hasSessionState(s)) { renderAgentInspector(s); return; }
   if (s?.kind === "task") { renderTaskInspector(s); return; }
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
@@ -73,7 +73,7 @@ export function renderInspector(s: Sess | null) {
     // is dead" — so the reason and what to do about it go on the card.
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
     const note = creds
-      ? "Claude Code can't reach the API with these credentials. Fix them in the terminal, then send the prompt again."
+      ? "The agent can't reach its API with these credentials. Fix them in the terminal, then send the prompt again."
       : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.";
     html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
   }
@@ -141,17 +141,15 @@ function renderShellInspector(s: Sess) {
       <div class="ext-hl">❯ Plain shell</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-note">A regular login shell running inside Episko, with no Claude and no telemetry. Handy for commands you don't want to run inside a session.</div>
+      <div class="ext-note">A regular login shell running inside Episko, with no coding-agent telemetry. Handy for commands you don't want to run inside a session.</div>
     </div>`);
 }
 
-// Somebody else's agent. The card says what the pane is and, more usefully, what it
-// is *not*: every gauge the inspector normally fills — state, context, cost, the
-// files card — is fed by Claude Code's hooks, and there is nothing behind them here.
-// Saying so once beats an inspector full of dashes that reads like a bug.
+// Terminal-only provider fallback. Integrated agents take the rich inspector path;
+// this card says plainly why a provider without a control-plane adapter cannot.
 function renderAgentInspector(s: Sess) {
   const ended = s.phase === "ended";
-  const label = s.title || s.agent || "agent";
+  const label = s.title || s.provider || "agent";
   const pill = $("iPill"); pill.className = "pill " + (ended ? "ended" : "idle");
   $("iPillTxt").textContent = ended ? "exited" : "running";
   paintInspector(`
@@ -160,7 +158,7 @@ function renderAgentInspector(s: Sess) {
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       ${s.branch ? `<div class="ext-meta"><span class="label">Branch</span><span class="ell">${esc(s.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-note">${esc(label)} running in an Episko pane, in this checkout. Episko owns the terminal and the worktree; it does not instrument the agent, so there is no phase, cost or context here — those come from Claude Code's hooks, which only Claude Code writes.</div>
+      <div class="ext-note">${esc(label)} is running in an Episko pane in this checkout. This provider currently uses the terminal-only adapter, so Episko cannot show its phase, usage or context.</div>
     </div>`);
 }
 
@@ -176,7 +174,7 @@ function renderTaskInspector(s: Sess) {
   // terminal can't do. Only agents, and only when the run actually failed.
   // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
   // into, so offering the handoff there would fail at the click.
-  const candidates = failed ? [...sessions.values()].filter((x) => isClaude(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
+  const candidates = failed ? [...sessions.values()].filter((x) => hasSessionState(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
   // A run-on-stop failure goes back to the session whose turn it was checking — and
   // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
   // type into), offer nothing rather than misdirecting the output to an unrelated

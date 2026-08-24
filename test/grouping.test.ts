@@ -23,15 +23,19 @@ const NOW_MS = 1800000000000; // 2027-01-15T08:00:00Z
 
 // A Sess as newSession() builds one, minus the DOM/xterm handles nothing here reads.
 function sess(o: Partial<Sess> = {}): Sess {
+  const explicitKind = o.kind;
   return {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [],
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
-    kind: "claude", external: false, ...o,
+    kind: "agent",
+    provider: explicitKind === undefined ? "claude" : explicitKind === "agent" ? "codex" : null,
+    capabilities: explicitKind === undefined ? [...CLAUDE_CLI.capabilities] : [],
+    external: false, ...o,
   } as Sess;
 }
 /// The `Sess` fields of a session with a background fan-out up — `total` agents
@@ -46,7 +50,7 @@ function open(...list: Sess[]): Sess[] { for (const s of list) sessions.set(s.id
 const ext = (o: Partial<ExtSession> = {}): ExtSession =>
   ({ pid: 1, session_id: "e1", cwd: "/w/epi", name: "epi", status: "idle", version: "2.1", ...o });
 const dorm = (o: Partial<Restorable> = {}): Restorable =>
-  ({ id: "d1", resumeId: "d1", project: "epi", workdir: "/w/epi", colorKey: "/w/epi",
+  ({ id: "d1", resumeId: "d1", provider: "claude", project: "epi", workdir: "/w/epi", colorKey: "/w/epi",
      worktree: null, branch: "main", title: "", lastActivity: 0, ...o });
 // A ProjGroup as allProjects() builds one, for the two functions that take one.
 const grp = (o: Partial<ProjGroup> = {}): ProjGroup =>
@@ -1125,7 +1129,7 @@ describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
 
   it("never groups a claude or shell pane, whatever it carries", () => {
     const items = foldRunGroups([
-      sess({ id: "c", kind: "claude", run: { groupId: "g1" } as never }),
+      sess({ id: "c", run: { groupId: "g1" } as never }),
       sess({ id: "sh", kind: "shell", run: { groupId: "g1" } as never }),
     ]);
     expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
@@ -1254,7 +1258,7 @@ describe("dormantBusy — a live session must not be offered for restore", () =>
     // alive. `list_external_sessions` excludes owned pids, so without this set the
     // row would read resumable and a second --resume would interleave the
     // transcript the live process still owns.
-    setBackendLive(new Set(["d1"]));
+    setBackendLive(new Set(["claude:d1"]));
     expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
     // Rotation before the reload changes nothing: the backend map is keyed by the
     // launch id, which is exactly what the roster's `id` still holds.
@@ -1266,11 +1270,17 @@ describe("dormantBusy — a live session must not be offered for restore", () =>
     setBackendLive(new Set());
     expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
   });
+
+  it("keys live conversations by provider as well as thread id", () => {
+    setBackendLive(new Set(["codex:d1"]));
+    expect(dormantBusy(dorm({ id: "d1", provider: "claude" }))).toBe(false);
+    expect(dormantBusy(dorm({ id: "d1", provider: "codex" }))).toBe(true);
+  });
 });
 
 describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", () => {
-  const live = (o: Partial<{ id: string; kind: string; workdir: string }> = {}) =>
-    ({ id: "o1", kind: "claude", workdir: "/w/epi", ...o });
+  const live = (o: Partial<{ id: string; kind: string; provider: string | null; workdir: string }> = {}) =>
+    ({ id: "o1", kind: "agent", provider: "claude", workdir: "/w/epi", ...o });
 
   it("adopts a claude orphan under its roster identity", () => {
     const out = orphanAdoptions([live()], [dorm({ id: "o1", resumeId: "rot", project: "Epi!" })]);
@@ -1284,7 +1294,13 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
     // A running conversation is worth more than a tidy label — the caller derives
     // one from the workdir.
     const out = orphanAdoptions([live()], []);
-    expect(out).toEqual([{ id: "o1", workdir: "/w/epi", meta: null }]);
+    expect(out).toEqual([{ id: "o1", workdir: "/w/epi", provider: "claude", meta: null }]);
+  });
+
+  it("reattaches an integrated Codex pane with its provider identity", () => {
+    const out = orphanAdoptions([live({ provider: "codex" })], [dorm({ id: "o1", provider: "codex" })]);
+    expect(out[0]?.provider).toBe("codex");
+    expect(out[0]?.meta?.provider).toBe("codex");
   });
 
   it("leaves shells and tasks alone — their metadata did not survive the reload", () => {
@@ -1299,7 +1315,7 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
 
 describe("pickAgent — which agent a launch in this project starts", () => {
   const cli = (id: string, label = id): AgentCli =>
-    ({ id, label, mark: id.slice(0, 2), bin: id, path: `/usr/local/bin/${id}` });
+    ({ id, label, mark: id.slice(0, 2), bin: id, path: `/usr/local/bin/${id}`, capabilities: [] });
   /// Known to Episko, absent from this machine — what `list_agents` now returns for
   /// the twelve you haven't installed, and what the picker greys out.
   const gone = (id: string, label = id): AgentCli => ({ ...cli(id, label), path: null });

@@ -15,7 +15,7 @@
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
-import { isClaude } from "./types";
+import { hasAgentCapability } from "./types";
 import {
   dayIo, ioDayCount, ioSameNote, ioTotal, todayKey, tokenDays, U_MONTHS, uBuckets, uDkey,
   uModels, usage, usageRange, usageWindow, uSum, type DaySpend, type UDay,
@@ -140,10 +140,10 @@ function uTiles(): string {
   const spend = uSum(cur, (d) => d.cost), tok = uSum(cur, (d) => d.tok);
   const nSess = sess(cur), nPrev = sess(prev);
   const perSess = nSess ? tok / nSess : 0, perPrev = nPrev ? uSum(prev, (d) => d.tok) / nPrev : 0;
-  const haveTok = tokenDays.length > 0; // the transcript scan populates tokens/sessions
+  const haveTok = tokenDays.length > 0; // history scan + live provider counters
   const tile = (label: string, val: string, foot: string, series: number[]) =>
     `<div class="u-tile"><div class="label">${label}</div><div class="u-fig mono">${val}</div><div class="u-tfoot">${foot}${uSpark(series)}</div></div>`;
-  // Token/session tiles come from the (async) transcript scan: skeleton while it runs.
+  // Token/session tiles combine the async history scan with live provider counters.
   const skel = `<span class="u-skel"></span>`;
   const scanFoot = `<span class="u-delta u-muted"><span class="u-spin"></span>scanning…</span>`;
   const noData = `<span class="u-delta u-muted">no data</span>`;
@@ -232,7 +232,7 @@ function uModelMix(): string {
   }).join("");
   const body = total > 0
     ? `<div class="u-share">${rows}</div>`
-    : `<p class="u-hint">${tokenScanning ? "Scanning transcripts…" : "No token data in range yet."}</p>`;
+    : `<p class="u-hint">${tokenScanning ? "Scanning agent history…" : "No token data in range yet."}</p>`;
   return `<div class="label">Model mix <span class="u-byline">· by tokens</span></div>${body}`;
 }
 
@@ -244,7 +244,7 @@ function uTokenMix(): string {
   const total = inp + out + cr + cw;
   if (!total) {
     const body = tokenScanning
-      ? `<div class="u-skelbar"></div><p class="u-hint"><span class="u-spin"></span> Scanning transcripts for token history…</p>`
+      ? `<div class="u-skelbar"></div><p class="u-hint"><span class="u-spin"></span> Scanning agent history for token usage…</p>`
       : `<p class="u-hint">No token data in range yet.</p>`;
     return `<div class="label" style="margin-top:15px">Token composition</div>${body}`;
   }
@@ -263,7 +263,7 @@ function uProjects(): string {
   // cache (the field was added after the scan shipped) — guard, or Object.entries throws.
   for (const d of cur) if (d.u) for (const [p, v] of Object.entries(d.u.projects || {})) proj[p] = (proj[p] || 0) + v;
   const entries = Object.entries(proj).sort((a, b) => b[1] - a[1]).slice(0, 8);
-  if (!entries.length) return `<section class="u-card"><div class="label">Top projects</div><p class="u-hint">${tokenScanning ? "Scanning transcripts…" : "No token data in range yet."}</p></section>`;
+  if (!entries.length) return `<section class="u-card"><div class="label">Top projects</div><p class="u-hint">${tokenScanning ? "Scanning agent history…" : "No token data in range yet."}</p></section>`;
   const maxw = entries[0][1] || 1;
   const rows = entries.map(([p, v]) => `<tr><td><span class="u-pj"><span class="u-dot" style="background:${accentFor(p)}"></span>${esc(p)}</span></td><td class="u-num"><span class="u-pjbar"><i style="width:${(v / maxw * 100).toFixed(0)}%"></i></span></td><td class="u-num"><span class="u-usd mono">${uTok(v)}</span></td></tr>`).join("");
   return `<section class="u-card"><div class="u-cardh"><div><div class="label">Attribution</div><h3 class="u-h">Top projects</h3></div><p class="u-hint" style="margin-top:5px">by tokens · working directory</p></div>
@@ -346,7 +346,7 @@ export function usagePanelHtml(): string {
 //
 // This used to be a card pinned to the bottom of the inspector, where it cost ~120px of
 // a 296px column to say something that is **not about the session on stage**: `ioAll`
-// sums every claude process Episko owns, so the card read identically whichever pane you
+// sums every embedded process Episko owns, so the card read identically whichever pane you
 // had open. A number that never changes with the panel it sits in does not belong in
 // that panel. It is a status-bar figure, and it is one now.
 //
@@ -369,7 +369,7 @@ function ioPct(bps: number): number {
 /// shipped — so a machine that has just updated has a `today` smaller than its `run`,
 /// which is correct rather than a bug, and is what `ioSameNote` explains.
 const IO_WINDOWS: ReadonlyArray<[IoWindow, string, string]> = [
-  ["today", "today", "Every claude session Episko has run today."],
+  ["today", "today", "Every embedded session Episko has run today."],
   ["run", "this run", "Since Episko started — the processes' own counters, which reset with the app."],
   ["all", "recorded", "Every day this rollup has recorded one. It starts when the rollup shipped, so it is not a lifetime figure."],
 ];
@@ -417,7 +417,7 @@ export function liveIo(): IoPop {
   return {
     readBps: ioAll.readBps, writeBps: ioAll.writeBps, primed: ioAll.primed,
     windows: IO_WINDOWS.map(([id, label, tip]) => ({ label, tip, text: ioText(id) })),
-    running: [...sessions.values()].filter((x) => isClaude(x) && !x.external).length,
+    running: [...sessions.values()].filter((x) => hasAgentCapability(x, "usage") && !x.external).length,
     note: ioSameNote(ioText("today"), ioText("run"), ioText("all"), ioDayCount()),
   };
 }

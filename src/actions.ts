@@ -124,8 +124,13 @@ export function removeFavorite(path: string) {
   renderAll();
 }
 export function resolvePermission(id: string, behavior: string) {
-  invoke("resolve_permission", { id, behavior }).catch(() => {});
-  for (const s of sessions.values()) if (s.pendingPermId === id) { s.pendingPermId = null; s.attention = null; s.pendingCmd = ""; }
+  const owner = [...sessions.values()].find((s) => s.pendingPermId === id);
+  if (owner && owner.provider !== "claude") {
+    invoke("resolve_agent_request", { sessionId: owner.id, requestId: id, behavior }).catch(() => {});
+  } else {
+    invoke("resolve_permission", { id, behavior }).catch(() => {});
+  }
+  if (owner) { owner.pendingPermId = null; owner.attention = null; owner.pendingCmd = ""; owner.pendRisk = null; }
   renderAll();
 }
 
@@ -260,7 +265,7 @@ export function setDefaultAgent(id: string) {
   localStorage.setItem("cc-agent", defaultAgent);
   const a = agentDef(defaultAgent);
   toast(a && a.id !== "claude"
-    ? `New sessions run ${a.label} — no phase, cost or context`
+    ? `New sessions run ${a.label}${a.capabilities.includes("session-state") ? " — inspector connected" : " — terminal only"}`
     : "New sessions run Claude Code");
   renderSettings();
 }

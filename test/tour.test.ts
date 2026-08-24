@@ -41,7 +41,7 @@ const allSteps = () => CHAPTERS.flatMap((c) => c.steps.map((s) => ({ c, s })));
 /** A world where nothing has happened yet. Spread over it to state only what matters. */
 const W0: TourWorld = {
   projects: 0, sessions: 0, phase: "", agentOnStage: false, permPending: false,
-  permAnswered: false, permMode: "default", attnCount: 0, open: [], settingsTab: "",
+  provider: "", permAnswered: false, permMode: "default", attnCount: 0, open: [], settingsTab: "",
   stage: "none", toolsTab: false, caffeinated: false,
 };
 
@@ -399,6 +399,7 @@ describe("the permission modes it plans around", () => {
     for (const m of ["auto", "dontAsk", "bypassPermissions", "plan"]) {
       expect(permAsks({ ...W0, permMode: m }), m).toBe(false);
     }
+    expect(permAsks({ ...W0, provider: "codex", permMode: "default" })).toBe(false);
   });
 });
 

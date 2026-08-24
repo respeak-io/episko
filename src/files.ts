@@ -42,6 +42,20 @@ const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 /// make the card lie is to have silently dropped the file being asked about.
 const CAP = 400;
 
+/// Provider-neutral half of `applyTouch`: record a path when an adapter already knows
+/// the resulting kind (Codex file-change items carry add/update/delete explicitly).
+export function noteTouch(list: FileTouch[], path: string, kind: TouchKind, now: number): void {
+  if (!path.trim()) return;
+  const at = list.findIndex((f) => f.path === path);
+  if (at >= 0) {
+    const f = list[at]; f.n++; f.at = now;
+    if (RANK[kind] > RANK[f.kind]) f.kind = kind;
+    return;
+  }
+  list.push({ path, kind, n: 1, at: now });
+  if (list.length > CAP) evict(list);
+}
+
 /// Which of the three things a tool does to a file, or null if it does none of them.
 /// Also the definition the "also ran" tally filters by, so the two halves of the card
 /// can never disagree about what counts as a file tool.

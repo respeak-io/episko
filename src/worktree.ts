@@ -18,7 +18,7 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { CLAUDE_CLI, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
+import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
 // The one thing an external session's registry file says about what it is doing. A view
 // module, and mirror.ts already reaches for it from the render layer for the same reason:
 // "is that terminal busy?" has one answer and this is where it lives.
@@ -248,9 +248,13 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   $("wtList").setAttribute("aria-label", manage ? "Checkouts" : "Session destinations");
   $("wtProj").textContent = project;
   $("wtPath").textContent = repoDir;
-  const eng = engineDef(termEngine);
-  $("wtEng").textContent = `${termEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
-  ($("wtEng") as HTMLElement).title = `New sessions open in ${eng.label}`;
+  const ag = effectiveAgent(repoDir);
+  const launchEngine = ag.capabilities.includes("external-terminal") ? termEngine : "embedded";
+  const eng = engineDef(launchEngine);
+  $("wtEng").textContent = `${launchEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
+  ($("wtEng") as HTMLElement).title = launchEngine === termEngine
+    ? `New sessions open in ${eng.label}`
+    : `${ag.label} sessions currently stay embedded`;
   ($("wtEng") as HTMLElement).style.display = manage ? "none" : "";
   // What this launch will be allowed to do, next to where it will open — but only when
   // that isn't the standard ask-me mode, so the chip means "something is different
@@ -260,15 +264,13 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   // chip describing the next launch would only be furniture of a worse kind.
   // Which agent this dialog will start, on the same "only when it differs" rule as the
   // permission chip below — and this one matters more, because picking a non-Claude
-  // agent silently empties the cockpit the pane is about to appear in. This is the last
-  // moment before the launch where saying so costs nothing.
-  const ag = effectiveAgent(repoDir);
+  // agent changes which adapter and capabilities back the cockpit. This is the last
+  // moment before launch where saying so costs nothing.
   const agEl = $("wtAgent") as HTMLElement;
   agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
   agEl.textContent = `${ag.mark} ${ag.label}`;
-  agEl.title = `${ag.label} runs here — no phase, cost, context or permission prompts, `
-    + `because those come from hooks only Claude Code reads. Change it on the project's `
-    + `own menu, or in Settings › Sessions.`;
+  agEl.title = `${ag.label} runs here — ${agentCapabilitySummary(ag)}. Change it on the `
+    + `project's own menu, or in Settings › Sessions.`;
   const pm = permModeDef(permMode);
   const modeEl = $("wtMode") as HTMLElement;
   // …and the permission mode is a `claude` flag, so under any other agent the chip
@@ -919,7 +921,7 @@ function wtSwitchHtml(): string {
   const extBusy = extHere.filter(extWorking);
   const pick = wtSwitchable();
   if (busy.length || extBusy.length) {
-    const agents = busy.filter((s) => s.kind === "claude").length;
+    const agents = busy.filter(isAgent).length;
     const runs = busy.filter((s) => s.kind === "task").length;
     const what: string[] = [];
     if (agents) what.push(`${agents} agent${agents === 1 ? " is" : "s are"} mid-turn`);

@@ -9,8 +9,8 @@
 // here rather than in ./inspector: each is welded to the open/load machinery beside
 // it, and none of them is ever reached with a `Sess`.
 //
-// The roster is a convenience layer, not a system of record: `/resume` inside Claude
-// always lists every session for a folder, so nothing dropped here is ever lost.
+// The roster is a convenience layer, not a system of record: provider history owns
+// the durable conversation, while this remembers which ones were on screen.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, takeStage, toast } from "./dom";
@@ -21,8 +21,12 @@ import { renderFoot } from "./footer";
 import { wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
+import { codexHistoryEntries, codexHistoryMessages } from "./providers/codex";
 import { dormantBusy, orderedSessions } from "./grouping";
-import { isClaude, type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess } from "./types";
+import {
+  hasAgentCapability, isAgent, providerSessionKey,
+  type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
+} from "./types";
 import {
   accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
@@ -35,7 +39,7 @@ import {
 let setActive: (id: string) => void = () => {};
 export function setMirrorSetActive(fn: typeof setActive) { setActive = fn; }
 let launch: (project: string, workdir: string, opts: {
-  colorKey?: string; worktree?: string | null; branch?: string; resume?: string;
+  colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string;
 }) => void = () => {};
 export function setMirrorLaunch(fn: typeof launch) { launch = fn; }
 let renderAll: () => void = () => {};
@@ -43,16 +47,16 @@ export function setMirrorRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
 // The roster is "what was open when Episko last closed". Closing a session removes
 // it — an explicit close means done, so only survivors come back. Shell panes are
-// excluded: a login shell has no transcript and nothing to resume.
+// excluded: a login shell has no provider conversation to resume.
 function rosterEntry(s: Sess): Restorable {
   return {
     id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: s.workdir,
     colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
-    title: s.title, lastActivity: s.lastActivity,
+    title: s.title, lastActivity: s.lastActivity, provider: s.provider || "claude",
   };
 }
 function saveRoster() {
-  const open = [...sessions.values()].filter((s) => isClaude(s) && s.workdir).map(rosterEntry);
+  const open = [...sessions.values()].filter((s) => hasAgentCapability(s, "resume") && s.workdir).map(rosterEntry);
   // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
   // restores only some of them doesn't quietly discard the rest.
   const live = new Set(open.map((r) => r.id));
@@ -85,7 +89,7 @@ export async function refreshExternals() {
       invoke<LiveSess[]>("live_sessions"),
     ]);
     setExternals(list);
-    setBackendLive(new Set(live.map((l) => l.id.toLowerCase())));
+    setBackendLive(new Set(live.map((l) => providerSessionKey(l.provider, l.id))));
     // Scour each external repo for its logo, keyed by the same repo_root the sidebar
     // groups by — otherwise ext-only projects would forever show the accent dot.
     // probeIcon dedupes by key, so this hits the backend at most once per repo.
@@ -133,7 +137,7 @@ export async function refreshDirtyStates(force = false) {
   // uncommitted work", and `codex` writing files is exactly that. A *shell* still does
   // not — one is as often opened to look at a folder as to change it, and each folder
   // in this set costs a `git_diffstat` every sweep.
-  for (const s of sessions.values()) if ((isClaude(s) || s.kind === "agent") && s.workdir) folders.add(s.workdir);
+  for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
@@ -205,7 +209,8 @@ export function openDormant(id: string) {
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  loadTranscriptInto(d.workdir, d.resumeId, true, () => pastMirrorId() === id);
+  if (d.provider === "codex") loadCodexTranscriptInto(d.resumeId, () => pastMirrorId() === id);
+  else loadTranscriptInto(d.workdir, d.resumeId, true, () => pastMirrorId() === id);
 }
 export function renderPastHeader(d: Restorable) {
   ($("btnClose") as HTMLButtonElement).hidden = true;
@@ -219,12 +224,12 @@ export function renderPastInspector(d: Restorable) {
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const action = busy
-    ? `<div class="ext-note warn">This session is running right now, in Episko or another terminal. Resuming it a second time would interleave both conversations into one transcript, so it can't be restored until the other one exits.</div>`
+    ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can interleave or corrupt its state, so it can't be restored until the other one exits.</div>`
     : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
-       <div class="ext-note">Claude picks the conversation back up where it left off. It may offer to compact the context first, which is normal for a long session.</div>`;
+       <div class="ext-note">${esc(d.provider || "claude")} picks the conversation back up where it left off. A long session may compact its context first.</div>`;
   $("inspector").innerHTML = `
     <div class="ext-card">
-      <div class="ext-hl">· From your last run</div>
+      <div class="ext-hl">· ${esc(d.provider || "claude")} · from your last run</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
@@ -232,7 +237,7 @@ export function renderPastInspector(d: Restorable) {
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Remove from list</button>
-      <div class="ext-note">Removing only clears this row from Episko. The conversation stays on disk: <span class="mono">/resume</span> inside any Claude session in this folder always lists them all.</div>
+      <div class="ext-note">Removing only clears this row from Episko. The provider's conversation remains in its own history.</div>
     </div>`;
 }
 export function resumeDormant(id: string) {
@@ -240,7 +245,7 @@ export function resumeDormant(id: string) {
   if (!d) return;
   if (dormantBusy(d)) { toast("That session is already running"); return; }
   closeExternalView();
-  launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId });
+  launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId, resumeProvider: d.provider || "claude" });
 }
 export function forgetDormant(id: string) {
   setDormants(dormants.filter((x) => x.id !== id));
@@ -254,9 +259,8 @@ export function forgetDormant(id: string) {
   flushRoster();
   renderAll();
 }
-// On boot: reconcile the roster against what Claude actually has on disk. An entry
-// with no transcript can't be resumed — a session launched but never prompted never
-// writes one — so it's dropped rather than shown as a row that would fail on click.
+// On boot: reconcile Claude roster entries against its on-disk transcripts and Codex
+// entries against the App Server's public thread list.
 // Titles are refreshed from disk too: `ai-title` beats our in-memory OSC title and,
 // unlike it, exists for sessions launched into an external terminal. So is "last
 // active", and that one is the transcript's newest *record*, not its mtime — a
@@ -268,14 +272,18 @@ export async function loadDormants() {
   if (!Array.isArray(roster) || !roster.length) return;
   const live = new Set([...sessions.keys()]);
   const byDir = new Map<string, Restorable[]>();
+  const codex: Restorable[] = [];
+  const found: Restorable[] = [];
   for (const r of roster) {
     if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
     if (live.has(r.id)) continue;
     if (!r.resumeId) r.resumeId = r.id;
+    if (!r.provider) r.provider = "claude"; // roster written before provider support
+    if (r.provider === "codex") { codex.push(r); continue; }
+    if (r.provider !== "claude") { found.push(r); continue; }
     const arr = byDir.get(r.workdir);
     if (arr) arr.push(r); else byDir.set(r.workdir, [r]);
   }
-  const found: Restorable[] = [];
   await Promise.all([...byDir.entries()].map(async ([workdir, entries]) => {
     const past = await invoke<{ session_id: string; title: string; last_active: number }[]>("list_past_sessions", { workdir }).catch(() => []);
     const byId = new Map(past.map((p) => [p.session_id.toLowerCase(), p]));
@@ -285,6 +293,21 @@ export async function loadDormants() {
       found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.last_active ? hit.last_active * 1000 : r.lastActivity });
     }
   }));
+  if (codex.length) {
+    const raw = await invoke<any>("agent_history", { provider: "codex", threadId: null, limit: 300 }).catch(() => null);
+    if (raw == null) {
+      // An upgrade or PATH change can make the history reader temporarily
+      // unavailable. Retain the roster rather than turning that into data loss.
+      found.push(...codex);
+    } else {
+      const byId = new Map(codexHistoryEntries(raw).map((h) => [h.session_id.toLowerCase(), h]));
+      for (const r of codex) {
+        const hit = byId.get(r.resumeId.toLowerCase());
+        if (!hit) continue;
+        found.push({ ...r, title: hit.title || r.title || "", lastActivity: hit.last_active ? hit.last_active * 1000 : r.lastActivity });
+      }
+    }
+  }
   found.sort((a, b) => b.lastActivity - a.lastActivity);
   setDormants(found);
   if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
@@ -308,13 +331,23 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
     if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Couldn't read the transcript.<br><span class="mono">${esc(String(err))}</span></div>`;
   }
 }
-function renderTranscript(msgs: { role: string; text: string }[], initial: boolean) {
+
+async function loadCodexTranscriptInto(sessionId: string, stillCurrent: () => boolean) {
+  try {
+    const raw = await invoke<any>("agent_history", { provider: "codex", threadId: sessionId, limit: 80 });
+    if (!stillCurrent()) return;
+    renderTranscript(codexHistoryMessages(raw, 80), true, "Codex");
+  } catch (err) {
+    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this Codex conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
+  }
+}
+function renderTranscript(msgs: { role: string; text: string }[], initial: boolean, agent = "Claude") {
   const body = $("extBody");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   body.innerHTML = msgs.length
     ? msgs.map((m) => {
         const user = m.role === "user";
-        return `<div class="tvmsg ${m.role}"><span class="tvgutter" title="${user ? "You" : "Claude"}">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(m.text)}</div></div>`;
+        return `<div class="tvmsg ${m.role}"><span class="tvgutter" title="${user ? "You" : agent}">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(m.text)}</div></div>`;
       }).join("")
     : `<div class="ext-empty">No messages in this session yet.</div>`;
   if (initial || nearBottom) body.scrollTop = body.scrollHeight;

@@ -15,12 +15,12 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
+import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, fmtUntil, sparkline, tilde } from "./format";
 import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isClaude, liveFanout, statusKey,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState, liveFanout, statusKey,
   type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { sessions } from "./state";
@@ -79,7 +79,7 @@ export function dwellText(s: Sess): string {
 // on you, so crowning it "longest waiting" would point you at the one row with nothing
 // to answer.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isClaude(x) && !x.attention && !bgWaiting(x));
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && hasSessionState(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
@@ -145,16 +145,31 @@ export function gaugesHtml(s: Sess): string {
   const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k tokens` : "context";
   const ctxFoot = warn ? `<div class="warn-line ${warn.cls}">${warn.txt}</div>` : (ctxSpark ? `<div class="gspark">${ctxSpark}</div>` : "");
   const costFoot = costSpark ? `<div class="gspark">${costSpark}</div>` : "";
+  const totalTokens = s.tokenUsage?.total.totalTokens ?? null;
+  const totalTxt = totalTokens == null ? "–" : totalTokens >= 1_000_000
+    ? `${(totalTokens / 1_000_000).toFixed(1)}m`
+    : totalTokens >= 1_000 ? `${Math.round(totalTokens / 1_000)}k` : String(totalTokens);
+  const usageNum = s.cost != null ? "$" + s.cost.toFixed(2) : totalTxt;
+  const usageLab = s.cost != null ? (s.durMs != null ? fmtDur(s.durMs) : "cost")
+    : s.tokenUsage ? `${Math.round(s.tokenUsage.total.inputTokens / 1000)}k in · ${Math.round(s.tokenUsage.total.outputTokens / 1000)}k out`
+      : (s.durMs != null ? fmtDur(s.durMs) : "usage");
+  const limits = s.rateLimits.length ? `<div class="gauges">${s.rateLimits.map((w) => {
+    const label = w.windowMins === 300 ? "5-hour limit" : w.windowMins === 10080 ? "weekly limit"
+      : w.windowMins ? `${w.windowMins}m limit` : "usage limit";
+    const reset = w.resetsAt ? `resets in ${fmtUntil(w.resetsAt)}` : "provider account";
+    const cls = w.usedPercent >= 95 ? "hot" : w.usedPercent >= 80 ? "warn" : "";
+    return `<div class="gauge"><div class="grow"><svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, w.usedPercent))} 100"></circle></svg><div><div class="gnum">${Math.round(w.usedPercent)}%</div><div class="glab">${label}</div></div></div><div class="warn-line ${cls}">${reset}</div></div>`;
+  }).join("")}</div>` : "";
   return `<div class="gauges">
     <div class="gauge">
       <div class="grow"><svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg><div><div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div></div>
       ${ctxFoot}
     </div>
     <div class="gauge">
-      <div class="grow"><div><div class="gnum">${s.cost != null ? "$" + s.cost.toFixed(2) : "–"}</div><div class="glab">${s.durMs != null ? fmtDur(s.durMs) : "cost"}</div></div></div>
+      <div class="grow"><div><div class="gnum">${usageNum}</div><div class="glab">${usageLab}</div></div></div>
       ${costFoot}
     </div>
-  </div>`;
+  </div>${limits}`;
 }
 export function planHtml(s: Sess): string {
   const done = s.todos.filter((t) => t.status === "completed").length, total = s.todos.length;

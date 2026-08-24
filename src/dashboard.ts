@@ -1297,14 +1297,10 @@ async function doDispatch(): Promise<void> {
   const t = sheet.t, r = root(), n = name();
   sheet = null;
   renderDash();
-  // Pinned to Claude, and this is the one launch in the app that ignores the agent
-  // preference. The claim written below is handed back on the `SessionEnd` hook, which
-  // only an instrumented session fires — dispatching an uninstrumented agent at an
-  // issue would assign it, label it, comment on it and then never release it, so a
-  // colleague's tooling would read the work as in-flight forever. The two dispatches
-  // that only *type* into a pane (a note, a colleague's sentence) follow the
-  // preference, because nothing outside Episko is waiting on those.
-  const sid = await host.launch(n, r, { colorKey: r, agent: "claude" });
+  // Follow the project provider preference like every other launch. Claim release is
+  // tied to the provider-neutral `pty-exit` event, so Claude, Codex and terminal-only
+  // agents all hand the issue back when their pane stops.
+  const sid = await host.launch(n, r, { colorKey: r });
   // No toast: `launch` already showed the actual spawn error, and a second one would
   // replace the reason with a vaguer restatement of it. No claim either — see above.
   if (typeof sid !== "string") return;
@@ -1337,7 +1333,7 @@ async function doDispatch(): Promise<void> {
   }
 
   // Sent, not prefilled — see the note above. The carriage return goes in a write of its
-  // OWN, a beat behind the text: Claude's REPL reads a burst that arrives in one chunk
+  // OWN, a beat behind the text: full-screen agent REPLs commonly read a burst that arrives in one chunk
   // as a *paste*, and a `\r` inside a paste is a newline in the buffer, not a submit. So
   // the prompt landed in the input box and sat there — which is exactly the waiting this
   // path exists to remove. A lone `\r` has no burst to be folded into.

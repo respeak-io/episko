@@ -14,7 +14,7 @@
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
-import { CLAUDE_CLI, type Engine, type PermMode } from "./types";
+import { agentCapabilitySummary, CLAUDE_CLI, type Engine, type PermMode } from "./types";
 import {
   allAgents, ALL_PERM_MODES, attnPrefs, availEngines, defaultAgent, engineDef, footPrefs,
   keyPrefs, missingAgents,
@@ -97,9 +97,9 @@ export interface SettingsHost {
 function agentHint(): string {
   const missing = missingAgents().length;
   return "What a new session runs — ⌘N, the new-session dialog and a worktree launch all "
-    + "follow this. Only Claude Code is instrumented: the others get a pane, a worktree and "
-    + "the project tree, but no phase, cost, context or permission cards, because those come "
-    + "from hooks nothing else reads. Per-project overrides live on a project's own menu"
+    + "follow this. Each row lists the integrations its provider exposes; providers without "
+    + "a control-plane adapter still get a real terminal, worktree and project tools. "
+    + "Per-project overrides live on a project's own menu"
     + (missing
       ? `, which also lists the ${missing} agents Episko supports that aren't on your PATH, and the binary it looked for.`
       : ".");
@@ -326,9 +326,10 @@ const SET_TABS: SetTab[] = [
         active: () => defaultAgent,
         segs: () => allAgents().map((a) => ({
           value: a.id, label: a.label, glyph: a.mark,
-          sub: a.id === CLAUDE_CLI.id ? "phase, cost, context" : "no telemetry",
+          sub: agentCapabilitySummary(a),
         })) },
-      { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
+      { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens. Providers without external-terminal support stay embedded.",
+        dim: () => !(allAgents().find((a) => a.id === defaultAgent) ?? CLAUDE_CLI).capabilities.includes("external-terminal"),
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
       { kind: "seg", set: "permmode", label: "Permission mode",
@@ -656,7 +657,7 @@ function renderAttnControl(): string {
     <div class="peeksub set-inline">
       <div class="set-itxt">
         <div class="set-glabel">Clear it when you open the session</div>
-        <div class="set-hint">Going to a session takes it out of the badge, the tray and the palette's “Needs you”. A blocking permission stays until you actually answer it — looking at one doesn't unblock Claude. Off means the badge only empties when the sessions in it move on by themselves.</div>
+        <div class="set-hint">Going to a session takes it out of the badge, the tray and the palette's “Needs you”. A blocking permission stays until you actually answer it — looking at one doesn't unblock the agent. Off means the badge only empties when the sessions in it move on by themselves.</div>
       </div>
       <button class="sw${p.clearOnOpen ? " on" : ""}" data-setattn="clear" role="switch" aria-checked="${p.clearOnOpen}"></button>
     </div>

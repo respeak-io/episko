@@ -4,11 +4,10 @@
 // #terminals, and a PTY behind it — which is why they sit together rather than beside
 // the surfaces that trigger them.
 //
-// What each spawner does *not* share is the point of having four: a claude session is
-// instrumented (and may live in an external terminal, in which case its pane is a
-// placard rather than a terminal), a shell gets Terminal.app's ⌥/⌘ key conventions and
-// no telemetry, a task run carries its exit code as its phase, and an agent pane runs
-// somebody else's CLI with none of the above.
+// What each spawner does *not* share is the point of having four: Claude uses launch
+// hooks (and may live in an external terminal), integrated providers use their own
+// control plane beside the PTY, terminal-only providers expose just the TUI, a shell
+// gets Terminal.app's ⌥/⌘ key conventions, and a task's exit code is its phase.
 //
 // Also here: the stage's own chrome (`renderHeader`, `syncStageButtons`), because both
 // read only what pane is active, and the two context resolvers every "…here" action
@@ -27,7 +26,8 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  CLAUDE_CLI, isClaude, isExited, statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
+  CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
+  statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
@@ -78,6 +78,20 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   return { term, fit };
 }
 
+// The corresponding terminal for providers whose TUI owns its own chords. Fresh
+// launches and reload adoption both go through this constructor so input cannot drift.
+function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit); term.open(pane);
+  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+  term.attachCustomKeyEventHandler(clipboardKeys(term));
+  return { term, fit };
+}
+
 // ---------- launch ----------
 // Returns the new session id, or null if the spawn failed. Most callers ignore it —
 // but the dashboard's dispatch paths need it to type the prompt in and to write the
@@ -85,22 +99,21 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
 // `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
 // the toast said it hadn't, and neither the prompt nor the claim was ever sent.
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; agent?: string } = {}): Promise<string | null> {
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
-  // Which agent this is, before anything else is built — a non-Claude one is a wholly
-  // different pane (no instrumentation, no external-terminal engines, different key
-  // handling), so it forks here rather than being patched in afterwards.
+  // Which provider this is, before anything else is built. Claude has its hook-backed
+  // spawner and optional external terminal; every other provider goes through the
+  // adapter-aware agent spawner and its own capabilities.
   //
-  // Two things override the preference, and both are facts rather than tastes:
-  //   · a **resume** is Claude's transcript being replayed through `claude --resume`.
-  //     There is nothing to resume in another agent, so the pref cannot apply.
-  //   · an explicit `opts.agent`, which is how the dashboard pins issue dispatch to
-  //     Claude: the claim it writes is handed back on the `SessionEnd` hook, so
-  //     dispatching an uninstrumented agent would leave the issue claimed forever.
-  const agent = opts.resume ? CLAUDE_CLI : agentDef(opts.agent ?? "") ?? effectiveAgent(colorKey);
+  // Two things can override the preference, and both are explicit launch facts:
+  //   · a **resume** carries its provider, so it cannot follow today's default.
+  //   · an explicit `opts.agent` lets a specialized workflow request one provider.
+  const agent = opts.resume
+    ? (opts.resumeProvider === "claude" || !opts.resumeProvider ? CLAUDE_CLI : agentDef(opts.resumeProvider)) ?? CLAUDE_CLI
+    : agentDef(opts.agent ?? "") ?? effectiveAgent(colorKey);
   if (agent.id !== CLAUDE_CLI.id) {
-    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch });
+    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch, resume: opts.resume });
   }
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
@@ -123,9 +136,10 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], git: null,
     lastEvent: "", activity: [],
-    files: [], tally: {}, kind: "claude", external, term, fit, pane,
+    files: [], tally: {}, kind: "agent", provider: "claude",
+    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => {
@@ -244,26 +258,29 @@ export async function adoptOrphans(): Promise<number> {
   return orphans.length;
 }
 
-async function adoptSession(o: { id: string; workdir: string; meta: Restorable | null }) {
+async function adoptSession(o: { id: string; workdir: string; provider: string; meta: Restorable | null }) {
   const m = o.meta;
+  const provider = o.provider || m?.provider || "claude";
+  const providerDef = provider === "claude" ? CLAUDE_CLI : agentDef(provider);
   const project = m?.project || basename(o.workdir) || "session";
   const colorKey = m?.colorKey ?? o.workdir;
   probeIcon(colorKey);
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
-  const { term, fit } = newClaudeTerm(o.id, pane);
+  const { term, fit } = provider === "claude" ? newClaudeTerm(o.id, pane) : newAgentTerm(o.id, pane);
   const s: Sess = {
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
     resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
-    title: m?.title ?? "",
+    title: m?.title ?? providerDef?.label ?? provider,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null,
     apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], git: null,
     lastEvent: "", activity: [],
-    files: [], tally: {}, kind: "claude", external: false, term, fit, pane,
+    files: [], tally: {}, kind: "agent", provider,
+    capabilities: [...(providerDef?.capabilities ?? [])], external: false, term, fit, pane,
     adopt: { pending: [] },
   };
   // From this line the pty-output listener queues this session's chunks into
@@ -325,10 +342,10 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], git: null,
     lastEvent: "", activity: [],
     files: [], tally: {},
-    kind: "shell", external: false, term, fit, pane,
+    kind: "shell", provider: null, capabilities: [], external: false, term, fit, pane,
   };
   sessions.set(id, s);
   setActive(id);
@@ -344,17 +361,10 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   return id;
 }
 
-// Somebody else's coding agent in an embedded xterm pane — codex, opencode, gemini
-// and the rest of `available_agents`. Mirrors launchShell exactly, because that is
-// what an uninstrumented agent pane *is*: the same PTY, the same xterm, a different
-// program on the other end.
-//
-// What it deliberately does not do is pretend to be a session. There is no phase
-// machine, no cost, no context gauge and no resume, because none of those exist
-// without Claude Code's hooks — see `spawn_agent` in pty.rs. The row still says
-// something useful (which agent, which checkout, and whether it has exited), which
-// is exactly what the ❯ Terminal row already says.
-export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string> {
+// Any non-Claude coding agent in an embedded xterm pane. The AgentCli capability set
+// makes this one launch path serve both integrated providers (Codex today) and the
+// terminal-only fallback (OpenCode, Gemini and the rest until adapters land).
+export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   // Same grouping rule as a shell: key on the repo root so an agent started in a
   // worktree nests under its project instead of becoming a top-level entry.
@@ -362,44 +372,34 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
-  const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
-    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open(pane);
-  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
-  // `clipboardKeys` alone, not `shellKeys`: these are full-screen TUIs that own their
-  // own keyboard, and a shell pane's ⌥/⌘ word-navigation rewrites would land inside
-  // whatever chord the agent has bound to those keys. Ctrl+Shift+C/V is the one pair
-  // worth taking, for the same reason a task pane takes it — Ctrl+C has to stay the
-  // interrupt.
-  term.attachCustomKeyEventHandler(clipboardKeys(term));
+  // `newAgentTerm` installs clipboard keys alone, not `shellKeys`: these are
+  // full-screen TUIs that own the rest of their keyboard.
+  const { term, fit } = newAgentTerm(id, pane);
   const s: Sess = {
-    // resumeId is inert here exactly as it is for a shell: no transcript of ours to
-    // resume, and saveRoster only keeps claude sessions anyway.
-    id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
+    id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], git: null,
     lastEvent: "", activity: [],
     files: [], tally: {},
-    kind: "agent", agent: agent.id, external: false, term, fit, pane,
+    kind: "agent", provider: agent.id, capabilities: [...agent.capabilities], external: false, term, fit, pane,
   };
   sessions.set(id, s);
   setActive(id);
-  dlog("info", `agent ${agent.id} · ${project} · ${id.slice(0, 8)}`);
+  dlog("info", `${opts.resume ? "resume" : "agent"} ${agent.id} · ${project} · ${id.slice(0, 8)}`);
+  let spawned = true;
   try {
-    await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80 });
+    await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80, resume: opts.resume ?? null });
+    if (opts.resume) setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
   } catch (e) {
+    spawned = false;
     dlog("error", `${agent.id} launch failed: ${e}`);
     toast(`${agent.label} failed: ${e}`);
     term.writeln(`\r\n\x1b[31m[${agent.id} error] ${e}\x1b[0m`);
   }
   renderAll();
-  return id;
+  return spawned ? id : null;
 }
 
 // Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
@@ -448,10 +448,10 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], git: null,
     lastEvent: "", activity: [],
     files: [], tally: {},
-    resumeId: id, kind: "task", external: false, term, fit, pane,
+    resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
   };
   sessions.set(id, s);
@@ -687,7 +687,7 @@ export function setActive(id: string, keepGroup = false) {
     if (on) { paintPaneCap(x); attachWebgl(x); }
     else if (isExited(x)) {
       detachWebgl(x);
-      if (isClaude(x) && x.phase === "ended") trimScrollback(x);
+      if (hasSessionState(x) && x.phase === "ended") trimScrollback(x);
     }
   }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
@@ -748,7 +748,7 @@ export async function pollIo(): Promise<void> {
 }
 
 export async function refreshSessionStats(s: Sess) {
-  if (!isClaude(s) || s.external) return;
+  if (!hasSessionState(s) || s.external) return;
   // Only re-render when the *displayed* values change — comparing the rendered strings
   // avoids a needless inspector rebuild (which would restart the heartbeat animation)
   // every 4s while a session sits idle.
@@ -807,7 +807,7 @@ let idleWtSweptAt = 0;
 
 async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
-  for (const s of sessions.values()) if (isClaude(s) && s.colorKey) live.add(s.colorKey);
+  for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
   // **A favourite with nothing running needs a roster too.** This set used to be
   // sessions and externals alone, which quietly made the sidebar's peek rows a feature
@@ -894,7 +894,7 @@ export function noteGitCommand(cmd: unknown) {
 // Claude Code makes itself, `tool_input` the ones it doesn't know about (a write's
 // `file_path`, or the `cd` a Bash-first agent wrote under).
 export function noteDrift(s: Sess, tool: string, data: any) {
-  if (!isClaude(s) || !s.workdir) return;
+  if (!hasAgentCapability(s, "activity") || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
   const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
@@ -926,7 +926,10 @@ export function renderHeader(s: Sess | null) {
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
-  if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
+  if (!hasSessionState(s)) {
+    hb.textContent = s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : (s.title || s.provider || "agent");
+    hb.hidden = false; hb.classList.add("ext-chip");
+  }
   // A drifted session gets BOTH branches, in the order they happened: the chip is the
   // only thing on screen that says which checkout the work is landing in, and showing
   // just the new one would trade a stale label for a lie about where `--resume` goes.
@@ -936,7 +939,7 @@ export function renderHeader(s: Sess | null) {
     hb.hidden = false; hb.classList.add("drifted");
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
-  $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
+  $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   // The path follows the work for the same reason — it is the answer to "where am I?".
   $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }

@@ -20,7 +20,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./dom";
 import { dlog } from "./debug";
-import { isClaude, type Runnable, type Sess } from "./types";
+import { hasSessionState, type Runnable, type Sess } from "./types";
 import { sessions } from "./state";
 import { openInputPrompt } from "./taskui";
 import {
@@ -54,7 +54,7 @@ const stopInFlight = new Set<string>();
 
 export async function maybeRunOnStop(s: Sess) {
   const rule = stopRules[s.colorKey];
-  if (!rule || !isClaude(s)) return;
+  if (!rule || !hasSessionState(s)) return;
   // Claimed before the first await: discovery is async, so two Stops in the same
   // tick would otherwise both get past this.
   if (Date.now() - (stopRunAt.get(s.colorKey) ?? 0) < STOP_RUN_FLOOR) return;
@@ -136,4 +136,3 @@ export function sendOutputToSession(task: Sess, targetId: string) {
 export function revealSource(root: string, sourceFile: string) {
   invoke("reveal_path", { dir: root, rel: sourceFile }).catch((e) => toast("reveal failed: " + e));
 }
-

@@ -218,12 +218,14 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
-// Launch ids of every PTY the BACKEND holds (`live_sessions`, refreshed on the
-// externals poll, lowercased at the call site). In normal operation this repeats
-// the `sessions` map; the one state where they disagree is a webview reload, which
+// Provider-qualified launch ids of every PTY the BACKEND holds (`live_sessions`,
+// refreshed on the externals poll). In normal operation this repeats the `sessions`
+// map; the one state where they disagree is a webview reload, which
 // empties the map while every PTY runs on (#47). Those orphans are invisible as
 // externals too — `list_external_sessions` excludes owned pids — so this set is
 // the only thing that lets `dormantBusy`/`histBusy` refuse to resume one.
+// Keyed as `<provider>:<session id>` so two agents may legitimately
+// expose the same resume/thread id without hiding each other's history row.
 export let backendLive: ReadonlySet<string> = new Set();
 export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
@@ -244,12 +246,10 @@ export let availEngines: Engine[] = ["embedded"];
 export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
 export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
-// --- other people's agents -----------------------------------------------------
-// The coding-agent CLIs found on this machine, filled once at startup from
-// `available_agents` (pty.rs owns the table of what to look for; this is only what
-// the probe found). Empty until then, and empty forever on a machine with none
-// installed — every surface that offers them drops its row rather than showing a
-// picker with nothing in it.
+// --- agent providers ------------------------------------------------------------
+// The coding-agent CLI catalogue, filled once at startup from `list_agents` (pty.rs
+// owns the table and probe). Rows remain present when their binary is missing so the
+// provider picker can explain exactly what it looked for.
 export let availAgents: AgentCli[] = [];
 export function setAvailAgents(l: AgentCli[]) { availAgents = l; }
 /// Only the ones that will actually start. `availAgents` is the whole catalogue now,
@@ -262,7 +262,7 @@ export function agentDef(id: string): AgentCli | undefined {
 }
 // Everything installed, Claude first — what Settings offers and what the project
 // picker lists above its fold. Claude leads rather than sorting in among the C's
-// because it is the default and the only instrumented one, not because of its name.
+// because it is the default, not because of its name.
 export function allAgents(): AgentCli[] { return [CLAUDE_CLI, ...installedAgents()]; }
 // The rest of the catalogue: known to Episko, absent from this machine. What the
 // project picker shows below the fold so that "why is Codex not here?" has an answer
@@ -353,7 +353,7 @@ export const worktreesByRepo = new Map<string, WtHead[]>();
 // branch poll without adding a cost anyone can feel.
 export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.exists ? 1 : 0}`).join("");
 
-// App-wide disk I/O, summed across every embedded claude session Episko owns — not a
+// App-wide disk I/O, summed across every embedded session Episko owns — not a
 // per-session figure. With several agents running, the question the inspector's I/O
 // bars answer is "how hard is Episko working the disk", and a number for whichever
 // pane happens to be on screen answers a different one while looking like that one.

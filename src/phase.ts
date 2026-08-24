@@ -68,12 +68,12 @@ export const ACT_CAP = 12;
 // card states plainly, so the name match is now only the fallback for a payload with no
 // id (an older CLI, a hook variant that omits it), where a mispairing is no worse than
 // what the name match always did.
-function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string, desc: string) {
+export function openActivity(s: Sess, tool: string, arg: string, id: string, inp: string, desc: string) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   s.activity.unshift({ tool, arg, time, startMs: Date.now(), durMs: null, id, inp, desc, out: "", failed: false });
   if (s.activity.length > ACT_CAP) s.activity.length = ACT_CAP;
 }
-function closeActivity(s: Sess, tool: string, id: string, inp: string, desc: string, out: string, failed: boolean) {
+export function closeActivity(s: Sess, tool: string, id: string, inp: string, desc: string, out: string, failed: boolean) {
   // A ternary, never `||`: with an id that matches nothing — its Pre row aged out past
   // ACT_CAP, or never opened — falling through to the name match closes the oldest
   // *other* open call of the same tool and staples this output onto it. Under parallel
@@ -220,8 +220,14 @@ export function riskLevel(tool: string, input: any): Risk {
 // which case a later lifecycle event, not a button, is our signal to reset). If a
 // blocking request is still held server-side, release it so it doesn't leak.
 export function clearPending(s: Sess) {
-  if (s.pendingPermId) invoke("resolve_permission", { id: s.pendingPermId, behavior: "terminal" }).catch(() => {});
-  s.attention = null; s.pendingPermId = null; s.pendingCmd = "";
+  if (s.pendingPermId) {
+    const cmd = s.provider === "claude" ? "resolve_permission" : "resolve_agent_request";
+    const args = s.provider === "claude"
+      ? { id: s.pendingPermId, behavior: "terminal" }
+      : { sessionId: s.id, requestId: s.pendingPermId, behavior: "terminal" };
+    invoke(cmd, args).catch(() => {});
+  }
+  s.attention = null; s.pendingPermId = null; s.pendingCmd = ""; s.pendRisk = null;
 }
 
 // The one place that decides how a turn ended, because two events reach it and only
@@ -237,6 +243,21 @@ function endTurn(s: Sess) { setPhase(s, s.apiErr ? "error" : "done"); }
 // count: a retry the user typed (UserPromptSubmit) and one the model started on its
 // own (PreToolUse) — after `/resume` or a queued message there may be no prompt.
 function newTurn(s: Sess) { s.apiErr = null; }
+
+// Provider adapters enter the same state machine through these small lifecycle
+// verbs. Claude's hooks still use the detailed switch below; App Server-style
+// providers do not have to forge Claude payloads merely to earn the same UI state.
+export function beginAgentTurn(s: Sess) {
+  clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; setPhase(s, "thinking");
+}
+export function finishAgentTurn(s: Sess, failed = false, detail = "") {
+  if (failed) s.apiErr = { kind: "unknown", detail: abbr(detail), at: Date.now() };
+  setPhase(s, failed ? "error" : "done");
+  clearPending(s); s.curTool = ""; s.curArg = "";
+  onSessionTouched(s, "", {});
+  onTurnEnd(s);
+}
+export function noteAgentTouch(s: Sess, tool: string, data: any) { onSessionTouched(s, tool, data); }
 
 export function applyHook(s: Sess, data: any) {
   const ev: string = data.hook_event_name ?? "?";

@@ -22,7 +22,7 @@ import {
 } from "./actions";
 import { groupById, groupOf, groupPaths } from "./projgroups";
 import { extWorking } from "./sidebarview";
-import { CLAUDE_CLI, isClaude, isExited, midFlight } from "./types";
+import { agentCapabilitySummary, isAgent, isExited, midFlight } from "./types";
 import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
   engineDef, externals, FAVORITES, missingAgents, projGroups, sessions, termEngine,
@@ -156,7 +156,7 @@ function openCtxMenu(key: string, x: number, y: number) {
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
   const fav = FAVORITES.some((f) => f.path === key);
-  const live = [...sessions.values()].filter((s) => s.colorKey === key && isClaude(s)).length;
+  const live = [...sessions.values()].filter((s) => s.colorKey === key && isAgent(s)).length;
   const agent = effectiveAgent(key);
   const ic = iconFor(key);
   const rows: (CtxRow | null)[] = [
@@ -281,7 +281,7 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
   // Stamped for the same reason `openCtxMenu` stamps it: the agent picker replaces
   // this menu in place, and its ‹ Back has to reopen on the same pixels.
   menuX = x; menuY = y;
-  const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isClaude(s)).length;
+  const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isAgent(s)).length;
   const rows: (CtxRow | null)[] = [
     // No agent row of its own: the override is keyed by repo (`colorKey`), which is
     // what every checkout of it launches under, so a per-worktree picker would be
@@ -378,7 +378,7 @@ function openAgentPicker(key: string, x: number, y: number) {
       // The tick marks the *override*, not the effective agent: ticking an inherited
       // row would make "follow the default" below it look like a no-op.
       sub: a.id === cur ? "✓ set for this project"
-        : a.id === CLAUDE_CLI.id ? "instrumented — phase, cost, context"
+        : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
         : tilde(a.path ?? ""),
     })),
     cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Sessions · ${defaultAgentDef().label}` } : null,

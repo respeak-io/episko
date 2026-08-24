@@ -98,7 +98,7 @@ export interface SoundEventDef {
 
 export const SOUND_EVENTS: SoundEventDef[] = [
   { id: "permission", glyph: "◆", label: "Permission asked", priority: 3, tone: "alert", on: true,
-    hint: "Claude is blocked and doing nothing until you answer." },
+    hint: "The agent is blocked and doing nothing until you answer." },
   { id: "question", glyph: "◇", label: "Notification", priority: 2, tone: "ping", on: true,
     hint: "Anything else the session raises: a question, a nudge, a plan to accept." },
   { id: "done", glyph: "●", label: "Your turn", priority: 2, tone: "chime", on: true,
@@ -270,7 +270,7 @@ export function hookSound(before: SoundSnap, after: SoundSnap): SoundEvent | nul
 }
 
 /// A pane's process exited. A task's exit code IS its verdict; anything else just
-/// stopped. (A claude session normally rings this from `SessionEnd` a moment earlier
+/// stopped. (A Claude session normally rings this from `SessionEnd` a moment earlier
 /// — `SOUND_REPEAT_MS` is what makes the pair one sound.)
 export const exitSound = (kind: SessKind, code: number): SoundEvent =>
   kind === "task" ? (code === 0 ? "taskDone" : "taskFail") : "ended";

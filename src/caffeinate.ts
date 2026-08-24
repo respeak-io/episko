@@ -19,6 +19,7 @@ import { esc } from "./format";
 import { dlog } from "./debug";
 
 import { sessions } from "./state";
+import { hasSessionState, isAgent } from "./types";
 
 // Three things it needs from the layer that owns the footer and the repaint.
 let host: { closeFootMenus: (keep?: string) => void; renderFoot: () => void; renderAll: () => void } =
@@ -89,7 +90,7 @@ function cafPersist() {
 // today and silently start voting the moment anything else writes to that field.
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
-    if (s.kind === "shell" || s.kind === "agent" || s.phase === "ended") continue;
+    if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
     if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
   }
