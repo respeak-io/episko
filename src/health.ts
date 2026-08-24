@@ -33,9 +33,13 @@ export interface Chip {
   text: string;
   /// The whole finding, on hover.
   title: string;
-  /// The line to go to when it is clicked, or 0 when the finding is about the file as a
-  /// whole and there is nowhere more specific to be.
-  line: number;
+  /// Where the finding *is*, in the order a repeat click walks them. Empty when it is
+  /// about the file as a whole and there is nowhere more specific to be.
+  places: number[];
+  /// **Every** line to mark, which is not the same list. A `dup ×3` has three places and
+  /// marks three lines; a complex function has one place and marks the whole span the
+  /// change added inside it. Conflating them made a chip claim "200 places".
+  lines: number[];
 }
 
 // ---------- thresholds ----------
@@ -206,7 +210,8 @@ function dupChip(h: FileHealth): Chip {
     sev: "bad",
     text: h.dups.length === 1 ? "duplicate block" : `dup ×${h.dups.length}`,
     title: `Six or more lines added here already exist in:\n${where.join("\n")}`,
-    line: h.dups[0].line,
+    places: h.dups.map((d) => d.line),
+    lines: h.dups.map((d) => d.line),
   };
 }
 
@@ -225,13 +230,14 @@ function dupChip(h: FileHealth): Chip {
 /// nothing and flashes nothing: indistinguishable from a dead control. A line the change
 /// added is always on screen, and is a better answer anyway — it is the part of the
 /// function you are actually being asked about.
-function firstAddedIn(f: DiffFile, start: number, end: number): number {
+function addedIn(f: DiffFile, start: number, end: number): number[] {
+  const out: number[] = [];
   for (const h of f.hunks) {
     for (const l of h.lines) {
-      if (l.kind === "add" && l.newNo && l.newNo >= start && l.newNo <= end) return l.newNo;
+      if (l.kind === "add" && l.newNo && l.newNo >= start && l.newNo <= end) out.push(l.newNo);
     }
   }
-  return 0;
+  return out;
 }
 
 export function fileChips(
@@ -258,7 +264,8 @@ export function fileChips(
       text: silenced.length === 1 ? "silenced error" : `silenced ×${silenced.length}`,
       title: `This change adds ${silenced.length === 1 ? "" : `${silenced.length} places where an error is swallowed:\n`}`
         + silenced.map((s) => `line ${s.line}: ${s.what}`).join("\n"),
-      line: silenced[0].line,
+      places: silenced.map((s) => s.line),
+      lines: silenced.map((s) => s.line),
     });
   }
 
@@ -277,7 +284,8 @@ export function fileChips(
       text: `${h.code_lines} code lines`,
       title: `${h.code_lines} lines of code, comments and blanks excluded — above this project's 90th percentile of ${p90}.\n`
         + `This change added ${plural(h.code_added, "code line")}.`,
-      line: 0,
+      places: [],
+      lines: [],
     });
   }
 
@@ -289,7 +297,8 @@ export function fileChips(
       text: `cognitive ${w.cognitive}`,
       title: `\`${w.name}\` (from line ${w.start}) scores ${w.cognitive} — at or above the threshold of ${prefs.cognitive}.\n`
         + `An approximation of Cognitive Complexity: branches cost more the deeper they nest.`,
-      line: firstAddedIn(f, w.start, w.end) || w.start,
+      places: [addedIn(f, w.start, w.end)[0] ?? w.start],
+      lines: addedIn(f, w.start, w.end),
     });
   }
 
@@ -302,7 +311,8 @@ export function fileChips(
       sev: "warn",
       text: `${g.code_lines}-line fn`,
       title: `\`${g.name}\` (from line ${g.start}) is ${plural(g.code_lines, "code line")} long — about ${Math.round(g.code_lines / 30)} screens.`,
-      line: firstAddedIn(f, g.start, g.end) || g.start,
+      places: [addedIn(f, g.start, g.end)[0] ?? g.start],
+      lines: addedIn(f, g.start, g.end),
     });
   }
 
@@ -312,11 +322,54 @@ export function fileChips(
       sev: "warn",
       text: `nesting ${h.max_nesting}`,
       title: `An added line sits ${h.max_nesting} levels deep, at line ${h.nesting_line}.`,
-      line: h.nesting_line,
+      places: [h.nesting_line],
+      lines: [h.nesting_line],
     });
   }
 
   return out;
+}
+
+/// The findings as text, for handing to an agent.
+///
+/// The point of the whole feature is that you are reviewing work you did not type, so the
+/// fix is going to be typed by an agent too — and a chip you can only *look* at makes you
+/// the courier. This is the same information as the chips, written so it can be pasted
+/// into a session and acted on: every finding names a file, a line and what is wrong, and
+/// the lead-in says what to do with them.
+///
+/// Deliberately not a machine format. The consumer is a model reading a prompt, and a
+/// path with a line number is the most actionable thing you can hand one — it can open
+/// exactly that line. JSON would only add ceremony for a reader that does not need it.
+export function findingsText(title: string, files: DiffFile[], chips: Chip[][], set: Chip[]): string {
+  const out: string[] = [];
+  const found = files.map((f, i) => [f, chips[i] ?? []] as const).filter(([, c]) => c.length);
+  if (!found.length && !set.length) {
+    return `No code-health findings in ${title}.`;
+  }
+  out.push(`# Code health — ${title}`);
+  out.push("");
+  out.push("Each finding below names a file and a line. Read the line before changing it —");
+  out.push("these are measurements, not verdicts, and some of them will be fine as they are.");
+  out.push("");
+  for (const [f, cs] of found) {
+    out.push(`## ${f.path}`);
+    for (const c of cs) {
+      const where = c.places.length
+        ? ` (line ${c.places[0]}${c.places.length > 1 ? `, ${c.places.length} places` : ""})`
+        : "";
+      // The title is the whole finding and is already written for a reader; flattened to
+      // one line so a bullet stays a bullet.
+      out.push(`- **${c.text}**${where} — ${c.title.replace(/\s*\n\s*/g, " ")}`);
+    }
+    out.push("");
+  }
+  if (set.length) {
+    out.push("## About the change as a whole");
+    for (const c of set) out.push(`- **${c.text}** — ${c.title.replace(/\s*\n\s*/g, " ")}`);
+    out.push("");
+  }
+  return out.join("\n").trimEnd() + "\n";
 }
 
 /// The worst severity in a set, for the rail's pips and for sorting. `null` when a file
@@ -330,7 +383,7 @@ export function worstSev(chips: Chip[]): Sev | null {
 
 /// The health of a whole working set, as one line beside the totals — the findings that
 /// are about the change rather than about any one file in it.
-export function setChips(files: DiffFile[], rep: HealthReport | null): Chip[] {
+export function setChips(files: DiffFile[], rep: HealthReport | null, diffCut = false): Chip[] {
   const out: Chip[] = [];
   if (noTestChanged(files)) {
     out.push({
@@ -339,17 +392,34 @@ export function setChips(files: DiffFile[], rep: HealthReport | null): Chip[] {
       text: "no test changed",
       title: "Source changed in this working set and nothing matching a test path did.\n"
         + "Informational — plenty of good changes need no test.",
-      line: 0,
+      places: [],
+      lines: [],
     });
   }
-  if (rep?.truncated) {
+  // Two different cuts, and both have to say so, because a measurement that covered less
+  // than the change did reads as a *cleaner* change rather than a partial one. The
+  // viewer's own "diff truncated" note is not enough on its own: it says the diff is
+  // short, which a reader takes to mean the listing is short — not that the findings are.
+  if (diffCut) {
+    out.push({
+      id: "partial",
+      sev: "info",
+      text: "findings incomplete",
+      title: "The diff was too large to read in full, so the files it left out were never\n"
+        + "measured either. A wholesale copy-pasted new file is exactly what falls off\n"
+        + "the end of that list, and it is the duplication rule's best case.",
+      places: [],
+      lines: [],
+    });
+  } else if (rep?.truncated) {
     out.push({
       id: "partial",
       sev: "info",
       text: "partial sweep",
       title: `Only ${rep.indexed} files were read, so duplicate blocks may be missed.\n`
         + "The project is larger than the cap this measurement bounds itself to.",
-      line: 0,
+      places: [],
+      lines: [],
     });
   }
   return out;

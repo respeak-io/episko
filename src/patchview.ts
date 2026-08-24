@@ -92,7 +92,7 @@ export function splitHunkHtml(h: DiffHunk): string {
 export function chipsHtml(chips: Chip[], fi: number): string {
   if (!chips.length) return "";
   const one = (c: Chip) =>
-    `<button class="hchip ${c.sev}${c.line ? "" : " nowhere"}" data-hline="${c.line}" data-hfi="${fi}" title="${escAttr(c.title)}">${esc(c.text)}</button>`;
+    `<button class="hchip ${c.sev}${c.places.length ? "" : " nowhere"}" data-hline="${c.places[0] ?? 0}" data-hfi="${fi}" data-hid="${c.id}" title="${escAttr(c.title)}">${esc(c.text)}</button>`;
   return `<div class="dhealth">${chips.map(one).join("")}</div>`;
 }
 
@@ -122,9 +122,16 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
   const body = f.binary
     ? `<div class="d-binbody">Binary file, no textual diff.</div>`
     : f.hunks.map(draw).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
+  // Head and chips share one sticky box. A finding's marks can be scattered a hundred
+  // lines apart, so the chip that lit them has to stay reachable while you read — it is
+  // the control that walks between them, and a control you have to scroll back up to
+  // find is one you stop using.
   return `<section class="dfile ${cls}${open ? "" : " collapsed"}" data-fi="${i}">
-      <div class="dfhead" data-dtoggle="${i}"><span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${btns}</div>
-      <div class="dfbody">${chipsHtml(chips, i)}${body}</div></section>`;
+      <div class="dftop">
+        <div class="dfhead" data-dtoggle="${i}"><span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${btns}</div>
+        ${chipsHtml(chips, i)}
+      </div>
+      <div class="dfbody">${body}</div></section>`;
 }
 
 /// The index down the left. One row a file, grouped under the folder it is in — which is

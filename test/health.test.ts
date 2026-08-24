@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_HEALTH, clampHealth, fileChips, isSourcePath, isTestPath,
-  noTestChanged, setChips, silencedIn, worstSev, type Chip,
+  findingsText, noTestChanged, setChips, silencedIn, worstSev, type Chip,
 } from "../src/health";
 import type { DiffFile, DiffLine } from "../src/diff";
 import type { FileHealth, HealthReport } from "../src/types";
@@ -166,14 +166,14 @@ describe("fileChips", () => {
     const fn = { name: "run", start: 10, end: 300, code_lines: 254, cognitive: 30 };
     const chips = fileChips(f, health({ worst_fn: fn, longest_fn: fn }), report());
     const cog = chips.find((c) => c.id === "cognitive")!;
-    expect(cog.line).toBe(260);
+    expect(cog.places).toEqual([260]);
     expect(cog.title).toContain("from line 10");
   });
 
   it("falls back to the declaration when the change added nothing inside the function", () => {
     const f = file("src/a.ts", del("gone", 4));
     const fn = { name: "run", start: 10, end: 300, code_lines: 254, cognitive: 30 };
-    expect(fileChips(f, health({ worst_fn: fn }), report()).find((c) => c.id === "cognitive")!.line).toBe(10);
+    expect(fileChips(f, health({ worst_fn: fn }), report()).find((c) => c.id === "cognitive")!.places).toEqual([10]);
   });
 
   it("still applies the patch-only rules while the measurement is missing", () => {
@@ -194,7 +194,7 @@ describe("fileChips", () => {
     const [c] = fileChips(clean, h, report());
     expect(c.id).toBe("dup");
     expect(c.sev).toBe("bad");
-    expect(c.line).toBe(42);
+    expect(c.places).toEqual([42]);
     expect(c.title).toContain("src/refunds.ts:12");
   });
 
@@ -229,7 +229,7 @@ describe("fileChips", () => {
     const h = health({ worst_fn: { name: "build", start: 204, end: 260, code_lines: 40, cognitive: 24 } });
     const c = fileChips(clean, h, report()).find((x) => x.id === "cognitive")!;
     expect(c.text).toBe("cognitive 24");
-    expect(c.line).toBe(204);
+    expect(c.places).toEqual([204]);
     expect(c.title).toContain("build");
   });
 
@@ -257,7 +257,7 @@ describe("fileChips", () => {
     const c = fileChips(clean, health({ max_nesting: 6, nesting_line: 88 }), report())
       .find((x) => x.id === "nesting")!;
     expect(c.text).toBe("nesting 6");
-    expect(c.line).toBe(88);
+    expect(c.places).toEqual([88]);
   });
 
   it("honours a raised threshold instead of the default", () => {
@@ -286,13 +286,106 @@ describe("fileChips", () => {
   });
 });
 
+describe("every line a finding covers", () => {
+  // Marking only the first was most of why the old flash read as "something happened
+  // somewhere": a `dup ×3` is three separate blocks and a complex function is a span.
+  it("lists all three places a duplicated block landed", () => {
+    const h = health({ dups: [
+      { line: 10, other_path: "a.ts", other_line: 1 },
+      { line: 40, other_path: "b.ts", other_line: 2 },
+      { line: 90, other_path: "c.ts", other_line: 3 },
+    ] });
+    const c = fileChips(file("src/x.ts", add("x", 10)), h, report())[0];
+    expect(c.lines).toEqual([10, 40, 90]);
+    expect(c.places).toEqual([10, 40, 90]);
+  });
+
+  it("lists every silenced line, not just the one it scrolls to", () => {
+    const f = file("a.py", add("except:", 3), add("x = 1", 4), add("except Exception:", 9));
+    const c = fileChips(f, health(), report()).find((x) => x.id === "silenced")!;
+    expect(c.lines).toEqual([3, 9]);
+  });
+
+  it("spans a complex function across the lines the change added inside it", () => {
+    const f = file("src/a.ts", add("a", 20), add("b", 21), ctx("c", 22), add("d", 40), add("e", 500));
+    const fn = { name: "big", start: 15, end: 50, code_lines: 30, cognitive: 30 };
+    const c = fileChips(f, health({ worst_fn: fn }), report()).find((x) => x.id === "cognitive")!;
+    expect(c.lines).toEqual([20, 21, 40]);
+    expect(c.lines).not.toContain(500);
+  });
+
+  it("gives a finding about the whole file no lines to mark", () => {
+    const h = health({ code_lines: 900, code_added: 100 });
+    const c = fileChips(file("src/a.ts", add("x", 1)), h, report())!.find((x) => x.id === "grew")!;
+    expect(c.lines).toEqual([]);
+    expect(c.places).toEqual([]);
+  });
+});
+
+describe("findingsText", () => {
+  const f1 = file("src/a.ts", add("except:", 3));
+  const f2 = file("src/b.ts", add("x", 1));
+
+  it("names a file and a line for every finding, so an agent can open it", () => {
+    const chips = [fileChips(f1, health(), report()), fileChips(f2, health(), report())];
+    const out = findingsText("myproj · main", [f1, f2], chips, []);
+    expect(out).toContain("# Code health — myproj · main");
+    expect(out).toContain("## src/a.ts");
+    expect(out).toContain("(line 3)");
+    // A file that earned nothing is not a heading with nothing under it.
+    expect(out).not.toContain("## src/b.ts");
+  });
+
+  it("flattens a finding's prose onto its own bullet", () => {
+    const h = health({ dups: [{ line: 9, other_path: "src/z.ts", other_line: 4 }] });
+    const out = findingsText("p", [f2], [fileChips(f2, h, report())], []);
+    const bullet = out.split("\n").find((l) => l.startsWith("- "))!;
+    expect(bullet).toContain("src/z.ts:4");
+    expect(bullet.split("\n")).toHaveLength(1);
+  });
+
+  it("counts the places when a finding covers more than one", () => {
+    const h = health({ dups: [
+      { line: 9, other_path: "a.ts", other_line: 1 },
+      { line: 30, other_path: "b.ts", other_line: 2 },
+    ] });
+    expect(findingsText("p", [f2], [fileChips(f2, h, report())], [])).toContain("2 places");
+  });
+
+  it("says so plainly when there is nothing to hand over", () => {
+    expect(findingsText("myproj", [f2], [[]], [])).toBe("No code-health findings in myproj.");
+  });
+
+  it("carries the whole-change findings under their own heading", () => {
+    const set = setChips([f1], report());
+    const out = findingsText("p", [f1], [[]], set);
+    expect(out).toContain("About the change as a whole");
+    expect(out).toContain("no test changed");
+  });
+});
+
+describe("setChips", () => {
+  it("admits that a cut diff means cut findings, not a cleaner change", () => {
+    // The viewer's own note says the *diff* is short, which a reader takes to mean the
+    // listing is short — not that the measurements are.
+    const got = setChips([], report(), true);
+    expect(ids(got)).toEqual(["partial"]);
+    expect(got[0].text).toBe("findings incomplete");
+  });
+
+  it("prefers the diff's cut over the index's when both happened", () => {
+    const got = setChips([], report({ truncated: true }), true);
+    expect(got.map((c) => c.text)).toEqual(["findings incomplete"]);
+  });
+});
+
 describe("worstSev", () => {
   it("is null for a file with nothing to say, so the row stays silent", () => {
     expect(worstSev([])).toBeNull();
   });
 
   it("reports the loudest present", () => {
-    const c = (sev: Chip["sev"]): Chip => ({ id: "x", sev, text: "", title: "", line: 0 });
+    const c = (sev: Chip["sev"]): Chip => ({ id: "x", sev, text: "", title: "", places: [], lines: [] });
     expect(worstSev([c("info"), c("warn")])).toBe("warn");
     expect(worstSev([c("info")])).toBe("info");
   });

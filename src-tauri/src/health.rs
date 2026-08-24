@@ -838,6 +838,13 @@ fn measure_change(
         let Some(sight) = index.get(&h) else { continue };
         let Some((fi, other_line)) = sight.other_than((self_i, line)) else { continue };
         let Some(other_path) = kept.get(fi as usize).cloned() else { continue };
+        // A duplicate is only a duplicate between files of the same kind. Documentation
+        // that quotes the code it documents is not copy-paste debt — and a red chip on
+        // `health.rs` naming a line of prose is exactly the finding that teaches you to
+        // stop reading the row. Code↔code and prose↔prose both still count.
+        if is_code_file(&c.path) != is_code_file(&other_path) {
+            continue;
+        }
         // One hit per partner file: a copied 40-line function otherwise reports 35
         // overlapping windows against the same neighbour.
         if !seen.insert(other_path.clone()) {
@@ -1021,6 +1028,21 @@ mod tests {
         assert_eq!(meth.depth[4], 2, "a method's body is still level 1: {:?}", meth.depth);
     }
 
+    /// Every Rust test in this repo lives in `#[cfg(test)] mod tests`, and every method
+    /// in an `impl` — so if the wrapper counted, all test code would sit one level deeper
+    /// than production code by construction and the threshold would mean something
+    /// different depending on where you were. It does not count: depth is measured from
+    /// the enclosing function, and a `mod` or an `impl` is not one.
+    #[test]
+    fn a_module_or_impl_wrapper_does_not_add_a_level() {
+        let bare = brace("fn t() {\n  if a {\n    go();\n  }\n}\n");
+        let wrapped = brace("mod tests {\n  fn t() {\n    if a {\n      go();\n    }\n  }\n}\n");
+        let in_impl = brace("impl Foo {\n  fn t(&self) {\n    if a {\n      go();\n    }\n  }\n}\n");
+        assert_eq!(bare.depth[3], 2, "body, if");
+        assert_eq!(wrapped.depth[4], 2, "the mod is not a level: {:?}", wrapped.depth);
+        assert_eq!(in_impl.depth[4], 2, "nor is the impl: {:?}", in_impl.depth);
+    }
+
     #[test]
     fn the_percentile_ignores_documentation_and_config() {
         let dir = crate::testutil::scratch_dir();
@@ -1079,6 +1101,44 @@ mod tests {
         assert_eq!(f.dups[0].other_path, "orig.ts");
         assert!(rep.indexed >= 2, "both files indexed, got {}", rep.indexed);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shape an agent actually produces. It rarely pastes a function verbatim — it
+    /// pastes it and renames the declaration, which is precisely the case the verbatim
+    /// test above cannot see. The window has to slide past the renamed line and match on
+    /// the body, or the rule misses the copies that matter most.
+    #[test]
+    fn a_copy_whose_declaration_was_renamed_is_still_a_copy() {
+        let dir = crate::testutil::scratch_dir();
+        let body = "let a = compute(1);\nlet b = compute(2);\nlet c = a + b;\nlet d = c * 2;\nlet e = d - 1;\nlet f = e / 3;\nreturn f;\n";
+        std::fs::write(dir.join("orig.ts"), format!("function elidePath() {{\n{body}}}\n")).unwrap();
+        std::fs::write(dir.join("copy.ts"), format!("function shortenPath() {{\n{body}}}\n")).unwrap();
+        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
+        crate::testutil::git(&dir, &["add", "-A"]);
+
+        let changed = vec![ChangedFile { path: "copy.ts".into(), added: (1..=9).collect() }];
+        let rep = project_health(dir.to_string_lossy().to_string(), changed);
+        let f = &rep.files[0];
+        assert_eq!(f.dups.len(), 1, "the renamed copy must still be found: {:?}", f.dups);
+        assert_eq!(f.dups[0].other_path, "orig.ts");
+        assert!(f.dups[0].line >= 2, "the match starts past the renamed line, got {}", f.dups[0].line);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Documentation quoting the code it documents is not copy-paste debt.
+    #[test]
+    fn prose_is_never_reported_as_a_duplicate_of_code() {
+        let dir = crate::testutil::scratch_dir();
+        let body = "let a = compute(1);\nlet b = compute(2);\nlet c = a + b;\nlet d = c * 2;\nlet e = d - 1;\nlet f = e / 3;\n";
+        std::fs::write(dir.join("README.md"), format!("Here is how it works:\n\n```ts\n{body}```\n")).unwrap();
+        std::fs::write(dir.join("a.ts"), format!("function go() {{\n{body}}}\n")).unwrap();
+        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
+        crate::testutil::git(&dir, &["add", "-A"]);
+
+        let changed = vec![ChangedFile { path: "a.ts".into(), added: (1..=8).collect() }];
+        let rep = project_health(dir.to_string_lossy().to_string(), changed);
+        assert!(rep.files[0].dups.is_empty(), "the README is not a partner: {:?}", rep.files[0].dups);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

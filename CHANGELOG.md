@@ -36,6 +36,17 @@ Markers: `+` new · `~` changed · `!` fixed
   `nesting`, `long_fn` and `size_add` for a project; anything you leave out keeps its
   default. Committable, so a team's thresholds travel with the repo.
 
++ **A finding stays put, and you can hand it to an agent.** Clicking a chip used to flash
+  its line for a second and fade out, which told you the click registered and nothing else.
+  Now it *selects*: every line the finding covers lights up and stays lit while you read
+  around it, the chip stays lit with it, and a finding in several places walks to the next
+  one each time you click it. The chips ride along with the file header as you scroll, so
+  the control is still there when you arrive.
+
+  And **copy findings** puts the whole list on the clipboard as text written to be pasted
+  into a session — every finding names its file and its line, so the agent that made the
+  change can go and fix it.
+
 ! **The findings say what they mean.** Pointing the rules at real code rather than at test
   fixtures turned up five things they got wrong, all now fixed: a Rust function was named
   after its visibility keyword rather than itself (`pub`, for the whole backend); a
@@ -45,7 +56,10 @@ Markers: `+` new · `~` changed · `!` fixed
   always the `describe` wrapping it; and nesting was counted differently in braced and
   indented languages — 2-space Python and YAML reported half their real depth and so never
   tripped it at all. Depth is now "levels inside this function" in both, and file size is
-  compared against the project's *code* rather than against its documentation.
+  compared against the project's *code* rather than against its documentation. Three more
+  since: documentation quoting the code it documents was reported as a duplicate of it, a
+  copy whose function was renamed slipped past the duplicate rule, and a diff too large to
+  read in full left the findings quietly covering fewer files than the change did.
 
 ~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
   you the files back to back with nothing between them, so scrolling into the middle of one

@@ -230,6 +230,18 @@ And the things that hold however the files are arranged:
   **nesting is measured from the enclosing function in both families**, with the indent step
   detected per file — absolute depth made one threshold mean two things, and a hard-coded
   four columns made the rule silently *never fire* on 2-space Python or YAML.
+- **A finding is selected, not flashed, and it is copyable.** Clicking a chip lights every
+  line it covers and stays lit until you pick another or click it again; a repeat click on
+  a finding with several *places* walks to the next one. Two lists, deliberately: `Chip.lines`
+  is everything to mark (a complex function marks the whole span the change added inside it)
+  and `Chip.places` is what a click walks (that same function has exactly one) — conflating
+  them made a chip claim "200 places". The chip row shares one sticky box with the file
+  header (`.dftop`), because the control that walks between marks a hundred lines apart has
+  to still be on screen when you get there. And **copy findings** puts them on the clipboard
+  as text written for a session to act on: the premise of the whole feature is that you are
+  reviewing work you did not type, so the fix will not be typed by you either, and a chip you
+  can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
+  never `navigator.clipboard` (an OS permission prompt).
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, counted from `SubagentStart`/`Stop`, with no disk and no backend), `statusKey` answers `"background"` for it, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.

@@ -908,7 +908,10 @@ html.win .wctl { display: flex; }
    two files is what says a file ended */
 .dfile.collapsed { margin: 7px 0; }
 .dfile:last-of-type { margin-bottom: 0; }
-.dfhead { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; user-select: none; border-radius: calc(var(--radius-sm) - 1px);
+/* The head and its findings stick together: a finding's marks can be a hundred lines
+   apart, so the chip that walks between them has to stay on screen with the filename. */
+.dftop { position: sticky; top: 0; z-index: 3; }
+.dfhead { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; user-select: none; border-radius: calc(var(--radius-sm) - 1px);
   /* opaque, not a translucent surface: code scrolls underneath it */
   background: var(--surface); }
 .dfhead:hover { background: var(--surface-2); }
@@ -916,8 +919,8 @@ html.win .wctl { display: flex; }
 .dfile.s-add { border-left-color: var(--st-done); }
 .dfile.s-del { border-left-color: var(--st-attention); }
 .dfile.s-ren { border-left-color: var(--tool-read); }
-.dfile:not(.collapsed) > .dfhead { border-bottom: 1px solid var(--hair); border-radius: calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0 0; }
-.dfile.collapsed .dfbody { display: none; }
+.dfile:not(.collapsed) .dfhead { border-bottom: 1px solid var(--hair); border-radius: calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0 0; }
+.dfile.collapsed .dfbody, .dfile.collapsed .dhealth { display: none; }
 .dfile.collapsed .dchev { transform: rotate(-90deg); }
 .dfbody { border-radius: 0 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px); overflow: hidden; }
 .dchev { color: var(--muted-2); font-size: 10px; transition: transform .12s; width: 10px; flex: none; }
@@ -987,7 +990,9 @@ html.win .wctl { display: flex; }
    than something that follows you down the file. Three severities and no score — the
    difference between them is whether you would want to know before merging, after, or
    only as context. */
-.dhealth { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.dhealth { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--hair);
+  /* opaque: code scrolls under this too, now that it is part of the sticky box */
+  background: var(--bg-2); }
 .hchip { display: inline-flex; align-items: center; font: 500 10.5px var(--font-mono); padding: 2px 7px; border-radius: 5px; line-height: 1.5; cursor: pointer; white-space: nowrap;
   color: var(--sc, var(--muted)); border: 1px solid color-mix(in srgb, var(--sc, var(--muted)) 45%, transparent);
   background: color-mix(in srgb, var(--sc, var(--muted)) 11%, transparent); }
@@ -1011,14 +1016,24 @@ html.win .wctl { display: flex; }
 .pip.warn { background: var(--st-working); }
 .pip.info { background: var(--tool-read); }
 
-/* Where a chip sent you. Fades out on its own: a permanent mark would still be there
-   the next time you scrolled past and would stop meaning "this one". */
-.dline.hlit, .sn.hlit { animation: hlit 1.6s ease-out; }
-@keyframes hlit {
-  0%, 40% { background: color-mix(in srgb, var(--accent) 34%, transparent); }
-  100%    { background: transparent; }
+/* Where a chip sent you — a selection, not a flash.
+   The first cut animated the target for 1.6s and faded it out, which answered "did the
+   click register" and nothing else: by the time your eye reached the line the mark was
+   already going. A finding stays lit until you choose another or click it again, and
+   EVERY line it covers is lit, not just the one that was scrolled to. */
+.hchip.on { background: color-mix(in srgb, var(--sc, var(--muted)) 30%, transparent); border-color: var(--sc, var(--muted)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--sc, var(--muted)) 40%, transparent); }
+.hchip.on:hover { background: color-mix(in srgb, var(--sc, var(--muted)) 34%, transparent); }
+.dline.hmark, .sn.hmark, .sc.hmark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
-@media (prefers-reduced-motion: reduce) { .dline.hlit, .sn.hlit { animation: none; box-shadow: inset 2px 0 0 var(--accent); } }
+/* the marked row's own +/− colour has to survive being marked, or a deletion inside a
+   lit block stops reading as a deletion */
+.dline.hmark .dsign { color: var(--accent-ink, var(--text)); }
+.dline.hmark .ln, .sn.hmark { opacity: .85; color: var(--text); }
+@media (prefers-reduced-motion: no-preference) {
+  .dline.hmark, .sn.hmark, .sc.hmark { transition: background .12s, box-shadow .12s; }
+}
 
 /* --- the call sheet (modal): one tool call, in full ---
    Sized like Settings > Usage (.setdlg.wide), which is the app's "this needs the room"
