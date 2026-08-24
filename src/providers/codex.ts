@@ -32,6 +32,71 @@ function usage(v: unknown): AgentTokenUsage {
   };
 }
 
+type TokenPrice = { input: number; cached: number; cacheWrite?: number; output: number };
+
+// Standard API dollars per million tokens, checked against OpenAI's pricing/model
+// pages on 2026-08-24. App Server's own USD estimate wins whenever it is available;
+// this table is the subscription-login fallback, where the server can return token
+// groups and credits but no USD route. Snapshot suffixes inherit their base model.
+//
+// GPT-5.5/5.4 long-context and regional uplifts cannot be recovered from the grouped
+// cumulative response, so the fallback deliberately means the ordinary standard API
+// equivalent — the same sort of useful approximation Claude presents, not a bill.
+const API_PRICES: Record<string, TokenPrice> = {
+  "gpt-5.6": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
+  "gpt-5.6-sol": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
+  "gpt-5.6-terra": { input: 2, cached: 0.2, cacheWrite: 2.5, output: 12 },
+  "gpt-5.6-luna": { input: 0.2, cached: 0.02, cacheWrite: 0.25, output: 1.2 },
+  "gpt-5.5": { input: 5, cached: 0.5, output: 30 },
+  "gpt-5.4": { input: 2.5, cached: 0.25, output: 15 },
+  "gpt-5.4-mini": { input: 0.75, cached: 0.075, output: 4.5 },
+  "gpt-5.3-codex": { input: 1.75, cached: 0.175, output: 14 },
+  "gpt-5.2-codex": { input: 1.75, cached: 0.175, output: 14 },
+  "gpt-5.1-codex": { input: 1.25, cached: 0.125, output: 10 },
+  "gpt-5.1-codex-max": { input: 1.25, cached: 0.125, output: 10 },
+  "gpt-5-codex": { input: 1.25, cached: 0.125, output: 10 },
+  "codex-mini-latest": { input: 1.5, cached: 0.375, output: 6 },
+};
+const PRICE_IDS = Object.keys(API_PRICES).sort((a, b) => b.length - a.length);
+const priceFor = (model: string): TokenPrice | null => {
+  const id = model.toLowerCase();
+  const base = PRICE_IDS.find((x) => id === x || id.startsWith(`${x}-20`));
+  return base ? API_PRICES[base] : null;
+};
+const tokens = (v: unknown): number => Number.isFinite(v) ? Math.max(0, Number(v)) : 0;
+
+/**
+ * App Server groups every model/cache/service-tier route used by the thread. Prefer
+ * its cumulative USD-micros estimate; if a ChatGPT subscription route omits USD, price
+ * those same groups at public API rates. Repricing only the latest aggregate token
+ * counter would make a mid-thread model change rewrite all of the older turns.
+ */
+export function codexApiEquivalentUsd(v: unknown): number | null {
+  const x = obj(v); const micros = x.estimatedUsageUsdMicros;
+  if (Number.isFinite(micros) && micros >= 0) return Number(micros) / 1_000_000;
+  if (!Array.isArray(x.groups) || !x.groups.length) return null;
+  let usd = 0; let sawUsage = false;
+  for (const raw of x.groups) {
+    const g = obj(raw); const cached = tokens(g.cachedInputTokens);
+    const writes = tokens(g.cacheWriteInputTokens);
+    const fresh = Number.isFinite(g.netNewInputTokens)
+      ? Math.max(0, tokens(g.netNewInputTokens) - writes)
+      : Math.max(0, tokens(g.inputTokens) - cached - writes);
+    const output = tokens(g.outputTokens);
+    if (!(fresh > 0 || cached > 0 || writes > 0 || output > 0)) continue;
+    sawUsage = true;
+    const price = priceFor(text(g.model));
+    if (!price) return null; // a partial thread total would be worse than no estimate
+    const speed = text(g.speed).toLowerCase();
+    const mul = speed === "fast" || speed === "priority" ? 2 : 1;
+    usd += mul * (
+      fresh * price.input + cached * price.cached
+      + writes * (price.cacheWrite ?? price.input) + output * price.output
+    ) / 1_000_000;
+  }
+  return sawUsage ? usd : 0;
+}
+
 function fileTouches(item: Record<string, any>): AgentFileTouch[] {
   if (item.type !== "fileChange" || !Array.isArray(item.changes)) return [];
   return item.changes.flatMap((c: any) => {
@@ -111,6 +176,10 @@ export function codexEvents(e: ProviderEvent): AgentEvent[] {
     case "item/started": case "item/completed": return itemEvents(e.method, p);
     case "turn/plan/updated": return [{ type: "plan", todos: plan(p.plan) }];
     case "thread/tokenUsage/updated": return [{ type: "usage", usage: usage(p.tokenUsage) }];
+    case "episko/thread/usage": {
+      const totalUsd = codexApiEquivalentUsd(p.threadUsage);
+      return totalUsd == null ? [] : [{ type: "cost", totalUsd }];
+    }
     case "account/rateLimits/updated": {
       const r = obj(p.rateLimits); const windows = [r.primary, r.secondary].filter(Boolean).map((w: any) => ({
         usedPercent: Number(w.usedPercent) || 0,

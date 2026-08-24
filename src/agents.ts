@@ -8,7 +8,7 @@ import {
   abbr, beginAgentTurn, closeActivity, finishAgentTurn, noteAgentTouch,
   openActivity, pushHist, setPhase,
 } from "./phase";
-import { addAgentTokenUsage } from "./usage";
+import { addAgentTokenUsage, addUsage, costDelta } from "./usage";
 import type { AgentRateLimit, AgentTokenUsage, Risk, Sess, Todo, TouchKind } from "./types";
 
 export interface ProviderEvent {
@@ -29,6 +29,7 @@ export type AgentEvent =
   | { type: "permission-resolved"; id: string }
   | { type: "plan"; todos: Todo[] }
   | { type: "usage"; usage: AgentTokenUsage }
+  | { type: "cost"; totalUsd: number }
   | { type: "rate-limits"; windows: AgentRateLimit[] }
   | { type: "error"; detail: string }
   | { type: "disconnected" };
@@ -81,6 +82,16 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       s.ctxTokens = used;
       s.ctxPct = cap && cap > 0 ? used / cap * 100 : null;
       if (s.ctxPct != null) pushHist(s.ctxHist, s.ctxPct);
+      break;
+    }
+    case "cost": {
+      // Provider totals have the same semantics as Claude's statusLine total: they
+      // survive a pane move/resume. Key the persistent baseline by provider + thread
+      // so reopening one conversation never books its whole estimate a second time.
+      const id = `${s.provider || "agent"}:${s.resumeId || s.id}`;
+      addUsage(costDelta(id, event.totalUsd, false), s);
+      s.cost = event.totalUsd;
+      pushHist(s.costHist, event.totalUsd);
       break;
     }
     case "rate-limits": s.rateLimits = event.windows; break;

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { store } from "./localstorage"; // must precede modules that read localStorage
 import { applyAgentEvent } from "../src/agents";
-import { codexEvents, codexHistoryEntries, codexHistoryMessages } from "../src/providers/codex";
+import { codexApiEquivalentUsd, codexEvents, codexHistoryEntries, codexHistoryMessages } from "../src/providers/codex";
 import { rl } from "../src/rl";
+import { resetCostBaselines, usage, usageDetail } from "../src/usage";
 import type { Sess } from "../src/types";
 
 const sess = (id = "pane-1"): Sess => ({
@@ -23,6 +24,9 @@ const raw = (method: string, params: any = {}, requestId: string | null = null) 
 
 beforeEach(() => {
   store.clear();
+  for (const k of Object.keys(usage)) delete usage[k];
+  for (const k of Object.keys(usageDetail)) delete usageDetail[k];
+  resetCostBaselines();
   rl.h5 = rl.h5Reset = rl.d7 = rl.d7Reset = null;
 });
 
@@ -48,6 +52,25 @@ describe("Codex provider adapter", () => {
       secondary: { usedPercent: 34, windowDurationMins: 10080, resetsAt: 20 },
     } }))[0];
     expect(limits).toMatchObject({ type: "rate-limits", windows: [{ usedPercent: 12 }, { usedPercent: 34 }] });
+  });
+
+  it("normalizes App Server's cumulative API-equivalent estimate", () => {
+    expect(codexApiEquivalentUsd({ estimatedUsageUsdMicros: 2_345_678 })).toBeCloseTo(2.345678, 10);
+    expect(codexApiEquivalentUsd({
+      estimatedUsageUsdMicros: null,
+      groups: [{ model: "gpt-5.6-sol", netNewInputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 }],
+    })).toBeCloseTo(24.4, 10);
+    expect(codexApiEquivalentUsd({
+      estimatedUsageUsdMicros: null,
+      groups: [{ model: "gpt-5.6-sol", speed: "fast", netNewInputTokens: 1_000_000, outputTokens: 1_000_000 }],
+    })).toBeCloseTo(48, 10);
+    expect(codexApiEquivalentUsd({
+      estimatedUsageUsdMicros: null,
+      groups: [{ model: "future-model", netNewInputTokens: 1_000 }],
+    })).toBeNull();
+    expect(codexEvents(raw("episko/thread/usage", {
+      threadUsage: { threadId: "thread-1", estimatedUsageUsdMicros: 1_250_000 },
+    }))[0]).toEqual({ type: "cost", totalUsd: 1.25 });
   });
 
   it("maps public App Server history without reading Codex rollout files", () => {
@@ -94,5 +117,21 @@ describe("provider-neutral agent reducer", () => {
     } });
     expect(s.ctxTokens).toBe(50); expect(s.ctxPct).toBe(25);
     expect(JSON.parse(store.get("cc-agent-usage-tokens")!)[0]).toMatchObject({ input: 80, cache_read: 20, output: 20, sessions: 1 });
+  });
+
+  it("rolls up only new Codex equivalent spend across updates and resumes", () => {
+    const before = sess("cost-pane"); before.resumeId = "cost-thread"; before.model = "gpt-5.6-sol";
+    applyAgentEvent(before, { type: "cost", totalUsd: 1.25 });
+    applyAgentEvent(before, { type: "cost", totalUsd: 3 });
+    applyAgentEvent(before, { type: "cost", totalUsd: 2.5 }); // a revised estimate, not a reset
+    expect(before.cost).toBe(2.5);
+    expect(Object.values(usage)[0]).toBeCloseTo(3, 10);
+
+    const after = sess("resumed-pane"); after.resumeId = "cost-thread"; after.model = "gpt-5.6-sol";
+    applyAgentEvent(after, { type: "cost", totalUsd: 3 });
+    applyAgentEvent(after, { type: "cost", totalUsd: 3.5 });
+    expect(after.cost).toBe(3.5);
+    expect(after.costHist).toEqual([3, 3.5]);
+    expect(Object.values(usage)[0]).toBeCloseTo(3.5, 10);
   });
 });

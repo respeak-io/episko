@@ -595,17 +595,24 @@ function saveBaselines() {
   }
   localStorage.setItem(COST_BASE_KEY, JSON.stringify(Object.fromEntries(costBaseline)));
 }
-export function costDelta(conv: string, total: number): number {
+export function costDelta(conv: string, total: number, dropsAreReset = true): number {
   const prev = costBaseline.get(conv)?.t;
-  costBaseline.set(conv, { t: total, at: Date.now() });
+  // Claude owns its running total and a drop means that counter restarted. Provider
+  // API-equivalent estimates are derived, however: a pricing-table update can revise
+  // an old thread down without one new token being spent. Those callers retain the
+  // high-water mark so a later rebound cannot be booked a second time.
+  const baseline = !dropsAreReset && prev !== undefined ? Math.max(prev, total) : total;
+  costBaseline.set(conv, { t: baseline, at: Date.now() });
   // **Only when the figure moved.** A statusLine fires every `refreshInterval` (10s) per
   // session whether or not anything was spent, and this used to serialise and write the
   // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
   // forever. An unchanged total leaves nothing to persist but `at`, and `at` exists
   // solely to order eviction, where seconds do not matter: it rides along on the next
   // write this conversation earns.
-  if (prev !== total) saveBaselines();
-  return prev === undefined || total < prev ? total : total - prev;
+  if (prev !== baseline) saveBaselines();
+  if (prev === undefined) return total;
+  if (total < prev) return dropsAreReset ? total : 0;
+  return total - prev;
 }
 // Only a test needs to clear it; the app's own copy is meant to outlive the run.
 export function resetCostBaselines() { costBaseline.clear(); localStorage.removeItem(COST_BASE_KEY); }

@@ -258,6 +258,22 @@ fn approval_response(method: &str, behavior: &str, params: &Value) -> Option<Val
     }
 }
 
+fn thread_usage_request(id: u64, thread_id: &str) -> Value {
+    json!({
+        "method": "account/usage/read",
+        "id": id,
+        "params": { "threadId": thread_id }
+    })
+}
+
+fn method_not_found(value: &Value) -> bool {
+    value.pointer("/error/code").and_then(Value::as_i64) == Some(-32601)
+        || value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.to_ascii_lowercase().contains("method not found"))
+}
+
 fn observer_loop(
     app: AppHandle,
     session_id: String,
@@ -272,6 +288,13 @@ fn observer_loop(
     let rate_limits_request = 1u64;
     let mut next_id = 2u64;
     let mut resume_request: Option<u64> = None;
+    // `account/usage/read` is the App Server's own API-equivalent estimate for a
+    // thread. Only keep one request in flight: token notifications can arrive in a
+    // burst at turn end, and an older estimate racing a newer one would make the live
+    // cost gauge move backwards. `usage_dirty` earns exactly one follow-up read.
+    let mut usage_request: Option<u64> = None;
+    let mut usage_dirty = false;
+    let mut usage_supported = true;
     let mut approval_serial = 0u64;
     let mut pending: HashMap<String, PendingApproval> = HashMap::new();
     let mut stopped = false;
@@ -337,6 +360,46 @@ fn observer_loop(
                     result.clone(),
                     None,
                 );
+            }
+            continue;
+        }
+
+        if usage_request.is_some_and(|id| value.get("id") == Some(&json!(id))) {
+            usage_request = None;
+            if let Some(result) = value.get("result") {
+                emit_provider_event(
+                    &app,
+                    &session_id,
+                    "episko/thread/usage",
+                    result.clone(),
+                    None,
+                );
+            } else if let Some(error) = value.get("error") {
+                if method_not_found(&value) {
+                    // This method was added after the first App Server releases. A
+                    // stale CLI must lose the estimate, not its whole observer.
+                    usage_supported = false;
+                    log::debug!("Codex App Server has no thread usage estimate · {session_id}");
+                } else {
+                    // Authentication and provider failures can heal. Leave the method
+                    // enabled so the next token update gets another honest attempt.
+                    log::warn!("codex observer usage estimate failed · {session_id}: {error}");
+                }
+            }
+            if usage_dirty && usage_supported {
+                usage_dirty = false;
+                if let Some(thread) = thread_id.as_deref() {
+                    let id_num = next_id;
+                    next_id += 1;
+                    match send(&mut socket, thread_usage_request(id_num, thread)) {
+                        Ok(()) => usage_request = Some(id_num),
+                        Err(e) => {
+                            log::warn!("codex observer usage refresh failed · {session_id}: {e}")
+                        }
+                    }
+                }
+            } else {
+                usage_dirty = false;
             }
             continue;
         }
@@ -427,6 +490,24 @@ fn observer_loop(
 
         if !method.is_empty() {
             emit_provider_event(&app, &session_id, method, params, None);
+            // The token event says the cumulative estimate may have changed. Ask for
+            // the provider's per-model grouped reading rather than repricing one latest
+            // aggregate; its USD value wins, with the adapter supplying the public-rate
+            // fallback for subscription routes that only return groups.
+            if method == "thread/tokenUsage/updated" && usage_supported {
+                if usage_request.is_some() {
+                    usage_dirty = true;
+                } else if let Some(thread) = thread_id.as_deref() {
+                    let id_num = next_id;
+                    next_id += 1;
+                    match send(&mut socket, thread_usage_request(id_num, thread)) {
+                        Ok(()) => usage_request = Some(id_num),
+                        Err(e) => {
+                            log::warn!("codex observer usage read failed · {session_id}: {e}")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -647,5 +728,30 @@ mod tests {
             approval_token("item/commandExecution/requestApproval", &p, 1),
             approval_token("item/commandExecution/requestApproval", &p, 2)
         );
+    }
+
+    #[test]
+    fn requests_the_provider_owned_estimate_for_one_thread() {
+        assert_eq!(
+            thread_usage_request(7, "thread-1"),
+            json!({
+                "method": "account/usage/read",
+                "id": 7,
+                "params": { "threadId": "thread-1" }
+            })
+        );
+    }
+
+    #[test]
+    fn only_an_unknown_method_permanently_disables_the_optional_estimate() {
+        assert!(method_not_found(
+            &json!({ "error": { "code": -32601, "message": "nope" } })
+        ));
+        assert!(method_not_found(
+            &json!({ "error": { "code": 500, "message": "Method not found: account/usage/read" } })
+        ));
+        assert!(!method_not_found(
+            &json!({ "error": { "code": 401, "message": "sign in again" } })
+        ));
     }
 }
