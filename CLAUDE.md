@@ -277,6 +277,14 @@ And the things that hold however the files are arranged:
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **Persistence is all `localStorage`**, every key prefixed `cc-`; `grep '"cc-'` for the current set.
+  **Every read of one narrows rather than trusts.** `state.ts` reads its preferences at
+  module scope in the module everything else imports, so a `JSON.parse` that throws there
+  is a blank window before any UI exists to say why — and a stored value is not safe just
+  because we wrote it (a crash mid-write truncates, and these are the keys people hand-edit).
+  A parseable value of the wrong shape is the sharper half: `"null"` and `"[]"` survive the
+  parse and only fail at the first property access, somewhere else entirely. Use `strMap` /
+  `strList` / `favList` / a `clamp*`, never a bare `JSON.parse`, and discard a bad value on
+  its own rather than letting it take the session (`test/state.test.ts`).
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash. The durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
 
 ## App-wide rules

@@ -37,13 +37,13 @@ const DEFAULT_FAVORITES: Favorite[] = [];
 // Re-derive each display name from its path on load: it's always the basename, and
 // this self-heals favorites persisted before the Windows-path fix (whose stored name
 // was the full backslash path).
-export let FAVORITES: Favorite[] = (JSON.parse(localStorage.getItem("cc-favorites") || "null") || DEFAULT_FAVORITES)
+export let FAVORITES: Favorite[] = favList(localStorage.getItem("cc-favorites"))
   .map((f: Favorite) => ({ ...f, name: basename(f.path) }));
 export function setFavorites(f: Favorite[]) { FAVORITES = f; }
 export function saveFavorites() { localStorage.setItem("cc-favorites", JSON.stringify(FAVORITES)); }
 // User-defined sidebar order (project path keys), set by drag-drop. Projects not
 // listed here keep their natural order after the listed ones.
-export let projOrder: string[] = JSON.parse(localStorage.getItem("cc-proj-order") || "null") || [];
+export let projOrder: string[] = strList(localStorage.getItem("cc-proj-order"));
 export function setProjOrder(o: string[]) { projOrder = o; }
 export function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.stringify(projOrder)); }
 // The user's named, collapsible groups of projects, and which project is in which.
@@ -171,10 +171,35 @@ function safeParse<T>(raw: string | null): Partial<T> | null {
   try { return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 
+/// The three narrowing reads the preferences above use. Declarations, so they hoist to
+/// the readers near the top of the file.
+///
+/// Every one of these runs at MODULE SCOPE in the module everything else imports, so a
+/// `JSON.parse` that throws here is not a broken preference — it is a blank window, with
+/// no in-app surface left to clear the key that caused it. "It was valid when we wrote
+/// it" is not a guarantee either: a crash mid-write truncates, and these keys are the
+/// ones people hand-edit. So each one *narrows* rather than trusts, and anything that is
+/// not the shape the app then indexes into is discarded whole — the cost is one forgotten
+/// preference instead of the session. `loadPermissionModes` below already did this.
+function strMap(raw: string | null): Record<string, string> {
+  const v = safeParse<Record<string, string>>(raw);
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  return Object.fromEntries(Object.entries(v).filter(([, m]) => typeof m === "string")) as Record<string, string>;
+}
+function strList(raw: string | null): string[] {
+  const v = safeParse<string[]>(raw);
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+function favList(raw: string | null): Favorite[] {
+  const v = safeParse<Favorite[]>(raw);
+  if (!Array.isArray(v)) return DEFAULT_FAVORITES;
+  return v.filter((f): f is Favorite => !!f && typeof f === "object" && typeof f.path === "string");
+}
+
 // A hand-picked accent per project path, overriding the hash below. A `const` map
 // mutated in place (like `sessions`), so it needs no setter; the colour picker in
 // main.ts still owns writing it back to localStorage.
-export const colorOverrides: Record<string, string> = JSON.parse(localStorage.getItem("cc-colors") || "{}");
+export const colorOverrides: Record<string, string> = strMap(localStorage.getItem("cc-colors"));
 // The project accent. Here rather than in format.ts because it reads the override
 // map above, and format.ts must not depend on state (this module already imports
 // it). Same hash seeds branch colours, so the sidebar's colour language is one.
@@ -308,8 +333,7 @@ export function setDefaultAgent(id: string) { defaultAgent = id; }
 // inherits one answer. Same shape and the same reasoning as `cc-task-onstop`: a
 // personal preference, in localStorage, never a committed project fact — a colleague
 // opening the same repo keeps whichever agent *they* drive.
-export const agentByProject: Record<string, string> =
-  JSON.parse(localStorage.getItem("cc-agent-by-project") || "{}");
+export const agentByProject: Record<string, string> = strMap(localStorage.getItem("cc-agent-by-project"));
 export function setProjectAgent(colorKey: string, id: string | null) {
   if (id) agentByProject[colorKey] = id; else delete agentByProject[colorKey];
 }
