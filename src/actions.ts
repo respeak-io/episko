@@ -33,6 +33,7 @@ import {
   setPeekPrefs as setPeekPrefsState, setProviderPermissionMode as setPermissionModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
+  revivePrefs, setRevivePrefs as setRevivePrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
   type SortMode, type WtGroup,
@@ -50,6 +51,9 @@ import { CLAUDE_CLI } from "./types";
 import { resolveProviderPermission } from "./providers/control";
 import { removePermission } from "./permissions";
 import { providerAdapter, providerPermissionMode } from "./providers";
+import { reviveGap, reviveStep, type RevivePrefs } from "./revive";
+import { playSound } from "./chime";
+import { dlog } from "./debug";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
@@ -192,6 +196,95 @@ export function setSoundPrefs(p: SoundPrefs) {
   setSoundPrefsState(p);
   localStorage.setItem("cc-sound", JSON.stringify(soundPrefs));
   renderSettings();
+}
+
+// And for the revive watchdog. `renderAll` rather than `renderSettings` alone, because
+// switching it off has to take the "retrying in 2m" line back off the inspector's error
+// card immediately — a session that is no longer being retried must not go on saying it
+// is. Turning it off never cancels a schedule explicitly: `reviveStep` returns `off`
+// before it looks at anything, so every existing `Sess.revive` becomes inert on the
+// spot and is cleared by the next turn that ends cleanly.
+export function setRevivePrefs(p: RevivePrefs) {
+  setRevivePrefsState(p);
+  localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
+  renderAll();
+  renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// ---------- the revive watchdog ----------
+// The timer half of ./revive: every rule lives there and is tested, so this only asks
+// what to do and does it. Driven by a fixed interval from main.ts rather than a timeout
+// scheduled to `reviveDeadline`, for a reason specific to what this waits for — the
+// machine's network coming back is not an event anything fires, so there is nothing to
+// schedule against, and a poll is the only thing that notices.
+
+/// Whether the machine currently thinks it has a network. Weak on purpose and exactly
+/// strong enough: `navigator.onLine` only knows whether an interface is up, which is a
+/// terrible test for "is the API reachable" and a very good one for "did the Wi-Fi nap",
+/// and the second is the failure this feature was written for. A false positive costs
+/// one attempt; a false negative costs nothing at all, because being offline does not
+/// consume one (see `reviveStep`).
+const online = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
+
+/// Skip reasons worth a line in the debug console. The other six fire on every tick for
+/// every healthy session in the fleet and would bury the log within a minute; these two
+/// are the ones somebody is actually asking about at 08:00 — "it was waiting for the
+/// network" and "it had already given up".
+const LOUD_SKIPS = new Set(["offline", "exhausted"]);
+/// What each session's last skip was, so a repeated reason is logged once rather than
+/// six times a minute. Keyed by session id and cleaned as sessions go.
+const lastSkip = new Map<string, string>();
+
+/**
+ * One pass over the fleet: schedule, send, or give up on each failed session.
+ *
+ * Everything that could be wrong to do is decided by `reviveStep`; the only judgement
+ * here is about output — what gets logged, what makes a noise, and when to repaint.
+ */
+export function tickRevive() {
+  const now = Date.now(), net = online();
+  let changed = false;
+  for (const s of sessions.values()) {
+    const act = reviveStep(s, revivePrefs, now, net);
+    if (act.do === "none") {
+      if (LOUD_SKIPS.has(act.why) && lastSkip.get(s.id) !== act.why) {
+        lastSkip.set(s.id, act.why);
+        dlog("info", `revive ${s.id.slice(0, 8)} · ${act.why === "offline" ? "network is down — holding the attempt" : "gave up; waiting for you"}`);
+      }
+      continue;
+    }
+    lastSkip.delete(s.id);
+    s.revive = act.state;
+    changed = true;
+    if (act.do === "schedule") {
+      dlog("info", `revive ${s.id.slice(0, 8)} · ${s.apiErr?.kind ?? "?"} · try ${act.state.attempts + 1}/${revivePrefs.attempts} in ${reviveGap(act.state.dueAt - now)}`);
+      continue;
+    }
+    if (act.do === "giveup") {
+      // The one moment this feature is allowed to make a noise. Every failure in between
+      // was silent by design (see `soundSnap` in ./sound) — Episko was handling those,
+      // and a buzz per retry is six alarms for one outage. This is the one that means
+      // something changed for the human: nobody is coming, the session is yours.
+      dlog("warn", `revive ${s.id.slice(0, 8)} · gave up after ${act.state.attempts} tries`);
+      playSound("error");
+      continue;
+    }
+    // `do === "send"`. Two writes, exactly as the dashboard's dispatch does it: the text,
+    // then the Enter. This is the ONE place in the app that presses Enter for you —
+    // ./taskrun's `sendOutputToSession` deliberately stops at the prefill so a human
+    // commits it — and the departure is the whole point, since the entire premise here is
+    // that there is no human awake to press it.
+    dlog("info", `revive ${s.id.slice(0, 8)} · sending continue ${act.state.attempts}/${revivePrefs.attempts}`);
+    const sid = s.id;
+    void invoke("write_pty", { sessionId: sid, data: act.prompt })
+      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
+      .catch((e) => dlog("error", `revive ${sid.slice(0, 8)} · write failed: ${e}`));
+  }
+  // Closed panes leave their last skip reason behind, and this runs forever. Tiny, but a
+  // map keyed by session id that nothing ever removes from is how a long-running app
+  // grows a leak nobody looks for.
+  if (lastSkip.size > sessions.size) for (const id of lastSkip.keys()) if (!sessions.has(id)) lastSkip.delete(id);
+  if (changed) renderAll();
 }
 
 // And once more for the keyboard shortcuts. This one DOES take the full `renderAll`,

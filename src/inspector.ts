@@ -17,7 +17,8 @@ import { $, stageGen } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { activeId, sessions } from "./state";
+import { activeId, revivePrefs, sessions } from "./state";
+import { reviveStatus } from "./revive";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
@@ -73,10 +74,15 @@ export function renderInspector(s: Sess | null) {
     // and the glyph alone can't say whether that means "wait a minute" or "your key
     // is dead" — so the reason and what to do about it go on the card.
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
-    const note = creds
+    // What the watchdog is doing about it, when it is doing anything. It REPLACES the
+    // note rather than sitting beside it: "send the prompt again to pick it back up" and
+    // "retrying in 2m" are contradictory instructions, and the card would be telling you
+    // to do the thing it is about to do for you.
+    const rev = reviveStatus(s, revivePrefs, Date.now());
+    const note = rev ?? (creds
       ? "The agent can't reach its API with these credentials. Fix them in the terminal, then send the prompt again."
-      : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.";
-    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
+      : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.");
+    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note${rev ? " revive" : ""}">${esc(note)}</div></div>`);
   }
   // Above the vital, and above the working set it contradicts: everything below reads
   // the folder the session was launched in, which is not where the work is going.

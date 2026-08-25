@@ -19,9 +19,10 @@ import { esc } from "./format";
 import { rl } from "./rl";
 import {
   activeId, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
-  pastMirrorId, sessions, termEngine,
+  pastMirrorId, revivePrefs, sessions, termEngine,
 } from "./state";
 import { liveCount, orphanAgents, type Sess } from "./types";
+import { reviveDeadline } from "./revive";
 
 // A lightweight in-app event log + live state snapshot, surfaced via the 🐞 button
 // (in the footer) and mirrored to a fixed file (episko-debug.json) so an external
@@ -80,9 +81,21 @@ export function dbgSnapshot() {
       // explaining from outside the app — the case this was written for looked, from
       // every log line, like a session sitting quietly in the checkout it had left.
       drift: s.drift ? `${s.drift.branch} @ ${s.drift.dir}` : null,
+      // What the revive watchdog has done about a turn the API killed. This is the one
+      // field here that is read *after the fact* rather than live: the question at 08:00
+      // is "did it try, how many times, and when did it stop", and the rolling
+      // `episko.log` has the individual attempts while this has the standing state.
+      revive: s.revive
+        ? `${s.revive.attempts} tried, ${s.revive.gaveUp ? "gave up" : `next at ${new Date(s.revive.dueAt).toISOString()}`}`
+        : null,
     })),
     externals: externals.map((e) => ({ pid: e.pid, session_id: e.session_id, cwd: e.cwd, status: e.status, dirty: folderDirty(e.cwd) })),
     dirtyFolders: [...dirtyByFolder.entries()].map(([f, g]) => ({ folder: f, added: g?.added ?? 0, removed: g?.removed ?? 0, files: g?.files ?? 0, untracked: g?.untracked ?? 0, dirty: isDirty(g) })),
+    // When the revive watchdog next acts on anything, or null when it is idle. A
+    // top-level field rather than per-session because "is this thing going to do
+    // something, and when" is one question about the app, and an external tool reading
+    // the snapshot should not have to scan the fleet to answer it.
+    nextRevive: (() => { const at = reviveDeadline(sessions.values(), revivePrefs, Date.now()); return at ? new Date(at).toISOString() : null; })(),
     log: dbgLog.slice(-250),
   };
 }

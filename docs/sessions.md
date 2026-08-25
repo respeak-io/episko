@@ -108,3 +108,53 @@ Answers "reopen the one I closed", which the roster cannot. It joins Claude's tr
 - **The scan was profiled, and both hot spots were the unguessable ones** (subprocess spawns and tail reads; the directory walk was negligible). Both were removed rather than paged: `repo_root_of` reads the `.git` layout directly, with no subprocess; it walks from the **physical** cwd (git resolves symlinks before answering, and a linked worktree's root comes from the canonically-written `gitdir:` file, so an unresolved walk disagrees with *itself* and splits a repo from its own worktrees); a **stale worktree**'s dangling `.git` pointer means "not a repository" rather than starting a parent search; following it would file a dead checkout under a repo that forgot it. Tested by substitution against git's own answers. `transcript_meta` reads a 64KB tail, widening to 512KB only when **both** `ai-title` and `last-prompt` were missing. Each is last-wins, so one in range means the newest is; accepting on *either* mislabelled rows. Verified against the full corpus: zero differ from an always-full read.
 - **Same resume constraints as a dormant row, surfaced not hidden**: a live id is listed but tagged `live` (a second `--resume` interleaves); a vanished folder is tagged `no folder`, not dropped.
 - **Two doors, one dialog**: the stage-header `◷` opens *scoped* (everything beside it acts on the project on screen; `syncStageButtons` greys it with them); the top-bar `◷` is whole-machine. Reuses `#wtDlg`'s `.wt-*` skin and the mirror's `.tvmsg` preview.
+
+## Reviving a session the API killed (`revive.ts`, `tickRevive` in `actions.ts`)
+
+Ships **off** (`cc-revive`, Settings › Sessions). Switched on, it types a carry-on into a
+session whose turn ended in `StopFailure` — the overnight case, where the cost of a
+thirty-second outage is eight hours of a session sitting at its prompt. `revive.ts` is
+pure and holds every rule; `tickRevive` is a 10s poll that applies what it returns and
+decides nothing.
+
+- **A poll, not a timeout scheduled to `reviveDeadline`.** The two things worth waking
+  for are a rung falling due and the network coming back, and only one is an event. A Wi-Fi
+  interface reassociating at 04:12 fires nothing, so a deadline-driven design would sit on
+  an overdue attempt with no reason to re-examine it. The 10s is only the granularity of
+  "how soon after the internet returns"; the ladder's own waits are minutes wide.
+- **`attention` is checked before anything that can return `send`.** A blocking permission
+  sits at a prompt indistinguishable from an idle one, so a continue typed into it
+  *answers* it. This is the one failure mode here that is destructive rather than useless.
+- **`apiErr`, not `phase === "error"`.** A failed tool call reddens the same glyph; only
+  `StopFailure` writes `apiErr`, and only that means the API killed the turn.
+- **The terminal list is a denylist and the unknown bucket defaults ON.** Retrying a kind
+  we should not costs a few no-op turns bounded by `attempts`; *not* retrying a kind
+  Anthropic added after this build costs the night, silently, on the failure nobody
+  anticipated. `TERMINAL_KINDS` (auth, billing, org, invalid request, model, and
+  `max_output_tokens`) is the part no preference can switch back on.
+- **`ReviveState.attempts` survives the turns a continue starts.** It is cleared in exactly
+  one place — `endTurn`'s success branch in `phase.ts` — and deliberately *not* in
+  `newTurn`, which is where it looks like it belongs. Clear it there and a down API (each
+  new turn failing in milliseconds) restarts the streak at rung one every time, flattening
+  the ladder into a fixed `baseMs` hammer.
+- **A fresh `apiErr.at` re-times the ladder from when the failure happened**, not from
+  when the poll noticed, and `send` moves `dueAt` to the next rung as part of sending — so
+  a write that goes nowhere and provokes no new `StopFailure` cannot be re-sent every tick
+  until the budget is gone.
+- **No fan-out guard, which is a reversal rather than an omission.** Agents killed
+  alongside their parent never send `SubagentStop`, so `subagents` stays high with nothing
+  behind it; standing down for it would sleep through `FANOUT_DEAD_MS` (an hour) in exactly
+  the scenario this exists for. (`bgWaiting` could not express it anyway — it requires
+  `done`/`idle`, so on a session already narrowed to `error` it is false by construction.)
+- **Being offline does not consume an attempt.** `dueAt` stays in the past, so the next
+  tick after the interface returns sends immediately. For the failure this was written for,
+  every attempt would otherwise be spent while there was no network to spend it on.
+- **`jitterPct` is not a nicety.** Six sessions killed by one 529 back off identically and
+  return in the same second, at which point they are the overload.
+- **One noise, at the give-up.** `soundSnap.reviving` silences the `error` chime for a
+  failure the watchdog already has a schedule for; the first failure still rings (no
+  schedule exists yet) and `tickRevive` plays `error` by hand when it stops trying. Six
+  buzzes for one outage is how somebody ends up switching all the sounds off.
+- **Backstop below all of it**: `spawn_claude` sets `CLAUDE_CODE_MAX_RETRIES=12` unless the
+  user's environment already sets it. Claude Code's own classifier already covers 429/5xx
+  and the connection errors, so a wider leash means fewer turns ever reach this module.

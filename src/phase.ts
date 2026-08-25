@@ -267,10 +267,22 @@ export function clearPending(s: Sess) {
 // 529 Overloaded", the sidebar claiming the agent was waiting on the human. So a
 // known-failed turn (`apiErr`, set by StopFailure and cleared only when the session
 // genuinely starts another one) stays failed until it does.
-function endTurn(s: Sess) { setPhase(s, s.apiErr ? "error" : "done"); }
+// A turn that ENDED CLEANLY is also the one thing that clears the revive watchdog's
+// attempt counter, and this is the only place that does it. Not `newTurn` below, which
+// is where it looks like it belongs: a continue the watchdog typed *is* a new turn, so
+// clearing it there would put the ladder back on rung one after every retry, and an API
+// that is simply down (each turn failing in milliseconds) would be hit at a flat `baseMs`
+// forever instead of backing off at all — the exact hammer the backoff exists to prevent.
+// The streak ends when the session actually gets an answer, which is here.
+function endTurn(s: Sess) {
+  if (s.apiErr) { setPhase(s, "error"); return; }
+  s.revive = null;
+  setPhase(s, "done");
+}
 // A new turn is under way, so whatever killed the last one is history. Both signals
 // count: a retry the user typed (UserPromptSubmit) and one the model started on its
 // own (PreToolUse) — after `/resume` or a queued message there may be no prompt.
+// Note `s.revive` deliberately survives this; see `endTurn` above for why.
 function newTurn(s: Sess) { s.apiErr = null; }
 
 // Provider adapters enter the same state machine through these small lifecycle

@@ -25,6 +25,7 @@ import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
+import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
@@ -133,6 +134,19 @@ export function setAttnPrefs(p: AttnPrefs) { attnPrefs = clampAttnPrefs(p); }
 // this only holds the value.
 export let soundPrefs: SoundPrefs = clampSoundPrefs(safeParse(localStorage.getItem("cc-sound")));
 export function setSoundPrefs(p: SoundPrefs) { soundPrefs = clampSoundPrefs(p); }
+
+// --- reviving a session the API killed --------------------------------------------
+// Whether Episko types a "carry on" back into a session whose turn an API error ended
+// while nobody was watching, and the backoff ladder it does that on. One JSON blob under
+// cc-revive for the same reason as the three above. The rules and the clamping are
+// ./revive, which is pure and tested; this only holds the value.
+//
+// **Ships off**, unlike every other preference here, and `clampRevivePrefs` requires an
+// explicit `true` rather than tolerating an absent key: this is the one setting in the
+// app that makes Episko type into a terminal unattended, and nobody should meet it by
+// finding a prompt in their scrollback that they did not send.
+export let revivePrefs: RevivePrefs = clampRevivePrefs(safeParse(localStorage.getItem("cc-revive")));
+export function setRevivePrefs(p: RevivePrefs) { revivePrefs = clampRevivePrefs(p); }
 
 // --- keyboard shortcuts ----------------------------------------------------------
 // The master switch and what each bindable action is bound to *now* — the full

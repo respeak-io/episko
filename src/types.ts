@@ -19,6 +19,26 @@ export type Risk = "low" | "med" | "high";
 // different questions: overloaded means wait, rate_limit means wait longer,
 // authentication_failed means go fix your credentials.
 export interface ApiErr { kind: string; detail: string; at: number }
+// What the revive watchdog has done about an `ApiErr`: the schedule for typing a
+// "carry on" back into a session whose turn the API killed while nobody was watching.
+// The shape lives here beside the failure it answers, the way `FileTouch` sits here and
+// its rules sit in ./files — every rule that reads or writes this is in ./revive, which
+// is pure and tested, and the timer that drives it is in ./actions.
+export interface ReviveState {
+  /// Continues typed for this failure streak, counted against `RevivePrefs.attempts`.
+  /// **Deliberately survives the turns it starts** — see `Sess.revive` below.
+  attempts: number;
+  /// The `ApiErr.at` this schedule was computed from; a different stamp is a new failure
+  /// and re-times the next attempt from the moment it happened.
+  errAt: number;
+  /// When the next continue is due.
+  dueAt: number;
+  /// When the last one was sent. Display only.
+  lastAt: number;
+  /// Whether "I have stopped trying" has already been announced, so the sound and the
+  /// log line fire once instead of on every tick until morning.
+  gaveUp: boolean;
+}
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
 //
@@ -676,6 +696,16 @@ export interface Sess {
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
   apiErr: ApiErr | null;
+  /// What the revive watchdog has done about the failure above: how many continues it
+  /// has typed for this streak and when the next one is due. Null for the great majority
+  /// of sessions, which never fail — and always null while the feature is switched off,
+  /// which is what keeps every surface that reads it quiet on a default install.
+  ///
+  /// Cleared in exactly one place (`endTurn` in ./phase, on the success branch), NOT by
+  /// `newTurn`: a continue Episko typed *is* a new turn, so clearing it there would reset
+  /// the attempt counter on every retry and flatten the backoff ladder into a fixed-rate
+  /// hammer. See ./revive for the whole state machine.
+  revive: ReviveState | null;
   // Set when the agent's work has moved to a *different* checkout of this repo than the
   // one the session was launched in — by either route, see `Drift.via` above and
   // ./gitwatch for the two signals. Display-only either way: nothing here changes

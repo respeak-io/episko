@@ -31,9 +31,9 @@ import {
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent,
-  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
-  toggleRail, toggleTheme,
+  setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
+  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, tickRevive,
+  toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { taskServerUrl } from "./servers";
@@ -260,6 +260,7 @@ setMirrorRenderAll(renderAll);
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setRevivePrefs,
   startTour: startChapter,
   setFootSeg,
 });
@@ -1100,6 +1101,20 @@ setInterval(() => { void pollIo(); }, 60_000);
 // one has died — are both fine to learn about a beat late. It returns before touching
 // the disk when nothing is running, which is the overwhelming majority of the time.
 setInterval(() => { void pollServers(); }, 4000);
+
+// The revive watchdog: bring back sessions whose turn an API error killed while nobody
+// was watching. Every rule is in ./revive and the pass itself is ./actions' `tickRevive`;
+// this is only the clock. It ships switched off, so on a default install the tick is a
+// `for` loop over the fleet that returns "off" on the first line and costs nothing.
+//
+// A POLL RATHER THAN A TIMEOUT, which is the opposite of what ./attn's highlight does,
+// and for a reason specific to what this is waiting for: the two events that should wake
+// it — the network coming back, and a rung falling due — only one of them is an event at
+// all. Nothing fires when a napping Wi-Fi interface reassociates at 04:12, so a schedule
+// built around `reviveDeadline` would sit there with an overdue attempt it had no reason
+// to re-examine. Ten seconds is the granularity of "how soon after the internet returns",
+// and it is the only thing that number decides — the ladder's own waits are minutes wide.
+setInterval(tickRevive, 10_000);
 
 // discover Claude Code sessions running outside Episko and keep them fresh.
 refreshExternals();
