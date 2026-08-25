@@ -119,6 +119,38 @@ export interface StatusFile {
 // A DiffStat with the files behind it. `entries` is capped backend-side while `dirty`
 // is not, so `dirty - entries.length` is what a list says it left out.
 export interface WorkingSet extends DiffStat { entries: StatusFile[] }
+
+// ---- what a change did to the shape of the code (health.rs -> ./health) ----
+// Facts only. Which of them are worth a chip is ./health's decision, and the thresholds
+// are its table — the same split `project_facts` has with ./dash.
+// One function the change went into. `cognitive` is an approximation of Cognitive
+// Complexity (no AST on the Rust side by design), used only to compare a function with
+// the ones around it.
+export interface FnSpan { name: string; start: number; end: number; code_lines: number; cognitive: number }
+// A block of six or more added lines that already exists somewhere else in the project.
+export interface DupHit { line: number; other_path: string; other_line: number }
+// One changed file, measured. `measured` false means the file could not be read — it was
+// deleted, binary, or over the size cap — and every number below it is meaningless; the
+// UI must show nothing there rather than a row of confident zeroes.
+export interface FileHealth {
+  path: string; code_lines: number; code_added: number;
+  max_nesting: number; nesting_line: number;
+  worst_fn: FnSpan | null; longest_fn: FnSpan | null;
+  dups: DupHit[]; measured: boolean;
+}
+// `p90_code_lines` is the project's own 90th percentile, because "big" is relative or it
+// is nothing. `truncated` means the caps cut the sweep short, so a duplicate may have
+// been missed — said out loud rather than left to read as a clean result.
+// The project's own thresholds, from a `[health]` table in `.episko/episko.toml`. Every
+// field optional and absent meaning "use the default" — ./health's `clampHealth` is what
+// turns this into a complete table, and it refuses a 0 rather than honouring it.
+export interface HealthPolicy {
+  cognitive?: number; nesting?: number; longFn?: number; sizeAdd?: number;
+}
+export interface HealthReport {
+  files: FileHealth[]; p90_code_lines: number; indexed: number; truncated: boolean;
+  prefs: HealthPolicy;
+}
 // One checkout of a repo as `worktree_heads` reports it — path, the branch on its
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.

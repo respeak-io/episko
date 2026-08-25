@@ -62,6 +62,71 @@ Markers: `+` new · `~` changed · `!` fixed
   tell it apart — and because Episko owns that terminal, its **Stop** really does stop it. A
   task only appears once it is serving: it already has a pane and a sidebar row, and the one
   thing those cannot give you is an address to click.
++ **The diff tells you what the change did to the code, not just what it says.** Every
+  changed file now carries a row of findings above its first hunk, and the index marks the
+  files that earned them, so you can see which one to open first. Click a finding to go to
+  the line that earned it.
+
+  Seven rules, and the one that matters most is **duplication**: six or more lines you just
+  added that already exist somewhere else in the project, named with the file and line they
+  are a copy of. It is the thing linters are not configured to look for and the thing that
+  most reliably goes wrong in generated code. Beside it: **silenced errors** (a new bare
+  `except:`, an empty `catch`, `as any`, `@ts-ignore`), the **complexity** and **nesting**
+  of the functions your change actually went into, a **long function**, a file that is now
+  **among the largest in this project** — measured against the project's own distribution
+  rather than a number somebody picked — and, once beside the totals, whether **no test
+  changed**.
+
+  Nothing here blocks anything, and nothing is a score. A file the measurement could not
+  read says nothing rather than showing zeroes, and comments and blank lines are stripped
+  before anything is counted, so a well-documented file is not mistaken for a big one.
+
++ **Thresholds are yours.** A `[health]` block in `.episko/episko.toml` sets `cognitive`,
+  `nesting`, `long_fn` and `size_add` for a project; anything you leave out keeps its
+  default. Committable, so a team's thresholds travel with the repo.
+
++ **A finding stays put, and you can hand it to an agent.** Clicking a chip used to flash
+  its line for a second and fade out, which told you the click registered and nothing else.
+  Now it *selects*: every line the finding covers lights up and stays lit while you read
+  around it, the chip stays lit with it, and a finding in several places walks to the next
+  one each time you click it. The chips ride along with the file header as you scroll, so
+  the control is still there when you arrive.
+
+  And **copy findings** puts the whole list on the clipboard as text written to be pasted
+  into a session — every finding names its file and its line, so the agent that made the
+  change can go and fix it.
+
+! **The findings say what they mean.** Pointing the rules at real code rather than at test
+  fixtures turned up five things they got wrong, all now fixed: a Rust function was named
+  after its visibility keyword rather than itself (`pub`, for the whole backend); a
+  changelog entry *describing* a swallowed error was flagged as one, along with the pattern
+  list itself; the complexity and length findings could point at a line the diff does not
+  show, so clicking them did nothing visible; on a test file the longest "function" was
+  always the `describe` wrapping it; and nesting was counted differently in braced and
+  indented languages — 2-space Python and YAML reported half their real depth and so never
+  tripped it at all. Depth is now "levels inside this function" in both, and file size is
+  compared against the project's *code* rather than against its documentation. Three more
+  since: documentation quoting the code it documents was reported as a duplicate of it, a
+  copy whose function was renamed slipped past the duplicate rule, and a diff too large to
+  read in full left the findings quietly covering fewer files than the change did.
+
+~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
+  you the files back to back with nothing between them, so scrolling into the middle of one
+  left nothing on screen saying which file you were in. There is now an **index down the
+  left** — one row a file, grouped by folder, marking whichever file you are currently
+  reading — and every **file header sticks** to the top while its file is under the pointer.
+  Click a row in the index to go straight there.
+
++ **Only the words that actually changed are highlighted.** A `-`/`+` pair is now matched up
+  and the difference marked inside the line, so a one-argument change reads as a one-argument
+  change instead of two whole red and green lines. A line that was rewritten rather than
+  edited is left plain, deliberately: marking nine fragments of it says less than the row's
+  colour already did.
+
++ **Side by side.** A **side by side** button in the diff's header puts the old and new
+  versions in two columns; the choice is remembered. Pairing is by similarity rather than by
+  position, which is what keeps a changed line opposite its real counterpart when an agent
+  added a few comment lines above it.
 
 ## 0.21.0 — 2026-08-21
 

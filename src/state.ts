@@ -22,6 +22,7 @@
 // this module's import (see test/localstorage.ts).
 import { basename, hslToHex } from "./format";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
+import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
@@ -238,6 +239,12 @@ export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) =
 // Embedded is always available; installed external terminals are filled in from
 // the backend on startup (see `available_terminals`).
 export let availEngines: Engine[] = ["embedded"];
+// Which line layout the working-set diff viewer draws — unified (git's own order, one
+// column) or side by side. A viewer-local display choice, but persisted, so it is named
+// here with the other `cc-` keys rather than hidden inside ./diffview; that module owns
+// the write, being the only surface that can change it.
+export let diffMode: DiffMode = localStorage.getItem("cc-diff-mode") === "split" ? "split" : "unified";
+export function setDiffMode(m: DiffMode) { diffMode = m; }
 // xterm cell size, in px. Persisted under cc-term-font; applyFontSize in main.ts
 // pushes it to every open terminal, because only that layer holds the xterm handles.
 export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;

@@ -10,6 +10,7 @@
 mod external;
 mod files;
 mod git;
+mod health;
 mod github;
 mod icons;
 mod notes;
@@ -525,6 +526,7 @@ pub fn run() {
             git::git_working_set,
             git::git_changed,
             files::project_files,
+            health::project_health,
             git::git_diff,
             git::git_graph,
             git::git_commit_message,

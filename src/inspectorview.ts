@@ -16,7 +16,6 @@
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
 import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
-import type { DiffHunk } from "./diff";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
@@ -283,15 +282,6 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
   </div>`;
-}
-
-export function hunkHtml(h: DiffHunk): string {
-  const rows = h.lines.map((l) => {
-    const sign = l.kind === "add" ? "+" : l.kind === "del" ? "−" : "";
-    return `<div class="dline ${l.kind}"><span class="ln">${l.oldNo ?? ""}</span><span class="ln">${l.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${esc(l.text)}</span></div>`;
-  }).join("");
-  const ctx = h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : "";
-  return `<div class="dhunk"><div class="dhh">⋯${ctx}</div>${rows}</div>`;
 }
 
 // ---------- context: what the session has been into ----------

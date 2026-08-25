@@ -50,9 +50,9 @@ Three hard constraints shape this code:
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 
-## Backend (`src-tauri/src/`): fourteen modules
+## Backend (`src-tauri/src/`): fifteen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the thirteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the fourteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
 
 | Module | What |
 | --- | --- |
@@ -68,7 +68,8 @@ Three hard constraints shape this code:
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
-| `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else |
+| `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else; `index_of` is the in-crate half, so `health.rs` measures exactly the files the explorer lists |
+| `health.rs` | what a change did to the shape of the code: code lines with comments stripped, function spans, nesting, approximate cognitive complexity, and the cross-file duplicate index. Facts only — which of them earn a chip is `health.ts`'s |
 | `testutil.rs` | `git`, `scratch_dir`, `cfg(test)` only |
 
 Four conventions hold across them:
@@ -87,9 +88,9 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 65 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 67 modules
 
-**No framework, and no longer one file.** 65 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 67 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
@@ -99,11 +100,12 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | --- | --- |
 | `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isAgent`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
 | `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints |
-| `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent) |
+| `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent), plus what a *reader* needs from a hunk: which deletion became which addition (by similarity, not by position), and which words inside that pair moved — including when marking them would be noise |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
+| `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
 | `toolio.ts` | what a tool call *was* and what came back: the three response shapes worth modelling by hand, the generic dump for everything else, the cap both sides are cut to as they land, and what Copy hands over |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
@@ -130,9 +132,9 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
-**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
@@ -189,6 +191,58 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "tray-select")` at the bottom of `main.ts`. Telemetry is routed by `data.session_id?.toLowerCase()`, so session ids are matched case-insensitively, so keep them lowercase.
 - `applyHook` maps lifecycle events → a `Phase` state machine (idle/thinking/working/done/error/ended) and attention flags; `applyStatusline` fills model/context%/cost/duration. **Rate limits are account-wide**, held in a single `rl` object and shown identically on every session, not per-session.
 - **The inspector's Context card is a *set of files*, not a log of tool calls** (`files.ts`, `contextHtml`). `Sess.files` holds one entry per path with a `kind` that only ever climbs read → edited → created, because an agent re-reads what it just wrote constantly and a last-verb-wins field would demote half the edited files seconds later. It is fed from **PostToolUse**, not the Pre hook the timeline opens on: `tool_response.type` is what distinguishes a `Write` that created from one that overwrote. **Bash is deliberately not modelled** — `touch`, `>` and `sed -i` reach us as a shell string, and what they did to the tree is already answered correctly by the working-set card that reads git; the non-file tools are summarised in one line instead. The old timeline is still there under the card's `Tools` tab, one line per call, and **a row opens ./callsheet** rather than unfolding: `tool_input` and `tool_response` as ./toolio renders them, capped at capture (4000 chars a side) because a `Read` response is an entire file, and held in memory only — a tool payload must never reach `localStorage`. **A payload does not go in the rail.** 296px is ~38 characters of 10.5px mono, and every one of these is an 80–120 column artifact, so the row unfolding two `<pre>`s into it rendered a four-line patch as eleven and (with the `overflow-wrap: anywhere` that width forces) broke a diff's `+`/`−` off the lines that carry their meaning. What stays on the row is what a rail is good at — which call, how long, and the **first line of a failure's reason**, the one payload promoted out of a click because it has no other surface in the app. Two joins there are load-bearing. **Pair a call's Pre and Post hooks by `tool_use_id`, never by tool name**: the name picks the most recent open call so named, which is wrong whenever two calls of one tool overlap, and hanging an output off the wrong row is a lie the card states in full (the name match survives only as the fallback for a payload with no id). And **a failure carries no `tool_response` at all** — `PostToolUseFailure` puts the reason in a plain-string `error` — so anything reading a result has to read both fields.
+- **The diff overlay is a review surface, and it is shaped like a pull request** — an
+  index rail that is always on screen and file headers that **stick** to the top of the
+  scroller. Both exist for one question the old single-column list could not answer
+  without scrolling back up: *which file am I in*. So `.dfile` must never regain
+  `overflow: hidden` (it would make each section its own scrollport and the sticky header
+  would then stick to a box that never scrolls, i.e. not at all), and the rail's spy
+  allows **one header's height of slack** — "the last header above the top edge" is wrong
+  by one file for the whole handoff, while an arriving header is pushing the outgoing one
+  out. Everything about what a hunk *means* is ./diff's, not the view's: which deletion
+  became which addition is decided by **similarity, not position** (an agent's commonest
+  edit is three comment lines added above one changed line, which positional pairing gets
+  wrong and then offsets the rest of the run), and the word marks inside a pair are
+  dropped entirely below a similarity floor, because a rewritten comment lit up in nine
+  fragments says less than the row's own colour already did.
+- **Code health is a signal, never a gate, and it never delays the diff.** The chips on a
+  changed file (`health.rs` measures, ./health decides, ./patchview draws) land on a
+  *second* pass: `project_health` reads every file in the project to build its duplicate
+  index, so the overlay paints the patch first and `applyChips` inserts into the DOM that
+  is already there rather than repainting it — a repaint would reset every fold, lose
+  where you had scrolled to, and destroy the node under the pointer. Three rules hold
+  whatever else changes. **The backend answers facts and the frontend owns thresholds**
+  (`p90_code_lines` is the one project-wide number, because "big" is relative or it is
+  nothing), so a `[health]` table in `.episko/episko.toml` changes behaviour without a
+  rebuild — and `clampHealth` refuses a 0 at the boundary, since a threshold of 0 fires on
+  every file. **`measured: false` must never render as clean**: a file the backend could
+  not read carries a row of zeroes and every one of them is meaningless. And **a rule that
+  fires on ordinary code is worse than no rule** — `.unwrap()` was the obvious silenced-error
+  pattern and is deliberately absent, because it appears 156 times in `git.rs` alone and a
+  chip on every Rust change teaches you to ignore the row that matters. Four more of that
+  last kind, each found by pointing the rules at real code rather than at a fixture:
+  **strip the visibility modifier before naming a function** (`pub(crate)` carries its own
+  parentheses, so the name search read `pub` for the whole Rust backend, and `pub(crate)
+  struct` slipped past the keyword rejection to register as a function); **blank string
+  literals and skip non-source paths before matching a silenced error** (the CHANGELOG entry
+  *announcing* the rule earned a red chip, and the pattern table earned six on itself);
+  **only a declaration can win the length chip** (a call with a trailing block keeps the
+  callee's name, so on every vitest file the longest "function" was the `describe`); and
+  **nesting is measured from the enclosing function in both families**, with the indent step
+  detected per file — absolute depth made one threshold mean two things, and a hard-coded
+  four columns made the rule silently *never fire* on 2-space Python or YAML.
+- **A finding is selected, not flashed, and it is copyable.** Clicking a chip lights every
+  line it covers and stays lit until you pick another or click it again; a repeat click on
+  a finding with several *places* walks to the next one. Two lists, deliberately: `Chip.lines`
+  is everything to mark (a complex function marks the whole span the change added inside it)
+  and `Chip.places` is what a click walks (that same function has exactly one) — conflating
+  them made a chip claim "200 places". The chip row shares one sticky box with the file
+  header (`.dftop`), because the control that walks between marks a hundred lines apart has
+  to still be on screen when you get there. And **copy findings** puts them on the clipboard
+  as text written for a session to act on: the premise of the whole feature is that you are
+  reviewing work you did not type, so the fix will not be typed by you either, and a chip you
+  can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
+  never `navigator.clipboard` (an OS permission prompt).
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
