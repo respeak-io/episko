@@ -1,0 +1,25 @@
+// The suites, typechecked. Deliberately a second project rather than another entry in
+// `tsconfig.json`'s `include`, because the two halves need different ambient worlds and
+// merging them would cost a real guard:
+//
+//   · `test/` needs `@types/node` — three suites (dispatch, ipc, tour) parse source with
+//     `node:fs` rather than importing it, and `usage.test.ts` reads `process.env.TZ`.
+//   · `src/` must NOT have it. Nothing under `src/` may touch a node global: it is bundled
+//     for a webview, and today the only thing stopping `process.env` from compiling there
+//     is that the types are absent. Putting `test` into the base config would hand node's
+//     globals to `src/` too and quietly retire that check.
+//
+// src files still typecheck under BOTH projects (the suites import them), but only the
+// base config gates them, and it is the one without node types — so the guard survives.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // ES2022 for `Array.prototype.at`, which the suites use and the ES2020 lib lacks.
+    // Scoped here on purpose: `src/` stays on ES2020 until something there needs more.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // `vite/client` because `src/vite-env.d.ts` is not in this project's `include`, and
+    // without it the `?raw` SVG imports in `src/providers/logos.ts` have no declaration.
+    "types": ["node", "vite/client"]
+  },
+  "include": ["test"]
+}

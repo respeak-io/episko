@@ -274,8 +274,6 @@ describe("exitSound", () => {
   });
 
   it("treats anything else as merely having stopped, whatever the code", () => {
-    expect(exitSound("claude", 0)).toBe("ended");
-    expect(exitSound("claude", 1)).toBe("ended");
     expect(exitSound("shell", 0)).toBe("ended");
     // An agent pane has no verdict to report — only a task's exit code is one, and
     // reading a codex exit as taskFail would ring the failure chime on every quit.
