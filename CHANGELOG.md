@@ -161,8 +161,12 @@ Markers: `+` new · `~` changed · `!` fixed
   (`&'a str`) was read as an opening quote, which blanked the rest of its line — taking the
   brace with it, and skewing every span and depth measured after it in that file. CSS,
   SCSS, Bash and Kotlin-script files were measured by the backend and then never chipped,
-  because the two halves of the source-extension list had drifted apart. And a single
-  silenced error described itself as "This change addsline 42".
+  because the two halves of the source-extension list had drifted apart. A single
+  silenced error described itself as "This change addsline 42". A `#` comment in a Python
+  or shell file was read as code, so prose like `# never use a bare except:` earned a red
+  chip. And **Copy findings** rebuilt its set-level chips without the report, dropping the
+  *partial sweep* caveat from the text it hands to a session — the one line that says the
+  measurement is incomplete.
 
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session

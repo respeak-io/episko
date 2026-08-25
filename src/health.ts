@@ -111,7 +111,22 @@ const SILENCED: { re: RegExp; what: string; inComment: boolean }[] = [
 /// A line that is nothing but a comment, for the patterns that are not themselves ones.
 /// Deliberately crude — the exact rule is per language and lives in `health.rs`; here it
 /// only has to stop a prose line mentioning `as any` from being read as code doing it.
+///
+/// Per path, because the marker is: `# never use a bare except:` in a Python file failed
+/// the brace-family test below, was probed as code, and earned a red chip — the exact
+/// false-positive class the CHANGELOG incident above is about, in the `#`-comment
+/// languages instead of prose. A SWITCH rather than a union of both markers, since in C
+/// a line-start `#` is a preprocessor directive — code, not commentary — and uniting
+/// them would silence real findings there. The `inComment: true` patterns (`# noqa`,
+/// `@ts-ignore`) are unaffected either way: they match regardless of the answer here.
 const COMMENTISH = /^\s*(\/\/|\*|\/\*)/;
+const HASH_COMMENTISH = /^\s*#/;
+/// The `#`-comment half of `isSourcePath`'s list, plus the configs the diff also shows.
+const HASH_EXTS = new Set(["py", "pyi", "rb", "sh", "bash", "zsh", "yml", "yaml", "toml"]);
+function commentishFor(path: string): RegExp {
+  const ext = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
+  return HASH_EXTS.has(ext) ? HASH_COMMENTISH : COMMENTISH;
+}
 
 /// Blank the contents of string literals, so a line that *documents* a pattern is not
 /// read as a line that *does* it.
@@ -149,10 +164,11 @@ function blankLiterals(line: string): string {
 /// rather than of the diff.
 export function silencedIn(f: DiffFile): { line: number; what: string }[] {
   const out: { line: number; what: string }[] = [];
+  const commentish = commentishFor(f.path);
   for (const h of f.hunks) {
     for (const l of h.lines) {
       if (l.kind !== "add") continue;
-      const comment = COMMENTISH.test(l.text);
+      const comment = commentish.test(l.text);
       const probe = comment ? l.text : blankLiterals(l.text);
       for (const s of SILENCED) {
         if ((s.inComment || !comment) && s.re.test(probe)) {
