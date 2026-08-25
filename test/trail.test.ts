@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { store } from "./localstorage"; // must precede the subject import
 import type { HistEntry } from "../src/history";
-import { usage, usageWindow, type UDay } from "../src/usage";
+import { usage, usageWindow } from "../src/usage";
 import {
   dayByProject, dayFacts, dayIsClosed, dayItems, dayKeyOf, deterministicHeadline, dominantProject,
   humanAuthors, projectDayFacts, sharedDay,
@@ -16,7 +16,7 @@ const at = (y: number, m: number, d: number, h = 12, min = 0) => new Date(y, m -
 const secs = (d: Date) => Math.floor(d.getTime() / 1000);
 
 const hist = (over: Partial<HistEntry> & { last_active: number }): HistEntry => ({
-  session_id: "s1", cwd: "/w/episko", project: "episko", branch: "dev",
+  provider: "claude", session_id: "s1", cwd: "/w/episko", project: "episko", branch: "dev",
   title: "", last_prompt: "", bytes: 10, exists: true, repo_root: "/w/episko",
   ...over,
 });
@@ -278,7 +278,6 @@ describe("what a day closed", () => {
 });
 
 describe("a day reads as one story, not two lists", () => {
-  const names = (k: string) => k.split("/").pop() || k;
   const sess = (id: string, whenMs: number) =>
     ({ id, title: id, project: "e", colorKey: "/w/e", branch: "", cwd: "/w", when: whenMs, exists: true });
   const cmt = (sha: string, whenSecs: number): TrailCommit =>

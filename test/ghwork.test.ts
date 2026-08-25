@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports
 import { CLAIM_STALE_MS, type ClaimRecord } from "../src/claim";
 import {
-  bucketOf, bucketed, byRecency, cardRows, closeComment, holderOf, isoDay, quietFor,
+  bucketOf, bucketed, cardRows, closeComment, holderOf, isoDay, quietFor,
   staleCandidates, STALE_DAYS, type GhThread, type KeptIssue,
 } from "../src/ghwork";
 

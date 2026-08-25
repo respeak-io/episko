@@ -12,8 +12,9 @@ Episko is a Tauri v2 desktop app (Rust backend + vanilla-TS frontend) that launc
 pnpm install            # first time
 pnpm tauri dev      # run the app (Tauri + Vite dev server on fixed port 1420)
 pnpm tauri build    # production bundle
-pnpm build          # tsc typecheck + vite build (frontend only; the beforeBuildCommand)
-pnpm exec tsc --noEmit       # typecheck only (tsconfig is noEmit)
+pnpm build          # typechecks BOTH projects + vite build (frontend only; the beforeBuildCommand)
+pnpm exec tsc --noEmit       # typecheck src/ only (tsconfig is noEmit)
+pnpm exec tsc -p tsconfig.test.json --noEmit   # typecheck test/ (the other half)
 pnpm test               # vitest: frontend unit tests (test/*.test.ts)
 pnpm coverage           # the same suites with v8 coverage
 ```
@@ -26,9 +27,20 @@ Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`
 
 ## Testing
 
-**Unit-only: there is no end-to-end harness**, though the suites are substantial: roughly 800 vitest + 180 cargo tests, run in CI on both OSes; `tsc` (strict) is the real linter. The render, view and DOM-owning modules on both sides are untested by design, since anything touching the DOM, PTYs or live telemetry is verified by running the app, and **`RELEASE.md` holds that manual checklist** plus the tag/verify steps. Coverage is a yardstick with no gate on it, deliberately (`docs/testing.md` for the numbers and the vitest reporter trap).
+**Unit-only: there is no end-to-end harness**, though the suites are substantial: roughly 1400 vitest + 250 cargo tests, run in CI on both OSes; `tsc` (strict) is the real linter. The render, view and DOM-owning modules on both sides are untested by design, since anything touching the DOM, PTYs or live telemetry is verified by running the app, and **`RELEASE.md` holds that manual checklist** plus the tag/verify steps. Coverage is a yardstick with no gate on it, deliberately (`docs/testing.md` for the numbers and the vitest reporter trap).
 
 - **vitest runs in the `node` environment**: no module a test can reach may touch a browser global at module scope: `document`, `window`, *or* `navigator`. Platform predicates live in `dom.ts` (`IS_MAC`, `IS_WIN`) behind a `typeof navigator` guard; import those.
+- **`test/` is typechecked by a SECOND tsconfig, and the split is load-bearing.** The suites
+  need `@types/node` (three contract tests parse source with `node:fs`); `src/` must never
+  have it, because it is bundled for a webview and the only thing stopping a `process.env`
+  from compiling there is that node's globals are absent. So `tsconfig.json` keeps
+  `"types": []` — **without it TypeScript auto-loads every package under `node_modules/@types`
+  and that guard silently dies the moment anything adds `@types/node`** — and
+  `tsconfig.test.json` extends it with `types: ["node", "vite/client"]` and an ES2022 lib.
+  `pnpm build` runs both, so CI gates both. src files are compiled under each project, but
+  only the base one gates them, which is what keeps the guard real. Tests went unchecked
+  until 0.22.0 and had drifted: a `Sess` fixture still carried a field deleted two PRs
+  earlier, and two `HistEntry` fixtures were missing a required one.
 - Three **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector), `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key) and `tour.test.ts` (a tour step's anchor must resolve in `index.html`, the rail legend it teaches must match `GLYPH`/`GCLASS`, and a card that says *Settings › Sounds* must name a tab `settings.ts` ships). The first two joins had silently broken in production before the tests existed; the third is the same shape.
 - Rust tests are in-file `#[cfg(test)] mod tests`, several driving real `git` or the real `tiny_http` server; there is deliberately no `src-tauri/tests/` dir. Two `#[ignore]`d tests run against the real `claude` CLI via `cargo test -- --ignored`, which is a `RELEASE.md` step rather than a CI one.
 

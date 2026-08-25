@@ -11,10 +11,10 @@ const sess = (id = "pane-1"): Sess => ({
   resumeId: id, branch: "main", worktree: null, title: "Codex",
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
   pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], attnAt: 0, seenAt: 0,
-  subagents: 0, fanout: null, apiErr: null, drift: null,
+  agents: new Map(), fanout: null, apiErr: null, drift: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
-  lastEvent: "", activity: [], files: [], tally: {}, kind: "agent", external: false,
+  lastEvent: "", activity: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],
   pane: {} as HTMLElement,
 });

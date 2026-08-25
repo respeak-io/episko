@@ -276,7 +276,7 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
   });
   it("resolves each label, in the order declared", () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set()).map((d) => d.label)).toEqual(["b", "a"]);
+    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set())?.map((d) => d.label)).toEqual(["b", "a"]);
   });
   // null and [] are different answers: "I could not resolve these" vs "there are
   // none". Returning [] for both is what used to run a task whose build had been

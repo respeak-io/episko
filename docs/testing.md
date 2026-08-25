@@ -3,6 +3,27 @@
 > Rules and their reasons, compressed. The full narratives live in git history (CLAUDE.md before the split). Trust the code over the docs when they disagree, and fix the doc in the same commit.
 
 - **Coverage is a yardstick with no gate on it**, because render/DOM modules are untested by design. As of 0.15.0: ~90% statements over the modules the suites load, ~21% over all of `src/`, ~71% Rust lines (`cargo llvm-cov --summary-only`). vitest's `text` reporter hides any file at 100% in all four columns, so use `--coverage.reporter=json-summary` for per-file truth.
+- **Two tsconfigs, and `"types": []` is the load-bearing line.** `tsconfig.json` covers
+  `src/`, `tsconfig.test.json` extends it for `test/`; `pnpm build` runs both, so CI gates
+  both. The suites need `@types/node` — `dispatch`/`ipc`/`tour` parse source with `node:fs`
+  rather than importing it, and `usage.test.ts` reads `process.env.TZ` — plus an ES2022 lib
+  for `Array.prototype.at`, and `vite/client` (that project does not include
+  `src/vite-env.d.ts`, whose triple-slash reference is how the base project gets the `?raw`
+  SVG imports). But `src/` must **not** see node's globals: it is bundled for a webview, and
+  nothing else stops a `process.env` from compiling. TypeScript auto-loads every package
+  under `node_modules/@types` when `types` is unset, so merely *installing* `@types/node`
+  as a devDependency hands them to `src/` too — `"types": []` in the base config is what
+  prevents that, and it is easy to delete without noticing anything broke. Both halves have
+  a negative test worth repeating after any change here: put `process.env.HOME` in a `src/`
+  module (base project must fail) and a deleted `Sess` field in a fixture (test project must
+  fail).
+- **The suites went unchecked until 0.22.0**, when `include` was `["src"]` alone, and they
+  had drifted exactly as you would expect: a `Sess` fixture still carried `subagents` two
+  PRs after it was replaced by `agents`, two `HistEntry` fixtures were missing a `provider`
+  that had become required, and `exitSound("claude", …)` named a `SessKind` that no longer
+  existed. vitest never noticed — it strips types rather than checking them, so all of it
+  passed green. A fixture that lies about its type is a test asserting against a shape the
+  app cannot produce.
 - **Clippy**: keep it clean; if a lint wants a real change rather than a tidy-up, `#[allow]` it with a comment saying why.
 - **The cfg flip**: swap every `cfg(windows)` ↔ `cfg(not(windows))` in `src-tauri/src`, re-run `cargo clippy --all-targets`, then `git checkout -- src-tauri/src` to revert. Limits: it doesn't touch `cfg(target_os = …)`/`cfg(unix)` (`reveal_path`'s unused `exists` is a known false positive), and flipping `target_os` fails hard: `rusqlite` is macOS-only and the windows arms need crates macOS hasn't got, so CI's macOS leg is the only check for macOS-only arms. **Commit or stash your real changes first**, because the reverting checkout reverts everything in that directory.
 - **Fixture paths**: `env::temp_dir()` is a symlink spelling on macOS (`/var/folders` → `/private/var/folders`) and an 8.3 short name on the Windows runner; `git` and `physical_cwd` resolve paths before answering, so an unresolved fixture path fails on spelling alone. `scratch_dir` resolves before it returns, so use it, always.
