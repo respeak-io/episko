@@ -57,6 +57,48 @@ export const actKey = (a: Act): string => a.id || `t${a.startMs}`;
 // `at` the most recent one — together they order the list and size the "×3" badge.
 export type TouchKind = "created" | "edited" | "read";
 export interface FileTouch { path: string; kind: TouchKind; n: number; at: number }
+
+/// One background shell an agent started and left running — Claude Code's own
+/// `Bash{run_in_background:true}`, which is how every "let me start the dev server"
+/// ends up. See ./servers for how one is recognised and what the log file answers.
+///
+/// **`transcript` is captured at start and never recomputed.** The log lives beside the
+/// transcript, under the session directory Claude Code owned *at the moment the shell
+/// was spawned* — and Claude mints a new one on `/clear`, `/compact` and `/resume`. So
+/// the path is a fact about the launch, not about the session now; re-deriving it later
+/// from a rotated session would point at a directory that has never held this log.
+/// (Same trap as the `X-CC-Session` rule in CLAUDE.md, one level down.)
+export interface BgServer {
+  /// Claude Code's own `backgroundTaskId` — the id `TaskStop`/`TaskOutput` name, and
+  /// therefore the only handle that lets the *agent* be asked to stop this.
+  taskId: string;
+  /// The command the agent ran, verbatim, for the row's label.
+  cmd: string;
+  /// `transcript_path` as it stood when the shell was spawned. Half of the log's
+  /// address; the other half is `taskId`. Resolved to a real path by `read_bg_log`.
+  transcript: string;
+  startedAt: number;
+  /// Everything below is read back out of the log file by the poll, so all of it is
+  /// absent until the first read lands — and stays absent if the file never appears.
+  /// The resolved log path, echoed back by `read_bg_log` so a row can name its file.
+  log?: string;
+  /// The last localhost URL the process printed. The *last*, not the first: a dev
+  /// server that restarts itself (a vite config change) prints a fresh one, and the
+  /// stale line above it would send you to a port nothing is on.
+  url?: string;
+  /// Set once the log's closing sentinel appears — `[exited with code N]` or `[killed]`,
+  /// the latter carrying no code. A record with `ended` set is history: it stays on the
+  /// session so the popover can say "this one is finished", and is what keeps a crashed
+  /// dev server from silently disappearing off the count.
+  ended?: number; exit?: number | null;
+  /// Last few lines of the log, for the row's expanded peek.
+  tail?: string[];
+  /// The log's length at the last read. A background log is append-only, so handing
+  /// this back to `read_bg_log` turns the steady-state poll — a dev server nobody is
+  /// hitting, whose log has not moved in an hour — into one `metadata()` call instead
+  /// of a 32 KiB read.
+  len?: number;
+}
 // A single item from a TodoWrite payload (the plan Claude keeps for itself).
 export interface Todo { content: string; status: string }
 // Uncommitted "working set" summary from the git_diffstat backend command, plus
@@ -479,6 +521,11 @@ export interface Sess {
   /// — nothing here is written to disk or read back, so a restart starts them empty.
   /// See ./files for the rules and the inspector's Context card for what draws them.
   files: FileTouch[]; tally: Record<string, number>;
+  /// Background shells this session started and has not stopped — the dev servers,
+  /// watchers and long-running processes an agent leaves behind. Fed from PostToolUse
+  /// like `files` above, and display-only in the same way: nothing here survives a
+  /// restart, because the process it describes is a child of the session's own tree.
+  servers: BgServer[];
   // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
   // attached on activation, released when the pool evicts it or the pane exits (see
   // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it
@@ -494,6 +541,12 @@ export interface Sess {
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
+    /// The localhost URL this run announced, if it is a server — `just dev`, a VS Code
+    /// task, an npm script. **Latched as the output streams, never rescanned from
+    /// `tail`**, which is a rolling 40 lines: a dev server's banner scrolls out of it
+    /// within seconds of the first HMR line, so a URL read off the tail would appear
+    /// and then silently vanish. See `taskServerUrl` in ./servers.
+    url?: string;
     /// When the process exited. Without it the elapsed readout is `Date.now() -
     /// startedAt` forever, so a run that took 400ms reads "1m 23s" a minute later —
     /// the duration has to be frozen at the exit, not recomputed on every repaint.

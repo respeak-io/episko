@@ -1290,6 +1290,120 @@ fn fold_io(
     f
 }
 
+// ---------- the log of a background shell an agent started ----------
+
+/// How much of a background log to hand the frontend. A dev server left running all
+/// afternoon writes megabytes (a real one measured 300 KiB in three hours of HMR), and
+/// every consumer — the URL, the sentinel, a twelve-line peek — reads the *end*. So the
+/// tail is all that crosses the IPC boundary, and it is read without loading the front
+/// of the file at all.
+const BG_LOG_TAIL: u64 = 32 * 1024;
+
+/// Where Claude Code writes a backgrounded shell's output.
+///
+/// It mirrors the transcript: a transcript at
+/// `~/.claude/projects/<slug>/<uuid>.jsonl` puts its background logs under
+/// `<tmp>/claude/<slug>/<uuid>/tasks/<task_id>.output`. The layout is undocumented and
+/// not ours, so this is written to fail by returning `None` rather than by guessing —
+/// a row with no log still shows its command, which is a better failure than a row
+/// pointing confidently at a file that was never there.
+///
+/// `tmp` is a parameter rather than `env::temp_dir()` so the test can pin a root
+/// instead of building one by hand (CLAUDE.md's fixture-path rule).
+fn bg_log_path(tmp: &std::path::Path, transcript: &str, task_id: &str) -> Option<std::path::PathBuf> {
+    // The id reaches us from a hook payload and lands in a path, so it is checked
+    // rather than trusted: anything but Claude's own alphabet is refused outright.
+    if task_id.is_empty() || !task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    let t = std::path::Path::new(transcript);
+    let uuid = t.file_stem()?.to_str()?;
+    let slug = t.parent()?.file_name()?.to_str()?;
+    if uuid.is_empty() || slug.is_empty() {
+        return None;
+    }
+    Some(tmp.join("claude").join(slug).join(uuid).join("tasks").join(format!("{task_id}.output")))
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct BgLog {
+    /// The resolved path, so a row can name (and reveal) the file it is reading.
+    path: String,
+    /// The last `BG_LOG_TAIL` bytes, lossily decoded — a dev server's output is
+    /// whatever the process emitted, and a truncated multi-byte character at the cut
+    /// must not cost the whole read.
+    text: String,
+    /// The file isn't there. Normal and temporary right after a shell starts, and
+    /// permanent when Claude Code's layout is not what `bg_log_path` expects — the
+    /// caller shows the row either way rather than dropping it.
+    missing: bool,
+    /// The file's full length, which the caller keeps and passes back as `known_len`.
+    len: u64,
+    /// The length matched `known_len`, so nothing was read and `text` is empty. A
+    /// background log is append-only, which is what makes a length comparison an exact
+    /// "has anything happened" test rather than a heuristic.
+    unchanged: bool,
+}
+
+/// Read the tail of one background shell's log. `transcript` is the session's
+/// `transcript_path` **as it stood when the shell was spawned** — see the note on
+/// `BgServer` in types.ts for why it must not be re-derived from the session's current
+/// one. Errors are states, not failures: an unresolvable path or an unreadable file
+/// comes back as `missing`, because every one of them is a row that should still draw.
+///
+/// **`known_len` is what keeps this poll cheap.** It runs every few seconds against
+/// every running server, and the overwhelmingly common case is a dev server nobody is
+/// hitting, whose log has not moved since the last look. The file is append-only, so
+/// its length is an exact test for that — one `metadata()` call instead of a 32 KiB
+/// read. Same trick, and the same reasoning, as the discovery stamp in `tasks.rs`:
+/// this is not a watcher, it is a cheap question asked often. Pass 0 to force a read.
+#[tauri::command]
+pub(crate) fn read_bg_log(transcript: String, task_id: String, known_len: u64) -> BgLog {
+    match bg_log_path(&std::env::temp_dir(), &transcript, &task_id) {
+        Some(path) => bg_log_at(&path, known_len),
+        // Nothing resolved, so there is no path to name either — an unresolvable
+        // address and an absent file are the same answer to the caller.
+        None => BgLog { path: String::new(), text: String::new(), missing: true, len: 0, unchanged: false },
+    }
+}
+
+/// The half of `read_bg_log` that has a path already. Split out so the test can drive
+/// it against a real file: the command resolves through `env::temp_dir()`, which a test
+/// must not go anywhere near (CLAUDE.md's fixture-path rule), and a test that asserts
+/// about a `BgLog` it built itself would prove nothing about either.
+fn bg_log_at(path: &std::path::Path, known_len: u64) -> BgLog {
+    let miss = |path: String, len: u64| BgLog {
+        path, text: String::new(), missing: true, len, unchanged: false,
+    };
+    let disp = path.to_string_lossy().to_string();
+    let Ok(mut f) = std::fs::File::open(path) else { return miss(disp, 0) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    // Nothing has been appended since the caller last looked. Note this is checked
+    // BEFORE the zero-length shortcut would matter: a log that is still empty is also
+    // a log that has not moved, and both answers are "there is nothing to fold in".
+    if len == known_len {
+        return BgLog { path: disp, text: String::new(), missing: false, len, unchanged: true };
+    }
+    if len > BG_LOG_TAIL {
+        use std::io::Seek;
+        if f.seek(std::io::SeekFrom::Start(len - BG_LOG_TAIL)).is_err() {
+            return miss(disp, len);
+        }
+    }
+    let mut buf = Vec::new();
+    use std::io::Read as _;
+    if f.read_to_end(&mut buf).is_err() {
+        return miss(disp, len);
+    }
+    BgLog {
+        path: disp,
+        text: String::from_utf8_lossy(&buf).to_string(),
+        missing: false,
+        len,
+        unchanged: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1911,4 +2025,137 @@ mod tests {
             "claude accepted a nonsense --permission-mode, so the assertions above prove nothing"
         );
     }
+
+    // ---------- where a background shell's log lives ----------
+
+    /// The layout `bg_log_path` mirrors, spelled out once. Both halves come off the
+    /// transcript path — the project slug from its directory, the session uuid from its
+    /// file stem — because those are the two components Claude Code repeats under the
+    /// temp root. Verified against a real backgrounded shell before it was written down.
+    #[test]
+    fn bg_log_path_mirrors_the_transcript() {
+        let tmp = std::path::Path::new("/tmproot");
+        let got = bg_log_path(
+            tmp,
+            "/home/u/.claude/projects/E--tmp-episko-probe/819131de-4c0e-4a7e-a5c5-2d4a5550a104.jsonl",
+            "bczk8s47b",
+        )
+        .expect("a well-formed transcript path resolves");
+        let want: std::path::PathBuf = ["/tmproot", "claude", "E--tmp-episko-probe",
+            "819131de-4c0e-4a7e-a5c5-2d4a5550a104", "tasks", "bczk8s47b.output"]
+            .iter().collect::<std::path::PathBuf>();
+        // Compare component-wise: the separator differs by OS and the point here is the
+        // shape, not the spelling.
+        assert_eq!(
+            got.components().skip(1).collect::<Vec<_>>(),
+            want.components().skip(1).collect::<Vec<_>>(),
+            "resolved {got:?}"
+        );
+    }
+
+    /// The id lands in a path, so it is validated rather than trusted. It arrives in a
+    /// hook payload — the one part of this whole feature that is neither ours nor
+    /// checked by anything upstream of us.
+    #[test]
+    fn bg_log_path_refuses_a_task_id_that_is_not_one() {
+        let tmp = std::path::Path::new("/tmproot");
+        let tr = "/home/u/.claude/projects/slug/uuid.jsonl";
+        for bad in ["", "..", "../../etc/passwd", "a/b", r"a\b", "a.output", "a b"] {
+            assert!(
+                bg_log_path(tmp, tr, bad).is_none(),
+                "{bad:?} was accepted as a task id and would have escaped the tasks dir"
+            );
+        }
+        assert!(bg_log_path(tmp, tr, "bs0hhu7b4").is_some(), "a real id must still resolve");
+    }
+
+    /// A transcript path that isn't one resolves to nothing rather than to a plausible
+    /// wrong file. The frontend draws the row either way; what it must not do is offer
+    /// to reveal a path we invented.
+    #[test]
+    fn bg_log_path_refuses_a_transcript_without_both_halves() {
+        let tmp = std::path::Path::new("/tmproot");
+        for bad in ["", "uuid.jsonl", "/"] {
+            assert!(bg_log_path(tmp, bad, "bs0hhu7b4").is_none(), "{bad:?} resolved");
+        }
+    }
+
+    /// The tail is the point: only the end of the file crosses the IPC boundary, and a
+    /// log longer than the window must come back cut at the front, not at the back. A
+    /// real dev server left running an afternoon measured 300 KiB, so this is the
+    /// normal case rather than the extreme one.
+    #[test]
+    fn read_bg_log_returns_the_end_of_a_long_log() {
+        let dir = crate::testutil::scratch_dir();
+        let f = dir.join("long.output");
+        let mut body = "x".repeat(BG_LOG_TAIL as usize + 4096);
+        body.push_str("
+Local:   http://localhost:5555/
+[exited with code 0]
+");
+        std::fs::write(&f, &body).unwrap();
+
+        let got = bg_log_at(&f, 0);
+        assert!(!got.missing && !got.unchanged);
+        assert!(got.text.len() as u64 <= BG_LOG_TAIL, "the whole file came back, not its tail");
+        assert_eq!(got.len, body.len() as u64, "the caller needs the FULL length to gate on");
+        assert!(got.text.contains("[exited with code 0]"), "the sentinel must survive the cut");
+        assert!(got.text.contains("http://localhost:5555/"), "the URL must survive the cut");
+    }
+
+    /// The poll's cheap path, and the two halves of it that must both hold. Without the
+    /// gate, every running server costs a 32 KiB read every few seconds forever, and a
+    /// dev server nobody is hitting is exactly the case whose log never moves. Without
+    /// the gate *breaking* on an append, a server's death would never be noticed — the
+    /// sentinel arrives the same way everything else does.
+    #[test]
+    fn read_bg_log_skips_the_read_only_until_something_is_appended() {
+        let dir = crate::testutil::scratch_dir();
+        let f = dir.join("dev.output");
+        std::fs::write(&f, "  Local:   http://localhost:5555/
+").unwrap();
+
+        let first = bg_log_at(&f, 0);
+        assert!(!first.unchanged, "a first look must read");
+        assert!(first.text.contains("5555"));
+
+        // The poll's steady state: the log has not moved, so nothing is read.
+        let again = bg_log_at(&f, first.len);
+        assert!(again.unchanged, "an unmoved log must not be re-read");
+        assert!(again.text.is_empty(), "unchanged must carry no text for the caller to fold");
+        assert_eq!(again.len, first.len);
+
+        // ...and the moment it does move, the gate opens.
+        std::fs::write(&f, "  Local:   http://localhost:5555/
+[exited with code 1]
+").unwrap();
+        let after = bg_log_at(&f, first.len);
+        assert!(!after.unchanged, "an appended log must be read again");
+        assert!(after.text.contains("[exited with code 1]"), "the sentinel must reach the caller");
+    }
+
+    /// An empty log - a shell that has started but printed nothing yet - is *unchanged*
+    /// rather than missing. The distinction matters: missing means the row has no file
+    /// to name, and a shell that simply has not spoken yet does.
+    #[test]
+    fn read_bg_log_treats_an_empty_log_as_unchanged_not_missing() {
+        let dir = crate::testutil::scratch_dir();
+        let f = dir.join("silent.output");
+        std::fs::write(&f, "").unwrap();
+        let got = bg_log_at(&f, 0);
+        assert!(!got.missing, "the file is there");
+        assert!(got.unchanged && got.len == 0);
+    }
+
+    /// A log that is not there is a *state*, not an error: a shell that started a
+    /// moment ago has not written one yet, and the row still has to draw.
+    #[test]
+    fn read_bg_log_reports_a_missing_file_rather_than_failing() {
+        let got = read_bg_log("/w/.claude/projects/slug/uuid.jsonl".into(), "nosuchtask".into(), 0);
+        assert!(got.missing, "a missing log must come back as `missing`");
+        assert!(got.text.is_empty());
+        // The path is still reported, because it is what the row would reveal.
+        assert!(got.path.contains("nosuchtask.output"), "path was {:?}", got.path);
+    }
+
 }

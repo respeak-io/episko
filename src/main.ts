@@ -33,6 +33,11 @@ import {
   toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
+import { taskServerUrl } from "./servers";
+import {
+  closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
+  setServersRepaint, setServersSetActive,
+} from "./serversui";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
@@ -205,6 +210,13 @@ setSidebarRenderAll(renderAll);
 // rows here, and the reactor badge puts a pane on the stage.
 setFooterCloseColorPop(closeColorPop);
 setFooterSetActive(setActive);
+// The running-server pill lives in the header but joins the footer's popover family
+// (only one menu open at a time), puts a pane on the stage, and repaints itself off a
+// poll rather than off telemetry — three things it cannot reach from where it sits.
+setServersCloseMenus(closeFootMenus);
+setServersSetActive(setActive);
+setServersRepaint(renderAll);
+setServersCloseSession(closeSession);
 // A palette row can do almost anything the app can do, so the ⌘K UI takes one host
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
 /// ⌘P — the explorer, on whatever owns the stage. Keyed by folder like the peek, and
@@ -463,7 +475,7 @@ function renderAllNow() {
   // at all — so the stamp every attention surface below reads is refreshed here, once,
   // rather than at each of them. See syncAttn in ./grouping.
   syncAttn();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderServers(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
   // for. No-ops unless a group is actually tiled.
@@ -538,7 +550,13 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   if (s.run) {
     const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
-      if (line.trim()) s.run.tail.push(line.trimEnd());
+      if (!line.trim()) continue;
+      s.run.tail.push(line.trimEnd());
+      // …and if this run is a server — `just dev`, a VS Code task, an npm script — the
+      // URL it announces is latched HERE, as it streams, rather than read back off the
+      // tail: the tail is the rolling 40 lines below, and a dev server's banner is gone
+      // from it within seconds of the first HMR line. See taskServerUrl in ./servers.
+      s.run.url = taskServerUrl(s.run.url, line);
     }
     if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
   }
@@ -658,6 +676,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
+  if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that OPENS this popover must be spared here, or the same click that
   // opened it closes it again and the control reads as dead. `[data-dashbrtrunk]` is the
@@ -1009,6 +1028,13 @@ setInterval(() => {
 // anything when the disk was idle, and flushes at most once per floor when it wasn't.
 // It carries no `git_diffstat` — see `pollIo`.
 setInterval(() => { void pollIo(); }, 60_000);
+
+// Re-read the background logs of every server still running. 4s rather than the
+// telemetry cadence: this is a file read per server, and the two things it is watching
+// for — a URL appearing a second after a dev server boots, and the sentinel that says
+// one has died — are both fine to learn about a beat late. It returns before touching
+// the disk when nothing is running, which is the overwhelming majority of the time.
+setInterval(() => { void pollServers(); }, 4000);
 
 // discover Claude Code sessions running outside Episko and keep them fresh.
 refreshExternals();

@@ -11,6 +11,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { closeServersPop } from "./serversui";
 import { dlog } from "./debug";
 import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
@@ -215,7 +216,7 @@ export function closeFootMenus(keep?: string) {
   const menus: [string, () => void][] = [
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
-    ["costPop", closeCostPop], ["ioPop", closeIoPop],
+    ["costPop", closeCostPop], ["ioPop", closeIoPop], ["svrPop", closeServersPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }

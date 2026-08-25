@@ -60,10 +60,10 @@ Three hard constraints shape this code:
 | `git.rs` | worktrees, branches (local **and** remote-only, each with its standing and author), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info, the branch sweeps (`sweep_branches`, `delete_remote_branches`) |
 | `tasks.rs` | runnable discovery; see docs/tasks.md |
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger; everything read out of `~/.claude` |
-| `pty.rs` | the four launch engines, the permission-mode whitelist, app-wide disk I/O, `stream_pty_session`, the PTY lifecycle |
+| `pty.rs` | the four launch engines, the permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output), `stream_pty_session`, the PTY lifecycle |
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
-| `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus |
+| `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus, `session_ports` (which TCP ports a pane's process tree is listening on) |
 | `github.rs` | `gh`: issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force |
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
@@ -93,7 +93,7 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty-nine, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -109,6 +109,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
+| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
@@ -131,11 +132,11 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview`, `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 65 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 67 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -206,6 +207,66 @@ And the things that hold however the files are arranged:
   not beside it (docs/explorer.md).
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 - **`termEngine` picks where a terminal lives** (embedded xterm pane / ghostty / Terminal / iTerm); the per-launch instrumentation and telemetry are identical for all four. `permMode` is orthogonal and sets the *starting* permission mode only (`docs/sessions.md`).
+- **A background shell's log is addressed by the transcript path it had AT START.**
+  An agent's `Bash{run_in_background:true}` is how every dev server in this app gets
+  started, and Episko sees it for free: `tool_response.backgroundTaskId` on a
+  PostToolUse it already receives, with the output at
+  `<tmp>/claude/<slug>/<uuid>/tasks/<id>.output` — the last two components of
+  `transcript_path`. But Claude mints a **new** session dir on `/clear`, `/compact` and
+  `/resume`, so re-deriving that path later points at a directory that has never held
+  the log. `BgServer.transcript` is captured when the shell is recorded and never
+  recomputed (./servers, ./types); `read_bg_log` resolves it. Same trap as the
+  `X-CC-Session` rule above, one level down.
+- **Stopping a server is asked of the agent, never done behind its back.** The process
+  is a descendant of Episko's own tree and could be killed — but the agent holds
+  `TaskStop`, believes the server is up, and goes on saying so after a kill it never
+  saw. So ./serversui prefills `TaskStop <id>` into the session and the human presses
+  Enter: the `handToTerminal`/`sendOutputToSession` contract. A server whose session is
+  gone is an **orphan**: `session_ports` cannot see it either, because attribution is by
+  ancestry and its chain is broken, so it belongs to no pane and there is nobody to ask.
+  Listing orphans would need a *project*-level answer (match the process's cwd or command
+  line against known roots), which is a separate feature and not this one.
+- **The kernel is the authority; a parsed log line is a guess.** `session_ports`
+  (external.rs) walks every listening TCP socket back up the ppid chain to a pane's PTY
+  child — measured **eight** hops from a `vite` leaf to `episko.exe`, well inside
+  `is_descendant_of`'s cap — and that is the only signal that can see a server nobody
+  announced: one typed by hand into a shell pane, or one whose banner nothing parses.
+  `reconcilePorts` joins the two in a three-step ladder (a port a record already names
+  is that record's → **one** silent record and **one** loose port are each other → the
+  rest get rows of their own), failing closed the moment either side is ambiguous.
+  **`usefulPort` runs first and matters**: one real `wrangler dev` holds five listening
+  sockets, of which four are Node's inspector and kernel-assigned control channels, so
+  an unfiltered scan puts four pieces of noise in front of one useful row. And
+  **`reconcilePorts` mutates**, so it belongs to the poll and never to a render pass.
+- **The header lists three sources on different rules, because it is for what is
+  otherwise invisible.** An agent's background shell has no pane, no row, nothing on screen, so
+  **every** one is listed — URL or not. An Episko **task** (`just dev`, a VS Code task,
+  an npm script) already has a pane, a sidebar row, a glyph and a phase, so it appears
+  **only once it has announced a URL** — the one thing its pane cannot give you. Same
+  reason a failed *task* never appears here and a failed *shell* does: the sidebar has
+  already gone red about the first. A bare **port** is listed when nothing else explains
+  it, which is the only way a server started by hand in a shell pane has ever been
+  visible. Stopping differs with the source and honestly so: Episko owns a task's PTY, so
+  ✕ there is a real `closeSession` (what the pane's own ✕ does), an agent's shell is only
+  ever asked, and a port row has **no ✕ at all** — we know which pid holds the socket, but
+  it sits several hops below a pane that has its own ✕, and the row exists to tell you the
+  port is open rather than to take responsibility for it. Its empty cell is kept so ◨
+  stays in line down the list.
+- **A task's server URL is latched as its output streams, never rescanned from `tail`.**
+  `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
+  after the first HMR line — a URL read back off the tail would appear and then silently
+  vanish. `taskServerUrl` folds it per line in main.ts's `pty-output` handler, and is
+  **stricter than `serverUrl`**: it latches only on an announcement line, because its
+  answer sticks and a stray `curl http://localhost:9999` in the output would otherwise
+  put a wrong address on the row permanently.
+- **A server that died on its own keeps its row; one that was asked to stop does not.**
+  A dev server exiting on `EADDRINUSE` two seconds in is the commonest way this goes
+  wrong, and dropping the count 1 → 0 would be the exact silence the feature exists to
+  end — so a **non-zero** exit persists (red pill) until dismissed, the rule task panes
+  already follow. `exit === 0` (a background one-shot finishing) and `exit === null` (a
+  kill somebody requested) are not news and leave. `liveServers` is what the poll
+  re-reads, `shownServers` what the popover draws; keep those two questions apart, or a
+  dead log is re-read every four seconds forever.
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
   you have been to since it finished leaves the badge, the tray title, the palette's
   "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);

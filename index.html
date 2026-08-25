@@ -20,6 +20,12 @@
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
         <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
+          <!--
+            Running servers. Left of the reactor because it is the calmer of the two:
+            the reactor is "something wants you now", this is "something is still up".
+            Hidden entirely when the count is zero (see renderServers).
+          -->
+          <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
             <button class="caf-main" id="cafMain" aria-label="Keep this computer awake">
@@ -425,6 +431,7 @@
     <div class="menupop" id="enginePop"></div>
     <div class="menupop cafpop" id="cafPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
+    <div class="menupop svrpop" id="svrPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop costpop" id="costPop"></div>
     <div class="menupop iopop" id="ioPop"></div>

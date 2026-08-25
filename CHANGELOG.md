@@ -35,6 +35,33 @@ Markers: `+` new · `~` changed · `!` fixed
   ages out on its own clock, its completion is credited to the run that actually spawned it,
   and the fleet card, the row tooltip and the debug snapshot each say how many agents belong
   to an earlier run and what kind they were.
++ **The dev servers your agents leave running, in the header.** When an agent backgrounds a
+  shell — which is how `pnpm dev`, `uvicorn` and every watcher gets started — Episko now sees
+  it, reads the log that shell is writing, and shows a count beside the reactor. The pill goes
+  green once something has actually announced a URL. Open it and each row names the project and
+  the command, offers the URL as a button that opens your browser, jumps to the session that
+  started it, and expands to the last lines of its output. **Stop** asks that session's agent to
+  run `TaskStop` rather than killing the process behind its back, so the agent stops believing
+  it still has a server. A server that **crashes** — the port was already taken, which is the
+  commonest way this goes wrong — turns the pill red and keeps its row until you dismiss it,
+  rather than dropping the count back to zero and saying nothing. Nothing new is instrumented:
+  it all rides the `PostToolUse` hook Episko already receives, and an idle server's log costs
+  one length check rather than a read.
+
++ **And it asks the kernel, not just the output.** Episko now walks every listening TCP port
+  back up the process tree to the pane it came from, so a server shows up whether or not
+  anything announced it — including one you started by hand in a shell pane, and one whose
+  banner Episko cannot parse. Where a port and a pane's own words agree, the words win (they
+  carry the scheme and any base path); where a pane started something and went quiet, the one
+  unexplained port under it fills in the address; anything left over gets a row of its own.
+  Debugger and kernel-assigned sockets are filtered out, so one `wrangler dev` is one row
+  rather than five.
+
++ **Tasks you ran yourself are in there too.** A `just dev`, a VS Code task or an npm script
+  launched from **▶ Run** joins the same list the moment it prints a URL, marked `▶` so you can
+  tell it apart — and because Episko owns that terminal, its **Stop** really does stop it. A
+  task only appears once it is serving: it already has a pane and a sidebar row, and the one
+  thing those cannot give you is an address to click.
 
 ## 0.21.0 — 2026-08-21
 
