@@ -18,7 +18,7 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
+import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
 // The one thing an external session's registry file says about what it is doing. A view
 // module, and mirror.ts already reaches for it from the render layer for the same reason:
 // "is that terminal busy?" has one answer and this is where it lives.
@@ -31,8 +31,11 @@ import {
   remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
 } from "./branches";
 import {
-  cmpBase, engineDef, externals, permMode, permModeDef, sessions, termEngine, worktreesByRepo,
+  cmpBase, effectiveAgent, engineDef, externals, permissionModeFor, sessions, termEngine,
+  worktreesByRepo,
 } from "./state";
+import { providerPermissionMode } from "./providers";
+import { agentLogo } from "./providers/logos";
 // The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
 // killed pane is actually *dead* rather than merely signalled — which is what a
 // directory deletion on Windows has to wait for. A logic module, so no cycle.
@@ -247,9 +250,13 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   $("wtList").setAttribute("aria-label", manage ? "Checkouts" : "Session destinations");
   $("wtProj").textContent = project;
   $("wtPath").textContent = repoDir;
-  const eng = engineDef(termEngine);
-  $("wtEng").textContent = `${termEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
-  ($("wtEng") as HTMLElement).title = `New sessions open in ${eng.label}`;
+  const ag = effectiveAgent(repoDir);
+  const launchEngine = ag.capabilities.includes("external-terminal") ? termEngine : "embedded";
+  const eng = engineDef(launchEngine);
+  $("wtEng").textContent = `${launchEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
+  ($("wtEng") as HTMLElement).title = launchEngine === termEngine
+    ? `New sessions open in ${eng.label}`
+    : `${ag.label} sessions currently stay embedded`;
   ($("wtEng") as HTMLElement).style.display = manage ? "none" : "";
   // What this launch will be allowed to do, next to where it will open — but only when
   // that isn't the standard ask-me mode, so the chip means "something is different
@@ -257,11 +264,22 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   // otherwise looks exactly like any other until it acts (or refuses to). Hidden in
   // manage mode alongside the engine chip: nothing is being launched from there, so a
   // chip describing the next launch would only be furniture of a worse kind.
-  const pm = permModeDef(permMode);
+  // Which agent this dialog will start, on the same "only when it differs" rule as the
+  // permission chip below — and this one matters more, because picking a non-Claude
+  // agent changes which adapter and capabilities back the cockpit. This is the last
+  // moment before launch where saying so costs nothing.
+  const agEl = $("wtAgent") as HTMLElement;
+  agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
+  agEl.innerHTML = `<span class="agent-logo" aria-hidden="true">${agentLogo(ag.id)}</span>${esc(ag.label)}`;
+  agEl.title = `${ag.label} runs here — ${agentCapabilitySummary(ag)}. Change it on the `
+    + `project's own menu, or in Settings › Sessions.`;
+  const pm = providerPermissionMode(ag.id, permissionModeFor(ag.id));
   const modeEl = $("wtMode") as HTMLElement;
-  modeEl.hidden = manage || permMode === "default";
-  modeEl.textContent = `${pm.glyph} ${pm.label}`;
-  modeEl.title = `Starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)`;
+  // A dialog header is a row of facts about the next launch, so only a non-default,
+  // integrated policy earns a chip. Terminal-only providers manage this in their TUI.
+  modeEl.hidden = manage || !ag.capabilities.includes("launch-permissions") || !pm || pm.id === "default";
+  modeEl.textContent = pm ? `${pm.glyph} ${pm.label}` : "";
+  modeEl.title = pm ? `${ag.label} starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)` : "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
@@ -904,7 +922,7 @@ function wtSwitchHtml(): string {
   const extBusy = extHere.filter(extWorking);
   const pick = wtSwitchable();
   if (busy.length || extBusy.length) {
-    const agents = busy.filter((s) => s.kind === "claude").length;
+    const agents = busy.filter(isAgent).length;
     const runs = busy.filter((s) => s.kind === "task").length;
     const what: string[] = [];
     if (agents) what.push(`${agents} agent${agents === 1 ? " is" : "s are"} mid-turn`);

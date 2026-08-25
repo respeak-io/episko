@@ -13,28 +13,6 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-! **Keep-awake now survives the PC sleeping.** On Windows the assertion was set once and
-  never re-stated, but Windows drops a thread's execution state across suspend/resume — so
-  the first sleep ended it permanently, and because the button only re-asks the backend when
-  its *flags* change (in *Until agents idle*, one session left at `done` holds them steady
-  for days), nothing ever restored it. The cup went on steaming over a machine that idle-slept
-  every half hour. The thread that owns the assertion now re-states it every 30s.
-
-! **A reload no longer strands the assertion.** Reloading the webview while caffeinated
-  restarted the button with no memory of it, leaving the backend holding the machine awake
-  with the cup painted off — and nothing short of quitting could stop it. Startup now clears
-  it explicitly.
-! **A finished session no longer hides behind a previous run's agents.** Launching a second
-  fan-out restarts the run's counters but inherited whatever the last one left running, so
-  agents an interrupt had killed rode the new run's tally — a pane read **34 / 36 with all
-  34 of that run finished**, and went on reading it, because every one of the new run's own
-  events refreshed the hour those leftovers were being measured against. The number was the
-  cheap half: a session that had been waiting on a human since 19:57 was reported as busy,
-  so it never reached the reactor badge, the tray title or the palette's *Needs you*. Agents
-  are now tracked by the `agent_id` the hooks carry rather than counted, so an inherited one
-  ages out on its own clock, its completion is credited to the run that actually spawned it,
-  and the fleet card, the row tooltip and the debug snapshot each say how many agents belong
-  to an earlier run and what kind they were.
 + **The dev servers your agents leave running, in the header.** When an agent backgrounds a
   shell — which is how `pnpm dev`, `uvicorn` and every watcher gets started — Episko now sees
   it, reads the log that shell is writing, and shows a count beside the reactor. The pill goes
@@ -62,6 +40,7 @@ Markers: `+` new · `~` changed · `!` fixed
   tell it apart — and because Episko owns that terminal, its **Stop** really does stop it. A
   task only appears once it is serving: it already has a pane and a sidebar row, and the one
   thing those cannot give you is an address to click.
+
 + **The diff tells you what the change did to the code, not just what it says.** Every
   changed file now carries a row of findings above its first hunk, and the index marks the
   files that earned them, so you can see which one to open first. Click a finding to go to
@@ -96,6 +75,75 @@ Markers: `+` new · `~` changed · `!` fixed
   into a session — every finding names its file and its line, so the agent that made the
   change can go and fix it.
 
++ **Only the words that actually changed are highlighted.** A `-`/`+` pair is now matched up
+  and the difference marked inside the line, so a one-argument change reads as a one-argument
+  change instead of two whole red and green lines. A line that was rewritten rather than
+  edited is left plain, deliberately: marking nine fragments of it says less than the row's
+  colour already did.
+
++ **Side by side.** A **side by side** button in the diff's header puts the old and new
+  versions in two columns; the choice is remembered. Pairing is by similarity rather than by
+  position, which is what keeps a changed line opposite its real counterpart when an agent
+  added a few comment lines above it.
+
++ **Episko runs the other agents too, and which one is a setting.** Settings › Sessions
+  gains *Agent*, sitting above *Launch engine* and *Permission mode* because it is the
+  outermost of the three: what a session runs, then where its terminal opens, then how
+  it starts. Claude Code is now the default **value** rather than a hardcoded choice, and
+  the alternatives are the coding-agent CLIs actually installed on your machine — Codex,
+  OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity,
+  Devin, Cline, Pi and the rest, twenty-one in all. Only agents found on your PATH are
+  offered, so the picker never promises a binary you haven't got.
+
+  The agents you *haven't* installed are listed too, folded below the ones you have and
+  greyed, each saying which binary Episko searched your PATH for. A row that simply
+  wasn't there read as "Episko doesn't support Codex" — which is a support ticket, not
+  an answer.
+
+  Any project can override the choice from its own right-click menu (*Agent · Codex*),
+  keyed to the repo so every worktree of it agrees. `⌘N`, the new-session dialog and a worktree
+  launch all obey. Uninstall an agent and anything pinned to it quietly falls back
+  rather than failing to start.
+
+  What an agent pane deliberately does *not* have is a phase, a cost or a context gauge.
+  Those come from hooks Episko writes into Claude Code's own settings, and no other agent
+  reads them — so instead of a grid of dashes, the row says `»`, the inspector says which
+  agent and where, and every launch surface names the agent before you commit to it.
+  Two things ignore the setting on purpose: resuming a conversation (that is Claude's own
+  transcript), and dispatching at a GitHub issue (the claim is handed back on a hook only
+  Claude fires, so an uninstrumented agent would hold the issue forever).
+
+~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
+  you the files back to back with nothing between them, so scrolling into the middle of one
+  left nothing on screen saying which file you were in. There is now an **index down the
+  left** — one row a file, grouped by folder, marking whichever file you are currently
+  reading — and every **file header sticks** to the top while its file is under the pointer.
+  Click a row in the index to go straight there.
+
+! **Keep-awake now survives the PC sleeping.** On Windows the assertion was set once and
+  never re-stated, but Windows drops a thread's execution state across suspend/resume — so
+  the first sleep ended it permanently, and because the button only re-asks the backend when
+  its *flags* change (in *Until agents idle*, one session left at `done` holds them steady
+  for days), nothing ever restored it. The cup went on steaming over a machine that idle-slept
+  every half hour. The thread that owns the assertion now re-states it every 30s.
+
+! **A reload no longer strands the assertion.** Reloading the webview while caffeinated
+  restarted the button with no memory of it, leaving the backend holding the machine awake
+  with the cup painted off — and nothing short of quitting could stop it. Startup now clears
+  it explicitly.
+
+! **A finished session no longer hides behind a previous run's agents.** Launching a second
+  fan-out restarts the run's counters but inherited whatever the last one left running, so
+  agents an interrupt had killed rode the new run's tally — a pane read **34 / 36 with all
+  34 of that run finished**, and went on reading it, because every one of the new run's own
+  events refreshed the hour those leftovers were being measured against. The number was the
+  cheap half: a session that had been waiting on a human since 19:57 was reported as busy,
+  so it never reached the reactor badge, the tray title or the palette's *Needs you*. Agents
+  are now tracked by the `agent_id` the hooks carry rather than counted, so an inherited one
+  ages out on its own clock, its completion is credited to the run that actually spawned it,
+  and the fleet card, the row tooltip and the debug snapshot each say how many agents belong
+  to an earlier run and what kind they were.
+
 ! **The findings say what they mean.** Pointing the rules at real code rather than at test
   fixtures turned up five things they got wrong, all now fixed: a Rust function was named
   after its visibility keyword rather than itself (`pub`, for the whole backend); a
@@ -110,23 +158,11 @@ Markers: `+` new · `~` changed · `!` fixed
   copy whose function was renamed slipped past the duplicate rule, and a diff too large to
   read in full left the findings quietly covering fewer files than the change did.
 
-~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
-  you the files back to back with nothing between them, so scrolling into the middle of one
-  left nothing on screen saying which file you were in. There is now an **index down the
-  left** — one row a file, grouped by folder, marking whichever file you are currently
-  reading — and every **file header sticks** to the top while its file is under the pointer.
-  Click a row in the index to go straight there.
-
-+ **Only the words that actually changed are highlighted.** A `-`/`+` pair is now matched up
-  and the difference marked inside the line, so a one-argument change reads as a one-argument
-  change instead of two whole red and green lines. A line that was rewritten rather than
-  edited is left plain, deliberately: marking nine fragments of it says less than the row's
-  colour already did.
-
-+ **Side by side.** A **side by side** button in the diff's header puts the old and new
-  versions in two columns; the choice is remembered. Pairing is by similarity rather than by
-  position, which is what keeps a changed line opposite its real counterpart when an agent
-  added a few comment lines above it.
+! **‹ Back in a project menu's drill-down goes back instead of shutting the menu.**
+  Found while adding the agent picker beside it: `#ctxMenu` carries three click
+  listeners, and stopping propagation never stopped its *siblings* — so the listener
+  after the one that handled ‹ Back saw the same click, found the menu reopened, and
+  closed it again. *Move to group → ‹ Back* had done this since the drill-down shipped.
 
 ## 0.21.0 — 2026-08-21
 

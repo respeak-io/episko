@@ -20,7 +20,7 @@ import { setEngine } from "./footer";
 import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
-import { isAgent, taskStateText, type Runnable, type Sess } from "./types";
+import { hasSessionState, isAgent, taskStateText, type Runnable, type Sess } from "./types";
 import { allProjects, attnPending, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
@@ -90,7 +90,7 @@ function sessionActions(s: Sess): PalItem[] {
       a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
-  // Not gated on isAgent — every pane kind has a real directory behind it (a task's
+  // Not gated on agent capabilities — every pane kind has a real directory behind it (a task's
   // run cwd, a shell's launch dir), and unlike the `reveal` shortcut this names
   // *this* session's folder rather than whichever one holds the stage.
   a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
@@ -158,9 +158,12 @@ function buildPalGroups(raw: string): PalGroup[] {
 
   const sessCands: PalItem[] = [...sessions.values()].filter(matchesState).map((s) => {
     const i = order.get(s.id);
+    // An agent pane's `title` is its CLI's name and never changes, so the `||` chain
+    // below already lands on "Codex" — no arm of its own here, deliberately.
     const label = `${s.project} · ${s.kind === "task" ? "▶ " + (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
     const sub = s.kind === "shell" ? "shell"
       : s.kind === "task" ? `task · ${taskStateText(s)}`
+      : isAgent(s) && !hasSessionState(s) ? `agent · ${s.phase === "ended" ? "exited" : "running"}`
       : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
     return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? palDigitShortcut(i + 1) : undefined, session: s, run: () => host.setActive(s.id) };
   });

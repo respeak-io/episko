@@ -43,7 +43,7 @@ import {
   applyBgLog, bgOutcome, cmdLabel, failedServers, forgetServer, liveServers,
   reconcilePorts, servingUrls, shownServers, type BgRead, type SessionPort,
 } from "./servers";
-import type { BgServer, Sess } from "./types";
+import { isClaude, type BgServer, type Sess } from "./types";
 
 /// A row, resolved. `"bg"` is a shell an agent backgrounded — the record carries
 /// everything and the pane knows nothing about it. `"task"` is a runnable Episko itself
@@ -431,7 +431,7 @@ function goToSession(id: string) {
 function askStop(sessionId: string, taskId: string) {
   const s = sessions.get(sessionId);
   if (!s) { toast("That session is gone — nothing here can stop it"); return; }
-  if (s.kind !== "claude") { toast("Only a Claude session can be asked to stop a task"); return; }
+  if (!isClaude(s)) { toast("Only a Claude session can be asked to stop a task"); return; }
   if (s.phase === "ended") { toast("That session has ended — its agent can no longer be asked"); return; }
   const msg = `Stop the background task ${taskId} (use the TaskStop tool). Don't start it again.`;
   if (activeId !== sessionId) setActiveSession(sessionId);

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { Sess } from "../src/types";
+import { CLAUDE_CLI, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
   addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, installGrown,
@@ -32,7 +32,7 @@ afterEach(() => { vi.useRealTimers(); });
 
 // A Sess carries far more than addUsage looks at; these are the fields it reads.
 const sess = (o: Partial<Sess>): Sess =>
-  ({ id: "s1", kind: "claude", model: "Opus 4.8", project: "epi", workdir: "/w/epi", ...o }) as Sess;
+  ({ id: "s1", kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], model: "Opus 4.8", project: "epi", workdir: "/w/epi", ...o }) as Sess;
 
 // One transcript-scanned day, with only the fields under test spelled out.
 const day = (d: string, o: Partial<DayUsage> = {}): DayUsage => ({

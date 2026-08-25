@@ -4,21 +4,20 @@
 //
 // It is its own module rather than more of ./mirror because it shares nothing with
 // it: no `mirror` stage pointer, no roster, no polling. The one thing it borrows is
-// the read-only transcript read (`read_transcript`) and the `.tvmsg` markup that
-// renders it, both already contracts rather than internals.
+// provider history readers and the `.tvmsg` markup that renders their prose.
 //
 // Resuming from here is the same operation a dormant row performs, under the same two
-// constraints: `--resume` must run in the session's ORIGINAL cwd (hence `entry.cwd`,
-// recovered from inside the transcript by the backend, and the `exists` guard), and a
-// live session must not be resumed twice (`histBusy`).
+// constraints: resume must run in the session's ORIGINAL cwd (hence `entry.cwd` and
+// the `exists` guard), and a live session must not be resumed twice (`histBusy`).
 
-import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { abbr } from "./phase";
 import { activeProjectCtx, launch } from "./panes";
-import { accentFor } from "./state";
+import { accentFor, availAgents } from "./state";
+import { historyProviders, readProviderHistory } from "./providers";
+import { providerSessionKey } from "./types";
 import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
@@ -33,7 +32,7 @@ let histLoading = false;
 // The preview is keyed by session id and re-checked on arrival: arrow keys move the
 // selection faster than a transcript read returns, and a late reply must not paint
 // over the row the user has already moved to.
-let histPreview: { id: string; msgs: { role: string; text: string }[] } | null = null;
+let histPreview: { key: string; msgs: { role: string; text: string }[] } | null = null;
 const HIST_LIMIT = 300;
 const HIST_TTL = 60000;           // re-scan on reopen if the last one is older
 
@@ -67,7 +66,11 @@ export async function loadHistory(force: boolean) {
   histLoading = true;
   histRender();
   try {
-    histAll = await invoke<HistEntry[]>("list_session_history", { limit: HIST_LIMIT });
+    const batches = await Promise.all(historyProviders(availAgents).map(async (provider) => {
+      try { return await provider.history!.list(HIST_LIMIT); }
+      catch (e) { dlog("warn", `${provider.id} history scan failed: ${e}`); return []; }
+    }));
+    histAll = batches.flat().sort((a, b) => b.last_active - a.last_active).slice(0, HIST_LIMIT);
     histLoadedAt = Date.now();
   } catch (e) {
     dlog("warn", `history scan failed: ${e}`);
@@ -110,7 +113,7 @@ export function histRender() {
     // An empty scoped list is a different answer from an empty search, and saying so
     // is what stops "this project has none" reading as "History is broken".
     const [head, body] = !histAll.length
-      ? ["No past sessions", "Claude hasn't written any transcripts on this machine yet."]
+      ? ["No past sessions", "No supported coding agent has saved a conversation on this machine yet."]
       : ($("histQ") as HTMLInputElement).value.trim()
       ? ["No match", "Nothing here matches that filter."]
       : scope
@@ -148,7 +151,7 @@ function histFacts(pairs: [string, string][]) {
 }
 function histDetailHtml(h: HistEntry | undefined): string {
   if (!h) {
-    return `<div class="wt-empty"><b>Nothing selected</b>Past sessions live in Claude's own transcripts, so anything you closed is still here.</div>`;
+    return `<div class="wt-empty"><b>Nothing selected</b>Supported providers keep their own conversation history, so anything you closed can still appear here.</div>`;
   }
   const busy = histBusy(h);
   const p = histProject(h);
@@ -160,25 +163,25 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ["path", `${esc(tilde(h.cwd))}${h.exists ? "" : ` <span class="warn">· gone</span>`}`],
     ...(h.branch ? [["branch", esc(h.branch)] as [string, string]] : []),
     ["last active", `${esc(when)} <span class="dim">· ${esc(relTime(h.last_active * 1000))}</span>`],
-    ["session", `${esc(h.session_id.slice(0, 8))} <span class="dim">· ${esc(size)} transcript</span>`],
+    ["session", `${esc(h.session_id.slice(0, 8))} <span class="dim">· ${esc(h.provider)}${h.bytes ? ` · ${esc(size)}` : ""}</span>`],
   ]);
   const action = busy
-    ? `<div class="ext-note warn">This session is running right now, in Episko or another terminal. Claude doesn't lock a transcript, so resuming it a second time would interleave both conversations into one file.</div>`
+    ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can corrupt or interleave its state, so Episko waits for the other process to exit.</div>`
     : !h.exists
-    ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Claude refuses to resume a session outside the directory it ran in, so this one can only be read.</div>`
+    ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Provider sessions must resume in their original directory, so this one can only be read.</div>`
     : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
-       <div class="ext-note">Reopens the conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. Claude may offer to compact the context first, which is normal for a long session.</div>`;
-  const preview = histPreview?.id === h.session_id
+       <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
+  const preview = histPreview?.key === providerSessionKey(h.provider, h.session_id)
     ? (histPreview.msgs.length
         ? `<div class="hist-tv">${histPreview.msgs.map((m) => {
             const user = m.role === "user";
             return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(abbr(m.text, 420))}</div></div>`;
           }).join("")}</div>`
-        : `<div class="hist-tv tv-empty">No prose in this transcript; it's tool traffic only.</div>`)
-    : `<div class="hist-tv tv-empty">Reading the transcript…</div>`;
+        : `<div class="hist-tv tv-empty">No prose in this conversation; it's tool traffic only.</div>`)
+    : `<div class="hist-tv tv-empty">Reading the conversation…</div>`;
   return `
     <div class="wt-dhead">
-      <div class="wt-dkind">past session</div>
+      <div class="wt-dkind">past ${esc(h.provider)} session</div>
       <div class="wt-dname">${esc(histLabel(h))}</div>
     </div>
     ${facts}
@@ -186,18 +189,22 @@ function histDetailHtml(h: HistEntry | undefined): string {
     <div class="wt-dkind">how it ended</div>
     ${preview}`;
 }
-// Lazily mirror the tail of the selected transcript — the same read the read-only
-// external/dormant pane uses, just fewer messages and inline in the detail column.
+// Lazily mirror the selected provider conversation, just a few messages inline in
+// the detail column.
 async function histLoadPreview(h: HistEntry | undefined) {
-  if (!h || histPreview?.id === h.session_id) return;
+  if (!h) return;
   const id = h.session_id;
+  const key = providerSessionKey(h.provider, id);
+  if (histPreview?.key === key) return;
   try {
-    const msgs = await invoke<{ role: string; text: string }[]>("read_transcript", { cwd: h.cwd, sessionId: id, limit: 8 });
-    if (!histOpen() || histSelected()?.session_id !== id) return;
-    histPreview = { id, msgs };
+    const msgs = await readProviderHistory(h.provider, id, h.cwd, 8);
+    const selected = histSelected();
+    if (!histOpen() || !selected || providerSessionKey(selected.provider, selected.session_id) !== key) return;
+    histPreview = { key, msgs };
   } catch {
-    if (!histOpen() || histSelected()?.session_id !== id) return;
-    histPreview = { id, msgs: [] };
+    const selected = histSelected();
+    if (!histOpen() || !selected || providerSessionKey(selected.provider, selected.session_id) !== key) return;
+    histPreview = { key, msgs: [] };
   }
   histPaintDetail();
 }
@@ -207,7 +214,7 @@ export function histResume(h: HistEntry | undefined) {
   if (!h.exists) { toast(`${basename(h.cwd)} no longer exists`); return; }
   const p = histProject(h);
   closeHistory();
-  void launch(p.project, h.cwd, { colorKey: p.colorKey, worktree: p.worktree, branch: h.branch, resume: h.session_id });
+  void launch(p.project, h.cwd, { colorKey: p.colorKey, worktree: p.worktree, branch: h.branch, resume: h.session_id, resumeProvider: h.provider });
 }
 
 // ---------- the dialog's own events ----------

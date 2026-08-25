@@ -8,6 +8,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
+import providerManifest from "./providers/manifest.json";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -267,27 +268,158 @@ export interface GitActionResult {
 // What `purge_worktree_folder` answers: did the folder go, and if not, who is left.
 export interface PurgeResult { gone: boolean; stranded: Stranded | null }
 // What a pane actually contains. All three run in an identical PTY; the kind is
-// what decides whether telemetry, cost and git actions apply to it.
-//   claude — an instrumented `claude` session (the only kind with telemetry)
+// the durable product concept, while an agent's provider and capabilities decide
+// which integrations apply to it.
+//   agent — any coding-agent CLI, from a fully integrated provider to a terminal-only
+//           fallback
 //   shell  — a plain login shell (❯ Terminal)
 //   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
 // Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
-// rather than an embedded pane", and only ever applies to a claude session.
-export type SessKind = "claude" | "shell" | "task";
+// rather than an embedded pane". Provider capabilities decide whether that is
+// available, rather than the session kind growing another provider-specific arm.
+export type SessKind = "agent" | "shell" | "task";
+// Features a provider adapter can supply to the shared session model. These are
+// intentionally user-facing capabilities, not transport names: Claude hooks, the
+// Codex App Server and a future OpenCode server can all produce `session-state`
+// without the UI knowing which protocol delivered it.
+export const AGENT_CAPABILITIES = [
+  "session-state", "activity", "context", "usage", "permissions", "resume",
+  "history", "external-terminal", "launch-permissions",
+] as const;
+export type AgentCapability = typeof AGENT_CAPABILITIES[number];
+
+type ProviderManifestEntry = { capabilities: string[] };
+const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
+const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
+
+/**
+ * The checked-in provider matrix is shared with Rust's CLI catalogue. Validate it
+ * here as it crosses into typed frontend state: a misspelled capability must fail at
+ * startup/tests rather than quietly turning a feature off in half of the app.
+ */
+export function providerCapabilities(id: string): AgentCapability[] {
+  const capabilities = PROVIDER_MANIFEST[id]?.capabilities ?? [];
+  for (const capability of capabilities) {
+    if (!AGENT_CAPABILITY_SET.has(capability)) {
+      throw new Error(`unknown capability ${capability} for provider ${id}`);
+    }
+  }
+  return [...capabilities] as AgentCapability[];
+}
+// One coding-agent CLI Episko knows about, as `list_agents` reports it — the whole
+// catalogue, installed or not. `path` is where it is, or **null** for "this machine
+// hasn't got it": those rows are shown, greyed and inert, rather than dropped, because
+// a missing row reads as "Episko doesn't support Codex" and sends somebody to the
+// issue tracker. `bin` is what was looked for, which is the only useful thing to say
+// about an agent that wasn't found. `mark` remains part of the backend catalogue wire
+// shape for compatibility; visible brand assets live at the frontend provider boundary.
+export interface AgentCli {
+  id: string; label: string; mark: string; bin: string; path: string | null;
+  capabilities: AgentCapability[];
+}
+// Provider-normalized token accounting for one live conversation. `total` is the
+// cumulative thread reading; `last` is the most recent model call and therefore the
+// best available context-window reading for providers such as Codex. Claude can leave
+// this null because its statusLine already fills the legacy context/cost fields.
+export interface AgentTokenBreakdown {
+  totalTokens: number; inputTokens: number; cachedInputTokens: number;
+  cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number;
+}
+export interface AgentTokenUsage {
+  total: AgentTokenBreakdown; last: AgentTokenBreakdown; contextWindow: number | null;
+}
+export interface AgentRateLimit {
+  usedPercent: number; resetsAt: number | null; windowMins: number | null;
+}
+// One provider-neutral approval request. Control-plane providers can raise several in
+// parallel (including from child agents), so Sess keeps a queue rather than treating
+// the latest request as the only one that exists. The legacy scalar fields remain the
+// projection the existing inspector/palette render; ./permissions keeps them synced to
+// the queue's head.
+export interface PendingPermission {
+  id: string; tool: string; command: string; risk: Risk;
+}
+// One provider-owned launch policy offered through the shared Sessions setting.
+// The id is deliberately just a string: it is meaningful only to that provider's
+// adapter and is whitelisted again at the backend launch boundary. `asks` answers the
+// narrower UI question of whether an approval card can still appear in this mode.
+export interface AgentPermissionMode {
+  id: string; label: string; sub: string; glyph: string; asks: boolean;
+}
+export function agentCapabilitySummary(a: AgentCli): string {
+  if (!a.capabilities.includes("session-state")) return "terminal only";
+  const features = [
+    a.capabilities.includes("usage") ? "usage" : "phase",
+    a.capabilities.includes("context") ? "context" : "",
+    a.capabilities.includes("permissions") ? "permissions" : "",
+  ].filter(Boolean);
+  return features.join(", ") || "integrated";
+}
+/// Can this one actually be launched? The single place the null-path convention is
+/// read, so no caller has to remember which way round it goes.
+export const agentInstalled = (a: AgentCli) => a.path !== null;
+// Claude Code as an entry in the same list, so the Settings picker and the launch path
+// can treat "which agent" as one question with one shape of answer.
+//
+// Not in the backend's AGENTS table on purpose (that table is what `spawn_agent` will
+// run, and claude must go through `spawn_claude` to be instrumented), so it is spelled
+// once here instead. `path` is empty because nothing probes for it: `resolve_claude`
+// is the app's own binary lookup and never reports "not installed" — if claude is
+// missing, Episko has bigger problems than a greyed-out row.
+export const CLAUDE_CAPABILITIES: AgentCapability[] = providerCapabilities("claude");
+export const CLAUDE_CLI: AgentCli = {
+  id: "claude", label: "Claude Code", mark: "Cc", bin: "claude", path: "",
+  capabilities: CLAUDE_CAPABILITIES,
+};
+/// Which agent a launch in `colorKey` actually starts — the project override if there
+/// is one, else the global default, else Claude.
+///
+/// The fallback is the whole reason this is a function and not a lookup. Both prefs
+/// are ids persisted in `localStorage`, and `avail` is re-probed at every startup, so
+/// either can name an agent that has since been uninstalled — at which point every
+/// launch in that project would fail on a binary that is no longer there, with the
+/// setting still cheerfully showing the name. Falling back means the worst case is "it
+/// started the wrong agent", not "⌘N stopped working".
+///
+/// A plain cascade rather than a strict one: an override naming a dead agent drops to
+/// the *default*, not straight to Claude. "My override broke, so I get my default" is
+/// what every settings system does, and Claude is the floor of that cascade rather
+/// than a special case inside it.
+export function pickAgent(colorKey: string, def: string, byProject: Record<string, string>, avail: AgentCli[]): AgentCli {
+  // `agentInstalled`, not just "is in the list": since `list_agents` began returning
+  // the whole catalogue, being *in* `avail` stopped meaning the binary is there. An id
+  // naming a listed-but-absent agent has to fall through exactly as an unknown one
+  // does, or the picker's greyed rows become launchable through the back door.
+  const known = (id: string | undefined) =>
+    id === CLAUDE_CLI.id ? CLAUDE_CLI : avail.find((a) => a.id === id && agentInstalled(a));
+  return known(byProject[colorKey]) ?? known(def) ?? CLAUDE_CLI;
+}
+
+/// Resolve the provider carried by a durable resume row. Unlike a preference, this is
+/// conversation identity: an unknown provider must not silently become Claude and
+/// consume or rewrite the wrong provider's restore row. An absent provider is the
+/// legacy Claude spelling; a known-but-uninstalled provider is returned so its normal
+/// launch error can explain what is missing while leaving the row intact.
+export function resumeAgent(provider: string | undefined, catalogue: AgentCli[]): AgentCli | undefined {
+  if (!provider || provider === CLAUDE_CLI.id) return CLAUDE_CLI;
+  return catalogue.find((agent) => agent.id === provider);
+}
 // Where a launched terminal lives. The instrumentation is identical for all four;
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
-// How a new claude session treats tool calls at launch (`claude --permission-mode`).
-// Orthogonal to Engine: this decides what the session may do, not where its terminal
-// lives, and it applies to every engine. The spellings are Claude Code's own, because
-// they go on the command line verbatim (bar `default`, which means "pass no flag" —
-// see `permission_mode_arg` in pty.rs). Only the *starting* mode: Claude's own ⇧⇥
-// still switches mode inside a running session, and nothing here tracks that.
-export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
-// Always ask through this rather than re-testing the string: whether telemetry,
-// cost and git actions apply to a pane is one decision, made in one place.
-export const isAgent = (s: Sess) => s.kind === "claude";
+export const isAgent = (s: Sess) => s.kind === "agent";
+export const isClaude = (s: Sess) => isAgent(s) && s.provider === "claude";
+// Capability checks are the shared UI boundary. `isClaude` remains for the few
+// launch/protocol decisions that really are provider-specific; phase, inspector,
+// roster and usage surfaces ask what the adapter supplies instead.
+export const hasAgentCapability = (s: Sess, capability: AgentCapability) =>
+  isAgent(s) && s.capabilities.includes(capability);
+export const hasSessionState = (s: Sess) => hasAgentCapability(s, "session-state");
+/// Stable identity wherever live provider sessions share one set. Thread ids are
+/// provider-owned, so a bare UUID is not a global key once more than one adapter exists.
+export const providerSessionKey = (provider: string | null | undefined, id: string) =>
+  `${(provider || "").toLowerCase()}:${id.toLowerCase()}`;
 // Whether the process behind a pane has exited. The pane still renders — an ended
 // row is information — but nothing behind it can change any more, so the pollers
 // skip it and the quit guard doesn't count it. Phase alone can't answer this for a
@@ -306,12 +438,20 @@ export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != nul
 //            the command the pane exists to accept.
 //   task   — while it runs. A run is a claim about a tree, and a build that starts on
 //            one branch and finishes on another has verified nothing.
-//   claude — only mid-turn: thinking, working, or holding a permission whose tool call
+//   integrated agent — only mid-turn: thinking, working, or holding a permission whose tool call
 //            fires the instant you allow it. Idle, done and error are all "the agent is
 //            waiting on you" — it is not touching the tree, and its next turn reads
 //            HEAD fresh rather than from the conversation.
+//   terminal-only agent — never, and this one is a judgement call rather than a fact.
+//            There is no control plane, so "is it mid-edit?" is genuinely
+//            unanswerable; the choice is between a switch that is occasionally unsafe
+//            and a checkout that can never be switched while a terminal-only agent pane is open,
+//            since nothing would ever report it idle again. A session lives for hours
+//            (unlike a task run, which is why that one blocks), so the permanent block
+//            is the worse of the two — and the user drove the agent here and knows
+//            whether it is working.
 export const midFlight = (s: Sess) =>
-  s.kind === "shell" ? false
+  s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) ? false
     : s.kind === "task" ? !isExited(s)
       : !!s.attention || s.phase === "working" || s.phase === "thinking";
 // ---------- background fan-outs ----------
@@ -382,7 +522,7 @@ export const orphanAgents = (s: Sess, now = Date.now()): Agent[] =>
 /// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
 /// the fleet is written off however high it reads.
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
-  if (!isAgent(s) || !s.fanout) return null;
+  if (!hasSessionState(s) || !s.fanout) return null;
   if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
   return liveCount(s, now) > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
@@ -505,13 +645,13 @@ export interface Runnable {
 
 export interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
-  // resumeId = the id `claude --resume` must target. It starts equal to `id` (we
-  // launch with --session-id id) but tracks Claude's *runtime* id, which rotates
-  // on /clear, /compact and /resume — each rotation opening a NEW transcript file.
-  // Restoring `id` after a compaction would resurrect the pre-compaction thread.
+  // The provider's durable conversation/thread id, as distinct from Episko's pane id.
+  // Claude rotates it on /clear, /compact and /resume; Codex supplies its thread id
+  // after App Server starts. Restoring always targets this provider-owned identity.
   resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
+  pendingPermissions: PendingPermission[];
   /// When this pane entered the "needs you" set, and **0 when it is not in it** —
   /// maintained in exactly one place (`syncAttn` in ./grouping) rather than at each of
   /// the four events that can put it there. It is not `phaseSince`: a permission is
@@ -545,6 +685,11 @@ export interface Sess {
   // inspector's button closes, not one Episko opened.
   drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
+  tokenUsage: AgentTokenUsage | null;
+  rateLimits: AgentRateLimit[];
+  // Opaque provider/account identity supplied by the integration boundary. Account-wide
+  // quota updates are shared only between sessions with the same non-null scope.
+  rateLimitScope: string | null;
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
@@ -569,6 +714,11 @@ export interface Sess {
   // snapshot's seq is already inside it and is dropped on flush; see adoptSession
   // in ./panes for the whole protocol.
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
+  /// Stable provider slug for an agent pane (`AgentCli.id`), null for shells/tasks.
+  /// Capabilities are copied at launch so every session remains self-describing even
+  /// if the installed-provider catalogue is refreshed or the adapter disconnects.
+  provider: string | null;
+  capabilities: AgentCapability[];
   // task panes only
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
@@ -614,20 +764,20 @@ export interface ExtSession {
 }
 
 // ---------- restorable sessions ----------
-// Episko's launch uuid IS Claude's --session-id, so every session we launch already
-// has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
-// therefore not about capturing conversation state — Claude already has it — but
-// about remembering which sessions were on screen at quit, and with what identity.
+// Restore remembers which resumable provider sessions were on screen at quit. Claude
+// resumes its transcript; Codex resumes its App Server thread. The roster stores the
+// provider so a later preference change cannot reopen a conversation in the wrong CLI.
 /// One embedded PTY as the BACKEND holds it (`live_sessions`). Meaningful to the
 /// frontend only where its own map falls short — after a webview reload, when the
 /// map is empty and every one of these is an orphan (#47).
-export interface LiveSess { id: string; kind: string; workdir: string }
+export interface LiveSess { id: string; kind: string; provider: string | null; workdir: string }
 
 export interface Restorable {
   id: string;          // the original launch uuid (roster key, stable across restarts)
-  resumeId: string;    // what to hand `claude --resume`
+  resumeId: string;    // what to hand the provider's resume operation
+  provider: string;
   project: string; workdir: string; colorKey: string;
   worktree: string | null; branch: string;
-  title: string;       // last known label; refreshed from the transcript on load
+  title: string;       // last known label; refreshed from provider history when possible
   lastActivity: number;
 }

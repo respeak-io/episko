@@ -19,6 +19,7 @@ import { esc } from "./format";
 import { dlog } from "./debug";
 
 import { sessions } from "./state";
+import { hasSessionState, isAgent } from "./types";
 
 // Three things it needs from the layer that owns the footer and the repaint.
 let host: { closeFootMenus: (keep?: string) => void; renderFoot: () => void; renderAll: () => void } =
@@ -83,10 +84,13 @@ function cafPersist() {
   localStorage.setItem("cc-caf-timer", String(cafTimerSec));
   localStorage.setItem("cc-caf-await", cafAgentsAwait ? "1" : "0");
 }
-// Is any real (non-shell) session doing work worth staying awake for?
+// Is any real (instrumented) session doing work worth staying awake for?
+// Panes with no telemetry are skipped outright rather than left to fail the phase
+// tests below: their phase is `idle` for life, so the tests would answer correctly
+// today and silently start voting the moment anything else writes to that field.
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
-    if (s.kind === "shell" || s.phase === "ended") continue;
+    if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
     if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
   }

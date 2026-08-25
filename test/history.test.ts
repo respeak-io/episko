@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtSession, Restorable, Sess } from "../src/types";
+import { CLAUDE_CLI, type ExtSession, type Restorable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { sessions, setBackendLive, setDormants, setExternals, setFavorites } from "../src/state";
 import {
@@ -13,7 +13,7 @@ const DAY = 86400000;
 // A row as `list_session_history` returns one. Defaults describe the ordinary case:
 // a repo checked out at its own root, still on disk.
 const row = (o: Partial<HistEntry> = {}): HistEntry => ({
-  session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
+  provider: "claude", session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
   title: "A past chat", last_prompt: "", last_active: NOW_MS / 1000, bytes: 2048,
   exists: true, repo_root: "/w/epi", ...o,
 });
@@ -21,14 +21,14 @@ const sess = (o: Partial<Sess> = {}): Sess => ({
   id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
   resumeId: "sid", branch: "main", worktree: null, title: "",
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-  pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null,
+  pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-  curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
+  curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
   git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
-  kind: "claude", external: false, ...o,
+  kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
 } as Sess);
 const dorm = (o: Partial<Restorable> = {}): Restorable =>
-  ({ id: "d1", resumeId: "d1", project: "epi", workdir: "/w/epi", colorKey: "/w/epi",
+  ({ id: "d1", resumeId: "d1", provider: "claude", project: "epi", workdir: "/w/epi", colorKey: "/w/epi",
      worktree: null, branch: "main", title: "", lastActivity: 0, ...o });
 const ext = (o: Partial<ExtSession> = {}): ExtSession =>
   ({ pid: 1, session_id: "e1", cwd: "/w/epi", name: "epi", status: "idle", version: "2.1", ...o });
@@ -112,7 +112,7 @@ describe("histBusy — a live session must not be resumed twice", () => {
   it("is busy when only the backend still holds the PTY — a reload orphan (#47)", () => {
     // A webview reload empties the frontend map while the process runs on, and an
     // owned pid is excluded from externals — so this set is the only witness.
-    setBackendLive(new Set(["orph"]));
+    setBackendLive(new Set(["claude:orph"]));
     expect(histBusy(row({ session_id: "orph" }))).toBe(true);
     expect(histBusy(row({ session_id: "other" }))).toBe(false);
   });
@@ -120,7 +120,7 @@ describe("histBusy — a live session must not be resumed twice", () => {
   it("reaches an orphan's rotated id through the roster, which saved the rotation", () => {
     // The orphan ran /clear before the reload: its transcript now lives under "rot",
     // an id the backend never sees. Only cc-restore links the two.
-    setBackendLive(new Set(["orph"]));
+    setBackendLive(new Set(["claude:orph"]));
     setDormants([dorm({ id: "orph", resumeId: "rot" })]);
     expect(histBusy(row({ session_id: "rot" }))).toBe(true);
   });
@@ -128,6 +128,14 @@ describe("histBusy — a live session must not be resumed twice", () => {
   it("a roster entry whose launch is not live in the backend proves nothing", () => {
     setDormants([dorm({ id: "gone", resumeId: "rot" })]);
     expect(histBusy(row({ session_id: "rot" }))).toBe(false);
+  });
+
+  it("does not confuse equal thread ids owned by different providers", () => {
+    sessions.set("codex-pane", sess({ id: "same", resumeId: "same", provider: "codex" }));
+    setBackendLive(new Set(["codex:orphan"]));
+    expect(histBusy(row({ provider: "claude", session_id: "same" }))).toBe(false);
+    expect(histBusy(row({ provider: "claude", session_id: "orphan" }))).toBe(false);
+    expect(histBusy(row({ provider: "codex", session_id: "same" }))).toBe(true);
   });
 });
 

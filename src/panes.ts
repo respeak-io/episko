@@ -1,13 +1,13 @@
-// Panes: the three things Episko can put on stage, and the life of one once it is
-// there. `spawn_claude`, `spawn_shell` and `spawn_task` are three backend entry points
-// but one frontend shape — a `Sess` in the map, a `.term-pane` in #terminals, and a
-// PTY behind it — which is why they sit together rather than beside the surfaces that
-// trigger them.
+// Panes: the four things Episko can put on stage, and the life of one once it is
+// there. `spawn_claude`, `spawn_shell`, `spawn_task` and `spawn_agent` are four backend
+// entry points but one frontend shape — a `Sess` in the map, a `.term-pane` in
+// #terminals, and a PTY behind it — which is why they sit together rather than beside
+// the surfaces that trigger them.
 //
-// What each spawner does *not* share is the point of having three: a claude session is
-// instrumented (and may live in an external terminal, in which case its pane is a
-// placard rather than a terminal), a shell gets Terminal.app's ⌥/⌘ key conventions and
-// no telemetry, and a task run carries its exit code as its phase.
+// What each spawner does *not* share is the point of having four: Claude uses launch
+// hooks (and may live in an external terminal), integrated providers use their own
+// control plane beside the PTY, terminal-only providers expose just the TUI, a shell
+// gets Terminal.app's ⌥/⌘ key conventions, and a task's exit code is its phase.
 //
 // Also here: the stage's own chrome (`renderHeader`, `syncStageButtons`), because both
 // read only what pane is active, and the two context resolvers every "…here" action
@@ -26,7 +26,8 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  isAgent, isExited, statusKey, taskStateText, type DiffStat, type GitActionResult,
+  CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited, providerCapabilities, resumeAgent,
+  statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
@@ -48,16 +49,24 @@ import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, engineDef,
-  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permMode, permModeDef,
+  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  effectiveAgent, engineDef,
+  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, worktreesByRepo, wtSig,
 } from "./state";
+import { providerPermissionMode } from "./providers";
 
 // The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
 // from scratch, and it is the file that orchestrates them that owns it.
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
+
+function launchPermission(agent: AgentCli) {
+  if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
+  const def = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+  return { mode: def && def.id !== "default" ? def.id : null, def };
+}
 
 // The embedded terminal of a claude pane — shared by a fresh launch and by the
 // adoption of a reload orphan, so the two cannot drift on options or key wiring.
@@ -76,6 +85,20 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   return { term, fit };
 }
 
+// The corresponding terminal for providers whose TUI owns its own chords. Fresh
+// launches and reload adoption both go through this constructor so input cannot drift.
+function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
+  const term = new Terminal({
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit); term.open(pane);
+  term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
+  term.attachCustomKeyEventHandler(clipboardKeys(term));
+  return { term, fit };
+}
+
 // ---------- launch ----------
 // Returns the new session id, or null if the spawn failed. Most callers ignore it —
 // but the dashboard's dispatch paths need it to type the prompt in and to write the
@@ -83,9 +106,33 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
 // `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
 // the toast said it hadn't, and neither the prompt nor the claim was ever sent.
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
+  await agentDiscoveryReady;
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
+  // Which provider this is, before anything else is built. Claude has its hook-backed
+  // spawner and optional external terminal; every other provider goes through the
+  // adapter-aware agent spawner and its own capabilities.
+  //
+  // Two things can override the preference, and both are explicit launch facts:
+  //   · a **resume** carries its provider, so it cannot follow today's default.
+  //   · an explicit `opts.agent` lets a specialized workflow request one provider.
+  const agent = opts.resume
+    ? resumeAgent(opts.resumeProvider, availAgents)
+    : agentDef(opts.agent ?? "") ?? effectiveAgent(colorKey);
+  // A restore row's provider is durable identity, not a preference. Starting Claude
+  // here would open a different provider's conversation id, then make the successful
+  // launch path consume the original row. Refuse before a pane, session or roster
+  // mutation; the dormant remains available to a build that knows its provider.
+  if (!agent) {
+    const provider = opts.resumeProvider || "unknown";
+    dlog("warn", `resume refused for unsupported provider ${provider} · ${opts.resume}`);
+    toast(`Can't resume: ${provider} isn't supported by this build`);
+    return null;
+  }
+  if (agent.id !== CLAUDE_CLI.id) {
+    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch, resume: opts.resume });
+  }
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
   const external = termEngine !== "embedded";
@@ -105,11 +152,12 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
-    files: [], tally: {}, servers: [], kind: "claude", external, term, fit, pane,
+    files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
+    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => {
@@ -128,8 +176,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // over the wire as null rather than as a spelling of the standard mode. Read here
   // rather than taken as an opt, exactly like termEngine: it is a preference, and a
   // restore is as much a new launch as anything else.
-  const mode = permMode === "default" ? null : permMode;
-  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permModeDef(permMode).label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
+  const permission = launchPermission(agent);
+  const mode = permission.mode;
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
   let spawned = true;
   try {
@@ -228,31 +277,42 @@ export async function adoptOrphans(): Promise<number> {
   return orphans.length;
 }
 
-async function adoptSession(o: { id: string; workdir: string; meta: Restorable | null }) {
+async function adoptSession(o: { id: string; workdir: string; provider: string; meta: Restorable | null }) {
   const m = o.meta;
+  const provider = o.provider || m?.provider || "claude";
+  const providerDef = provider === "claude" ? CLAUDE_CLI : agentDef(provider);
+  const capabilities = providerDef?.capabilities ?? providerCapabilities(provider);
   const project = m?.project || basename(o.workdir) || "session";
   const colorKey = m?.colorKey ?? o.workdir;
   probeIcon(colorKey);
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
-  const { term, fit } = newClaudeTerm(o.id, pane);
+  const { term, fit } = provider === "claude" ? newClaudeTerm(o.id, pane) : newAgentTerm(o.id, pane);
   const s: Sess = {
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
     resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
-    title: m?.title ?? "",
+    title: m?.title ?? providerDef?.label ?? provider,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
-    attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null,
+    attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
     apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
-    files: [], tally: {}, servers: [], kind: "claude", external: false, term, fit, pane,
+    files: [], tally: {}, servers: [], kind: "agent", provider,
+    capabilities: [...capabilities], external: false, term, fit, pane,
     adopt: { pending: [] },
   };
   // From this line the pty-output listener queues this session's chunks into
   // `s.adopt` — the snapshot below decides which of them it already contains.
   sessions.set(o.id, s);
+  // The backend observer survives a WebView reload, while every frontend snapshot does
+  // not. Ask it to replay provider state only after the Sess exists to receive events.
+  if (capabilities.includes("session-state") && provider !== "claude") {
+    invoke("refresh_agent_state", { sessionId: o.id }).catch((e) => {
+      dlog("warn", `provider state refresh failed for ${o.id.slice(0, 8)}: ${e}`);
+    });
+  }
   term.onTitleChange((t) => {
     const c = cleanTitle(t, s);
     if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === o.id) renderHeader(s); }
@@ -307,12 +367,12 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
     files: [], tally: {}, servers: [],
-    kind: "shell", external: false, term, fit, pane,
+    kind: "shell", provider: null, capabilities: [], external: false, term, fit, pane,
   };
   sessions.set(id, s);
   setActive(id);
@@ -326,6 +386,48 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   }
   renderAll();
   return id;
+}
+
+// Any non-Claude coding agent in an embedded xterm pane. The AgentCli capability set
+// makes this one launch path serve both integrated providers (Codex today) and the
+// terminal-only fallback (OpenCode, Gemini and the rest until adapters land).
+export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
+  const id = crypto.randomUUID();
+  // Same grouping rule as a shell: key on the repo root so an agent started in a
+  // worktree nests under its project instead of becoming a top-level entry.
+  const colorKey = opts.colorKey ?? workdir;
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  $("terminals").appendChild(pane);
+  // `newAgentTerm` installs clipboard keys alone, not `shellKeys`: these are
+  // full-screen TUIs that own the rest of their keyboard.
+  const { term, fit } = newAgentTerm(id, pane);
+  const s: Sess = {
+    id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
+    branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, drift: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
+    lastEvent: "", activity: [],
+    files: [], tally: {}, servers: [],
+    kind: "agent", provider: agent.id, capabilities: [...agent.capabilities], external: false, term, fit, pane,
+  };
+  sessions.set(id, s);
+  setActive(id);
+  const permission = launchPermission(agent);
+  dlog("info", `${opts.resume ? "resume" : "agent"} ${agent.id} · ${project} · ${id.slice(0, 8)}${permission.mode ? ` · ${permission.def?.label}` : ""}`);
+  let spawned = true;
+  try {
+    await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80, resume: opts.resume ?? null, mode: permission.mode });
+    if (opts.resume) setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
+  } catch (e) {
+    spawned = false;
+    dlog("error", `${agent.id} launch failed: ${e}`);
+    toast(`${agent.label} failed: ${e}`);
+    term.writeln(`\r\n\x1b[31m[${agent.id} error] ${e}\x1b[0m`);
+  }
+  renderAll();
+  return spawned ? id : null;
 }
 
 // Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
@@ -372,12 +474,12 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null, drift: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
     files: [], tally: {}, servers: [],
-    resumeId: id, kind: "task", external: false, term, fit, pane,
+    resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
   };
   sessions.set(id, s);
@@ -613,7 +715,7 @@ export function setActive(id: string, keepGroup = false) {
     if (on) { paintPaneCap(x); attachWebgl(x); }
     else if (isExited(x)) {
       detachWebgl(x);
-      if (isAgent(x) && x.phase === "ended") trimScrollback(x);
+      if (hasSessionState(x) && x.phase === "ended") trimScrollback(x);
     }
   }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
@@ -674,7 +776,7 @@ export async function pollIo(): Promise<void> {
 }
 
 export async function refreshSessionStats(s: Sess) {
-  if (!isAgent(s) || s.external) return;
+  if (!hasSessionState(s) || s.external) return;
   // Only re-render when the *displayed* values change — comparing the rendered strings
   // avoids a needless inspector rebuild (which would restart the heartbeat animation)
   // every 4s while a session sits idle.
@@ -820,7 +922,7 @@ export function noteGitCommand(cmd: unknown) {
 // Claude Code makes itself, `tool_input` the ones it doesn't know about (a write's
 // `file_path`, or the `cd` a Bash-first agent wrote under).
 export function noteDrift(s: Sess, tool: string, data: any) {
-  if (!isAgent(s) || !s.workdir) return;
+  if (!hasAgentCapability(s, "activity") || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
   const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
@@ -852,7 +954,10 @@ export function renderHeader(s: Sess | null) {
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
-  if (s.kind !== "claude") { hb.textContent = s.kind === "shell" ? "shell" : "task"; hb.hidden = false; hb.classList.add("ext-chip"); }
+  if (!hasSessionState(s)) {
+    hb.textContent = s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : (s.title || s.provider || "agent");
+    hb.hidden = false; hb.classList.add("ext-chip");
+  }
   // A drifted session gets BOTH branches, in the order they happened: the chip is the
   // only thing on screen that says which checkout the work is landing in, and showing
   // just the new one would trade a stale label for a lie about where `--resume` goes.
@@ -862,7 +967,7 @@ export function renderHeader(s: Sess | null) {
     hb.hidden = false; hb.classList.add("drifted");
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
-  $("hTitle").textContent = s.kind === "claude" ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
+  $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   // The path follows the work for the same reason — it is the answer to "where am I?".
   $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }

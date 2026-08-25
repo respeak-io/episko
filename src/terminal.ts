@@ -100,12 +100,12 @@ export function detachWebgl(s: Sess) {
   for (const c of canvases) { c.width = 0; c.height = 0; }
 }
 
-// An ended claude pane keeps up to 8000 lines of scrollback it can never grow again,
-// tens of MB across a day of panes — and the transcript is on disk, where History and
-// `--resume` reopen it. So the buffer is reclaimed once the pane is done: immediately
+// An ended resumable agent pane keeps up to 8000 lines of scrollback it can never grow
+// again, tens of MB across a day — while provider history can reopen the conversation.
+// So the buffer is reclaimed once the pane is done: immediately
 // when it ends off stage, and on the way *off* the stage when you watched it end (the
-// visible screen keeps its final output either way). Claude panes only: a shell has
-// no transcript, and a failed task's scrollback IS the log you open it to read.
+// visible screen keeps its final output either way). Provider-backed panes only: a
+// shell has no history, and a failed task's scrollback IS the log you open it to read.
 export function trimScrollback(s: Sess) {
   if (!s.term || s.term.options.scrollback === 0) return;
   try { s.term.options.scrollback = 0; } catch { /* pane already disposed */ }

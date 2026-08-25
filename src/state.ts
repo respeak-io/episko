@@ -27,7 +27,8 @@ import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
-import type { DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
+import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
+import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
 
 export interface Favorite { name: string; path: string }
@@ -218,12 +219,14 @@ export function setExternals(l: ExtSession[]) { externals = l; }
 // Restorable-from-last-run rows: what the roster says was open at the last quit.
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
-// Launch ids of every PTY the BACKEND holds (`live_sessions`, refreshed on the
-// externals poll, lowercased at the call site). In normal operation this repeats
-// the `sessions` map; the one state where they disagree is a webview reload, which
+// Provider-qualified launch ids of every PTY the BACKEND holds (`live_sessions`,
+// refreshed on the externals poll). In normal operation this repeats the `sessions`
+// map; the one state where they disagree is a webview reload, which
 // empties the map while every PTY runs on (#47). Those orphans are invisible as
 // externals too — `list_external_sessions` excludes owned pids — so this set is
 // the only thing that lets `dormantBusy`/`histBusy` refuse to resume one.
+// Keyed as `<provider>:<session id>` so two agents may legitimately
+// expose the same resume/thread id without hiding each other's history row.
 export let backendLive: ReadonlySet<string> = new Set();
 export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
@@ -250,31 +253,87 @@ export function setDiffMode(m: DiffMode) { diffMode = m; }
 export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
 export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
+// --- agent providers ------------------------------------------------------------
+// The coding-agent CLI catalogue, filled once at startup from `list_agents` (pty.rs
+// owns the table and probe). Rows remain present when their binary is missing so the
+// provider picker can explain exactly what it looked for.
+export let availAgents: AgentCli[] = [];
+let finishAgentDiscovery: (() => void) | null = null;
+/** Fresh launches wait for the one startup probe rather than silently resolving a
+ * persisted non-Claude preference against an empty catalogue and starting Claude. */
+export const agentDiscoveryReady = new Promise<void>((resolve) => { finishAgentDiscovery = resolve; });
+export function setAvailAgents(l: AgentCli[]) {
+  availAgents = l;
+  finishAgentDiscovery?.();
+  finishAgentDiscovery = null;
+}
+/// Only the ones that will actually start. `availAgents` is the whole catalogue now,
+/// so every surface that offers a *choice* filters through this; the project picker is
+/// the one place that reads the unfiltered list, because explaining what is missing is
+/// its job.
+export function installedAgents(): AgentCli[] { return availAgents.filter(agentInstalled); }
+export function agentDef(id: string): AgentCli | undefined {
+  return id === CLAUDE_CLI.id ? CLAUDE_CLI : availAgents.find((a) => a.id === id);
+}
+// Everything installed, Claude first — what Settings offers and what the project
+// picker lists above its fold. Claude leads rather than sorting in among the C's
+// because it is the default, not because of its name.
+export function allAgents(): AgentCli[] { return [CLAUDE_CLI, ...installedAgents()]; }
+// The rest of the catalogue: known to Episko, absent from this machine. What the
+// project picker shows below the fold so that "why is Codex not here?" has an answer
+// on screen instead of in an issue.
+export function missingAgents(): AgentCli[] { return availAgents.filter((a) => !agentInstalled(a)); }
+// --- which agent a new session runs -------------------------------------------
+// The third fact about a launch, beside where its terminal opens (`termEngine`) and
+// how it starts (`permissionModes`), and persisted exactly like them. Claude Code is the
+// default *value* rather than a hardcoded choice — see `pickAgent` in ./types for the
+// resolution order and why an uninstalled agent falls back instead of failing.
+export let defaultAgent: string = localStorage.getItem("cc-agent") || CLAUDE_CLI.id;
+export function setDefaultAgent(id: string) { defaultAgent = id; }
+// Per project, keyed by `colorKey` (the repo root), so every worktree of a repo
+// inherits one answer. Same shape and the same reasoning as `cc-task-onstop`: a
+// personal preference, in localStorage, never a committed project fact — a colleague
+// opening the same repo keeps whichever agent *they* drive.
+export const agentByProject: Record<string, string> =
+  JSON.parse(localStorage.getItem("cc-agent-by-project") || "{}");
+export function setProjectAgent(colorKey: string, id: string | null) {
+  if (id) agentByProject[colorKey] = id; else delete agentByProject[colorKey];
+}
+/// The agent a launch in this project starts. Read at the launch site, never stored on
+/// a `Sess` — the same rule `permissionModes` follows, and for the same reason: it is a
+/// preference, and recording it on a session would be a second copy that can go stale.
+export function effectiveAgent(colorKey: string): AgentCli {
+  return pickAgent(colorKey, defaultAgent, agentByProject, availAgents);
+}
+/// The global default on its own, ignoring any project override — what the "Follow the
+/// default" row names. Resolved through the same fallback a launch uses (empty overrides
+/// rather than a sentinel key), so the row cannot offer an agent that has since been
+/// uninstalled: it would say "Claude Code", which is what would actually run.
+export function defaultAgentDef(): AgentCli { return pickAgent("", defaultAgent, {}, availAgents); }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
-// --- how a new session starts (claude --permission-mode) -----------------------
-// A persisted preference like the engine above, and the same split: the type is in
-// ./types (it crosses to the backend), the label table stays in the UI layer.
-// Labels follow Claude Code's own names for these modes, so the picker and the
-// indicator the REPL shows after ⇧⇥ can't read as two different things.
-//
-// Ordered by how much the mode hands over: Manual asks about everything, Bypass
-// about nothing. The last three stop Claude asking, and therefore stop Episko's
-// permission cards too — the hint in Settings › Sessions says so, since a pane that
-// never raises one looks identical to a pane nobody has asked anything.
-export interface PermModeDef { id: PermMode; label: string; sub: string; glyph: string }
-export const ALL_PERM_MODES: PermModeDef[] = [
-  { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇" },
-  { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙" },
-  { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎" },
-  { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈" },
-  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts · anything not pre-approved is denied",    glyph: "⊘" },
-  { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠" },
-];
-export function permModeDef(id: PermMode): PermModeDef { return ALL_PERM_MODES.find((m) => m.id === id) || ALL_PERM_MODES[0]; }
-export let permMode: PermMode = (localStorage.getItem("cc-perm-mode") as PermMode) || "default";
-if (!ALL_PERM_MODES.some((m) => m.id === permMode)) permMode = "default";
-export function setPermMode(m: PermMode) { permMode = m; }
+// --- how each provider starts -------------------------------------------------
+// Permission policies are provider-owned launch facts, so preferences are keyed by
+// provider rather than forcing every CLI into Claude's vocabulary. Mode definitions
+// and validation live in ./providers; this module only owns the persisted primitive
+// state. The old single Claude key is read as a one-way migration.
+function loadPermissionModes(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem("cc-perm-modes") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, mode]) => typeof mode === "string")) as Record<string, string>;
+  } catch { return {}; }
+}
+const storedPermissionModes = loadPermissionModes();
+const legacyPermMode = localStorage.getItem("cc-perm-mode") || "default";
+if (!storedPermissionModes[CLAUDE_CLI.id]) storedPermissionModes[CLAUDE_CLI.id] = legacyPermMode;
+export const permissionModes = storedPermissionModes;
+export function permissionModeFor(provider: string): string {
+  return permissionModes[provider] || "default";
+}
+export function setProviderPermissionMode(provider: string, mode: string) {
+  permissionModes[provider] = mode;
+}
 // Uncommitted-changes cache, keyed by folder rather than session, because it feeds
 // the sidebar's per-project dot and the external inspector's diff card as well as
 // the active session: `Sess.git` only stays fresh for the session on stage, so
@@ -308,7 +367,7 @@ export const worktreesByRepo = new Map<string, WtHead[]>();
 // branch poll without adding a cost anyone can feel.
 export const wtSig = (l: WtHead[]) => l.map((w) => `${w.path} ${w.branch} ${w.exists ? 1 : 0}`).join("");
 
-// App-wide disk I/O, summed across every embedded claude session Episko owns — not a
+// App-wide disk I/O, summed across every embedded session Episko owns — not a
 // per-session figure. With several agents running, the question the inspector's I/O
 // bars answer is "how hard is Episko working the disk", and a number for whichever
 // pane happens to be on screen answers a different one while looking like that one.

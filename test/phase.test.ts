@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  actKey, apiErrText, bgWaiting, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally, liveCount,
-  liveAgents, ORPHAN_DEAD_MS, orphanAgents, phaseText, statusKey, type Sess,
+  actKey, apiErrText, bgWaiting, CLAUDE_CLI, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally,
+  liveAgents, liveCount, ORPHAN_DEAD_MS, orphanAgents, phaseText, statusKey, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -31,11 +31,11 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, agents: new Map(), fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [],
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
-    kind: "claude", external: false, ...o,
+    kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
   } as Sess;
 }
 const hook = (s: Sess, hook_event_name: string, extra: Record<string, unknown> = {}) =>
@@ -143,6 +143,22 @@ describe("applyHook — the lifecycle state machine", () => {
       hook(s, "Stop");
       // Left held, the tiny_http server never answers and Claude hangs forever.
       expect(ipc).toEqual([{ cmd: "resolve_permission", args: { id: "perm-7", behavior: "terminal" } }]);
+      expect(s.pendingPermId).toBeNull();
+    });
+    it("releases every queued parallel request when lifecycle moves on", () => {
+      const s = sess({
+        pendingPermId: "perm-1", attention: "permission: Bash",
+        pendingPermissions: [
+          { id: "perm-1", tool: "Bash", command: "git push", risk: "high" },
+          { id: "perm-2", tool: "Edit", command: "write app.ts", risk: "med" },
+        ],
+      });
+      hook(s, "Stop");
+      expect(ipc).toEqual([
+        { cmd: "resolve_permission", args: { id: "perm-1", behavior: "terminal" } },
+        { cmd: "resolve_permission", args: { id: "perm-2", behavior: "terminal" } },
+      ]);
+      expect(s.pendingPermissions).toEqual([]);
       expect(s.pendingPermId).toBeNull();
     });
     it("calls the backend only when something is actually held", () => {

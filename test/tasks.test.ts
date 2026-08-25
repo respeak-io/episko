@@ -598,7 +598,7 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
     expect(taskStateText(t({ exitCode: 0 }, "done"), NOW)).toBe("1m 23s");
   });
   it("says nothing for a pane that is not a run", () => {
-    expect(taskStateText({ phase: "idle", kind: "claude" } as Sess, NOW)).toBe("");
+    expect(taskStateText({ phase: "idle", kind: "agent" } as Sess, NOW)).toBe("");
   });
 
   // The inspector's "Took" row, the sidebar column and a tiled pane's caption each had

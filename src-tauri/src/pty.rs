@@ -38,6 +38,7 @@ use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::agent;
 #[cfg(not(windows))]
 use crate::platform::sh_quote;
 use crate::platform::{augmented_path, resolve_claude, sys_command};
@@ -61,7 +62,10 @@ fn apply_utf8_locale(_cmd: &mut CommandBuilder) {
 fn apply_utf8_locale(cmd: &mut CommandBuilder) {
     let is_utf8 = |var: &str| {
         std::env::var(var)
-            .map(|v| { let u = v.to_ascii_uppercase(); u.contains("UTF-8") || u.contains("UTF8") })
+            .map(|v| {
+                let u = v.to_ascii_uppercase();
+                u.contains("UTF-8") || u.contains("UTF8")
+            })
             .unwrap_or(false)
     };
     if !is_utf8("LANG") {
@@ -131,7 +135,12 @@ pub(crate) fn spawn_claude(
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let claude = resolve_claude();
@@ -169,7 +178,10 @@ pub(crate) fn spawn_claude(
 
     log::info!(
         "spawn claude · {session_id} · {workdir}{}{}",
-        resume.as_deref().map(|r| format!(" · resume {r}")).unwrap_or_default(),
+        resume
+            .as_deref()
+            .map(|r| format!(" · resume {r}"))
+            .unwrap_or_default(),
         perm.map(|m| format!(" · {m}")).unwrap_or_default()
     );
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -190,7 +202,17 @@ pub(crate) fn spawn_claude(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "claude", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "agent",
+            provider: Some("claude".into()),
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
 
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -351,7 +373,11 @@ pub(crate) const SCROLLBACK_MAX: usize = 256 * 1024;
 
 impl ScrollBuf {
     pub(crate) fn new() -> Self {
-        ScrollBuf { buf: VecDeque::new(), seq: 0, evicted: false }
+        ScrollBuf {
+            buf: VecDeque::new(),
+            seq: 0,
+            evicted: false,
+        }
     }
     /// Append one reader chunk and return the seq that names it.
     pub(crate) fn push(&mut self, chunk: &[u8]) -> u64 {
@@ -430,11 +456,15 @@ fn stream_pty_session(
         log::info!("pty exit · {session_id} · code {code}");
         if let Some(st) = app.try_state::<AppState>() {
             st.sessions.lock().unwrap().remove(&session_id);
+            agent::stop_runtime(&st, &session_id);
             if let Some(p) = child_pid {
                 st.owned_pids.lock().unwrap().remove(&p);
             }
         }
-        let _ = app.emit("pty-exit", serde_json::json!({ "sessionId": session_id, "code": code }));
+        let _ = app.emit(
+            "pty-exit",
+            serde_json::json!({ "sessionId": session_id, "code": code }),
+        );
     });
 }
 
@@ -476,7 +506,12 @@ pub(crate) fn spawn_shell(
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let (shell, shell_args) = interactive_shell();
@@ -505,7 +540,17 @@ pub(crate) fn spawn_shell(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "shell",
+            provider: None,
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -640,13 +685,22 @@ pub(crate) fn spawn_task(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let tasks::TaskSpec { exec, cwd: workdir, env } = spec;
+    let tasks::TaskSpec {
+        exec,
+        cwd: workdir,
+        env,
+    } = spec;
     if !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("no such directory: {workdir}"));
     }
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let mut cmd = match exec {
@@ -692,7 +746,427 @@ pub(crate) fn spawn_task(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "task",
+            provider: None,
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
+    );
+    stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
+    Ok(())
+}
+
+// ---------- other people's agents ----------
+
+/// One coding-agent CLI Episko will drop into a pane.
+///
+/// `bin` is the interactive executable's *bare* name, resolved against the augmented
+/// PATH at detection time rather than stored as an install path: these are twenty-one
+/// third-party tools with twenty-one installers (npm, brew, curl-to-`~/.local/bin`,
+/// bun, a vendor MSI) and no two agree on a prefix, so the PATH the user's own shell
+/// has is the only thing that knows where any of them landed.
+///
+/// One spelling covers both OSes. `win_resolve` walks PATHEXT, so `cursor-agent`
+/// finds `cursor-agent.cmd` without a second field to keep in step.
+struct AgentSpec {
+    id: &'static str,
+    label: &'static str,
+    bin: &'static str,
+    /// Stable legacy mark kept in the command's wire shape for compatibility with
+    /// older frontends. Current selectors resolve vetted SVGs at `src/providers/logos`;
+    /// this must never be used to guess a logo from `label`.
+    mark: &'static str,
+}
+
+/// The agents Episko can launch, in the order the picker lists them — sorted by label
+/// here so no call site sorts, and `agents_are_sorted_by_label` stops a new entry
+/// being dropped in wherever it happened to be typed.
+///
+/// Three binaries are not their agent's name and cannot be guessed: Antigravity
+/// installs `agy`, Kiro installs `kiro-cli`, Cursor installs `cursor-agent`. Getting
+/// one wrong fails silently — the agent simply never appears in the picker on a
+/// machine that has it — so these come from each vendor's own installer rather than
+/// from the product name.
+///
+/// **Claude Code is deliberately absent.** Its dedicated launcher supplies hooks,
+/// statusLine telemetry and external-terminal support; a generic catalogue entry would
+/// offer the same binary while silently bypassing that provider adapter.
+const AGENTS: &[AgentSpec] = &[
+    AgentSpec {
+        id: "amp",
+        label: "Amp",
+        bin: "amp",
+        mark: "Am",
+    },
+    AgentSpec {
+        id: "antigravity",
+        label: "Antigravity CLI",
+        bin: "agy",
+        mark: "Ag",
+    },
+    AgentSpec {
+        id: "cline",
+        label: "Cline",
+        bin: "cline",
+        mark: "Cl",
+    },
+    AgentSpec {
+        id: "codex",
+        label: "Codex",
+        bin: "codex",
+        mark: "Cx",
+    },
+    AgentSpec {
+        id: "cursor",
+        label: "Cursor Agent CLI",
+        bin: "cursor-agent",
+        mark: "Cu",
+    },
+    AgentSpec {
+        id: "devin",
+        label: "Devin CLI",
+        bin: "devin",
+        mark: "Dv",
+    },
+    AgentSpec {
+        id: "droid",
+        label: "Droid",
+        bin: "droid",
+        mark: "Dr",
+    },
+    AgentSpec {
+        id: "gemini",
+        label: "Gemini CLI",
+        bin: "gemini",
+        mark: "Gm",
+    },
+    AgentSpec {
+        id: "copilot",
+        label: "GitHub Copilot CLI",
+        bin: "copilot",
+        mark: "Cp",
+    },
+    AgentSpec {
+        id: "grok",
+        label: "Grok CLI",
+        bin: "grok",
+        mark: "Gr",
+    },
+    AgentSpec {
+        id: "hermes",
+        label: "Hermes Agent",
+        bin: "hermes",
+        mark: "He",
+    },
+    AgentSpec {
+        id: "kilo",
+        label: "Kilo Code CLI",
+        bin: "kilo",
+        mark: "Kl",
+    },
+    AgentSpec {
+        id: "kimi",
+        label: "Kimi Code CLI",
+        bin: "kimi",
+        mark: "Km",
+    },
+    AgentSpec {
+        id: "kiro",
+        label: "Kiro CLI",
+        bin: "kiro-cli",
+        mark: "Kr",
+    },
+    AgentSpec {
+        id: "maki",
+        label: "Maki",
+        bin: "maki",
+        mark: "Mk",
+    },
+    AgentSpec {
+        id: "mastracode",
+        label: "MastraCode",
+        bin: "mastracode",
+        mark: "Ms",
+    },
+    AgentSpec {
+        id: "omp",
+        label: "OMP",
+        bin: "omp",
+        mark: "Om",
+    },
+    AgentSpec {
+        id: "opencode",
+        label: "OpenCode",
+        bin: "opencode",
+        mark: "Oc",
+    },
+    AgentSpec {
+        id: "pi",
+        label: "Pi",
+        bin: "pi",
+        mark: "Pi",
+    },
+    AgentSpec {
+        id: "qodercli",
+        label: "Qoder CLI",
+        bin: "qodercli",
+        mark: "Qo",
+    },
+    AgentSpec {
+        id: "qwen",
+        label: "Qwen Code",
+        bin: "qwen",
+        mark: "Qw",
+    },
+];
+
+fn agent_spec(id: &str) -> Option<&'static AgentSpec> {
+    AGENTS.iter().find(|a| a.id == id)
+}
+
+/// Where an agent CLI actually is, or `None` if this machine hasn't got it.
+///
+/// A sibling of `platform::resolve_claude`, deliberately not beside it. The Windows
+/// half *is* `win_resolve`, which belongs to this module (it exists for
+/// `argv_command`), and `platform.rs`'s first half has to stay free of crate
+/// dependencies — so the helper moves to its consumer rather than dragging PATHEXT
+/// resolution down into the leaf layer.
+///
+/// Two things it does differently from `resolve_claude`, both because here the answer
+/// *is* the detection rather than a best effort at one:
+///
+/// - **It never falls back to the bare name.** `resolve_claude` returns `"claude"`
+///   when it finds nothing, because the alternative is refusing to launch the app's
+///   whole reason for existing. A fallback here would instead put all twenty-one
+///   agents in the picker on every machine, and twenty of those rows would be a way
+///   to open a pane onto "command not found".
+/// - **It never spawns a login shell.** `resolve_claude` can afford one probe; this
+///   runs over the entire table at once, and twenty-one login shells is a visible
+///   stall on a Mac. `augmented_path()` already harvested that shell's PATH once for
+///   the whole app run, so scanning it directly answers the same question for free.
+#[cfg(not(windows))]
+pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
+    let home = crate::platform::home_dir();
+    // Where per-user installers land things the *process* PATH may not carry under
+    // Finder. `augmented_path` already lists some of these; the overlap costs one
+    // `is_file` each and lets this list be read on its own.
+    let extra = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.deno/bin"),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.npm-global/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+    let path = augmented_path();
+    std::env::split_paths(&path)
+        .chain(extra.iter().map(std::path::PathBuf::from))
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
+    // `win_resolve` walks PATHEXT across the augmented PATH, which is what "is this
+    // installed?" means on Windows — and it is the same call `argv_command` makes at
+    // launch, so detection and spawn cannot disagree about which file this is.
+    if let Some(p) = win_resolve(bin) {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // npm's global bin dir is the one common install location `augmented_path` does
+    // not carry, and it is where every npm-distributed agent lands.
+    let home = crate::platform::home_dir();
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| format!(r"{home}\AppData\Roaming"));
+    for dir in [format!(r"{appdata}\npm"), format!(r"{home}\.bun\bin")] {
+        for ext in [".cmd", ".exe", ".bat", ".ps1"] {
+            let cand = std::path::Path::new(&dir).join(format!("{bin}{ext}"));
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct AgentInfo {
+    id: &'static str,
+    label: &'static str,
+    mark: &'static str,
+    /// What was looked for. Sent even when it was found, because it is the only useful
+    /// thing to say about an agent that *wasn't*: "Episko searched your PATH for
+    /// `cursor-agent`" is the answer to the question a missing row provokes.
+    bin: &'static str,
+    /// Where it is, or `None` if this machine hasn't got it.
+    path: Option<String>,
+    /// Features supplied by this provider adapter. The generic launcher is a
+    /// terminal-only fallback; integrated adapters opt into these without teaching
+    /// shared frontend surfaces provider names.
+    capabilities: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProviderManifestEntry {
+    capabilities: Vec<String>,
+}
+
+/// The one capability matrix shared with the TypeScript provider registry. Keeping
+/// this as checked-in JSON lets Rust advertise the exact promises the frontend gates
+/// on without maintaining a second Codex/Claude list in another language.
+fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntry> {
+    serde_json::from_str(include_str!("../../src/providers/manifest.json"))
+        .expect("src/providers/manifest.json must be valid provider metadata")
+}
+
+/// The whole catalogue, each entry saying whether it is installed — **not** a filtered
+/// list, which is what this used to be and was wrong.
+///
+/// `available_terminals` filters, and copying that contract here was a mistake worth
+/// recording: an external terminal Episko doesn't offer is one you can plainly see is
+/// not on your Mac, whereas an agent that silently fails to appear is indistinguishable
+/// from Episko not supporting it. That difference is a support issue — "why is Codex
+/// not in the list?" has no discoverable answer if there is no row to read. The rule
+/// this now follows is the one `tasks.rs` already follows for a Runnable that cannot
+/// run, and `projmenu.ts` for a worktree that cannot be removed: **what can't be used
+/// says why, rather than vanishing.**
+///
+/// The frontend decides what to do with a `path: None` row (the picker greys it and
+/// makes it inert); what this owes it is the fact and the binary name.
+#[tauri::command]
+pub(crate) fn list_agents() -> Vec<AgentInfo> {
+    let providers = provider_manifest();
+    AGENTS
+        .iter()
+        .map(|a| AgentInfo {
+            id: a.id,
+            label: a.label,
+            mark: a.mark,
+            bin: a.bin,
+            path: resolve_cli(a.bin),
+            capabilities: providers
+                .get(a.id)
+                .map(|p| p.capabilities.clone())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Run a coding-agent provider in an embedded PTY — the fourth kind of pane.
+///
+/// Provider capabilities decide the integration. Codex starts a loopback App Server
+/// beside the real TUI, so phase, activity, context, usage, approvals, history and
+/// resume arrive through its public protocol. Providers without an adapter keep the
+/// terminal-only fallback: worktree, project tree, palette, git working set and exit.
+///
+/// The TUI pid stays out of `owned_pids`: that set exists specifically to exclude
+/// Episko-launched Claude processes from Claude's external-session registry. Provider
+/// runtimes have their own lifecycle in `agent.rs` instead.
+#[allow(clippy::too_many_arguments)] // Tauri command parameters are the frontend wire format.
+#[tauri::command]
+pub(crate) fn spawn_agent(
+    app: AppHandle,
+    state: State<AppState>,
+    session_id: String,
+    workdir: String,
+    agent: String,
+    rows: u16,
+    cols: u16,
+    resume: Option<String>,
+    mode: Option<String>,
+) -> Result<(), String> {
+    let spec = agent_spec(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
+        return Err(format!("can't resume: {workdir} no longer exists"));
+    }
+    // Resolve here rather than handing `argv_command` the bare name. The picker only
+    // lists agents the probe found, so a miss at this point means it was uninstalled
+    // between the poll and the click — and naming it beats a pane that opens onto a
+    // shell's "not recognized" with no clue which of the two halves failed.
+    let bin = resolve_cli(spec.bin).ok_or_else(|| {
+        format!(
+            "{} isn't installed — `{}` is not on PATH",
+            spec.label, spec.bin
+        )
+    })?;
+    std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Through `argv_command`, not `CommandBuilder::new`, and that is load-bearing on
+    // Windows: most of these ship as an npm `.cmd` shim, which `CreateProcessW` cannot
+    // start on its own (ERROR_BAD_EXE_FORMAT) — the same wall every `package.json`
+    // script hit before `argv_command` existed. Codex keeps its real TUI while an
+    // independent App Server client feeds Episko's inspector; other providers retain
+    // this path's terminal-only fallback until they gain an adapter.
+    let args = agent::start_provider(
+        spec.id,
+        app.clone(),
+        &state,
+        agent::ProviderLaunch::new(
+            &session_id,
+            &workdir,
+            &bin,
+            resume.as_deref(),
+            mode.as_deref(),
+        ),
+    )?;
+    let mut cmd = argv_command(&bin, args);
+    cmd.cwd(&workdir);
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", augmented_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    apply_utf8_locale(&mut cmd);
+
+    log::info!(
+        "spawn agent · {} · {session_id} · {workdir} · {bin}",
+        spec.id
+    );
+    let child = match pair.slave.spawn_command(cmd) {
+        Ok(child) => child,
+        Err(e) => {
+            agent::stop_runtime(&state, &session_id);
+            return Err(e.to_string());
+        }
+    };
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
+    let child_pid = child.process_id();
+    let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
+    let win32 = Arc::new(AtomicBool::new(false));
+    state.sessions.lock().unwrap().insert(
+        session_id.clone(),
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "agent",
+            provider: Some(spec.id.into()),
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -746,8 +1220,9 @@ pub(crate) fn spawn_ghostty(
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
-    let bin = find_ghostty()
-        .ok_or_else(|| "Ghostty not found — install it or add `ghostty` to your PATH".to_string())?;
+    let bin = find_ghostty().ok_or_else(|| {
+        "Ghostty not found — install it or add `ghostty` to your PATH".to_string()
+    })?;
 
     let bg = accent.trim_start_matches('#').to_string();
     let mut cmd = std::process::Command::new(bin);
@@ -822,7 +1297,10 @@ pub(crate) fn spawn_external_terminal(
     _resume: Option<String>,
     _mode: Option<String>,
 ) -> Result<(), String> {
-    Err("external terminals aren't supported on Windows yet — use the embedded terminal".to_string())
+    Err(
+        "external terminals aren't supported on Windows yet — use the embedded terminal"
+            .to_string(),
+    )
 }
 
 /// Launch an instrumented `claude` session in a generic external terminal app
@@ -904,7 +1382,12 @@ pub(crate) fn open_terminal_here(workdir: String, _engine: String) -> Result<(),
         return Err(format!("not a directory: {workdir}"));
     }
     // Windows Terminal opens a new tab/window rooted at a directory via `-d`.
-    if sys_command("wt.exe").arg("-d").arg(&workdir).spawn().is_ok() {
+    if sys_command("wt.exe")
+        .arg("-d")
+        .arg(&workdir)
+        .spawn()
+        .is_ok()
+    {
         return Ok(());
     }
     // Fallback: `cmd /c start` spawns a *new console window* (a bare Command::spawn
@@ -944,7 +1427,8 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
         }
     }
     // Terminal.app / iTerm both open a new window at a directory passed to `open -a`.
-    let app_name = if engine == "iterm" && std::path::Path::new("/Applications/iTerm.app").exists() {
+    let app_name = if engine == "iterm" && std::path::Path::new("/Applications/iTerm.app").exists()
+    {
         "iTerm"
     } else {
         "Terminal"
@@ -962,22 +1446,38 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
 /// decides what a PTY's child actually receives, which is why the encoding decision
 /// lives here rather than in any one spawner or in the frontend.
 #[tauri::command]
-pub(crate) fn write_pty(state: State<AppState>, session_id: String, data: String) -> Result<(), String> {
+pub(crate) fn write_pty(
+    state: State<AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     let mut map = state.sessions.lock().unwrap();
     if let Some(s) = map.get_mut(&session_id) {
         let payload = pty_payload(&s.win32_input, &data);
-        s.writer.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+        s.writer
+            .write_all(payload.as_bytes())
+            .map_err(|e| e.to_string())?;
         s.writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub(crate) fn resize_pty(state: State<AppState>, session_id: String, rows: u16, cols: u16) -> Result<(), String> {
+pub(crate) fn resize_pty(
+    state: State<AppState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
     let map = state.sessions.lock().unwrap();
     if let Some(s) = map.get(&session_id) {
         s.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -989,6 +1489,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
     if let Some(mut s) = killed {
         log::info!("kill session · {session_id}");
         let _ = s.killer.kill();
+        agent::stop_runtime(&state, &session_id);
         if let Some(p) = s.pid {
             state.owned_pids.lock().unwrap().remove(&p);
         }
@@ -1000,6 +1501,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
 pub(crate) struct LiveSession {
     id: String,
     kind: &'static str,
+    provider: Option<String>,
     workdir: String,
 }
 
@@ -1018,7 +1520,12 @@ pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
         .lock()
         .unwrap()
         .iter()
-        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, workdir: s.workdir.clone() })
+        .map(|(id, s)| LiveSession {
+            id: id.clone(),
+            kind: s.kind,
+            provider: s.provider.clone(),
+            workdir: s.workdir.clone(),
+        })
         .collect()
 }
 
@@ -1036,11 +1543,19 @@ pub(crate) struct ScrollbackSnapshot {
 /// reload (#47 stage 2). Read under the same lock the reader appends under, so
 /// the returned seq is exact — see `ScrollBuf` for why that matters.
 #[tauri::command]
-pub(crate) fn read_scrollback(state: State<AppState>, session_id: String) -> Result<ScrollbackSnapshot, String> {
+pub(crate) fn read_scrollback(
+    state: State<AppState>,
+    session_id: String,
+) -> Result<ScrollbackSnapshot, String> {
     let map = state.sessions.lock().unwrap();
-    let s = map.get(&session_id).ok_or_else(|| format!("no such session: {session_id}"))?;
+    let s = map
+        .get(&session_id)
+        .ok_or_else(|| format!("no such session: {session_id}"))?;
     let (bytes, seq) = s.scrollback.lock().unwrap().snapshot();
-    Ok(ScrollbackSnapshot { data: STANDARD.encode(&bytes), seq })
+    Ok(ScrollbackSnapshot {
+        data: STANDARD.encode(&bytes),
+        seq,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1272,7 +1787,13 @@ fn fold_io(
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
     now: std::time::Instant,
 ) -> Folded {
-    let mut f = Folded { read_bps: 0.0, write_bps: 0.0, read: 0, written: 0, primed: false };
+    let mut f = Folded {
+        read_bps: 0.0,
+        write_bps: 0.0,
+        read: 0,
+        written: 0,
+        primed: false,
+    };
     for &(pid, r, w) in readings {
         f.read = f.read.saturating_add(r);
         f.written = f.written.saturating_add(w);
@@ -1418,13 +1939,17 @@ mod tests {
     fn ascii_input_is_never_rewritten() {
         for s in [
             "hunter2\r",
-            "\x03",                       // ^C
-            "\x1b[A\x1b[B\x1b[C\x1b[D",   // arrows
-            "\x1b[200~pasted\x1b[201~",   // bracketed paste, markers included
-            "\x1bOA",                     // SS3
+            "\x03",                     // ^C
+            "\x1b[A\x1b[B\x1b[C\x1b[D", // arrows
+            "\x1b[200~pasted\x1b[201~", // bracketed paste, markers included
+            "\x1bOA",                   // SS3
             "~!@#$%^&*()_+-=[]{}|;':\",./<>?`\\",
         ] {
-            assert_eq!(win32_input_encode(s), s, "rewrote an ASCII-only write: {s:?}");
+            assert_eq!(
+                win32_input_encode(s),
+                s,
+                "rewrote an ASCII-only write: {s:?}"
+            );
         }
     }
 
@@ -1466,7 +1991,10 @@ mod tests {
             "\x1b[200~\x1b[0;0;233;1;0;1_\x1b[0;0;233;0;0;1_\x1b[201~"
         );
         // An OSC's payload is the app's business, terminator included.
-        assert_eq!(win32_input_encode("\x1b]11;rgb:00/00/00\x07"), "\x1b]11;rgb:00/00/00\x07");
+        assert_eq!(
+            win32_input_encode("\x1b]11;rgb:00/00/00\x07"),
+            "\x1b]11;rgb:00/00/00\x07"
+        );
     }
 
     /// The flag is latched from ConPTY's own announcement, and only that. A PTY that
@@ -1477,14 +2005,24 @@ mod tests {
         let mut carry = Vec::new();
         note_win32_input_mode(b"\x1b[?25h hello", &mut carry, &flag);
         assert!(!flag.load(Ordering::Relaxed), "latched on unrelated output");
-        assert_eq!(pty_payload(&flag, "ä"), "ä", "should still be the untouched path");
+        assert_eq!(
+            pty_payload(&flag, "ä"),
+            "ä",
+            "should still be the untouched path"
+        );
 
         note_win32_input_mode(b"\x1b[6n\x1b[?9001h\x1b[?1004h", &mut carry, &flag);
         assert!(flag.load(Ordering::Relaxed));
-        assert_eq!(pty_payload(&flag, "ä"), "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_");
+        assert_eq!(
+            pty_payload(&flag, "ä"),
+            "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_"
+        );
 
         note_win32_input_mode(b"\x1b[?9001l", &mut carry, &flag);
-        assert!(!flag.load(Ordering::Relaxed), "withdrawal must be honoured too");
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "withdrawal must be honoured too"
+        );
     }
 
     /// The announcement split across two reads is still seen. Missing it is silent and
@@ -1496,7 +2034,10 @@ mod tests {
         note_win32_input_mode(b"junk\x1b[?90", &mut carry, &flag);
         assert!(!flag.load(Ordering::Relaxed));
         note_win32_input_mode(b"01h more", &mut carry, &flag);
-        assert!(flag.load(Ordering::Relaxed), "a split announcement was missed");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a split announcement was missed"
+        );
     }
 
     // ---------- the round trip, over a real PTY ----------
@@ -1518,7 +2059,13 @@ mod tests {
         println!("READY");
         let got = read_secret();
         // Hex, so the report survives the terminal it travels over.
-        println!("GOT:{}", got.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!(
+            "GOT:{}",
+            got.as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
     }
@@ -1584,7 +2131,11 @@ mod tests {
         // no-break space a passphrase copied out of a document carries".
         let cases: [(&str, &str, &str); 4] = [
             ("plain typed", "hunter2\r", "hunter2"),
-            ("pasted", "\x1b[200~Correct-Horse-42\x1b[201~\r", "Correct-Horse-42"),
+            (
+                "pasted",
+                "\x1b[200~Correct-Horse-42\x1b[201~\r",
+                "Correct-Horse-42",
+            ),
             ("non-ascii", "sëcrét✓§\r", "sëcrét✓§"),
             ("no-break space", "ab\u{a0}cd\r", "ab\u{a0}cd"),
         ];
@@ -1602,7 +2153,12 @@ mod tests {
     fn round_trip(send: &str) -> String {
         use std::time::{Duration, Instant};
         let pair = native_pty_system()
-            .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 30,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty");
         let mut cmd = CommandBuilder::new(std::env::current_exe().expect("current_exe"));
         cmd.arg("--exact");
@@ -1636,7 +2192,9 @@ mod tests {
                     let _ = g.write_all(b"\x1b[1;1R");
                     let _ = g.flush();
                 }
-                o2.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+                o2.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
             }
         });
 
@@ -1650,7 +2208,11 @@ mod tests {
             }
             false
         };
-        assert!(wait_for("READY"), "child never started: {}", out.lock().unwrap());
+        assert!(
+            wait_for("READY"),
+            "child never started: {}",
+            out.lock().unwrap()
+        );
         std::thread::sleep(Duration::from_millis(200));
         {
             let payload = pty_payload(&flag, send);
@@ -1703,7 +2265,10 @@ mod tests {
                 }
             }
             let whole: Vec<u8> = chunks.concat();
-            assert_eq!(replay, whole, "split at chunk {split} lost or doubled bytes");
+            assert_eq!(
+                replay, whole,
+                "split at chunk {split} lost or doubled bytes"
+            );
         }
     }
 
@@ -1716,7 +2281,10 @@ mod tests {
         sb.push(&vec![b'x'; SCROLLBACK_MAX]);
         let (bytes, _) = sb.snapshot();
         assert!(bytes.len() <= SCROLLBACK_MAX);
-        assert!(bytes.iter().all(|&b| b == b'x'), "the old line must be gone, not the fill");
+        assert!(
+            bytes.iter().all(|&b| b == b'x'),
+            "the old line must be gone, not the fill"
+        );
     }
 
     /// An evicted buffer starts mid-line — likely mid escape sequence, which on
@@ -1727,14 +2295,21 @@ mod tests {
     fn snapshot_trims_to_a_newline_only_after_eviction() {
         let mut sb = ScrollBuf::new();
         sb.push(b"first\nsecond\n");
-        assert_eq!(sb.snapshot().0, b"first\nsecond\n", "no eviction, nothing to trim");
+        assert_eq!(
+            sb.snapshot().0,
+            b"first\nsecond\n",
+            "no eviction, nothing to trim"
+        );
 
         let mut sb = ScrollBuf::new();
         // Fill so that eviction leaves a torn fragment ahead of a clean line.
         sb.push(&vec![b'a'; SCROLLBACK_MAX]);
         sb.push(b"\ncomplete line\n");
         let (bytes, _) = sb.snapshot();
-        assert!(bytes.starts_with(b"complete line\n"), "the torn front must go");
+        assert!(
+            bytes.starts_with(b"complete line\n"),
+            "the torn front must go"
+        );
     }
 
     /// One alternate-screen repaint can be 100% newline-free; trimming would then
@@ -1760,7 +2335,10 @@ mod tests {
         let mut samples = HashMap::new();
         // First poll: both agents seen, nothing to difference against yet.
         let first = fold_io(&[(10, 50_000_000, 0), (11, 1_000, 0)], &mut samples, t0);
-        assert!(!first.primed, "no previous reading, so the rate is unknown, not zero");
+        assert!(
+            !first.primed,
+            "no previous reading, so the rate is unknown, not zero"
+        );
         assert_eq!(first.read_bps, 0.0);
 
         // Second poll: pid 11 is gone; pid 10 read another MiB in one second.
@@ -1782,8 +2360,16 @@ mod tests {
         let t1 = t0 + std::time::Duration::from_secs(1);
         let mut samples = HashMap::new();
         fold_io(&[(1, 0, 0), (2, 0, 0)], &mut samples, t0);
-        let f = fold_io(&[(1, 1024 * 1024, 512), (2, 1024 * 1024, 512)], &mut samples, t1);
-        assert!((f.read_bps - 2.0 * 1024.0 * 1024.0).abs() < 1.0, "got {}", f.read_bps);
+        let f = fold_io(
+            &[(1, 1024 * 1024, 512), (2, 1024 * 1024, 512)],
+            &mut samples,
+            t1,
+        );
+        assert!(
+            (f.read_bps - 2.0 * 1024.0 * 1024.0).abs() < 1.0,
+            "got {}",
+            f.read_bps
+        );
         assert_eq!(f.read, 2 * 1024 * 1024, "lifetime totals add too");
         assert_eq!(f.written, 1024);
     }
@@ -1794,10 +2380,7 @@ mod tests {
     #[test]
     fn retiring_a_pid_banks_its_bytes_instead_of_losing_them() {
         let now = std::time::Instant::now();
-        let mut samples = HashMap::from([
-            (7u32, (900u64, 100u64, now)),
-            (8u32, (5u64, 6u64, now)),
-        ]);
+        let mut samples = HashMap::from([(7u32, (900u64, 100u64, now)), (8u32, (5u64, 6u64, now))]);
         let live = HashSet::from([8u32]);
         let mut retired = (0u64, 0u64);
         retire_missing(&mut samples, &live, &mut retired);
@@ -1808,7 +2391,11 @@ mod tests {
 
         // And a second sweep must not double-count what it already banked.
         retire_missing(&mut samples, &live, &mut retired);
-        assert_eq!(retired, (900, 100), "already-retired bytes are not banked twice");
+        assert_eq!(
+            retired,
+            (900, 100),
+            "already-retired bytes are not banked twice"
+        );
     }
 
     /// The retirement key is the session roster, not `owned_pids` — shells and tasks
@@ -1829,14 +2416,26 @@ mod tests {
             // The counter grows a little each poll, the way a real pane's does.
             let reading = [(42u32, 1_000_000 + poll * 1_000, 500 + poll)];
             retire_missing(&mut samples, &live, &mut retired);
-            let f = fold_io(&reading, &mut samples, t0 + std::time::Duration::from_secs(poll));
-            assert_eq!(f.read, 1_000_000 + poll * 1_000, "the live total is the reading");
+            let f = fold_io(
+                &reading,
+                &mut samples,
+                t0 + std::time::Duration::from_secs(poll),
+            );
+            assert_eq!(
+                f.read,
+                1_000_000 + poll * 1_000,
+                "the live total is the reading"
+            );
         }
         assert_eq!(retired, (0, 0), "a pane still in the roster banks nothing");
 
         // Only when it leaves the roster do its bytes retire — once, at the last reading.
         retire_missing(&mut samples, &HashSet::new(), &mut retired);
-        assert_eq!(retired, (1_004_000, 504), "and then exactly its final sample");
+        assert_eq!(
+            retired,
+            (1_004_000, 504),
+            "and then exactly its final sample"
+        );
     }
 
     /// The inspector's I/O readout is only worth showing if the platform actually
@@ -1942,12 +2541,17 @@ mod tests {
     /// cmd's quoting rules for no reason.
     #[test]
     fn windows_only_spawns_real_executables_directly() {
-        for exe in ["node.exe", r"C:\Program Files\nodejs\node.exe", "PYTHON.EXE", "foo.com"] {
+        for exe in [
+            "node.exe",
+            r"C:\Program Files\nodejs\node.exe",
+            "PYTHON.EXE",
+            "foo.com",
+        ] {
             assert!(win_runs_directly(exe), "{exe} is directly executable");
         }
         for script in [
             r"C:\Program Files\nodejs\npm.cmd",
-            r"C:\Program Files\nodejs\npm",   // the extensionless bash script beside it
+            r"C:\Program Files\nodejs\npm", // the extensionless bash script beside it
             r"C:\tools\build.bat",
             r"C:\tools\deploy.ps1",
         ] {
@@ -1963,8 +2567,18 @@ mod tests {
     /// `--permission-mode` is what ask-me-each-time already means.
     #[test]
     fn permission_mode_is_whitelisted_and_the_standard_mode_passes_no_flag() {
-        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
-            assert_eq!(permission_mode_arg(Some(m)), Some(m), "{m} should reach the command line");
+        for m in [
+            "plan",
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
+            assert_eq!(
+                permission_mode_arg(Some(m)),
+                Some(m),
+                "{m} should reach the command line"
+            );
         }
         // The standard mode is spelled by silence, whichever name it arrives under.
         assert_eq!(permission_mode_arg(None), None);
@@ -1977,8 +2591,17 @@ mod tests {
         assert_eq!(permission_mode_arg(Some("acceptedits")), None);
         assert_eq!(permission_mode_arg(Some("PLAN")), None);
         // Nothing that could do something in a shell script gets through.
-        for hostile in ["plan; rm -rf /", "plan --dangerously-skip-permissions", "$(id)", "plan\nrm x"] {
-            assert_eq!(permission_mode_arg(Some(hostile)), None, "{hostile:?} must not reach a command line");
+        for hostile in [
+            "plan; rm -rf /",
+            "plan --dangerously-skip-permissions",
+            "$(id)",
+            "plan\nrm x",
+        ] {
+            assert_eq!(
+                permission_mode_arg(Some(hostile)),
+                None,
+                "{hostile:?} must not reach a command line"
+            );
         }
     }
 
@@ -2004,11 +2627,21 @@ mod tests {
                 .arg("--version")
                 .env("PATH", augmented_path())
                 .output()
-                .unwrap_or_else(|e| panic!("could not run `claude` at {claude:?}: {e}\n\
-                     This test needs Claude Code installed and on PATH."))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "could not run `claude` at {claude:?}: {e}\n\
+                     This test needs Claude Code installed and on PATH."
+                    )
+                })
         };
 
-        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
+        for m in [
+            "plan",
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
             let out = try_mode(m);
             assert!(
                 out.status.success(),
@@ -2158,4 +2791,160 @@ Local:   http://localhost:5555/
         assert!(got.path.contains("nosuchtask.output"), "path was {:?}", got.path);
     }
 
+    // ---------- the agent table ----------
+    //
+    // Nothing else can check this half. A wrong `bin` compiles, passes clippy and
+    // ships; the only symptom is that the agent never appears in the picker on a
+    // machine that has it installed, which looks exactly like not having installed it.
+    // So the table gets the checks a table can have: no duplicates, no empties, and
+    // the ordering the picker relies on.
+
+    #[test]
+    fn agents_are_sorted_by_label() {
+        // The picker renders `available_agents()` in table order and does not sort, so
+        // an entry appended at the bottom (the obvious way to add one) would show up
+        // after Qwen with no test to say otherwise.
+        let labels: Vec<String> = AGENTS.iter().map(|a| a.label.to_lowercase()).collect();
+        let mut sorted = labels.clone();
+        sorted.sort();
+        assert_eq!(
+            labels, sorted,
+            "AGENTS is the picker's order — keep it sorted by label"
+        );
+    }
+
+    #[test]
+    fn agent_ids_and_labels_are_unique_and_populated() {
+        let mut ids = std::collections::HashSet::new();
+        let mut labels = std::collections::HashSet::new();
+        let mut marks = std::collections::HashSet::new();
+        for a in AGENTS {
+            assert!(
+                !a.id.is_empty() && !a.label.is_empty() && !a.bin.is_empty() && !a.mark.is_empty(),
+                "{} has an empty field",
+                a.id
+            );
+            // The id is the wire value `spawn_agent` takes and the key the frontend
+            // stores on a pane, so it has to be a stable slug rather than a display
+            // name that might get prettied up later.
+            assert!(
+                a.id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                "agent id {:?} must be a lowercase ascii slug",
+                a.id
+            );
+            assert!(ids.insert(a.id), "duplicate agent id {:?}", a.id);
+            assert!(
+                labels.insert(a.label),
+                "duplicate agent label {:?}",
+                a.label
+            );
+            // Keep the compatibility field well-formed and collision-free even though
+            // current frontends paint a provider-owned SVG instead.
+            assert_eq!(
+                a.mark.chars().count(),
+                2,
+                "agent mark {:?} must be two characters",
+                a.mark
+            );
+            assert!(
+                marks.insert(a.mark),
+                "duplicate agent mark {:?} ({})",
+                a.mark,
+                a.id
+            );
+        }
+    }
+
+    #[test]
+    fn claude_is_not_in_the_agent_table() {
+        // Deliberate, and easy to "fix" by someone who reads the list as an omission:
+        // launching claude through this path would strip the instrumentation the whole
+        // cockpit is built on. See the AGENTS doc comment.
+        assert!(
+            agent_spec("claude").is_none() && !AGENTS.iter().any(|a| a.bin == "claude"),
+            "claude belongs to spawn_claude, which instruments it — see the AGENTS comment"
+        );
+    }
+
+    #[test]
+    fn provider_manifest_names_real_agents_and_known_capabilities() {
+        const KNOWN: &[&str] = &[
+            "session-state",
+            "activity",
+            "context",
+            "usage",
+            "permissions",
+            "resume",
+            "history",
+            "external-terminal",
+            "launch-permissions",
+        ];
+        let providers = provider_manifest();
+        for (id, provider) in &providers {
+            assert!(
+                id == "claude" || agent_spec(id).is_some(),
+                "provider manifest names {id:?}, which is absent from AGENTS"
+            );
+            assert!(
+                provider.capabilities.is_empty()
+                    || provider.capabilities.iter().any(|c| c == "session-state"),
+                "integrated provider {id:?} must advertise session-state"
+            );
+            for capability in &provider.capabilities {
+                assert!(
+                    KNOWN.contains(&capability.as_str()),
+                    "provider {id:?} advertises unknown capability {capability:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_agent_only_answers_to_ids_in_the_table() {
+        for a in AGENTS {
+            assert_eq!(agent_spec(a.id).map(|s| s.bin), Some(a.bin));
+        }
+        // The lookup `spawn_agent` refuses on. A frontend that sent a label, a binary
+        // name or a stale id must not fall through to launching *something*.
+        for bogus in ["", "Codex", "cursor-agent", "claude", "opencode2"] {
+            assert!(
+                agent_spec(bogus).is_none(),
+                "{bogus:?} should not resolve to an agent"
+            );
+        }
+    }
+
+    #[test]
+    fn list_agents_reports_the_whole_table_and_marks_what_it_found() {
+        // Machine-dependent by nature — CI has none of these installed and a dev box
+        // has some — so the assertions are about shape rather than contents. The one
+        // that matters: the list is the *whole* table, because a picker built from a
+        // filtered one cannot explain an agent that is missing.
+        let list = list_agents();
+        assert_eq!(list.len(), AGENTS.len(), "list_agents must not filter");
+        for info in list {
+            let spec = agent_spec(info.id).expect("list_agents invented an id");
+            assert_eq!(
+                (spec.label, spec.bin, spec.mark),
+                (info.label, info.bin, info.mark)
+            );
+            // A `Some` path is a promise the agent will start, so it has to be a real
+            // file — that is what the picker lets you click.
+            if let Some(p) = &info.path {
+                assert!(
+                    std::path::Path::new(p).is_file(),
+                    "{} reported {p}, not a file",
+                    info.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_cli_says_no_to_something_nobody_ships() {
+        // The other half of the contract above: a miss is `None`, never a bare-name
+        // fallback. If this ever returns Some, every agent is in every picker.
+        assert!(resolve_cli("episko-definitely-not-a-real-binary").is_none());
+    }
 }

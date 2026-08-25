@@ -5,16 +5,17 @@
 //
 // "Reopen a session I closed" is a question the restore roster in ./mirror cannot
 // answer, by design: `closeSession` drops an entry (an explicit close means done) and
-// the roster only ever knew the sessions Episko launched. So History reads the store
-// that forgets nothing — Claude's own transcripts, via `list_session_history` — which
-// makes its list a *superset* of the sidebar's dormant rows, sessions started in a
-// plain terminal or an IDE included.
+// the roster only ever knew the sessions Episko launched. So History joins each
+// provider's durable history: Claude transcripts plus Codex App Server threads today.
+// Claude's half remains a superset that includes sessions started in a terminal/IDE.
 
 import { basename } from "./format";
 import { backendLive, dormants, externals, FAVORITES, sessions } from "./state";
+import { providerSessionKey } from "./types";
 
-/// One row as `list_session_history` returns it.
+/// One provider-neutral history row.
 export interface HistEntry {
+  provider: string;
   session_id: string; cwd: string; project: string; branch: string;
   title: string; last_prompt: string; bytes: number; exists: boolean;
   /// Epoch SECONDS, and the transcript's own newest record rather than its file
@@ -25,7 +26,7 @@ export interface HistEntry {
   repo_root: string | null;   // the repo's main worktree — see histProject
 }
 
-/** What a row calls itself: Claude's own title, else the last thing asked of it. */
+/** What a row calls itself: the provider title, else the last thing asked of it. */
 export const histLabel = (h: HistEntry) => h.title || h.last_prompt || "untitled session";
 
 // Put a history row back into the sidebar's own grouping — the colorKey it would have
@@ -66,12 +67,16 @@ const under = (p: string, root: string) => p === root || p.startsWith(root + "/"
 // launch id is live in the backend, exactly the shape the `sessions` loop has.
 export function histBusy(h: HistEntry): boolean {
   const id = h.session_id.toLowerCase();
-  for (const s of sessions.values()) if (s.resumeId.toLowerCase() === id || s.id.toLowerCase() === id) return true;
-  if (backendLive.has(id)) return true;
-  for (const d of dormants) {
-    if (backendLive.has(d.id.toLowerCase()) && d.resumeId.toLowerCase() === id) return true;
+  for (const s of sessions.values()) {
+    if (s.provider === h.provider && (s.resumeId.toLowerCase() === id || s.id.toLowerCase() === id)) return true;
   }
-  return externals.some((e) => e.session_id.toLowerCase() === id);
+  if (backendLive.has(providerSessionKey(h.provider, id))) return true;
+  for (const d of dormants) {
+    if (d.provider === h.provider
+      && backendLive.has(providerSessionKey(d.provider, d.id))
+      && d.resumeId.toLowerCase() === id) return true;
+  }
+  return h.provider === "claude" && externals.some((e) => e.session_id.toLowerCase() === id);
 }
 
 /** Does this row belong to the project rooted at `root`? Matches on the resolved

@@ -22,6 +22,19 @@
 
 import type { FileTouch, TouchKind } from "./types";
 
+/**
+ * Provider file events are allowed to name a path relative to the thread cwd. Everything
+ * after the neutral reducer — labels, open/reveal and Explorer joins — consumes absolute
+ * paths, so resolve the provider spelling once as it enters Sess state. Existing absolute
+ * POSIX, UNC and drive-letter paths pass through byte-for-byte.
+ */
+export function absoluteTouchPath(path: string, workdir: string): string {
+  const p = path.trim();
+  if (!p || !workdir || /^[A-Za-z]:[/\\]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return p;
+  const sep = workdir.includes("\\") && !workdir.includes("/") ? "\\" : "/";
+  return `${workdir.replace(/[/\\]+$/, "")}${sep}${p.replace(/[/\\]/g, sep)}`;
+}
+
 /// Kinds rank, and a file's kind only ever moves up this ladder. Three reasons it is a
 /// ladder rather than "the last thing that happened":
 ///
@@ -41,6 +54,20 @@ const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 /// is a memory bound rather than a display one — generous, because the cheapest way to
 /// make the card lie is to have silently dropped the file being asked about.
 const CAP = 400;
+
+/// Provider-neutral half of `applyTouch`: record a path when an adapter already knows
+/// the resulting kind (Codex file-change items carry add/update/delete explicitly).
+export function noteTouch(list: FileTouch[], path: string, kind: TouchKind, now: number): void {
+  if (!path.trim()) return;
+  const at = list.findIndex((f) => f.path === path);
+  if (at >= 0) {
+    const f = list[at]; f.n++; f.at = now;
+    if (RANK[kind] > RANK[f.kind]) f.kind = kind;
+    return;
+  }
+  list.push({ path, kind, n: 1, at: now });
+  if (list.length > CAP) evict(list);
+}
 
 /// Which of the three things a tool does to a file, or null if it does none of them.
 /// Also the definition the "also ran" tally filters by, so the two halves of the card

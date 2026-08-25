@@ -52,9 +52,10 @@ import {
 import { statusKey, type DiffStat, type GitActionResult, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, cmpBase, dashMirror, externals, folderDirty, permMode, sessions, setActiveId,
+  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, permissionModeFor, sessions, setActiveId,
   setMirror,
 } from "./state";
+import { providerPermissionMode } from "./providers";
 
 // What this pane does but does not own. Same host-object shape as ./settings and
 // ./palui: a control surface that touches many things it isn't responsible for takes
@@ -64,7 +65,7 @@ export interface DashHost {
   // "string"` to decide whether to type a prompt in and write a claim, so a host whose
   // launch resolves to `undefined` makes all three permanently take the failure branch
   // — which shipped, silently, because `unknown` accepted a `void`-returning launch.
-  launch: (project: string, workdir: string, opts?: { colorKey?: string }) => Promise<string | null>;
+  launch: (project: string, workdir: string, opts?: { colorKey?: string; agent?: string }) => Promise<string | null>;
   /// "Where should this session start?" — a plain launch in a folder that isn't a repo,
   /// the new-session dialog in one that is. `launch` above is the unconditional verb and
   /// is what a *dispatch* wants (it has already decided); this is what a **person**
@@ -821,7 +822,9 @@ export function renderDash(): void {
   $("dashScrim").classList.toggle("show", sheet !== null);
   if (sheet?.kind === "close") paint("dashSheet", closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name()));
   else if (sheet?.kind === "dispatch") {
-    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, permMode, holder(sheet.t)));
+    const agent = effectiveAgent(root());
+    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
   }
 }
 
@@ -1297,6 +1300,9 @@ async function doDispatch(): Promise<void> {
   const t = sheet.t, r = root(), n = name();
   sheet = null;
   renderDash();
+  // Follow the project provider preference like every other launch. Claim release is
+  // tied to the provider-neutral `pty-exit` event, so Claude, Codex and terminal-only
+  // agents all hand the issue back when their pane stops.
   const sid = await host.launch(n, r, { colorKey: r });
   // No toast: `launch` already showed the actual spawn error, and a second one would
   // replace the reason with a vaguer restatement of it. No claim either — see above.
@@ -1330,7 +1336,7 @@ async function doDispatch(): Promise<void> {
   }
 
   // Sent, not prefilled — see the note above. The carriage return goes in a write of its
-  // OWN, a beat behind the text: Claude's REPL reads a burst that arrives in one chunk
+  // OWN, a beat behind the text: full-screen agent REPLs commonly read a burst that arrives in one chunk
   // as a *paste*, and a `\r` inside a paste is a newline in the buffer, not a submit. So
   // the prompt landed in the input box and sat there — which is exactly the waiting this
   // path exists to remove. A lone `\r` has no burst to be folded into.

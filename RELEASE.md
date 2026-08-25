@@ -90,8 +90,8 @@ Tick these in order — each depends on the one above.
       *inside it*.
 - [ ] **The statusLine half arrives**, which the hook counter does not tell you —
       hooks log a line each, statusLine deliberately does not, and `rx`/`routed` climb
-      happily on hooks alone. The evidence is the inspector's **model / context % /
-      cost / duration**, the footer meters, and the **5h / 7d rate-limit windows**
+      happily on hooks alone. The evidence is the inspector's **model / context %**,
+      the footer's **cost / duration** and **5h / 7d rate-limit windows**
       being populated rather than `–`. All of them ride this one path, so they fail
       together and silently; a healthy-looking pane is not evidence.
       **Costs nothing to check:** launch a session and read the inspector *without
