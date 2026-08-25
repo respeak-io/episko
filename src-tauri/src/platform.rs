@@ -811,8 +811,8 @@ pub(crate) fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<St
 /// thread goes with the process.
 #[cfg(windows)]
 pub(crate) struct KeepAwake {
-    /// Dropping this releases the assertion: the parked thread's `recv()` fails,
-    /// it clears the execution state and exits.
+    /// Dropping this releases the assertion: the parked thread's `recv_timeout()`
+    /// reports the channel disconnected, it clears the execution state and exits.
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -860,13 +860,78 @@ fn execution_state_for(flags: &[String]) -> u32 {
     es
 }
 
+/// How often the parked thread re-states its execution state.
+///
+/// **Windows does not preserve a thread's execution state across suspend/resume.**
+/// A single `SetThreadExecutionState` at arming time therefore holds only until the
+/// first sleep — after that the box idle-sleeps freely while the UI still shows the
+/// cup steaming, because the frontend only re-invokes on a *flag change* and in agent
+/// mode the flags can sit unchanged for days (one session left at `done` keeps
+/// `cafAgentsBusy()` true indefinitely). Nothing else would ever restore it, so the
+/// thread that owns the assertion re-states it on a tick instead.
+///
+/// 30s is comfortably under the one minute that is the shortest *Sleep after* Windows
+/// lets you configure, so a resume can never outrun the next re-assert.
+#[cfg(windows)]
+const REASSERT_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Park a thread holding `es` until the returned handle is dropped, re-stating it
+/// every `every` so a suspend/resume can't quietly end the assertion.
+///
+/// The state must be set *and* released on the same thread, so the whole lifetime
+/// lives inside the closure: assert, hold, clear. Split out of `set_caffeinate` (and
+/// taking the interval rather than reading `REASSERT_EVERY` directly) so a test can
+/// drive the hold/re-assert/release cycle without an `AppState` and without a
+/// half-minute suite.
+#[cfg(windows)]
+fn spawn_keep_awake(
+    es: u32,
+    every: std::time::Duration,
+    on_reassert: impl Fn() + Send + 'static,
+) -> Result<KeepAwake, String> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
+    let (stop, rx) = channel::<()>();
+    let (ready, ready_rx) = channel::<Result<(), String>>();
+    let thread = std::thread::spawn(move || {
+        // SAFETY: a plain flags-in/flags-out Win32 call with no pointers.
+        let prev = unsafe { SetThreadExecutionState(ES_CONTINUOUS | es) };
+        if prev == 0 {
+            let _ = ready.send(Err("SetThreadExecutionState refused the request".into()));
+            return;
+        }
+        let _ = ready.send(Ok(()));
+        // Hold until released, waking on each tick to re-state the assertion (see
+        // REASSERT_EVERY). `recv_timeout` reports `Disconnected` the moment the
+        // sender drops rather than at the next tick, so releasing stays prompt and
+        // `Drop`'s join can't stall the caller for up to half a minute.
+        while let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(every) {
+            // SAFETY: as above. Re-stating the same state is idempotent, so this is
+            // a no-op except after a resume, which is the one time it matters.
+            unsafe { SetThreadExecutionState(ES_CONTINUOUS | es) };
+            on_reassert();
+        }
+        // SAFETY: same call; ES_CONTINUOUS alone clears our assertion.
+        unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+    });
+    // Surface a refusal as an error instead of a thread that quietly did nothing —
+    // the UI would otherwise paint the cup lit over a sleeping PC.
+    match ready_rx.recv() {
+        Ok(Ok(())) => Ok(KeepAwake { stop: Some(stop), thread: Some(thread) }),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => Err("keep-awake thread died before asserting".into()),
+    }
+}
+
 /// Toggle a Windows power assertion on or off — the `caffeinate` counterpart.
 /// Only ever one assertion is live: an existing one is dropped (which joins its
 /// thread and clears the state) first, so switching presets is a stop+restart.
 #[cfg(windows)]
 #[tauri::command]
 pub(crate) fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<String>) -> Result<(), String> {
-    use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
     let mut guard = state.caffeinate.lock().unwrap();
     guard.take(); // drop → releases whatever was asserted
     if !active || flags.is_empty() {
@@ -876,33 +941,7 @@ pub(crate) fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<St
     if es == 0 {
         return Err(format!("no Windows keep-awake equivalent for: {}", flags.join(" ")));
     }
-    let (stop, rx) = std::sync::mpsc::channel::<()>();
-    // The assertion must be set *and* released on the same thread, so the whole
-    // lifetime lives inside this closure: assert, park, clear.
-    let (ready, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-    let thread = std::thread::spawn(move || {
-        // SAFETY: a plain flags-in/flags-out Win32 call with no pointers.
-        let prev = unsafe { SetThreadExecutionState(ES_CONTINUOUS | es) };
-        if prev == 0 {
-            let _ = ready.send(Err("SetThreadExecutionState refused the request".into()));
-            return;
-        }
-        let _ = ready.send(Ok(()));
-        let _ = rx.recv(); // park until the sender is dropped
-        // SAFETY: same call; ES_CONTINUOUS alone clears our assertion.
-        unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
-    });
-    // Surface a refusal as a command error instead of a thread that quietly did
-    // nothing — the UI would otherwise paint the cup lit over a sleeping PC.
-    match ready_rx.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let _ = thread.join();
-            return Err(e);
-        }
-        Err(_) => return Err("keep-awake thread died before asserting".into()),
-    }
-    *guard = Some(KeepAwake { stop: Some(stop), thread: Some(thread) });
+    *guard = Some(spawn_keep_awake(es, REASSERT_EVERY, || {})?);
     Ok(())
 }
 
@@ -1293,6 +1332,46 @@ mod tests {
         // than lighting the cup over a machine that will happily sleep.
         assert_eq!(f(&["-m"]), 0);
         assert_eq!(f(&[]), 0);
+    }
+
+    /// The three things the hold loop has to get right at once: it re-states the
+    /// assertion (the whole point — Windows drops it across suspend/resume), it does
+    /// not mistake a tick for a release, and it still lets go immediately when asked.
+    /// All three are invisible from the outside, and the bug this replaced looked
+    /// identical from the outside, which is why they are counted rather than read.
+    #[cfg(windows)]
+    #[test]
+    fn keep_awake_holds_across_reassert_ticks_and_still_releases_promptly() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::System::Power::ES_SYSTEM_REQUIRED;
+        let every = Duration::from_millis(5);
+        let ticks = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&ticks);
+        let awake = spawn_keep_awake(ES_SYSTEM_REQUIRED, every, move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+        })
+        .expect("assertion refused");
+
+        // Twenty-odd ticks in. The bug this replaces was a bare `recv()`: it parks and
+        // releases exactly like the fix, so the only thing that tells them apart is
+        // whether the assertion is ever re-stated. Count that. (The hook sits on the
+        // line after the Win32 call, which is as close as a real extern call gets to
+        // observable.)
+        std::thread::sleep(every * 20);
+        assert!(ticks.load(Ordering::Relaxed) > 0, "assertion was never re-stated");
+        // And a timeout must not be treated as "release" — the easy mistake when
+        // swapping `recv` for `recv_timeout` — which would drop the assertion on the
+        // first tick while the UI still shows the cup steaming.
+        assert!(!awake.thread.as_ref().unwrap().is_finished(), "thread exited on a tick instead of holding");
+
+        // The other end of the same change: releasing must not wait for the next tick.
+        // `Drop` joins, and its caller is a `#[tauri::command]`, so a tick-long stall
+        // there would freeze the UI for REASSERT_EVERY on every preset switch.
+        let t = Instant::now();
+        drop(awake);
+        assert!(t.elapsed() < Duration::from_secs(1), "release waited for a tick: {:?}", t.elapsed());
     }
 
     /// The macOS half of the same setting. `set_caffeinate` spawns without a shell,

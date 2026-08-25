@@ -13,6 +13,18 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Keep-awake now survives the PC sleeping.** On Windows the assertion was set once and
+  never re-stated, but Windows drops a thread's execution state across suspend/resume — so
+  the first sleep ended it permanently, and because the button only re-asks the backend when
+  its *flags* change (in *Until agents idle*, one session left at `done` holds them steady
+  for days), nothing ever restored it. The cup went on steaming over a machine that idle-slept
+  every half hour. The thread that owns the assertion now re-states it every 30s.
+
+! **A reload no longer strands the assertion.** Reloading the webview while caffeinated
+  restarted the button with no memory of it, leaving the backend holding the machine awake
+  with the cup painted off — and nothing short of quitting could stop it. Startup now clears
+  it explicitly.
+
 ## 0.21.0 — 2026-08-21
 
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you

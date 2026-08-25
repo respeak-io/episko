@@ -106,6 +106,16 @@ function cafArmTimer() {
     cafTimerHandle = window.setTimeout(() => { cafArmed = false; reconcileCaf(); toast("Caffeinate ended"); }, cafTimerSec * 1000);
   }
 }
+// Clear any assertion the backend is still holding for us. A reload (⌘R) restarts
+// this module — cafArmed false, cafAssertKey "" — but leaves the Rust side untouched,
+// and reconcileCaf() then computes key "" against cafAssertKey "", sees no change and
+// invokes nothing. So a reload while caffeinated stranded the assertion: held forever,
+// with the cup painted off and no way to stop it short of quitting the app. Call this
+// once at boot, where "caffeinate always starts off" is decided (see main.ts). It is a
+// no-op against a backend holding nothing.
+export function initCaf() {
+  invoke("set_caffeinate", { active: false, flags: [] }).catch(() => {});
+}
 export function reconcileCaf() {
   const flags = cafDesiredFlags();
   const key = flags ? flags.join(" ") : "";
