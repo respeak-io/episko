@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.22.0 — 2026-08-25
+
+Episko runs the other coding agents too, and which one starts is a setting rather
+than a question. The diff reads like a pull request and says what the change did to
+the shape of the code, the header lists the dev servers your agents left running,
+and a turn the API kills overnight can pick itself back up.
+
 + **The dev servers your agents leave running, in the header.** When an agent backgrounds a
   shell — which is how `pnpm dev`, `uvicorn` and every watcher gets started — Episko now sees
   it, reads the log that shell is writing, and shows a count beside the reactor. The pill goes
@@ -222,7 +229,6 @@ Markers: `+` new · `~` changed · `!` fixed
   closed it again. *Move to group → ‹ Back* had done this since the drill-down shipped.
 
 ## 0.21.0 — 2026-08-21
-
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you
 can open to see exactly what ran and what came back. The project overview learned to push
 and switch branch, the status bar became yours to arrange, and every dialog is Episko's own.
