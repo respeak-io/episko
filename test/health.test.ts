@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   DEFAULT_HEALTH, clampHealth, fileChips, isSourcePath, isTestPath,
   findingsText, noTestChanged, setChips, silencedIn, worstSev, type Chip,
@@ -405,5 +406,48 @@ describe("setChips", () => {
 
   it("has nothing to say about a tidy change", () => {
     expect(setChips([file("src/a.ts", add("x")), file("test/a.test.ts", add("y"))], report())).toEqual([]);
+  });
+});
+
+// A fourth source-parsing contract test, for the same reason as the other three: the join
+// it guards has nothing between its two halves that can check it.
+//
+// `is_code_file` in health.rs decides which files the backend measures and counts into
+// `p90_code_lines`; `isSourcePath` here decides which of those may carry a chip. health.rs
+// says so in its own doc comment ("The frontend keeps the same list … keep them in step"),
+// and a comment is exactly as strong as whoever reads it. When they drift the failure is
+// silent in the worst direction: the file is measured, the numbers are real, and then
+// `fileChips` takes its early return and says nothing at all. `css`, `scss`, `bash` and
+// `kts` had drifted out of this half.
+describe("the two source-extension lists are one list", () => {
+  it("matches `is_code_file` in health.rs, which says they must", () => {
+    const rs = readFileSync(new URL("../src-tauri/src/health.rs", import.meta.url), "utf8");
+    const fn = rs.slice(rs.indexOf("fn is_code_file"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+    const rust = new Set([...body.matchAll(/"(\w+)"/g)].map((m) => m[1]));
+    expect(rust.size, "could not read the rust list — has is_code_file been rewritten?")
+      .toBeGreaterThan(15);
+
+    // Drive the TS half through its own public predicate rather than re-reading its
+    // array: what matters is the answer callers get, not how it is spelled.
+    const onlyRust = [...rust].filter((e) => !isSourcePath(`f.${e}`));
+    expect(onlyRust, "health.rs measures these; health.ts will never chip them").toEqual([]);
+    for (const e of rust) expect(isSourcePath(`a/b/f.${e}`), e).toBe(true);
+    for (const e of ["md", "json", "toml", "lock", "svg"]) expect(isSourcePath(`f.${e}`), e).toBe(false);
+  });
+});
+
+describe("a chip's tooltip reads as a sentence", () => {
+  // The singular branch interpolated an empty string straight against the first entry,
+  // so one silenced error rendered "This change addsline 42: …". It is the common case,
+  // it is shown as the chip's `title`, and `findingsText` flattens it into the text a
+  // session is handed — so the typo reached an agent as a prompt.
+  it("does not run the count into the first finding when there is only one", () => {
+    const f = file("src/a.ts", add("  const x = y as any;", 42));
+    const chips = fileChips(f, health(), report());
+    const silenced = chips.find((c) => c.id === "silenced");
+    expect(silenced, "no silenced chip to check").toBeTruthy();
+    expect(silenced!.title).not.toMatch(/adds\s*line/);
+    expect(silenced!.title).toContain("an error that is swallowed at line 42");
   });
 });

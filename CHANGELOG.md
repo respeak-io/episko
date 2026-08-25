@@ -154,6 +154,16 @@ Markers: `+` new · `~` changed · `!` fixed
   Each one is now read for the shape it is meant to be, and anything else is discarded on
   its own rather than taking the session with it.
 
+! **Code health measures what it says it measures.** Four faults, each of which failed by
+  going quiet rather than by being wrong out loud. Indentation was read in the file's own
+  step, but a tie between two step sizes resolved to the largest instead of the smallest,
+  so depth came out too small and the nesting chip simply never fired. A Rust lifetime
+  (`&'a str`) was read as an opening quote, which blanked the rest of its line — taking the
+  brace with it, and skewing every span and depth measured after it in that file. CSS,
+  SCSS, Bash and Kotlin-script files were measured by the backend and then never chipped,
+  because the two halves of the source-extension list had drifted apart. And a single
+  silenced error described itself as "This change addsline 42".
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

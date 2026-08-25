@@ -73,6 +73,27 @@ pub(crate) fn family_of(path: &str) -> Family {
     }
 }
 
+/// Whether a `'` in this language opens a literal or names a lifetime.
+///
+/// It cannot be read off `Family`: Rust and TypeScript are both `Brace`, and in
+/// TypeScript `'` really is a string delimiter. In Rust it usually is not — `&'a str`
+/// and `impl<'a>` carry a tick that never closes — and treating one as an opening quote
+/// blanks the rest of the line, taking the `(` and the `{` with it. The line then stops
+/// registering as a declaration AND stops contributing its brace, so on any line with an
+/// odd number of ticks `depth` is left skewed for the whole file and every span, nesting
+/// and complexity figure after it is measured against the wrong baseline.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Ticks {
+    /// `'` opens a string, as in JS/TS.
+    Quote,
+    /// `'` names a lifetime unless it forms a character literal. Rust only.
+    Lifetime,
+}
+
+pub(crate) fn ticks_of(path: &str) -> Ticks {
+    if path.rsplit('.').next() == Some("rs") { Ticks::Lifetime } else { Ticks::Quote }
+}
+
 /// Whether a path is code, as opposed to documentation, config or data.
 ///
 /// Not the same question as [`family_of`], which asks how to *parse* a file: `.toml` and
@@ -132,33 +153,53 @@ fn is_code(line: &str, fam: Family, in_block: &mut bool) -> bool {
 /// Single-line only, and knowingly so: a multi-line template literal or raw string will
 /// confuse the depth for as long as it runs. The failure is a wrong nesting number on
 /// one file, which is a chip that should not have fired — not a crash, and not silence.
-fn blank_literals(line: &str) -> String {
+fn blank_literals(line: &str, ticks: Ticks) -> String {
+    let ch: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
-    let mut quote: Option<char> = None;
-    let mut esc = false;
-    for c in line.chars() {
-        match quote {
-            Some(q) => {
-                out.push(' ');
-                if esc {
-                    esc = false;
-                } else if c == '\\' {
-                    esc = true;
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None => {
-                if c == '"' || c == '\'' || c == '`' {
-                    quote = Some(c);
-                    out.push(' ');
-                } else {
-                    out.push(c);
-                }
+    let mut i = 0;
+    while i < ch.len() {
+        let c = ch[i];
+        let opens = c == '"' || c == '`'
+            || (c == '\'' && (ticks == Ticks::Quote || is_char_literal(&ch, i)));
+        if !opens {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        out.push(' ');
+        i += 1;
+        let mut esc = false;
+        while i < ch.len() {
+            let d = ch[i];
+            out.push(' ');
+            i += 1;
+            if esc {
+                esc = false;
+            } else if d == '\\' {
+                esc = true;
+            } else if d == c {
+                break;
             }
         }
     }
     out
+}
+
+/// A Rust `'` that really is a character literal — `'a'`, `'\n'`, `'\u{41}'` — rather
+/// than the lifetime in `&'a str`. Only what follows can tell them apart, which is why
+/// this needs the whole line and an index rather than one character at a time.
+///
+/// It has to be right in both directions: read `'{'` as a lifetime and that brace starts
+/// counting (this very file has several), read `&'a` as a literal and the rest of the
+/// line disappears.
+fn is_char_literal(ch: &[char], i: usize) -> bool {
+    match ch.get(i + 1) {
+        // An escape runs to the next tick: `'\n'`, `'\''`, `'\u{41}'`.
+        Some('\\') => ch[i + 2..].contains(&'\''),
+        // Otherwise exactly one character, then the closing tick.
+        Some(_) => ch.get(i + 2) == Some(&'\''),
+        None => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +259,7 @@ fn first_word(t: &str) -> &str {
 }
 
 /// Walk a file once and answer everything the caller can need from its shape.
-pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
+pub(crate) fn measure(src: &str, fam: Family, ticks: Ticks) -> FileMetrics {
     let mut m = FileMetrics::default();
     // Index 0 is unused so `depth[n]` is line n, matching every line number in a patch.
     m.depth.push(0);
@@ -262,13 +303,13 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
 
         if fam == Family::Plain || !code {
             if fam == Family::Brace {
-                depth += brace_delta(raw);
+                depth += brace_delta(raw, ticks);
             }
             continue;
         }
 
         // --- scoring the line against whatever functions are open ---
-        let add = flow_score(t, fam);
+        let add = flow_score(t, fam, ticks);
         if add.0 > 0 || add.1 > 0 {
             if let Some(&(fi, base)) = open.last() {
                 let nest = (here as i32 - base).max(0) as u32;
@@ -283,10 +324,10 @@ pub(crate) fn measure(src: &str, fam: Family) -> FileMetrics {
 
         match fam {
             Family::Brace => {
-                let delta = brace_delta(raw);
-                if let Some(name) = fn_name(t) {
+                let delta = brace_delta(raw, ticks);
+                if let Some(name) = fn_name(t, ticks) {
                     // The body starts one level in from where the signature sits.
-                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0, decl: is_decl(t) });
+                    m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0, decl: is_decl(t, ticks) });
                     open.push((m.fns.len() - 1, depth.max(0) as u32 as i32 + 1));
                 }
                 depth += delta;
@@ -364,19 +405,25 @@ fn indent_unit(src: &str) -> u32 {
     // 2 before 4 before 8 on a tie only because the smaller step is the safer guess: it
     // over-reports depth rather than under-reporting it, and a rule that says too much is
     // fixable from the outside while one that says nothing is invisible.
-    let best = (2..=8).max_by_key(|&d| hist[d as usize]).unwrap_or(4);
+    //
+    // `max_by_key` is documented to return the LAST maximum, so it resolved a tie the
+    // other way — to 8, the largest step — and every depth in the file was divided by
+    // four times too much. The nesting chip then silently never fired, which is the
+    // failure this comment says it is here to avoid. `min_by_key` returns the FIRST
+    // minimum, so ordering by "fewest hits, then smallest step" gets both halves right.
+    let best = (2..=8).min_by_key(|&d| (std::cmp::Reverse(hist[d as usize]), d)).unwrap_or(4);
     if hist[best as usize] == 0 { 4 } else { best }
 }
 
-fn brace_delta(raw: &str) -> i32 {
-    let clean = blank_literals(raw);
+fn brace_delta(raw: &str, ticks: Ticks) -> i32 {
+    let clean = blank_literals(raw, ticks);
     let code = clean.split("//").next().unwrap_or("");
     code.chars().filter(|&c| c == '{').count() as i32 - code.chars().filter(|&c| c == '}').count() as i32
 }
 
 /// `(flow, flat)` — how much this line adds to complexity, split by whether nesting
 /// multiplies it.
-fn flow_score(t: &str, fam: Family) -> (u32, u32) {
+fn flow_score(t: &str, fam: Family, ticks: Ticks) -> (u32, u32) {
     let w = first_word(t);
     let mut flow = 0;
     let mut flat = 0;
@@ -391,7 +438,7 @@ fn flow_score(t: &str, fam: Family) -> (u32, u32) {
         // a ternary inside an arrow body — close enough, and cheap
         flat += 1;
     }
-    let clean = blank_literals(t);
+    let clean = blank_literals(t, ticks);
     if clean.contains("&&") {
         flat += 1;
     }
@@ -432,8 +479,8 @@ fn strip_vis(code: &str) -> &str {
 /// `func (r *T) f(`, `public void f(`, and a bare method `f(` inside a class. What it
 /// must NOT catch is control flow — `if (x) {` has exactly the same shape — which is
 /// what the keyword rejection below is for.
-fn fn_name(t: &str) -> Option<String> {
-    let clean = blank_literals(t);
+fn fn_name(t: &str, ticks: Ticks) -> Option<String> {
+    let clean = blank_literals(t, ticks);
     let code = strip_vis(clean.split("//").next().unwrap_or("").trim());
     if !code.ends_with('{') || !code.contains('(') {
         return None;
@@ -463,6 +510,10 @@ fn fn_name(t: &str) -> Option<String> {
         // `const f = (a) => {` puts the name before the `=`, not before the `(`.
         let before_eq = head.split('=').next().unwrap_or("").trim();
         let n2 = before_eq.rsplit(char::is_whitespace).next().unwrap_or("");
+        // A generic parameter list is not part of the name: `fn f<'a>` and `function
+        // f<T>` are both `f`. They arrive here rather than on the path above precisely
+        // because `<` ends the identifier run it scans for.
+        let n2 = n2.split('<').next().unwrap_or(n2);
         if n2.is_empty() || !n2.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
             return None;
         }
@@ -480,8 +531,8 @@ fn fn_name(t: &str) -> Option<String> {
 /// Unless the arrow is itself being named (`const f = (a) => {`), in which case it is a
 /// declaration like any other. Everything that does not end in an arrow — a `fn`, a
 /// `function`, a bare method signature — is a declaration.
-fn is_decl(t: &str) -> bool {
-    let clean = blank_literals(t);
+fn is_decl(t: &str, ticks: Ticks) -> bool {
+    let clean = blank_literals(t, ticks);
     let code = strip_vis(clean.split("//").next().unwrap_or("").trim()).trim_end();
     if !code.ends_with("=> {") {
         return true;
@@ -793,7 +844,7 @@ fn measure_change(
     let Ok(src) = std::fs::read_to_string(&full) else { return out };
 
     let fam = family_of(&c.path);
-    let m = measure(&src, fam);
+    let m = measure(&src, fam, ticks_of(&c.path));
     out.measured = true;
     out.code_lines = m.code_lines;
 
@@ -860,7 +911,50 @@ mod tests {
     use super::*;
 
     fn brace(src: &str) -> FileMetrics {
-        measure(src, Family::Brace)
+        measure(src, Family::Brace, Ticks::Quote)
+    }
+
+    /// Rust, whose `'` is usually a lifetime rather than a quote.
+    fn rust(src: &str) -> FileMetrics {
+        measure(src, Family::Brace, Ticks::Lifetime)
+    }
+
+    /// The whole Rust backend is measured through this, and every symptom is silent.
+    ///
+    /// A `'` was unconditionally an opening quote, so a lifetime blanked the rest of its
+    /// line — including the `(` that makes it a declaration and the `{` that opens its
+    /// body. An ODD number of ticks on a line is the sharp case: the brace never counts,
+    /// the matching `}` still decrements, and `depth` stays skewed for every line after
+    /// it, so spans, nesting and complexity are all measured against a broken baseline.
+    /// An even number is quieter and still wrong — everything between the two ticks
+    /// disappears, which is where the function's own name usually is.
+    #[test]
+    fn a_lifetime_is_not_a_string() {
+        // Three ticks: the odd one out used to swallow the brace.
+        let m = rust("fn f<'a>(x: &'a str, y: &'a str) {\n    g();\n}\nfn after() {\n    h();\n}\n");
+        assert_eq!(m.fns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["f", "after"]);
+        assert_eq!(m.depth[2], 1, "the body of `f` is one level in");
+        assert_eq!(m.depth[5], 1, "a later function must not inherit a skewed depth");
+
+        // Two ticks: the brace survived, but `ProviderLaunch` and the `(` did not.
+        let im = rust("impl<'a> Thing<'a> {\n    fn make<'b>(v: &'b str) -> Self {\n        Self\n    }\n}\n");
+        assert_eq!(im.fns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["make"]);
+        // 1, not 2: an `impl` wrapper is deliberately not a level — see
+        // `a_module_or_impl_wrapper_does_not_add_a_level`. What matters here is that the
+        // lifetimes on both lines left the depth countable at all.
+        assert_eq!(im.depth[3], 1, "the fn body, with the impl not counting: {:?}", im.depth);
+    }
+
+    /// The other direction, and it has to hold or the fix trades one wrong count for
+    /// another: a Rust CHARACTER literal is still a literal, and this file is full of
+    /// `'{'`. Reading that brace as real would open a block that never closes.
+    #[test]
+    fn a_rust_character_literal_is_still_blanked() {
+        assert_eq!(brace_delta("if c == '{' {", Ticks::Lifetime), 1, "only the real brace counts");
+        assert_eq!(brace_delta("if c == '}' {", Ticks::Lifetime), 1);
+        assert_eq!(brace_delta("let esc = '\\\\'; foo() {", Ticks::Lifetime), 1, "an escaped tick closes");
+        // And a language where `'` really does quote is untouched by any of this.
+        assert_eq!(brace_delta("const s = 'a string with { in it';", Ticks::Quote), 0);
     }
 
     #[test]
@@ -872,17 +966,17 @@ mod tests {
     #[test]
     fn a_python_comment_is_hash_and_a_brace_comment_is_not() {
         let py = "# note\nx = 1\n";
-        assert_eq!(measure(py, Family::Indent).code_lines, 1);
+        assert_eq!(measure(py, Family::Indent, Ticks::Quote).code_lines, 1);
         // The same text read as a brace family keeps the `#` line — a `#` is a
         // preprocessor directive in C, not a comment.
-        assert_eq!(measure(py, Family::Brace).code_lines, 2);
+        assert_eq!(measure(py, Family::Brace, Ticks::Quote).code_lines, 2);
     }
 
     #[test]
     fn an_unknown_family_counts_every_non_blank_line() {
         // No comment syntax is assumed, which is the honest answer for a file whose
         // language we do not know.
-        assert_eq!(measure("# x\n\ny\n", Family::Plain).code_lines, 2);
+        assert_eq!(measure("# x\n\ny\n", Family::Plain, Ticks::Quote).code_lines, 2);
     }
 
     #[test]
@@ -961,7 +1055,7 @@ mod tests {
     #[test]
     fn python_functions_end_where_the_indentation_does() {
         let src = "def a():\n    x = 1\n    if x:\n        y()\n\ndef b():\n    pass\n";
-        let m = measure(src, Family::Indent);
+        let m = measure(src, Family::Indent, Ticks::Quote);
         assert_eq!(m.fns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
         assert_eq!((m.fns[0].start, m.fns[0].end), (1, 5));
         assert!(m.fns[0].cognitive > 0, "the `if` is scored");
@@ -1006,9 +1100,18 @@ mod tests {
         assert_eq!(indent_unit("\t\tdeep()\n"), 4, "a file with no step falls back");
         assert_eq!(indent_unit(""), 4);
 
+        // The tie, which is the whole reason the comment above picks an order. `max_by_key`
+        // returns the LAST maximum, so this used to answer 8 — the largest step — and every
+        // depth in such a file came out four times too small, i.e. the nesting chip silently
+        // never fired. One 2-column jump and one 4-column jump, nothing to separate them.
+        assert_eq!(
+            indent_unit("a\n  b\nc\n    d\n"), 2,
+            "a tie must fall to the SMALLEST step: over-reporting depth is visible, under-reporting is not"
+        );
+
         // The same shape at two step sizes has to report the same depth.
-        let two = measure("def a():\n  if x:\n    if y:\n      z()\n", Family::Indent);
-        let four = measure("def a():\n    if x:\n        if y:\n            z()\n", Family::Indent);
+        let two = measure("def a():\n  if x:\n    if y:\n      z()\n", Family::Indent, Ticks::Quote);
+        let four = measure("def a():\n    if x:\n        if y:\n            z()\n", Family::Indent, Ticks::Quote);
         assert_eq!(two.depth[4], four.depth[4], "2-space and 4-space must agree");
         assert_eq!(two.depth[4], 3, "body, if, if -> three levels inside the function");
     }
@@ -1019,7 +1122,7 @@ mod tests {
     #[test]
     fn depth_is_measured_from_the_enclosing_function_in_both_families() {
         let br = brace("function f() {\n  if (a) {\n    deep();\n  }\n}\n");
-        let py = measure("def f():\n    if a:\n        deep()\n", Family::Indent);
+        let py = measure("def f():\n    if a:\n        deep()\n", Family::Indent, Ticks::Quote);
         assert_eq!(br.depth[3], 2, "brace: body, if");
         assert_eq!(py.depth[3], 2, "indent: body, if — the same shape, the same number");
 
