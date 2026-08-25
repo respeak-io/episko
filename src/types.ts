@@ -122,12 +122,42 @@ export interface Fanout {
   /// `meta.phases[].title`, in order.
   phases: string[];
   since: number;
-  /// Cumulative, unlike `Sess.subagents` — which stays the *live* count and is the one
-  /// owner of that number. started − done is not it: an agent that never stopped would
+  /// Cumulative, unlike `Sess.agents` — which holds the agents still up and is the one
+  /// owner of that set. started − done is not it: an agent that never stopped would
   /// make the two disagree, and the display asks both questions separately.
   started: number; done: number;
   /// The last `SubagentStart`/`Stop`. What the grace window in `liveFanout` measures.
   lastAt: number;
+}
+// One agent a fan-out spawned: what `SubagentStart` announces and `SubagentStop` retires.
+//
+// Identity, not a counter — the same argument as pairing a tool call's Pre and Post by
+// `tool_use_id`. Both hooks carry `agent_id` and `agent_type`, so an agent can be retired
+// by name instead of by decrementing a number, and the difference shows up in exactly the
+// case a count gets wrong: a Stop that never arrives is then a *named* agent still
+// outstanding rather than an unexplained gap between two figures, which is what lets the
+// card say "2 left over — Explore, code-reviewer" instead of quietly inflating a total.
+//
+// A payload with no `agent_id` still has to work (an older CLI, a hook we mis-read), so
+// `startAgent` mints a synthetic id and `stopAgent` retires the oldest agent outstanding.
+// That keeps one mechanism rather than a counter beside a map: two owners of one number
+// is how the count drifted in the first place.
+export interface Agent {
+  /// `agent_type` — "Explore", "general-purpose", a workflow's `agentType`. Empty when
+  /// the payload carried none. The only thing that can *name* a leftover.
+  type: string;
+  /// When its `SubagentStart` landed.
+  since: number;
+  /// 0 while this agent belongs to the fan-out now running. Otherwise **when a newer
+  /// fan-out superseded the run that spawned it**, from which point it is believed on
+  /// its own short clock (`ORPHAN_DEAD_MS`) rather than the live run's hour.
+  ///
+  /// This field is the reported bug. Four agents an interrupt killed at 19:30 were
+  /// inherited by a fresh 34-agent run: `startFanout` restarts `started`/`done` but the
+  /// live count carried over whole, so the tally read **"34 / 36"** with the run long
+  /// finished — and could not expire, because every one of the new run's own events
+  /// re-stamped the `lastAt` those leftovers were being measured against.
+  orphanedAt: number;
 }
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
@@ -224,9 +254,9 @@ export const midFlight = (s: Sess) =>
 /// boundary, which is worse than the bug this fixes. It is generous because the cost of
 /// being late is one stale minute, and the cost of being early is a lie.
 export const FANOUT_GRACE_MS = 90_000;
-/// The opposite bound: how long `subagents > 0` is believed with no event behind it.
+/// The opposite bound: how long an outstanding agent is believed with no event behind it.
 ///
-/// The live count is differenced from fire-and-forget hooks, and a `SubagentStop` can
+/// The live set is built from fire-and-forget hooks, and a `SubagentStop` can
 /// genuinely never come — an interrupted workflow's agents, a turn the API killed, a
 /// silently dropped POST (`curl -s` + async by design). Every miss skews the count up
 /// and nothing ever skews it down, so without a ceiling one lost Stop pinned the
@@ -237,9 +267,42 @@ export const FANOUT_GRACE_MS = 90_000;
 /// dims until its next event, because that event re-stamps `lastAt` and revives the
 /// readout. `applyHook` zeroes the count itself off this same answer.
 export const FANOUT_DEAD_MS = 3_600_000;
+/// How long an agent *inherited* from a superseded fan-out is still believed to be up.
+///
+/// Much shorter than `FANOUT_DEAD_MS`, and deliberately. That hour is safe for a live
+/// fleet because any real event re-stamps `lastAt` and revives the readout — an orphan
+/// has no such event, since the run that would have reported its Stop has already been
+/// replaced. So the hour that protects a fleet only protects a ghost here. Fifteen
+/// minutes still covers the real case (a second workflow launched over one still
+/// finishing) while keeping a killed agent from hiding a finished session from the
+/// reactor badge for the rest of the evening, which is the whole of the bug.
+export const ORPHAN_DEAD_MS = 900_000;
+/// The agents believed to be up right now: everything outstanding, minus the leftovers
+/// of a superseded run that have since gone quiet past their own window.
+///
+/// Every surface that used to read a `subagents` counter reads this instead, and it is a
+/// function rather than a field because the expiry is a *time*: a session sitting `done`
+/// with a stale fleet receives no hooks at all, so a repair that only ran on the next
+/// event would never run — which is precisely the state that stayed wrong.
+export function liveAgents(s: Sess, now = Date.now()): Agent[] {
+  const out: Agent[] = [];
+  for (const a of s.agents.values()) if (!a.orphanedAt || now - a.orphanedAt < ORPHAN_DEAD_MS) out.push(a);
+  return out;
+}
+export function liveCount(s: Sess, now = Date.now()): number {
+  let n = 0;  // counted in place, not `liveAgents(…).length`: this is on the paint path,
+  for (const a of s.agents.values()) {         // asked of every session on every pass.
+    if (!a.orphanedAt || now - a.orphanedAt < ORPHAN_DEAD_MS) n++;
+  }
+  return n;
+}
+/// The leftovers specifically — inherited, still inside their window. What the card
+/// names apart from the running fan-out's own agents, so "34 / 36" can say which two.
+export const orphanAgents = (s: Sess, now = Date.now()): Agent[] =>
+  liveAgents(s, now).filter((a) => a.orphanedAt);
 /// The session's fan-out if it is still in flight, else null.
 ///
-/// `subagents > 0` has to be sufficient on its own — a workflow agent can run eighteen
+/// A live agent has to be sufficient on its own — a workflow agent can run eighteen
 /// minutes without the parent seeing a single `Subagent*` event in between, so a rule
 /// that only trusted recent activity would drop the longest runs first. Sufficient,
 /// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
@@ -247,7 +310,7 @@ export const FANOUT_DEAD_MS = 3_600_000;
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
   if (!isAgent(s) || !s.fanout) return null;
   if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
-  return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
+  return liveCount(s, now) > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
 /// Is the fan-out the whole story — i.e. the conversation itself has nothing in flight?
 ///
@@ -267,13 +330,13 @@ export function bgWaiting(s: Sess, now = Date.now()): boolean {
 export function fanoutTally(s: Sess, now = Date.now()): { done: number; total: number } | null {
   const f = liveFanout(s, now);
   if (!f) return null;
-  const total = Math.max(f.started, f.done + s.subagents);
+  const total = Math.max(f.started, f.done + liveCount(s, now));
   return total > 1 || bgWaiting(s, now) ? { done: Math.min(f.done, total), total } : null;
 }
 /// What a background fan-out is called in prose. The lull case says the run is alive
 /// without naming a count, because during a stage boundary there is no count to name.
-export function fanoutText(s: Sess): string {
-  const n = s.subagents;
+export function fanoutText(s: Sess, now = Date.now()): string {
+  const n = liveCount(s, now);
   if (n) return `${n} agent${n === 1 ? "" : "s"} working`;
   return s.fanout?.name ? "workflow running" : "background work";
 }
@@ -304,7 +367,7 @@ export const apiErrText = (e: ApiErr) => API_ERR_TEXT[e.kind] ?? (e.kind.replace
 // turn broke, "API overloaded" also tells you it wasn't your fault and to retry.
 export const phaseText = (s: Sess, now = Date.now()) =>
   s.phase === "error" && s.apiErr ? apiErrText(s.apiErr)
-    : bgWaiting(s, now) ? fanoutText(s)
+    : bgWaiting(s, now) ? fanoutText(s, now)
       : PILL_TEXT[s.phase];
 
 /// How long a run has taken: wall-clock while it is going, and **frozen at its exit**
@@ -385,10 +448,12 @@ export interface Sess {
   /// against nothing else — to answer "have you looked at this since it started wanting
   /// you", which is what stops the reactor badge counting turns you have already read.
   seenAt: number;
-  /// Agents running in this session's name RIGHT NOW — `SubagentStart` minus
-  /// `SubagentStop`. The live count and nothing else; the cumulative tally, the run's
+  /// Agents running in this session's name RIGHT NOW, by `agent_id` — added by
+  /// `SubagentStart`, retired by `SubagentStop`. Read it through `liveAgents`/`liveCount`
+  /// rather than by `.size`: an agent a *newer* fan-out inherited is still in here while
+  /// it ages out, and only those two apply that window. The cumulative tally, the run's
   /// name and its phases live on `fanout` beside it.
-  subagents: number;
+  agents: Map<string, Agent>;
   /// The background fleet this session launched, from the first `SubagentStart` (or the
   /// `Workflow` call that named it) until the next turn clears it. Null for the great
   /// majority of sessions, which never fan out. See `Fanout` for why it exists.
