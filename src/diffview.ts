@@ -64,6 +64,12 @@ let activeFile = -1;
 // chips and a file not yet measured render identically, which is correct — neither is
 // making a claim.
 let chips: Chip[][] = [];
+// The report those chips came from, kept so the copy handler can rebuild the SAME
+// set-level chips the gate below and `renderSetChips` computed. It improvised with
+// `null` before, which dropped "partial sweep" / "findings incomplete" from the copied
+// text — precisely the caveat ./health added them to carry — and, when those were the
+// only findings, showed a button that copied "No code-health findings".
+let healthRep: HealthReport | null = null;
 // Bumped by every open, and captured by the measurement in flight. An answer whose
 // generation is stale belongs to a diff that is no longer on screen: opening one folder,
 // closing it and opening another must not paint the first one's chips on the second.
@@ -78,6 +84,7 @@ export async function openDiff(workdir: string, title: string, focus?: string) {
   focusPath = focus || "";
   files = [];
   chips = [];
+  healthRep = null;
   activeFile = -1;
   gen++;
   $("scrim").classList.add("show");
@@ -198,6 +205,7 @@ async function measureHealth(workdir: string, mine: number) {
   }
   // The overlay may have been closed, or reopened on another folder, while we measured.
   if (!diffOpen || mine !== gen) return;
+  healthRep = rep;
   const byPath = new Map(rep.files.map((h) => [h.path, h]));
   // The project's own thresholds when it set any, the defaults where it did not.
   const prefs = clampHealth(rep.prefs);
@@ -465,7 +473,7 @@ $("diffBody").addEventListener("click", (e) => {
 // raises an OS permission prompt (CLAUDE.md).
 $("diffCopy").addEventListener("click", () => {
   const title = `${$("diffTitle").textContent} · ${$("diffSub").textContent}`.trim();
-  const text = findingsText(title, files, chips, setChips(files, null));
+  const text = findingsText(title, files, chips, setChips(files, healthRep, !!$("diffBody").querySelector(".diff-trunc")));
   void writeText(text)
     .then(() => toast("Findings copied — paste them into a session"))
     .catch(() => toast("Couldn't reach the clipboard"));

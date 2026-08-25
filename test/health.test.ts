@@ -65,6 +65,24 @@ describe("silencedIn", () => {
     expect(silencedIn(f)).toEqual([]);
   });
 
+  it("knows a Python comment when the file is Python", () => {
+    // `# never use a bare except:` failed the brace-family comment test, was probed as
+    // code, and earned a red chip — the prose false positive above, in the `#`-comment
+    // languages. The marker is read off the path, and it is a switch rather than a union
+    // of both markers: in C a line-start `#` is a directive, which is code.
+    const py = file("a.py", add("# never use a bare except: it hides everything", 3));
+    expect(silencedIn(py)).toEqual([]);
+    const sh = file("deploy.sh", add("# don't add eslint-disable style pragmas here", 4));
+    expect(silencedIn(sh).map((s) => s.what)).toEqual(["`eslint-disable`"]); // inComment: true still fires
+    const c = file("a.c", add("#define GUARD catch (e) {}", 9));
+    expect(silencedIn(c)).toHaveLength(1); // a C directive is code, not commentary
+  });
+
+  it("still finds the real thing under a hash comment two lines up", () => {
+    const f = file("a.py", add("# tolerate flaky reads", 6), add("except:", 7));
+    expect(silencedIn(f)).toEqual([{ line: 7, what: "a bare `except:`" }]);
+  });
+
   it("does fire on the ones that are comments by nature", () => {
     // @ts-ignore only ever appears in a comment; skipping comment lines would make the
     // rule unreachable rather than conservative.
