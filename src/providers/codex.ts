@@ -226,6 +226,11 @@ function plan(v: unknown): Todo[] {
   })).filter((x) => x.content) : [];
 }
 
+/// Turn statuses that mean "somebody stopped this", not "this went wrong". Codex has
+/// used more than one spelling across versions, so this is a small set rather than a
+/// single equality test.
+const ABORTED: ReadonlySet<string> = new Set(["aborted", "cancelled", "canceled", "interrupted", "stopped"]);
+
 export function codexEvents(e: ProviderEvent): AgentEvent[] {
   const p = obj(e.params);
   const child = p.episkoChild === true;
@@ -246,7 +251,25 @@ export function codexEvents(e: ProviderEvent): AgentEvent[] {
     case "turn/started": return [{ type: "turn-started" }];
     case "turn/completed": {
       const t = obj(p.turn); const status = text(t.status);
-      return [{ type: "turn-completed", failed: status !== "completed", detail: clip(t.error), durationMs: Number.isFinite(t.durationMs) ? Number(t.durationMs) : null }];
+      // A turn the USER stopped is not a failure, and the distinction is load-bearing
+      // rather than cosmetic. `finishAgentTurn(s, true, …)` stamps a generic
+      // `apiErr {kind:"unknown"}`, which buckets as `other` in ./revive — a bucket that
+      // is ON in `REVIVE_DEFAULTS`. So with the watchdog enabled, pressing Esc in the
+      // Codex TUI was answered ~30s later by Episko typing the prompt back in and
+      // pressing Enter, restarting the exact work you had just cancelled. Revive's whole
+      // premise is "the API killed it, not you", and only the adapter can tell them
+      // apart.
+      //
+      // Unknown statuses still count as failures: reporting an outage that was really
+      // something else costs a retry, while silently calling a failure "done" loses the
+      // error card altogether. Same direction the item mappers above take.
+      const stopped = ABORTED.has(status);
+      return [{
+        type: "turn-completed",
+        failed: !stopped && status !== "completed",
+        detail: clip(t.error),
+        durationMs: Number.isFinite(t.durationMs) ? Number(t.durationMs) : null,
+      }];
     }
     case "item/started": case "item/completed": return itemEvents(e.method, p);
     case "turn/plan/updated": return [{ type: "plan", todos: plan(p.plan) }];
