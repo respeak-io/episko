@@ -69,7 +69,7 @@ import {
 } from "./debug";
 import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
-import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
+import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
@@ -1045,8 +1045,11 @@ initSidebarPeek();
 // rather than opening on top of it. `initTour` says whether it did.
 initChangelog(initTour());
 initFileDrop();
-// caffeinate always starts off — the assertion is bound to the last run's process
-// (`-w <pid>` on macOS, the parked thread on Windows) and died with it; renderAll's
-// reconcileCaf() paints the button. Note this is the ONE place agent-mode could
-// auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
+// caffeinate always starts off — on a cold start the assertion is bound to the last
+// run's process (`-w <pid>` on macOS, the parked thread on Windows) and died with it;
+// renderAll's reconcileCaf() paints the button. Note this is the ONE place agent-mode
+// could auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
+// initCaf() covers the case a dead process doesn't: a webview reload leaves the backend
+// asserting with nothing on this side left to remember it, so say so explicitly.
+initCaf();
 renderAll();
