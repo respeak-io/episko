@@ -45,6 +45,8 @@ export interface TourWorld {
   agentOnStage: boolean;
   /** Active agent provider, or empty when no agent pane owns the stage. */
   provider: string;
+  /** Whether this provider's selected launch policy can raise an approval card. */
+  permissionCanAsk: boolean;
   /** A permission is pending in *some* session — not necessarily the active one. */
   permPending: boolean;
   /** True once the user has answered at least one permission this run. */
@@ -91,17 +93,13 @@ export interface TourWorld {
 /**
  * The permission modes under which a shell command still raises Episko's card.
  *
- * `Auto`, `Don't ask` and `Bypass` answer for you, and `Plan` runs nothing to be asked
- * about — so under those the tour must not wait for a permission, and says what it would
- * have shown instead. Duplicated from `ALL_PERM_MODES` in ./state rather than imported
- * (this module holds rules, not app state, and `TourWorld` is primitives by design), so
- * test/tour.test.ts checks the two against each other exactly as it does the rail legend.
+ * Claude's `Auto`, `Don't ask` and `Bypass` answer for you, and `Plan` runs nothing to
+ * be asked about. Provider adapters now own that answer through each mode's `asks`
+ * field; this list remains the source-level contract test for Claude's asking modes.
  */
 export const ASKING_MODES = ["default", "acceptEdits"] as const;
 /** Can a permission card still appear for the quickstart command? */
-export const permAsks = (w: TourWorld): boolean =>
-  (!w.provider || w.provider === "claude")
-  && (ASKING_MODES as readonly string[]).includes(w.permMode);
+export const permAsks = (w: TourWorld): boolean => w.permissionCanAsk;
 
 /** The overlay names `TourWorld.open` may carry. One place, so a predicate cannot typo. */
 export const OPEN_IDS = ["wt", "settings", "ctx", "run", "palette", "graph", "cost", "usage"] as const;
@@ -312,11 +310,10 @@ export const CHAPTERS: Chapter[] = [
       },
       {
         anchor: ".attn-btns", dynamic: true, needs: ["inspector"],
-        // Only in a mode that can actually raise one. `permAsks` is a fact about the
-        // launch, so this resolves the moment the step is reached rather than after the
-        // user has stared at "Answer it — either way" for twenty seconds waiting for a
-        // card their permission mode had already promised never to show.
-        when: (w) => permAsks(w) || w.permPending || w.permAnswered,
+        // Teach the card only when this turn actually produced one. A policy that can
+        // ask is not a promise that a read-only first job will ask; using the observed
+        // outcome keeps the paired lesson honest in both directions.
+        when: (w) => w.permPending || w.permAnswered,
         title: "Blocked on you",
         body: `<b>This command was not auto-allowed</b>, so the agent stopped. That <b class="g-attn">◆</b> means it is genuinely `
           + "paused until you answer — the only event with its own urgent sound.<br><b>Allow</b> once, <b>Deny</b>, "
@@ -329,7 +326,7 @@ export const CHAPTERS: Chapter[] = [
         // them. It teaches rather than waits, because there is nothing coming to wait
         // for — and skipping the subject entirely would drop the app's most consequential
         // interaction from the one chapter everybody takes.
-        when: (w) => !permAsks(w) && !w.permPending && !w.permAnswered,
+        when: (w) => !w.permPending && !w.permAnswered,
         title: "What you are not being asked",
         body: "No permission card appeared for that command: the provider considered it safe or its configured policy "
           + `answered automatically. When an integrated provider does stop, the row goes <b class="g-attn">pink ◆</b>, `

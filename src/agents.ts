@@ -3,12 +3,13 @@
 // hooks feed. A future OpenCode adapter belongs beside ./providers/codex and does not
 // need a second inspector, permission card, roster, or phase machine.
 
-import { bumpTally, noteTouch } from "./files";
+import { absoluteTouchPath, bumpTally, noteTouch } from "./files";
 import {
   abbr, beginAgentTurn, closeActivity, finishAgentTurn, noteAgentTouch,
   openActivity, pushHist, setPhase,
 } from "./phase";
 import { addAgentTokenUsage, addUsage, costDelta } from "./usage";
+import { queuePermission, removePermission } from "./permissions";
 import type { AgentRateLimit, AgentTokenUsage, Risk, Sess, Todo, TouchKind } from "./types";
 
 export interface ProviderEvent {
@@ -30,13 +31,15 @@ export type AgentEvent =
   | { type: "plan"; todos: Todo[] }
   | { type: "usage"; usage: AgentTokenUsage }
   | { type: "cost"; totalUsd: number }
-  | { type: "rate-limits"; windows: AgentRateLimit[] }
+  | { type: "rate-limits"; windows: AgentRateLimit[]; scope: string | null }
   | { type: "error"; detail: string }
   | { type: "disconnected" };
 
 export function applyAgentEvent(s: Sess, event: AgentEvent): void {
   const previousEvent = s.lastEvent;
-  s.lastActivity = Date.now();
+  // Quota is account activity, not conversation activity. Sharing one snapshot across
+  // sibling panes must not float every idle session to the top of "latest activity".
+  if (event.type !== "rate-limits") s.lastActivity = Date.now();
   s.lastEvent = event.type;
   switch (event.type) {
     case "thread":
@@ -60,19 +63,12 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
     case "activity-completed":
       closeActivity(s, event.tool, event.id, event.input, "", event.output, event.failed);
       bumpTally(s.tally, event.tool);
-      for (const file of event.files) noteTouch(s.files, file.path, file.kind, Date.now());
+      for (const file of event.files) noteTouch(s.files, absoluteTouchPath(file.path, s.workdir), file.kind, Date.now());
       noteAgentTouch(s, event.tool, { tool_input: event.inputData });
       if (event.failed) setPhase(s, "error");
       break;
-    case "permission":
-      s.attention = `permission: ${event.tool}`; s.pendingCmd = event.command;
-      s.pendingPermId = event.id; s.pendRisk = event.risk;
-      break;
-    case "permission-resolved":
-      if (s.pendingPermId === event.id) {
-        s.pendingPermId = null; s.attention = null; s.pendingCmd = ""; s.pendRisk = null;
-      }
-      break;
+    case "permission": queuePermission(s, event); break;
+    case "permission-resolved": removePermission(s, event.id); break;
     case "plan": s.todos = event.todos; break;
     case "usage": {
       s.tokenUsage = event.usage;
@@ -94,7 +90,7 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       pushHist(s.costHist, event.totalUsd);
       break;
     }
-    case "rate-limits": s.rateLimits = event.windows; break;
+    case "rate-limits": s.rateLimits = event.windows; s.rateLimitScope = event.scope; break;
     case "error":
       s.apiErr = { kind: "unknown", detail: abbr(event.detail), at: Date.now() };
       setPhase(s, "error");
@@ -105,5 +101,25 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       // agent itself ended.
       s.lastEvent = "integration-disconnected";
       break;
+  }
+}
+
+/**
+ * Apply one normalized event and fan account-wide quota out to sessions known to share
+ * its opaque account scope. No provider id appears here: the integration boundary owns
+ * the identity, and unrelated accounts remain isolated because null/unequal scopes do
+ * not join.
+ */
+export function applyAgentEventToFleet(s: Sess, event: AgentEvent, fleet: Iterable<Sess>): void {
+  const previousScope = s.rateLimitScope;
+  applyAgentEvent(s, event);
+  if (event.type !== "rate-limits") return;
+  // A null scope is also meaningful: account/updated clears the old account before
+  // the replacement identity is known. Fan that clear through the panes which shared
+  // the owner's previous scope or one stale sibling could keep displaying it forever.
+  const fleetScope = event.scope ?? previousScope;
+  if (!fleetScope) return;
+  for (const peer of fleet) {
+    if (peer !== s && peer.rateLimitScope === fleetScope) applyAgentEvent(peer, event);
   }
 }

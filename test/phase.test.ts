@@ -31,9 +31,9 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [],
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
     kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
   } as Sess;
@@ -143,6 +143,22 @@ describe("applyHook — the lifecycle state machine", () => {
       hook(s, "Stop");
       // Left held, the tiny_http server never answers and Claude hangs forever.
       expect(ipc).toEqual([{ cmd: "resolve_permission", args: { id: "perm-7", behavior: "terminal" } }]);
+      expect(s.pendingPermId).toBeNull();
+    });
+    it("releases every queued parallel request when lifecycle moves on", () => {
+      const s = sess({
+        pendingPermId: "perm-1", attention: "permission: Bash",
+        pendingPermissions: [
+          { id: "perm-1", tool: "Bash", command: "git push", risk: "high" },
+          { id: "perm-2", tool: "Edit", command: "write app.ts", risk: "med" },
+        ],
+      });
+      hook(s, "Stop");
+      expect(ipc).toEqual([
+        { cmd: "resolve_permission", args: { id: "perm-1", behavior: "terminal" } },
+        { cmd: "resolve_permission", args: { id: "perm-2", behavior: "terminal" } },
+      ]);
+      expect(s.pendingPermissions).toEqual([]);
       expect(s.pendingPermId).toBeNull();
     });
     it("calls the backend only when something is actually held", () => {

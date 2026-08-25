@@ -34,12 +34,12 @@ Every one of these is a real path through `src/`, and the manifest now follows i
 | the reactor badge is there to point at | `.attn-badge` is `display:none` without `.show`, and ./attn does not count the pane you are looking at — so for one session on the stage it exists **only while a permission is pending**. |
 | the project menu has twelve verbs | ./projmenu builds **nine**. |
 | "arm *Until agents idle*" | the cup arms whatever preset is stored, and the shipped default is `display`. The mode is behind the caret. |
-| everyone gets the permission card | **three of the six permission modes answer for you** (`Auto`, `Don't ask`, `Bypass`) and `Plan` runs nothing to be asked about, so the card the chapter is proudest of never appears — and the step waiting for it stranded those users for its full 20s. |
+| everyone gets the permission card | a provider launch policy may answer or refuse without asking, and even an asking policy may consider the first read-only command safe. Waiting for a card based on policy rather than the observed event stranded users for the full 20s. |
 | "open Settings › Sounds" | lighting ⚙ and naming the tab leaves the tab **in the dark** next to a hole still pointing at the button you already pressed. |
 
 So the required chapter walks the path the app actually has: **add a project → open its
-page → ＋ Session → (the launcher, if it is a repo) → type a prompt → the badge lights →
-answer the permission → read the rail → ⌘K.** Two rules came out of writing it, and they
+page → ＋ Session → (the launcher, if it is a repo) → type a prompt → explain the
+permission card that appeared, or why none appeared → read the rail → ⌘K.** Two rules came out of writing it, and they
 apply to every chapter:
 
 - **A step must be reachable from the state the step before it left behind.** The
@@ -52,12 +52,12 @@ apply to every chapter:
   the card just named — which is what "Settings › Sounds" did.
 - **Two consecutive steps must not share an anchor.** The hole not moving reads as a
   Next that did not land. The contract test enforces it.
-- **Ask the app whether the moment can even happen.** `permAsks` reads the launch
-  permission mode, so the permission card gets a step in `Manual` / `Accept edits` and a
-  **sibling** card in the modes that answer for you — same lesson, no wait, worded for
-  what actually happened. Two steps and a `when` beat one step that hedges, and beat a
-  20s dead end. The pair is exclusive: the test asserts exactly one of them applies in
-  every state.
+- **Branch on what happened.** The prompt step uses the provider mode's neutral `asks`
+  fact only to avoid waiting for an impossible ask. Once the turn has advanced, the two
+  sibling lessons branch on the observed `permPending` / `permAnswered` latch: teach the
+  real card if one appeared, otherwise explain why there was no interruption. Two steps
+  and a `when` beat one step that hedges, and beat a 20s dead end. The pair is exclusive:
+  the test asserts exactly one applies in every state.
 - **Show the colour, do not describe it.** The rail key is seven chips in the rail's own
   `--st-*` colours (`.tr-leg` carries the state class, so one variable tints glyph, fill
   and hairline together). Card prose also stops the `g-*` pulse: a live row is a live
@@ -211,9 +211,9 @@ The manifest rules it also enforces, one per way this feature has gone wrong:
   as a Next that did not land;
 - an anchor that lives inside the rail or the inspector must declare `needs`, or the step
   lights nothing for anyone who works with that panel collapsed;
-- the permission modes the manifest plans around must exist in `ALL_PERM_MODES` — a
-  typo'd mode id makes `permAsks` false for everybody, which silently stops teaching the
-  permission card to exactly the people who would get one;
+- the permission modes the guide plans around must exist in the provider registry;
+  each mode's neutral `asks` fact controls only how long the prompt step waits, while
+  the later card/no-card pair follows the observed permission latch;
 - **"Settings › Sounds" has to name a real tab**: the copy is joined to `SET_TABS` in
   `settings.ts` exactly the way an anchor is joined to `index.html`, and nothing else
   checks it. Card copy that confidently names a window the app does not have is the same

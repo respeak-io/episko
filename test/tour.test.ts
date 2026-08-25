@@ -19,7 +19,7 @@ import {
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const SIDEBARVIEW = readFileSync(new URL("../src/sidebarview.ts", import.meta.url), "utf8");
 const SETTINGS = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
-const STATE = readFileSync(new URL("../src/state.ts", import.meta.url), "utf8");
+const PROVIDERS = readFileSync(new URL("../src/providers/index.ts", import.meta.url), "utf8");
 const CHANGELOGUI = readFileSync(new URL("../src/changelogui.ts", import.meta.url), "utf8");
 /** Every Settings tab, as `id -> label` — the other join a card's copy can get wrong. */
 const SET_TABS: Record<string, string> = Object.fromEntries(
@@ -41,7 +41,7 @@ const allSteps = () => CHAPTERS.flatMap((c) => c.steps.map((s) => ({ c, s })));
 /** A world where nothing has happened yet. Spread over it to state only what matters. */
 const W0: TourWorld = {
   projects: 0, sessions: 0, phase: "", agentOnStage: false, permPending: false,
-  provider: "", permAnswered: false, permMode: "default", attnCount: 0, open: [], settingsTab: "",
+  provider: "", permissionCanAsk: true, permAnswered: false, permMode: "default", attnCount: 0, open: [], settingsTab: "",
   stage: "none", toolsTab: false, caffeinated: false,
 };
 
@@ -378,8 +378,8 @@ describe("the What's new hand-off", () => {
 });
 
 describe("the permission modes it plans around", () => {
-  /** Every mode id `ALL_PERM_MODES` ships, read out of ./state the way the anchors are read out of index.html. */
-  const shipped = [...STATE.matchAll(/\{ id: "(\w+)", *label: "([^"]+)"/g)].map((m) => m[1]);
+  /** Every provider-owned mode id ships at the adapter boundary. */
+  const shipped = [...PROVIDERS.matchAll(/\{ id: "([\w-]+)", *label: "([^"]+)"/g)].map((m) => m[1]);
 
   it("found the table", () => {
     expect(shipped.length).toBeGreaterThan(4);
@@ -394,19 +394,19 @@ describe("the permission modes it plans around", () => {
   });
 
   it("knows which modes still raise a card", () => {
-    expect(permAsks({ ...W0, permMode: "default" })).toBe(true);
-    expect(permAsks({ ...W0, permMode: "acceptEdits" })).toBe(true);
+    expect(permAsks({ ...W0, permMode: "default", permissionCanAsk: true })).toBe(true);
+    expect(permAsks({ ...W0, permMode: "acceptEdits", permissionCanAsk: true })).toBe(true);
     for (const m of ["auto", "dontAsk", "bypassPermissions", "plan"]) {
-      expect(permAsks({ ...W0, permMode: m }), m).toBe(false);
+      expect(permAsks({ ...W0, permMode: m, permissionCanAsk: false }), m).toBe(false);
     }
-    expect(permAsks({ ...W0, provider: "codex", permMode: "default" })).toBe(false);
+    expect(permAsks({ ...W0, provider: "codex", permMode: "on-request", permissionCanAsk: true })).toBe(true);
   });
 });
 
 describe("Quick start under a mode that answers for you", () => {
   const qs = CHAPTERS[0];
   const at = (title: string) => qs.steps.find((s) => s.title.startsWith(title))!;
-  const auto = { ...W0, permMode: "auto", stage: "session", sessions: 1 };
+  const auto = { ...W0, permMode: "auto", permissionCanAsk: false, stage: "session", sessions: 1 };
 
   it("does not hold the prompt step waiting for an ask that is not coming", () => {
     // The 20s "Skip this step" is a backstop for a predicate that turns out wrong on
@@ -429,8 +429,13 @@ describe("Quick start under a mode that answers for you", () => {
     }
   });
 
-  it("still shows the card step to a mode that can raise one", () => {
-    expect(at("Blocked on you").when!({ ...W0, permMode: "acceptEdits" })).toBe(true);
+  it("uses what happened, not whether the configured mode could have asked", () => {
+    const card = at("Blocked on you");
+    const instead = at("What you are not being asked");
+    expect(card.when!({ ...W0, permMode: "acceptEdits" })).toBe(false);
+    expect(instead.when!({ ...W0, permMode: "acceptEdits" })).toBe(true);
+    expect(card.when!({ ...auto, permPending: true })).toBe(true);
+    expect(instead.when!({ ...auto, permPending: true })).toBe(false);
   });
 });
 

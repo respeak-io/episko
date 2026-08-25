@@ -19,18 +19,18 @@ mod pty;
 mod summarize;
 mod tasks;
 mod telemetry;
-mod usage;
 #[cfg(test)]
 mod testutil;
+mod usage;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Mutex;
 
 use portable_pty::{ChildKiller, MasterPty};
-use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
 use tauri::menu::SubmenuBuilder;
+use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -107,7 +107,6 @@ pub(crate) struct AppState {
     caffeinate: Mutex<Option<KeepAwake>>,
 }
 
-
 /// Persist a debug snapshot (JSON built by the frontend) to a fixed, discoverable
 /// path so an external tool — or an LLM agent debugging the running app — can read
 /// live state and the recent event log. Returns the path written.
@@ -136,8 +135,6 @@ fn log_frontend(level: String, msg: String) {
     }
 }
 
-
-
 // ---------- app quit ----------
 
 /// Actually terminate the app. The Cmd+Q accelerator is bound to our own menu
@@ -165,12 +162,19 @@ fn confirm_quit(app: AppHandle) {
 enum TrayRow {
     /// A clickable session. `id` is the session id the `sid` catch-all in the tray's
     /// menu handler turns back into a `tray-select`.
-    Session { id: String, label: String, shape: String, rgb: [u8; 3] },
+    Session {
+        id: String,
+        label: String,
+        shape: String,
+        rgb: [u8; 3],
+    },
     /// A project heading, rendered as a *disabled* item — the standard macOS idiom,
     /// and it keeps every session one click away where a submenu per project would
     /// cost a hover each. Disabled also means it fires no `MenuEvent`, which matters:
     /// the handler treats every id it doesn't recognise as a session to select.
-    Header { label: String },
+    Header {
+        label: String,
+    },
     Sep,
 }
 
@@ -203,12 +207,21 @@ fn update_tray(
                         .map_err(|e| e.to_string())?;
                     mb.item(&it)
                 }
-                TrayRow::Session { id, label, shape, rgb } => {
+                TrayRow::Session {
+                    id,
+                    label,
+                    shape,
+                    rgb,
+                } => {
                     // NOT a template image: muda hands the icon to AppKit untouched,
                     // and a template one would be re-tinted to the menu's text colour,
                     // which is the exact greyness this replaces. (The *tray* icon in
                     // `run()` is a template on purpose — it must adapt to the bar.)
-                    let icon = tauri::image::Image::new_owned(crate::icons::glyph_rgba(shape, *rgb), 32, 32);
+                    let icon = tauri::image::Image::new_owned(
+                        crate::icons::glyph_rgba(shape, *rgb),
+                        32,
+                        32,
+                    );
                     let it = IconMenuItemBuilder::with_id(id.clone(), label)
                         .icon(icon)
                         .build(&app)
@@ -318,8 +331,8 @@ pub fn run() {
             // (a git poll, a task launch) would otherwise pay for it inline.
             platform::warm_shell_path();
 
-            let server = tiny_http::Server::http("127.0.0.1:0")
-                .expect("bind telemetry server on 127.0.0.1");
+            let server =
+                tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server on 127.0.0.1");
             let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
             log::info!("telemetry server on 127.0.0.1:{port}");
 
@@ -394,8 +407,9 @@ pub fn run() {
                 .build()?;
             // Monochrome `>_` glyph, rendered as a macOS template image so it
             // adapts to the light/dark menu bar. Falls back to the app icon.
-            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
-                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
+                    .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(true)
@@ -542,6 +556,7 @@ pub fn run() {
             platform::set_caffeinate,
             telemetry::resolve_permission,
             agent::resolve_agent_request,
+            agent::refresh_agent_state,
             agent::agent_history,
             git::list_worktrees,
             git::worktree_heads,

@@ -23,6 +23,7 @@ import {
 import { groupById, groupOf, groupPaths } from "./projgroups";
 import { extWorking } from "./sidebarview";
 import { agentCapabilitySummary, isAgent, isExited, midFlight } from "./types";
+import { agentLogo } from "./providers/logos";
 import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
   engineDef, externals, FAVORITES, missingAgents, projGroups, sessions, termEngine,
@@ -132,14 +133,12 @@ let ctxKey: string | null = null;
 const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name || basename(key);
 // Where "Open project folder" actually lands, so the row can name it.
 
-type CtxRow = { act: string; ic: string; label: string; sub?: string; cls?: string; chev?: boolean };
-// A two-character icon is an agent monogram (`Cx`, `Gm`) and needs smaller, tighter
-// type than the single glyphs every other row uses — derived from the content rather
-// than flagged on the row, because "two characters" IS the condition, and a flag would
-// be a second thing to remember to set. Counted in code points: no icon here is astral
-// today, and `.length` would quietly mis-size the first one that is.
+type CtxRow = { act: string; ic?: string; logo?: string; label: string; sub?: string; cls?: string; chev?: boolean };
 const ctxRowHtml = (r: CtxRow) =>
-  `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}"><span class="mp-ic${[...r.ic].length === 2 ? " mp-mono" : ""}">${r.ic}</span>`
+  `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}">`
+  + (r.logo
+    ? `<span class="mp-ic agent-logo" aria-hidden="true">${r.logo}</span>`
+    : `<span class="mp-ic${[...(r.ic || "")].length === 2 ? " mp-mono" : ""}">${r.ic || ""}</span>`)
   + `<span class="mp-main"><span class="mp-l">${esc(r.label)}</span>${r.sub ? `<span class="mp-s">${esc(r.sub)}</span>` : ""}</span>`
   + (r.chev ? `<span class="mp-chev">›</span>` : "") + `</button>`;
 const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
@@ -170,7 +169,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     // the case where it earns the most: the picker behind it is where "Episko supports
     // twenty-one of these, here is what it looked for" is written down. Dropping it
     // then would hide the feature from exactly the person who has not found it yet.
-    { act: "agents", ic: agent.mark, label: `Agent · ${agent.label}`, sub: agentSub(key), chev: true },
+    { act: "agents", logo: agentLogo(agent.id), label: `Agent · ${agent.label}`, sub: agentSub(key), chev: true },
     null,
     // Dropped below unless the probe says this folder is a repo — a graph row on a
     // plain directory would open a panel with nothing but an error in it.
@@ -195,6 +194,7 @@ function openCtxMenu(key: string, x: number, y: number) {
       : { act: "addproj", ic: "☆", label: "Pin to sidebar", sub: "keeps it listed with no session running" },
   ];
   const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head">`
     + (ic ? `<img class="mp-hico" src="${ic}" alt="" />` : `<span class="mp-hsw" style="background:${accentFor(key)}"></span>`)
@@ -215,7 +215,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show"); ctxKey = wtTarget = gTarget = pickPath = agentKey = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -304,6 +304,7 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
       : removeRow(t),
   ];
   const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(t.branch || t.dir)}"></span>`
     + `<span class="mp-hmain"><span class="mp-hname">⑃ ${esc(t.branch)}</span><span class="mp-hpath">${esc(tilde(t.dir))}</span></span></div>`
@@ -374,7 +375,7 @@ function openAgentPicker(key: string, x: number, y: number) {
     // Above the fold: Claude plus what the probe FOUND. A row here is a promise the
     // binary exists, and the probe is the only thing that can make that promise.
     ...allAgents().map((a) => ({
-      act: `apick:${a.id}`, ic: a.mark, label: a.label,
+      act: `apick:${a.id}`, logo: agentLogo(a.id), label: a.label,
       // The tick marks the *override*, not the effective agent: ticking an inherited
       // row would make "follow the default" below it look like a no-op.
       sub: a.id === cur ? "✓ set for this project"
@@ -396,7 +397,7 @@ function openAgentPicker(key: string, x: number, y: number) {
     // a `.dis` row before reading its act, so there is no dead branch to write.
     ...(agentShowAll
       ? missing.map((a) => ({
-        act: "", ic: a.mark, label: a.label, cls: "dis",
+        act: "", logo: agentLogo(a.id), label: a.label, cls: "dis",
         // The binary name IS the answer to "why isn't it here?" — it says exactly what
         // Episko searched the PATH for, which no install link could tell you as
         // precisely, and which cannot rot the way twenty-one vendor URLs would.
@@ -405,10 +406,11 @@ function openAgentPicker(key: string, x: number, y: number) {
       : []),
   ];
   const menu = $("ctxMenu");
+  menu.classList.toggle("agent-all", agentShowAll);
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
     + `<span class="mp-hmain"><span class="mp-hname">Agent</span><span class="mp-hpath">${esc(projName(key))} · runs ${esc(eff.label)}</span></span></div>`
-    + ctxRowsHtml(rows);
+    + `<div class="agent-pick-list">${ctxRowsHtml(rows)}</div>`;
   placePop(menu, x, y);
 }
 
@@ -446,6 +448,7 @@ function openGroupPicker(key: string, x: number, y: number) {
     cur ? { act: "gclear", ic: "⊘", label: "Remove from group", sub: "back to the top level" } : null,
   ];
   const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
     + `<span class="mp-hmain"><span class="mp-hname">Group</span><span class="mp-hpath">${esc(projName(key))}</span></span></div>`
@@ -477,6 +480,7 @@ function openGroupMenu(gid: string, x: number, y: number) {
     { act: "gdelete", ic: "✕", label: "Delete group", sub: "the projects stay, at the top level", cls: "mp-danger" },
   ];
   const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
     + `<span class="mp-hmain"><span class="mp-hname">${esc(g.name)}</span>`
@@ -490,6 +494,7 @@ function openRenameGroup(gid: string) {
   if (!g) return;
   gTarget = gid;
   const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
     + `<span class="mp-hmain"><span class="mp-hname">Rename</span><span class="mp-hpath">${esc(g.name)}</span></span></div>`

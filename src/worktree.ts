@@ -31,9 +31,11 @@ import {
   remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
 } from "./branches";
 import {
-  cmpBase, effectiveAgent, engineDef, externals, permMode, permModeDef, sessions, termEngine,
+  cmpBase, effectiveAgent, engineDef, externals, permissionModeFor, sessions, termEngine,
   worktreesByRepo,
 } from "./state";
+import { providerPermissionMode } from "./providers";
+import { agentLogo } from "./providers/logos";
 // The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
 // killed pane is actually *dead* rather than merely signalled — which is what a
 // directory deletion on Windows has to wait for. A logic module, so no cycle.
@@ -268,17 +270,16 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   // moment before launch where saying so costs nothing.
   const agEl = $("wtAgent") as HTMLElement;
   agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
-  agEl.textContent = `${ag.mark} ${ag.label}`;
+  agEl.innerHTML = `<span class="agent-logo" aria-hidden="true">${agentLogo(ag.id)}</span>${esc(ag.label)}`;
   agEl.title = `${ag.label} runs here — ${agentCapabilitySummary(ag)}. Change it on the `
     + `project's own menu, or in Settings › Sessions.`;
-  const pm = permModeDef(permMode);
+  const pm = providerPermissionMode(ag.id, permissionModeFor(ag.id));
   const modeEl = $("wtMode") as HTMLElement;
-  // …and the permission mode is a `claude` flag, so under any other agent the chip
-  // would be describing a launch that never happens. Dropped rather than dimmed: a
-  // dialog header is a row of facts about the next launch, not a settings panel.
-  modeEl.hidden = manage || permMode === "default" || ag.id !== CLAUDE_CLI.id;
-  modeEl.textContent = `${pm.glyph} ${pm.label}`;
-  modeEl.title = `Starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)`;
+  // A dialog header is a row of facts about the next launch, so only a non-default,
+  // integrated policy earns a chip. Terminal-only providers manage this in their TUI.
+  modeEl.hidden = manage || !ag.capabilities.includes("launch-permissions") || !pm || pm.id === "default";
+  modeEl.textContent = pm ? `${pm.glyph} ${pm.label}` : "";
+  modeEl.title = pm ? `${ag.label} starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)` : "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);

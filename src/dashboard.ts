@@ -52,9 +52,10 @@ import {
 import { statusKey, type DiffStat, type GitActionResult, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, cmpBase, dashMirror, externals, folderDirty, permMode, sessions, setActiveId,
+  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, permissionModeFor, sessions, setActiveId,
   setMirror,
 } from "./state";
+import { providerPermissionMode } from "./providers";
 
 // What this pane does but does not own. Same host-object shape as ./settings and
 // ./palui: a control surface that touches many things it isn't responsible for takes
@@ -821,7 +822,9 @@ export function renderDash(): void {
   $("dashScrim").classList.toggle("show", sheet !== null);
   if (sheet?.kind === "close") paint("dashSheet", closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name()));
   else if (sheet?.kind === "dispatch") {
-    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, permMode, holder(sheet.t)));
+    const agent = effectiveAgent(root());
+    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
   }
 }
 

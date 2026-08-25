@@ -5,8 +5,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
-import { applyAgentEvent, type ProviderEvent } from "./agents";
+import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
+import { queuePermission } from "./permissions";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -638,12 +639,23 @@ listen<ProviderEvent>("agent-event", (e) => {
   }
   const adapter = providerAdapter(raw.provider)?.events;
   if (!adapter) { dlog("warn", `no event adapter for provider ${raw.provider}`); return; }
-  const events = adapter(raw); if (!events.length) return;
+  const events = adapter(raw);
+  // This is deliberately protocol-neutral: every integrated provider emits native
+  // lifecycle methods, while its adapter owns their spelling and mapping. It tells a
+  // dev build whether an item reached the UI but was unsupported, without logging the
+  // command, file path, or tool payload.
+  if (raw.method === "item/started" || raw.method === "item/completed") {
+    const item = raw.params?.item;
+    const itemType = typeof item?.type === "string" ? item.type : "unknown";
+    const mapped = events.map((event) => event.type).join(", ");
+    dlog(events.length ? "info" : "warn", `${raw.provider} ${raw.method} · ${itemType}${mapped ? ` → ${mapped}` : " ignored"}`);
+  }
+  if (!events.length) return;
   telem.rx++; telem.routed++;
   const before = soundSnap(s);
   const limitsBefore = s.rateLimits.map((x) => ({ ...x }));
   const resumeBefore = s.resumeId;
-  for (const event of events) applyAgentEvent(s, event);
+  for (const event of events) applyAgentEventToFleet(s, event, sessions.values());
   if (s.resumeId !== resumeBefore) {
     dlog("info", `${s.provider} session ${s.id.slice(0, 8)} thread → ${s.resumeId.slice(0, 8)}`);
     flushRoster();
@@ -664,10 +676,10 @@ listen<{ id: string; data: any }>("permission", (e) => {
   const sid: string | undefined = data.session_id?.toLowerCase?.();
   const s = sid ? sessions.get(sid) : undefined;
   if (!s) { dlog("warn", `permission for unrouted session ${sid ? sid.slice(0, 8) : "?"}: auto-deferred to terminal`); invoke("resolve_permission", { id, behavior: "terminal" }).catch(() => {}); return; }
-  s.attention = `permission: ${data.tool_name || ""}`;
-  s.pendingCmd = permCmd(data);
-  s.pendingPermId = id;
-  s.pendRisk = riskLevel(data.tool_name, data.tool_input);
+  queuePermission(s, {
+    id, tool: data.tool_name || "", command: permCmd(data),
+    risk: riskLevel(data.tool_name, data.tool_input),
+  });
   // The one alert the whole feature is for: Claude is stopped until this is answered,
   // and nothing else in the app can reach you from another window. The matching
   // `PermissionRequest` hook usually rings a beat earlier or later — `SOUND_REPEAT_MS`
@@ -1003,11 +1015,14 @@ FAVORITES.forEach((f) => probeIcon(f.path));
 // The whole list, not just the hits: a picker that can only show what you already have
 // cannot answer "why is Codex not here?". One probe per run — the answer changes when
 // you install something, which is not a thing to poll for.
-invoke<AgentCli[]>("list_agents").then((list) => {
+const agentDiscovery = invoke<AgentCli[]>("list_agents").then((list) => {
   setAvailAgents(list);
   const on = list.filter((a) => a.path !== null).map((a) => a.id);
   dlog("info", `agents on PATH: ${on.length ? on.join(", ") : "none"} (of ${list.length} known)`);
-}).catch(() => {});
+}).catch((e) => {
+  setAvailAgents([]); // release launch/adoption even when the probe itself failed
+  dlog("warn", `agent discovery failed: ${e}`);
+});
 
 invoke<string[]>("available_terminals").then((ids) => {
   setAvailEngines(ALL_ENGINES.map((e) => e.id).filter((id) => id === "embedded" || ids.includes(id)));
@@ -1068,7 +1083,7 @@ setInterval(refreshExternals, 3000);
 // and only THEN reconcile the roster: an adopted id is live again, so it must not
 // also come back as a dormant row (#47). A normal start finds no orphans and the
 // await is one empty IPC round-trip.
-void adoptOrphans().finally(() => void loadDormants());
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants());
 // Nothing else persists the roster on the way out: closeSession and the telemetry
 // tick both save, but a quit with live, quiet sessions would otherwise write nothing.
 window.addEventListener("beforeunload", flushRoster);

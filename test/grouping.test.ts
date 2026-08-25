@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { CLAUDE_CLI, isExited, midFlight, pickAgent, type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
+import { CLAUDE_CLI, isExited, midFlight, pickAgent, resumeAgent, type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
@@ -28,9 +28,9 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, subagents: 0, fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], subagents: 0, fanout: null, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
-    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [],
+    curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
     kind: "agent",
     provider: explicitKind === undefined ? "claude" : explicitKind === "agent" ? "codex" : null,
@@ -1364,7 +1364,23 @@ describe("pickAgent — which agent a launch in this project starts", () => {
     expect(pickAgent("/repo", "claude", { "/repo": "claude" }, [])).toEqual(CLAUDE_CLI);
   });
 
-  it("returns the whole entry, so a caller gets the label and mark it will render", () => {
+  it("returns the whole catalogue entry, including its launch metadata", () => {
     expect(pickAgent("/repo", "codex", {}, avail)).toEqual(avail[0]);
+  });
+});
+
+describe("resumeAgent — durable provider identity", () => {
+  const codex: AgentCli = {
+    id: "codex", label: "Codex", mark: "Cx", bin: "codex", path: null, capabilities: [],
+  };
+
+  it("keeps legacy Claude rows and known provider rows on their own provider", () => {
+    expect(resumeAgent(undefined, [codex])).toBe(CLAUDE_CLI);
+    expect(resumeAgent("claude", [codex])).toBe(CLAUDE_CLI);
+    expect(resumeAgent("codex", [codex])).toBe(codex);
+  });
+
+  it("refuses an unknown provider instead of silently resuming it as Claude", () => {
+    expect(resumeAgent("future-agent", [codex])).toBeUndefined();
   });
 });

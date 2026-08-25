@@ -4,7 +4,19 @@
 import type { AgentEvent, AgentFileTouch, ProviderEvent } from "../agents";
 import type { HistEntry } from "../history";
 import { riskLevel } from "../phase";
-import type { AgentTokenBreakdown, AgentTokenUsage, Todo, TouchKind } from "../types";
+import type { AgentPermissionMode, AgentTokenBreakdown, AgentTokenUsage, Todo, TouchKind } from "../types";
+
+// Codex launch policy is expressed with the current CLI's stable approval/sandbox
+// primitives. "Auto" is the useful, sandboxed meaning the old `--full-auto` shorthand
+// carried: do not stop for approvals, but keep writes inside the workspace sandbox.
+// The backend maps these ids to a whitelist; none is passed through as an argv value.
+export const CODEX_PERMISSION_MODES: readonly AgentPermissionMode[] = [
+  { id: "default", label: "Codex config", sub: "Uses approval_policy and sandbox_mode from config.toml", glyph: "◇", asks: true },
+  { id: "on-request", label: "On request", sub: "Codex asks when a command needs approval", glyph: "◆", asks: true },
+  { id: "read-only", label: "Read only", sub: "No writes and no approval prompts", glyph: "⊙", asks: false },
+  { id: "auto", label: "Auto", sub: "Runs unattended inside the workspace-write sandbox", glyph: "◈", asks: false },
+  { id: "bypass", label: "Full access", sub: "Bypasses approvals and sandboxing entirely", glyph: "⚠", asks: false },
+];
 
 const obj = (v: unknown): Record<string, any> => v && typeof v === "object" ? v as Record<string, any> : {};
 const text = (v: unknown, fallback = "") => typeof v === "string" ? v : fallback;
@@ -98,13 +110,36 @@ export function codexApiEquivalentUsd(v: unknown): number | null {
 }
 
 function fileTouches(item: Record<string, any>): AgentFileTouch[] {
-  if (item.type !== "fileChange" || !Array.isArray(item.changes)) return [];
-  return item.changes.flatMap((c: any) => {
-    const path = text(c?.path); if (!path) return [];
-    const t = text(c?.kind?.type ?? c?.type);
-    const kind: TouchKind = t === "add" ? "created" : "edited";
-    return [{ path, kind }];
-  });
+  if (item.status === "declined") return [];
+  const found: AgentFileTouch[] = [];
+  if (item.type === "fileChange" && item.status !== "failed" && Array.isArray(item.changes)) {
+    for (const c of item.changes) {
+      const path = text(c?.path); if (!path) continue;
+      const t = text(c?.kind?.type ?? c?.type);
+      const kind: TouchKind = t === "add" ? "created" : "edited";
+      found.push({ path, kind });
+      // An update can also be a move. Keep the destination as a real file touch; the
+      // source may no longer exist, but both paths are useful history and the neutral
+      // reducer resolves either relative spelling against the session cwd.
+      const moved = text(c?.kind?.move_path ?? c?.kind?.movePath);
+      if (moved) found.push({ path: moved, kind: "edited" });
+    }
+  } else if (item.type === "imageView") {
+    const path = text(item.path); if (path) found.push({ path, kind: "read" });
+  } else if (item.type === "commandExecution" && Array.isArray(item.commandActions)) {
+    // App Server already parsed these commands and only calls an action `read` when it
+    // has a concrete file path. Do not infer paths from shell text, listFiles folders,
+    // search roots or unknown commands.
+    for (const action of item.commandActions) {
+      if (action?.type !== "read") continue;
+      const path = text(action.path); if (path) found.push({ path, kind: "read" });
+    }
+  } else if (item.type === "imageGeneration" && item.status !== "failed") {
+    const path = text(item.savedPath); if (path) found.push({ path, kind: "created" });
+  }
+  // A command can contain the same read action more than once. One completed item is
+  // one touch in the set, so de-duplicate here before the neutral reducer counts it.
+  return found.filter((touch, i) => found.findIndex((x) => x.path === touch.path && x.kind === touch.kind) === i);
 }
 
 function itemParts(item: Record<string, any>) {
@@ -130,16 +165,49 @@ function itemParts(item: Record<string, any>) {
     };
     case "webSearch": return { tool: "WebSearch", arg: text(item.query), inputData: { query: text(item.query) }, input: text(item.query), output: clip(item.results), failed: false };
     case "imageView": return { tool: "Read", arg: leaf(text(item.path)), inputData: { file_path: text(item.path) }, input: text(item.path), output: "image viewed", failed: false };
+    // `collabToolCall` is the public App Server spelling; recent schemas renamed the
+    // richer item to `collabAgentToolCall`. Supporting both keeps the timeline useful
+    // across that protocol transition without leaking either spelling past this file.
+    case "collabToolCall": case "collabAgentToolCall": {
+      const tool = text(item.tool, "agent");
+      const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+      const inputData = { prompt: item.prompt, model: item.model, receiverThreadIds: receivers };
+      return {
+        tool: `Agent · ${tool}`, arg: text(item.prompt) || receivers.join(", "),
+        inputData, input: clip(inputData), output: clip(item.agentsStates ?? item.status),
+        failed: item.status === "failed",
+      };
+    }
+    case "subAgentActivity": return {
+      tool: "Agent", arg: `${text(item.kind, "activity")} · ${leaf(text(item.agentPath))}`,
+      inputData: { agentPath: item.agentPath, agentThreadId: item.agentThreadId, kind: item.kind },
+      input: clip({ agentPath: item.agentPath, agentThreadId: item.agentThreadId }),
+      output: text(item.kind), failed: text(item.kind).includes("fail"),
+    };
+    case "sleep": return {
+      tool: "Wait", arg: `${Number(item.durationMs) || 0}ms`, inputData: { durationMs: item.durationMs },
+      input: clip({ durationMs: item.durationMs }), output: "completed", failed: false,
+    };
+    case "imageGeneration": return {
+      tool: "ImageGen", arg: leaf(text(item.savedPath)) || text(item.revisedPrompt),
+      inputData: { prompt: item.revisedPrompt, transparentBackground: item.transparentBackground },
+      input: text(item.revisedPrompt), output: text(item.savedPath) || clip(item.failure ?? item.result),
+      failed: item.status === "failed" || !!item.failure,
+    };
     default: return null;
   }
 }
 
 function itemEvents(method: string, params: any): AgentEvent[] {
   const item = obj(params?.item); const p = itemParts(item); if (!p) return [];
-  const id = text(item.id); if (!id) return [];
-  if (method === "item/started") return [{ type: "activity-started", id, tool: p.tool, arg: p.arg, input: p.input, desc: "" }];
+  const rawId = text(item.id); if (!rawId) return [];
+  const child = params?.episkoChild === true;
+  const thread = text(params?.threadId);
+  const id = child && thread ? `${thread}:${rawId}` : rawId;
+  const tool = child ? `Subagent · ${p.tool}` : p.tool;
+  if (method === "item/started") return [{ type: "activity-started", id, tool, arg: p.arg, input: p.input, desc: "" }];
   return [{
-    type: "activity-completed", id, tool: p.tool, input: p.input, inputData: p.inputData,
+    type: "activity-completed", id, tool, input: p.input, inputData: p.inputData,
     output: p.output, failed: p.failed, files: fileTouches(item),
   }];
 }
@@ -147,8 +215,9 @@ function itemEvents(method: string, params: any): AgentEvent[] {
 function permission(e: ProviderEvent): AgentEvent {
   const p = obj(e.params);
   const command = text(p.command ?? p.reason ?? p.grantRoot, "Review in terminal");
-  const tool = e.method.includes("commandExecution") ? "Bash" : e.method.includes("fileChange") ? "Edit" : "Codex";
-  return { type: "permission", id: e.requestId || text(p.itemId), tool, command, risk: riskLevel(tool, { command }) };
+  const nativeTool = e.method.includes("commandExecution") ? "Bash" : e.method.includes("fileChange") ? "Edit" : "Codex";
+  const tool = p.episkoChild === true ? `Subagent · ${nativeTool}` : nativeTool;
+  return { type: "permission", id: e.requestId || text(p.itemId), tool, command, risk: riskLevel(nativeTool, { command }) };
 }
 
 function plan(v: unknown): Todo[] {
@@ -159,6 +228,12 @@ function plan(v: unknown): Todo[] {
 
 export function codexEvents(e: ProviderEvent): AgentEvent[] {
   const p = obj(e.params);
+  const child = p.episkoChild === true;
+  // Child tools and approvals belong in the parent's cockpit; child lifecycle, plan,
+  // token and error events do not. Letting a child turn complete would mark the parent
+  // done, and letting its plan through would replace the plan the user is looking at.
+  if (child && e.method !== "item/started" && e.method !== "item/completed"
+    && !e.method.endsWith("/requestApproval") && e.method !== "episko/request/resolved") return [];
   switch (e.method) {
     case "thread/started": {
       const t = obj(p.thread); return [{ type: "thread", id: text(t.id), title: text(t.name) || undefined }];
@@ -166,7 +241,7 @@ export function codexEvents(e: ProviderEvent): AgentEvent[] {
     case "episko/thread/resumed": {
       const t = obj(p.thread); return [{ type: "thread", id: text(t.id), model: text(p.model) || undefined, title: text(t.name) || undefined }];
     }
-    case "thread/name/updated": return [{ type: "thread", id: text(p.threadId), title: text(p.name) || undefined }];
+    case "thread/name/updated": return [{ type: "thread", id: text(p.threadId), title: text(p.threadName) || undefined }];
     case "thread/status/changed": return [{ type: "thread-status", status: text(p.status?.type), waiting: Array.isArray(p.status?.activeFlags) && p.status.activeFlags.includes("waitingOnApproval") }];
     case "turn/started": return [{ type: "turn-started" }];
     case "turn/completed": {
@@ -186,7 +261,7 @@ export function codexEvents(e: ProviderEvent): AgentEvent[] {
         resetsAt: Number.isFinite(w.resetsAt) ? Number(w.resetsAt) : null,
         windowMins: Number.isFinite(w.windowDurationMins) ? Number(w.windowDurationMins) : null,
       }));
-      return [{ type: "rate-limits", windows }];
+      return [{ type: "rate-limits", windows, scope: text(p.episkoScope) || null }];
     }
     case "episko/request/resolved": return [{ type: "permission-resolved", id: text(p.requestId) }];
     case "error": return [{ type: "error", detail: text(p.message) || clip(p.error) }];

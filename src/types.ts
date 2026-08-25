@@ -180,7 +180,7 @@ export type SessKind = "agent" | "shell" | "task";
 // without the UI knowing which protocol delivered it.
 export const AGENT_CAPABILITIES = [
   "session-state", "activity", "context", "usage", "permissions", "resume",
-  "history", "external-terminal",
+  "history", "external-terminal", "launch-permissions",
 ] as const;
 export type AgentCapability = typeof AGENT_CAPABILITIES[number];
 
@@ -207,8 +207,8 @@ export function providerCapabilities(id: string): AgentCapability[] {
 // hasn't got it": those rows are shown, greyed and inert, rather than dropped, because
 // a missing row reads as "Episko doesn't support Codex" and sends somebody to the
 // issue tracker. `bin` is what was looked for, which is the only useful thing to say
-// about an agent that wasn't found. `mark` is its two-letter monogram; see the AGENTS
-// table in pty.rs for why these are letters rather than logos.
+// about an agent that wasn't found. `mark` remains part of the backend catalogue wire
+// shape for compatibility; visible brand assets live at the frontend provider boundary.
 export interface AgentCli {
   id: string; label: string; mark: string; bin: string; path: string | null;
   capabilities: AgentCapability[];
@@ -226,6 +226,21 @@ export interface AgentTokenUsage {
 }
 export interface AgentRateLimit {
   usedPercent: number; resetsAt: number | null; windowMins: number | null;
+}
+// One provider-neutral approval request. Control-plane providers can raise several in
+// parallel (including from child agents), so Sess keeps a queue rather than treating
+// the latest request as the only one that exists. The legacy scalar fields remain the
+// projection the existing inspector/palette render; ./permissions keeps them synced to
+// the queue's head.
+export interface PendingPermission {
+  id: string; tool: string; command: string; risk: Risk;
+}
+// One provider-owned launch policy offered through the shared Sessions setting.
+// The id is deliberately just a string: it is meaningful only to that provider's
+// adapter and is whitelisted again at the backend launch boundary. `asks` answers the
+// narrower UI question of whether an approval card can still appear in this mode.
+export interface AgentPermissionMode {
+  id: string; label: string; sub: string; glyph: string; asks: boolean;
 }
 export function agentCapabilitySummary(a: AgentCli): string {
   if (!a.capabilities.includes("session-state")) return "terminal only";
@@ -275,17 +290,20 @@ export function pickAgent(colorKey: string, def: string, byProject: Record<strin
     id === CLAUDE_CLI.id ? CLAUDE_CLI : avail.find((a) => a.id === id && agentInstalled(a));
   return known(byProject[colorKey]) ?? known(def) ?? CLAUDE_CLI;
 }
+
+/// Resolve the provider carried by a durable resume row. Unlike a preference, this is
+/// conversation identity: an unknown provider must not silently become Claude and
+/// consume or rewrite the wrong provider's restore row. An absent provider is the
+/// legacy Claude spelling; a known-but-uninstalled provider is returned so its normal
+/// launch error can explain what is missing while leaving the row intact.
+export function resumeAgent(provider: string | undefined, catalogue: AgentCli[]): AgentCli | undefined {
+  if (!provider || provider === CLAUDE_CLI.id) return CLAUDE_CLI;
+  return catalogue.find((agent) => agent.id === provider);
+}
 // Where a launched terminal lives. The instrumentation is identical for all four;
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
-// How a new claude session treats tool calls at launch (`claude --permission-mode`).
-// Orthogonal to Engine: this decides what the session may do, not where its terminal
-// lives, and it applies to every engine. The spellings are Claude Code's own, because
-// they go on the command line verbatim (bar `default`, which means "pass no flag" —
-// see `permission_mode_arg` in pty.rs). Only the *starting* mode: Claude's own ⇧⇥
-// still switches mode inside a running session, and nothing here tracks that.
-export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
 export const isAgent = (s: Sess) => s.kind === "agent";
 export const isClaude = (s: Sess) => isAgent(s) && s.provider === "claude";
 // Capability checks are the shared UI boundary. `isClaude` remains for the few
@@ -496,6 +514,7 @@ export interface Sess {
   resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
+  pendingPermissions: PendingPermission[];
   /// When this pane entered the "needs you" set, and **0 when it is not in it** —
   /// maintained in exactly one place (`syncAttn` in ./grouping) rather than at each of
   /// the four events that can put it there. It is not `phaseSince`: a permission is
@@ -529,6 +548,9 @@ export interface Sess {
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   tokenUsage: AgentTokenUsage | null;
   rateLimits: AgentRateLimit[];
+  // Opaque provider/account identity supplied by the integration boundary. Account-wide
+  // quota updates are shared only between sessions with the same non-null scope.
+  rateLimitScope: string | null;
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];

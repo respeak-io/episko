@@ -713,8 +713,8 @@ html.win .wctl { display: flex; }
 .chip-s { font: 9.5px var(--font-mono); letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hair); color: var(--muted); }
 .chip-s.hot { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 14%, transparent); border-color: color-mix(in srgb, var(--st-done) 30%, transparent); }
 
-/* --- gauges: context + cost, each with a sparkline --- */
-.gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* --- inspector gauge: selected conversation's context and sparkline --- */
+.gauges { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .gauge { border-radius: var(--radius); padding: 10px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 7px; }
 .gauge .grow { display: flex; align-items: center; gap: 9px; min-height: 34px; }
 .gauge .gnum { font: 700 17px var(--font-mono); letter-spacing: -.02em; }
@@ -1720,6 +1720,11 @@ select.in-ctl { cursor: pointer; }
 .seg-opt.on { background: var(--accent-wash); border-color: var(--accent-line); }
 .seg-top { display: flex; align-items: center; gap: 8px; }
 .seg-glyph { flex: none; width: 15px; text-align: center; color: var(--muted); font-size: 12px; }
+/* Trusted provider SVGs stay inline so monochrome marks inherit the current theme;
+   colour marks keep their native fills. Both selectors use this exact box. */
+.agent-logo { display: inline-grid; place-items: center; line-height: 0; }
+.agent-logo svg { display: block; width: 16px; height: 16px; overflow: visible; }
+.seg-glyph.agent-logo { width: 18px; height: 18px; }
 /* An agent monogram: two letters where the other rows have one symbol. Smaller and
    tracked in, so the pair reads as one mark rather than as a truncated word. */
 .seg-mono, .mp-mono { font: 700 9px/1 var(--font-mono); letter-spacing: -.2px; }
@@ -2146,6 +2151,16 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-chev { margin-left: auto; padding-left: 6px; color: var(--muted-2); font-size: 13px; }
 .ctxmenu .mp-item.sub-open { background: var(--surface); }
 .ctxmenu .mp-danger .mp-ic, .ctxmenu .mp-danger .mp-l { color: var(--st-attention); }
+/* Expanding "more supported" can expose the entire CLI catalogue. Keep the header
+   fixed and make only that list bounded, so it remains usable on a laptop display. */
+.ctxmenu .agent-pick-list { display: flex; flex-direction: column; gap: 2px; }
+.ctxmenu.agent-all .agent-pick-list {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+}
 /* A verb that cannot run stays listed and says why — dropping the row would read as
    "Episko forgot how to do this". Same shape the branch popover uses for its own. */
 .ctxmenu .mp-item.dis { cursor: not-allowed; opacity: .55; }

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { store } from "./localstorage"; // must precede modules that read localStorage
-import { applyAgentEvent } from "../src/agents";
-import { codexApiEquivalentUsd, codexEvents, codexHistoryEntries, codexHistoryMessages } from "../src/providers/codex";
+import { applyAgentEvent, applyAgentEventToFleet } from "../src/agents";
+import { CODEX_PERMISSION_MODES, codexApiEquivalentUsd, codexEvents, codexHistoryEntries, codexHistoryMessages } from "../src/providers/codex";
 import { rl } from "../src/rl";
 import { resetCostBaselines, usage, usageDetail } from "../src/usage";
 import type { Sess } from "../src/types";
@@ -10,9 +10,9 @@ const sess = (id = "pane-1"): Sess => ({
   id, project: "episko", accent: "#fff", workdir: "/w/episko", colorKey: "/w/episko",
   resumeId: id, branch: "main", worktree: null, title: "Codex",
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
-  pendingCmd: "", pendingPermId: null, pendRisk: null, attnAt: 0, seenAt: 0,
+  pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], attnAt: 0, seenAt: 0,
   subagents: 0, fanout: null, apiErr: null, drift: null,
-  model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [],
+  model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
   lastEvent: "", activity: [], files: [], tally: {}, kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],
@@ -31,13 +31,36 @@ beforeEach(() => {
 });
 
 describe("Codex provider adapter", () => {
+  it("owns a distinct, sandbox-aware launch policy list", () => {
+    expect(CODEX_PERMISSION_MODES.map((mode) => mode.id)).toEqual([
+      "default", "on-request", "read-only", "auto", "bypass",
+    ]);
+    expect(CODEX_PERMISSION_MODES.find((mode) => mode.id === "auto"))
+      .toMatchObject({ asks: false, sub: expect.stringContaining("workspace-write") });
+  });
+
   it("normalizes thread identity, commands and approvals", () => {
     expect(codexEvents(raw("thread/started", { thread: { id: "thread-1", name: "Fix it" } }))[0])
       .toEqual({ type: "thread", id: "thread-1", title: "Fix it" });
+    // App Server's generated schema calls this `threadName`; the thread snapshot's
+    // `name` spelling does not carry over to this notification.
+    expect(codexEvents(raw("thread/name/updated", { threadId: "thread-1", threadName: "Fixed" }))[0])
+      .toEqual({ type: "thread", id: "thread-1", title: "Fixed" });
     expect(codexEvents(raw("item/started", { item: { type: "commandExecution", id: "call-1", command: "pnpm test", cwd: "/w/episko", status: "inProgress" } }))[0])
       .toMatchObject({ type: "activity-started", id: "call-1", tool: "Bash", input: "pnpm test" });
     expect(codexEvents(raw("item/commandExecution/requestApproval", { itemId: "call-1", command: "rm -rf build" }, "ask-1"))[0])
       .toMatchObject({ type: "permission", id: "ask-1", tool: "Bash", risk: "high" });
+  });
+
+  it("keeps child tools and approvals while ignoring child lifecycle", () => {
+    const child = { threadId: "child-1", episkoChild: true };
+    expect(codexEvents(raw("turn/completed", { ...child, turn: { status: "completed" } }))).toEqual([]);
+    expect(codexEvents(raw("item/started", { ...child, item: {
+      type: "commandExecution", id: "call-1", command: "pnpm test", status: "inProgress",
+    } }))[0]).toMatchObject({ id: "child-1:call-1", tool: "Subagent · Bash" });
+    expect(codexEvents(raw("item/commandExecution/requestApproval", {
+      ...child, itemId: "call-1", command: "git push",
+    }, "ask-child"))[0]).toMatchObject({ id: "ask-child", tool: "Subagent · Bash", risk: "high" });
   });
 
   it("normalizes token usage and rate-limit windows", () => {
@@ -52,6 +75,45 @@ describe("Codex provider adapter", () => {
       secondary: { usedPercent: 34, windowDurationMins: 10080, resetsAt: 20 },
     } }))[0];
     expect(limits).toMatchObject({ type: "rate-limits", windows: [{ usedPercent: 12 }, { usedPercent: 34 }] });
+  });
+
+  it("keeps structured file reads, edits and newer tools visible in Context", () => {
+    const command = codexEvents(raw("item/completed", { item: {
+      type: "commandExecution", id: "cmd-read", command: "cat src/app.ts", status: "completed",
+      commandActions: [
+        { type: "read", name: "app.ts", path: "/w/episko/src/app.ts", command: "cat src/app.ts" },
+        { type: "listFiles", path: "/w/episko/src", command: "ls src" },
+      ],
+    } }))[0];
+    expect(command).toMatchObject({
+      type: "activity-completed",
+      files: [{ path: "/w/episko/src/app.ts", kind: "read" }],
+    });
+
+    const changed = codexEvents(raw("item/completed", { item: {
+      type: "fileChange", id: "edit-1", status: "completed", changes: [
+        { path: "/w/episko/src/new.ts", kind: { type: "add" } },
+        { path: "/w/episko/src/old.ts", kind: { type: "update" } },
+        { path: "src/before.ts", kind: { type: "move", move_path: "src/after.ts" } },
+      ],
+    } }))[0];
+    expect(changed).toMatchObject({ files: [
+      { path: "/w/episko/src/new.ts", kind: "created" },
+      { path: "/w/episko/src/old.ts", kind: "edited" },
+      { path: "src/before.ts", kind: "edited" },
+      { path: "src/after.ts", kind: "edited" },
+    ] });
+
+    const image = codexEvents(raw("item/completed", { item: {
+      type: "imageView", id: "image-1", path: "/w/episko/mock.png",
+    } }))[0];
+    expect(image).toMatchObject({ tool: "Read", files: [{ path: "/w/episko/mock.png", kind: "read" }] });
+
+    const collab = codexEvents(raw("item/completed", { item: {
+      type: "collabAgentToolCall", id: "agent-1", tool: "spawnAgent", status: "completed",
+      prompt: "Review the adapter", receiverThreadIds: ["child-1"], agentsStates: { "child-1": { status: "completed" } },
+    } }))[0];
+    expect(collab).toMatchObject({ type: "activity-completed", tool: "Agent · spawnAgent", failed: false });
   });
 
   it("normalizes App Server's cumulative API-equivalent estimate", () => {
@@ -93,6 +155,20 @@ describe("Codex provider adapter", () => {
 });
 
 describe("provider-neutral agent reducer", () => {
+  it("folds adapter file touches into the shared inspector set", () => {
+    const s = sess("files-pane");
+    const item = {
+      type: "commandExecution", id: "read-1", command: "cat src/app.ts", cwd: "/w/episko",
+      status: "completed", commandActions: [
+        { type: "read", name: "app.ts", path: "/w/episko/src/app.ts", command: "cat src/app.ts" },
+      ],
+    };
+    for (const event of codexEvents(raw("item/started", { item: { ...item, status: "inProgress" } }))) applyAgentEvent(s, event);
+    for (const event of codexEvents(raw("item/completed", { item }))) applyAgentEvent(s, event);
+    expect(s.files).toMatchObject([{ path: "/w/episko/src/app.ts", kind: "read", n: 1 }]);
+    expect(s.activity[0]).toMatchObject({ tool: "Bash", id: "read-1", failed: false });
+  });
+
   it("drives the shared lifecycle, timeline and permission state", () => {
     const s = sess();
     for (const event of codexEvents(raw("thread/started", { thread: { id: "thread-1", name: "Fix it" } }))) applyAgentEvent(s, event);
@@ -106,6 +182,56 @@ describe("provider-neutral agent reducer", () => {
     applyAgentEvent(s, { type: "permission-resolved", id: "ask" });
     applyAgentEvent(s, { type: "turn-completed", failed: false, detail: "", durationMs: 250 });
     expect(s.phase).toBe("done"); expect(s.pendingPermId).toBeNull(); expect(s.durMs).toBe(250);
+  });
+
+  it("queues parallel approvals and promotes the next request after a resolution", () => {
+    const s = sess();
+    applyAgentEvent(s, { type: "permission", id: "ask-1", tool: "Bash", command: "git push", risk: "high" });
+    applyAgentEvent(s, { type: "permission", id: "ask-2", tool: "Edit", command: "write app.ts", risk: "med" });
+    expect(s.pendingPermissions).toHaveLength(2);
+    expect(s).toMatchObject({ pendingPermId: "ask-1", pendingCmd: "git push" });
+    applyAgentEvent(s, { type: "permission-resolved", id: "ask-1" });
+    expect(s).toMatchObject({ pendingPermId: "ask-2", pendingCmd: "write app.ts", pendRisk: "med" });
+    applyAgentEvent(s, { type: "permission-resolved", id: "ask-2" });
+    expect(s).toMatchObject({ pendingPermId: null, attention: null, pendingPermissions: [] });
+  });
+
+  it("shares quotas only across panes with the same opaque account scope", () => {
+    const owner = sess("owner"); const sibling = sess("sibling"); const other = sess("other");
+    owner.rateLimitScope = sibling.rateLimitScope = "scope-a";
+    other.rateLimitScope = "scope-b";
+    const event = { type: "rate-limits" as const, scope: "scope-a", windows: [
+      { usedPercent: 42, resetsAt: 100, windowMins: 300 },
+    ] };
+    applyAgentEventToFleet(owner, event, [owner, sibling, other]);
+    expect(owner.rateLimits).toEqual(event.windows);
+    expect(sibling.rateLimits).toEqual(event.windows);
+    expect(other.rateLimits).toEqual([]);
+  });
+
+  it("clears every pane that shared the account's previous scope", () => {
+    const owner = sess("owner"); const sibling = sess("sibling"); const other = sess("other");
+    owner.rateLimitScope = sibling.rateLimitScope = "scope-a";
+    owner.rateLimits = sibling.rateLimits = [{ usedPercent: 42, resetsAt: 100, windowMins: 300 }];
+    other.rateLimitScope = "scope-b";
+    other.rateLimits = [{ usedPercent: 7, resetsAt: 200, windowMins: 300 }];
+    applyAgentEventToFleet(owner, { type: "rate-limits", scope: null, windows: [] }, [owner, sibling, other]);
+    expect(owner).toMatchObject({ rateLimitScope: null, rateLimits: [] });
+    expect(sibling).toMatchObject({ rateLimitScope: null, rateLimits: [] });
+    expect(other).toMatchObject({ rateLimitScope: "scope-b", rateLimits: [{ usedPercent: 7 }] });
+  });
+
+  it("resolves relative provider file paths before they reach the inspector", () => {
+    const s = sess();
+    applyAgentEvent(s, {
+      type: "activity-completed", id: "edit", tool: "Edit", input: "", inputData: {},
+      output: "completed", failed: false, files: [
+        { path: "src/before.ts", kind: "edited" }, { path: "src/after.ts", kind: "edited" },
+      ],
+    });
+    expect(s.files.map((file) => file.path)).toEqual([
+      "/w/episko/src/before.ts", "/w/episko/src/after.ts",
+    ]);
   });
 
   it("uses last-call tokens for context and cumulative tokens for analytics", () => {

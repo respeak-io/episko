@@ -12,11 +12,11 @@
 
 - **Every session in one view.** A sidebar of projects and their sessions, each with a status glyph and context %, sorted so whatever needs you floats up. Sessions that need a decision are called out in the header and the tray. Projects can be grouped under your own headings (*Work*, *Side*) and a group folds to one line that still carries the most urgent glyph it hides.
 - **Real terminals all the way down.** Each session is a genuine PTY running the provider's actual TUI: type into it, watch it think. Claude can render embedded ([xterm.js](https://xtermjs.org/)) or in Ghostty, Terminal.app or iTerm2; Codex currently stays embedded so its App Server connection remains attached. Plain shell panes too, for when you just need a prompt next to an agent.
-- **Answer permission prompts in-app.** When Claude or Codex asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal, instead of hunting for which window is blocked. Claude's starting permission mode is configurable too.
-- **Live telemetry per session.** Model, context window use, time in state, the running tool, and recent activity with latencies. Claude adds exact dollar cost; Codex adds live token usage and its own rate-limit windows. Both share the git working set and inspector.
+- **Answer permission prompts in-app.** When Claude or Codex asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal, instead of hunting for which window is blocked. Starting permission/sandbox policy is stored separately for each integrated agent.
+- **Live telemetry per session.** Model, context window use, time in state, the running tool, and recent activity with latencies. Claude adds exact dollar cost; Codex adds live token usage, an API-equivalent cost estimate and its own rate-limit windows. Both share the git working set and inspector.
 - **A dashboard per project.** Click a project for its week: commits and sessions summarised a day at a time, open issues and pull requests, the repo's checkouts, shared notes, and what it all cost. [See below](#every-project-has-a-homepage).
 - **Send an agent at a GitHub issue.** Dispatch from the dashboard and Episko creates the worktree, sends the prompt, and writes a claim to the issue so a colleague's agent doesn't start the same work twice, then hands the issue back when the session ends.
-- **Usage limits, before you hit them.** Your 5-hour and weekly limits with reset times, and a forecast that warms from amber to red when your current pace won't make it.
+- **Usage limits, before you hit them.** The footer follows the selected agent, names whose 5-hour and weekly account windows it is showing, and keeps Claude's burn forecast from amber to red.
 - **A usage dashboard.** Daily spend as a contribution heatmap, tokens by model, token composition (cache reads vs. input vs. output), and cost attributed per project.
 - **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout. A session also notices when its agent drifts to *another* checkout mid-task, and offers the repair: follow it there, or move the conversation back.
 - **A commit graph per project.** Right-click a project → *Commit graph…* for its lanes, merges, branch and tag labels. It reads a page at a time and fetches the next as you scroll, so opening it on a huge repo costs the same as on a small one.
@@ -168,4 +168,4 @@ Release builds target Apple silicon (`aarch64`) and Windows x64. Intel Macs aren
 
 [MIT](./LICENSE) © Respeak GmbH, Karlsruhe
 
-Episko is an independent project, not affiliated with, endorsed, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
+Episko is an independent project, not affiliated with, endorsed, or sponsored by the agent providers it supports. Product names and logos belong to their respective owners. Claude and Claude Code are trademarks of Anthropic, PBC.

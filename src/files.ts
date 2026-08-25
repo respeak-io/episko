@@ -22,6 +22,19 @@
 
 import type { FileTouch, TouchKind } from "./types";
 
+/**
+ * Provider file events are allowed to name a path relative to the thread cwd. Everything
+ * after the neutral reducer — labels, open/reveal and Explorer joins — consumes absolute
+ * paths, so resolve the provider spelling once as it enters Sess state. Existing absolute
+ * POSIX, UNC and drive-letter paths pass through byte-for-byte.
+ */
+export function absoluteTouchPath(path: string, workdir: string): string {
+  const p = path.trim();
+  if (!p || !workdir || /^[A-Za-z]:[/\\]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return p;
+  const sep = workdir.includes("\\") && !workdir.includes("/") ? "\\" : "/";
+  return `${workdir.replace(/[/\\]+$/, "")}${sep}${p.replace(/[/\\]/g, sep)}`;
+}
+
 /// Kinds rank, and a file's kind only ever moves up this ladder. Three reasons it is a
 /// ladder rather than "the last thing that happened":
 ///

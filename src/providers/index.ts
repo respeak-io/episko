@@ -7,9 +7,19 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AgentEvent, ProviderEvent } from "../agents";
 import type { HistEntry } from "../history";
 import {
-  agentInstalled, CLAUDE_CLI, type AgentCli, type Restorable,
+  agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
-import { codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
+import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
+import { forecast5h, forecast7d, type Forecast } from "../rl";
+
+const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
+  { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇", asks: true },
+  { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙", asks: false },
+  { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎", asks: true },
+  { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈", asks: false },
+  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts · anything not pre-approved is denied",    glyph: "⊘", asks: false },
+  { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠", asks: false },
+];
 
 export interface ProviderMessage { role: string; text: string }
 
@@ -24,6 +34,8 @@ export interface AgentProviderAdapter {
   label: string;
   events?: (event: ProviderEvent) => AgentEvent[];
   history?: ProviderHistory;
+  permissionModes?: readonly AgentPermissionMode[];
+  rateLimitForecasts?: () => { windowMins: number; forecast: Forecast }[];
 }
 
 const claudeHistory: ProviderHistory = {
@@ -91,13 +103,22 @@ const codexHistory: ProviderHistory = {
 };
 
 export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
-  { id: "claude", label: "Claude", history: claudeHistory },
-  { id: "codex", label: "Codex", events: codexEvents, history: codexHistory },
+  { id: "claude", label: "Claude", history: claudeHistory, permissionModes: CLAUDE_PERMISSION_MODES, rateLimitForecasts: () => [
+    { windowMins: 300, forecast: forecast5h() },
+    { windowMins: 10080, forecast: forecast7d() },
+  ] },
+  { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
 ];
 
 const PROVIDERS = new Map(PROVIDER_ADAPTERS.map((provider) => [provider.id, provider]));
 
 export const providerAdapter = (id: string) => PROVIDERS.get(id);
+
+export function providerPermissionMode(provider: string, id: string): AgentPermissionMode | null {
+  const modes = providerAdapter(provider)?.permissionModes;
+  if (!modes?.length) return null;
+  return modes.find((mode) => mode.id === id) ?? modes[0];
+}
 
 /** Integrated history readers whose CLI is installed and advertises the capability. */
 export function historyProviders(available: AgentCli[]): AgentProviderAdapter[] {

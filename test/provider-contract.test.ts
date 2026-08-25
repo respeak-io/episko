@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { agentLogo, agentLogoIds } from "../src/providers/logos";
 
 // Provider support crosses a JSON capability matrix, a frontend adapter registry and
 // shared UI code. TypeScript cannot prove those files agree, so this suite checks the
@@ -19,6 +20,7 @@ function tsFiles(dir = SRC_PATH): string[] {
 const manifest = JSON.parse(read("providers/manifest.json")) as Record<string, { capabilities: string[] }>;
 const types = read("types.ts");
 const registry = read("providers/index.ts");
+const pty = readFileSync(new URL("../src-tauri/src/pty.rs", import.meta.url), "utf8");
 
 const quoted = (source: string) => [...source.matchAll(/["']([a-z][a-z0-9-]*)["']/g)].map((m) => m[1]);
 const capabilityBlock = /export const AGENT_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const/.exec(types)?.[1] ?? "";
@@ -27,6 +29,13 @@ const registryBlock = /export const PROVIDER_ADAPTERS[^=]*=\s*\[([\s\S]*?)\n\];/
 const registryIds = [...registryBlock.matchAll(/\{\s*id:\s*["']([a-z0-9]+)["']/g)].map((m) => m[1]);
 
 describe("provider integration contract", () => {
+  it("has an explicit logo for Claude and every backend catalogue agent", () => {
+    const catalogueBlock = /const AGENTS:[\s\S]*?=\s*&\[([\s\S]*?)\n\];/.exec(pty)?.[1] ?? "";
+    const catalogueIds = [...catalogueBlock.matchAll(/\bid:\s*"([a-z0-9]+)"/g)].map((match) => match[1]);
+    expect([...agentLogoIds()].sort()).toEqual(["claude", ...catalogueIds].sort());
+    for (const id of agentLogoIds()) expect(agentLogo(id), `${id} has no SVG mark`).toContain("<svg");
+  });
+
   it("has one adapter entry for every provider in the shared capability matrix", () => {
     expect(registryIds.length).toBeGreaterThan(0);
     expect([...registryIds].sort()).toEqual(Object.keys(manifest).sort());
@@ -55,6 +64,9 @@ describe("provider integration contract", () => {
       }
       if (entry.capabilities.includes("history")) {
         expect(adapter, `${provider} claims history without a history adapter`).toMatch(/\bhistory\s*:/);
+      }
+      if (entry.capabilities.includes("launch-permissions")) {
+        expect(adapter, `${provider} claims launch permissions without provider-owned choices`).toMatch(/\bpermissionModes\s*:/);
       }
     }
   });

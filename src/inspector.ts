@@ -22,7 +22,7 @@ import { activeId, sessions } from "./state";
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml,
+  contextGaugeHtml, contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml,
   planHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
@@ -63,10 +63,11 @@ export function renderInspector(s: Sess | null) {
   // ACT — a pending permission is the only thing that should ever jump the queue.
   if (s.attention) {
     const risk = s.pendingPermId && s.pendRisk ? `<span class="risk ${s.pendRisk}">${RISK_LABEL[s.pendRisk]}</span>` : "";
+    const queued = s.pendingPermissions.length > 1 ? ` · ${s.pendingPermissions.length - 1} more queued` : "";
     const permBtns = s.pendingPermId
       ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
       : "";
-    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
+    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention + queued)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
   } else if (s.phase === "error" && s.apiErr) {
     // Right behind it: a turn the API killed. Nothing is happening and nothing will,
     // and the glyph alone can't say whether that means "wait a minute" or "your key
@@ -82,7 +83,7 @@ export function renderInspector(s: Sess | null) {
   if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));                                        // state, dwell, current tool
   html.push(fanoutHtml(s));                                       // the fleet it launched, if any
-  html.push(gaugesHtml(s));                                       // TRACK — context + cost
+  html.push(contextGaugeHtml(s));                                 // TRACK — context
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
   // What's changed on disk, and how the branch sits against its upstream. Shown
   // for any repo session — a clean tree that's behind is exactly what you want to

@@ -62,7 +62,10 @@ fn apply_utf8_locale(_cmd: &mut CommandBuilder) {
 fn apply_utf8_locale(cmd: &mut CommandBuilder) {
     let is_utf8 = |var: &str| {
         std::env::var(var)
-            .map(|v| { let u = v.to_ascii_uppercase(); u.contains("UTF-8") || u.contains("UTF8") })
+            .map(|v| {
+                let u = v.to_ascii_uppercase();
+                u.contains("UTF-8") || u.contains("UTF8")
+            })
             .unwrap_or(false)
     };
     if !is_utf8("LANG") {
@@ -132,7 +135,12 @@ pub(crate) fn spawn_claude(
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let claude = resolve_claude();
@@ -170,7 +178,10 @@ pub(crate) fn spawn_claude(
 
     log::info!(
         "spawn claude · {session_id} · {workdir}{}{}",
-        resume.as_deref().map(|r| format!(" · resume {r}")).unwrap_or_default(),
+        resume
+            .as_deref()
+            .map(|r| format!(" · resume {r}"))
+            .unwrap_or_default(),
         perm.map(|m| format!(" · {m}")).unwrap_or_default()
     );
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -191,7 +202,17 @@ pub(crate) fn spawn_claude(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", provider: Some("claude".into()), scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "agent",
+            provider: Some("claude".into()),
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
 
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -352,7 +373,11 @@ pub(crate) const SCROLLBACK_MAX: usize = 256 * 1024;
 
 impl ScrollBuf {
     pub(crate) fn new() -> Self {
-        ScrollBuf { buf: VecDeque::new(), seq: 0, evicted: false }
+        ScrollBuf {
+            buf: VecDeque::new(),
+            seq: 0,
+            evicted: false,
+        }
     }
     /// Append one reader chunk and return the seq that names it.
     pub(crate) fn push(&mut self, chunk: &[u8]) -> u64 {
@@ -436,7 +461,10 @@ fn stream_pty_session(
                 st.owned_pids.lock().unwrap().remove(&p);
             }
         }
-        let _ = app.emit("pty-exit", serde_json::json!({ "sessionId": session_id, "code": code }));
+        let _ = app.emit(
+            "pty-exit",
+            serde_json::json!({ "sessionId": session_id, "code": code }),
+        );
     });
 }
 
@@ -478,7 +506,12 @@ pub(crate) fn spawn_shell(
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let (shell, shell_args) = interactive_shell();
@@ -507,7 +540,17 @@ pub(crate) fn spawn_shell(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "shell", provider: None, scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "shell",
+            provider: None,
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -642,13 +685,22 @@ pub(crate) fn spawn_task(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let tasks::TaskSpec { exec, cwd: workdir, env } = spec;
+    let tasks::TaskSpec {
+        exec,
+        cwd: workdir,
+        env,
+    } = spec;
     if !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("no such directory: {workdir}"));
     }
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let mut cmd = match exec {
@@ -694,7 +746,17 @@ pub(crate) fn spawn_task(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "task", provider: None, scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "task",
+            provider: None,
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -716,18 +778,9 @@ struct AgentSpec {
     id: &'static str,
     label: &'static str,
     bin: &'static str,
-    /// Two letters for the picker's icon slot, where every other row in that menu has
-    /// a glyph. Vendor logos were the obvious answer and are not available: the CC0
-    /// sets have no mark for Codex, Grok, Kiro, Devin, Droid, Antigravity, Kilo, Maki,
-    /// MastraCode, OMP or Qoder (OpenAI's and xAI's have been *removed* on request),
-    /// and two of the names that do resolve resolve to the wrong product entirely —
-    /// `AMP` is Google's web framework, `Hermes` is a German parcel courier. Half a set
-    /// of logos plus two wrong ones is worse than no logos, so every agent gets the
-    /// same kind of mark instead.
-    ///
-    /// Lives here rather than being derived on the frontend from `label` because the
-    /// four C's (Codex, Cursor, Cline, Copilot) need deciding by hand, and a collision
-    /// between two derived monograms would be silent.
+    /// Stable legacy mark kept in the command's wire shape for compatibility with
+    /// older frontends. Current selectors resolve vetted SVGs at `src/providers/logos`;
+    /// this must never be used to guess a logo from `label`.
     mark: &'static str,
 }
 
@@ -745,27 +798,132 @@ struct AgentSpec {
 /// statusLine telemetry and external-terminal support; a generic catalogue entry would
 /// offer the same binary while silently bypassing that provider adapter.
 const AGENTS: &[AgentSpec] = &[
-    AgentSpec { id: "amp", label: "Amp", bin: "amp", mark: "Am" },
-    AgentSpec { id: "antigravity", label: "Antigravity CLI", bin: "agy", mark: "Ag" },
-    AgentSpec { id: "cline", label: "Cline", bin: "cline", mark: "Cl" },
-    AgentSpec { id: "codex", label: "Codex", bin: "codex", mark: "Cx" },
-    AgentSpec { id: "cursor", label: "Cursor Agent CLI", bin: "cursor-agent", mark: "Cu" },
-    AgentSpec { id: "devin", label: "Devin CLI", bin: "devin", mark: "Dv" },
-    AgentSpec { id: "droid", label: "Droid", bin: "droid", mark: "Dr" },
-    AgentSpec { id: "gemini", label: "Gemini CLI", bin: "gemini", mark: "Gm" },
-    AgentSpec { id: "copilot", label: "GitHub Copilot CLI", bin: "copilot", mark: "Cp" },
-    AgentSpec { id: "grok", label: "Grok CLI", bin: "grok", mark: "Gr" },
-    AgentSpec { id: "hermes", label: "Hermes Agent", bin: "hermes", mark: "He" },
-    AgentSpec { id: "kilo", label: "Kilo Code CLI", bin: "kilo", mark: "Kl" },
-    AgentSpec { id: "kimi", label: "Kimi Code CLI", bin: "kimi", mark: "Km" },
-    AgentSpec { id: "kiro", label: "Kiro CLI", bin: "kiro-cli", mark: "Kr" },
-    AgentSpec { id: "maki", label: "Maki", bin: "maki", mark: "Mk" },
-    AgentSpec { id: "mastracode", label: "MastraCode", bin: "mastracode", mark: "Ms" },
-    AgentSpec { id: "omp", label: "OMP", bin: "omp", mark: "Om" },
-    AgentSpec { id: "opencode", label: "OpenCode", bin: "opencode", mark: "Oc" },
-    AgentSpec { id: "pi", label: "Pi", bin: "pi", mark: "Pi" },
-    AgentSpec { id: "qodercli", label: "Qoder CLI", bin: "qodercli", mark: "Qo" },
-    AgentSpec { id: "qwen", label: "Qwen Code", bin: "qwen", mark: "Qw" },
+    AgentSpec {
+        id: "amp",
+        label: "Amp",
+        bin: "amp",
+        mark: "Am",
+    },
+    AgentSpec {
+        id: "antigravity",
+        label: "Antigravity CLI",
+        bin: "agy",
+        mark: "Ag",
+    },
+    AgentSpec {
+        id: "cline",
+        label: "Cline",
+        bin: "cline",
+        mark: "Cl",
+    },
+    AgentSpec {
+        id: "codex",
+        label: "Codex",
+        bin: "codex",
+        mark: "Cx",
+    },
+    AgentSpec {
+        id: "cursor",
+        label: "Cursor Agent CLI",
+        bin: "cursor-agent",
+        mark: "Cu",
+    },
+    AgentSpec {
+        id: "devin",
+        label: "Devin CLI",
+        bin: "devin",
+        mark: "Dv",
+    },
+    AgentSpec {
+        id: "droid",
+        label: "Droid",
+        bin: "droid",
+        mark: "Dr",
+    },
+    AgentSpec {
+        id: "gemini",
+        label: "Gemini CLI",
+        bin: "gemini",
+        mark: "Gm",
+    },
+    AgentSpec {
+        id: "copilot",
+        label: "GitHub Copilot CLI",
+        bin: "copilot",
+        mark: "Cp",
+    },
+    AgentSpec {
+        id: "grok",
+        label: "Grok CLI",
+        bin: "grok",
+        mark: "Gr",
+    },
+    AgentSpec {
+        id: "hermes",
+        label: "Hermes Agent",
+        bin: "hermes",
+        mark: "He",
+    },
+    AgentSpec {
+        id: "kilo",
+        label: "Kilo Code CLI",
+        bin: "kilo",
+        mark: "Kl",
+    },
+    AgentSpec {
+        id: "kimi",
+        label: "Kimi Code CLI",
+        bin: "kimi",
+        mark: "Km",
+    },
+    AgentSpec {
+        id: "kiro",
+        label: "Kiro CLI",
+        bin: "kiro-cli",
+        mark: "Kr",
+    },
+    AgentSpec {
+        id: "maki",
+        label: "Maki",
+        bin: "maki",
+        mark: "Mk",
+    },
+    AgentSpec {
+        id: "mastracode",
+        label: "MastraCode",
+        bin: "mastracode",
+        mark: "Ms",
+    },
+    AgentSpec {
+        id: "omp",
+        label: "OMP",
+        bin: "omp",
+        mark: "Om",
+    },
+    AgentSpec {
+        id: "opencode",
+        label: "OpenCode",
+        bin: "opencode",
+        mark: "Oc",
+    },
+    AgentSpec {
+        id: "pi",
+        label: "Pi",
+        bin: "pi",
+        mark: "Pi",
+    },
+    AgentSpec {
+        id: "qodercli",
+        label: "Qoder CLI",
+        bin: "qodercli",
+        mark: "Qo",
+    },
+    AgentSpec {
+        id: "qwen",
+        label: "Qwen Code",
+        bin: "qwen",
+        mark: "Qw",
+    },
 ];
 
 fn agent_spec(id: &str) -> Option<&'static AgentSpec> {
@@ -922,6 +1080,7 @@ pub(crate) fn spawn_agent(
     rows: u16,
     cols: u16,
     resume: Option<String>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let spec = agent_spec(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
@@ -931,13 +1090,22 @@ pub(crate) fn spawn_agent(
     // lists agents the probe found, so a miss at this point means it was uninstalled
     // between the poll and the click — and naming it beats a pane that opens onto a
     // shell's "not recognized" with no clue which of the two halves failed.
-    let bin = resolve_cli(spec.bin)
-        .ok_or_else(|| format!("{} isn't installed — `{}` is not on PATH", spec.label, spec.bin))?;
+    let bin = resolve_cli(spec.bin).ok_or_else(|| {
+        format!(
+            "{} isn't installed — `{}` is not on PATH",
+            spec.label, spec.bin
+        )
+    })?;
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     // Through `argv_command`, not `CommandBuilder::new`, and that is load-bearing on
@@ -950,10 +1118,13 @@ pub(crate) fn spawn_agent(
         spec.id,
         app.clone(),
         &state,
-        &session_id,
-        &workdir,
-        &bin,
-        resume.as_deref(),
+        agent::ProviderLaunch::new(
+            &session_id,
+            &workdir,
+            &bin,
+            resume.as_deref(),
+            mode.as_deref(),
+        ),
     )?;
     let mut cmd = argv_command(&bin, args);
     cmd.cwd(&workdir);
@@ -965,7 +1136,10 @@ pub(crate) fn spawn_agent(
     cmd.env("COLORTERM", "truecolor");
     apply_utf8_locale(&mut cmd);
 
-    log::info!("spawn agent · {} · {session_id} · {workdir} · {bin}", spec.id);
+    log::info!(
+        "spawn agent · {} · {session_id} · {workdir} · {bin}",
+        spec.id
+    );
     let child = match pair.slave.spawn_command(cmd) {
         Ok(child) => child,
         Err(e) => {
@@ -982,7 +1156,17 @@ pub(crate) fn spawn_agent(
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
-        Session { master: pair.master, writer, killer, pid: child_pid, workdir, kind: "agent", provider: Some(spec.id.into()), scrollback: scroll.clone(), win32_input: win32.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            killer,
+            pid: child_pid,
+            workdir,
+            kind: "agent",
+            provider: Some(spec.id.into()),
+            scrollback: scroll.clone(),
+            win32_input: win32.clone(),
+        },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
     Ok(())
@@ -1036,8 +1220,9 @@ pub(crate) fn spawn_ghostty(
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
-    let bin = find_ghostty()
-        .ok_or_else(|| "Ghostty not found — install it or add `ghostty` to your PATH".to_string())?;
+    let bin = find_ghostty().ok_or_else(|| {
+        "Ghostty not found — install it or add `ghostty` to your PATH".to_string()
+    })?;
 
     let bg = accent.trim_start_matches('#').to_string();
     let mut cmd = std::process::Command::new(bin);
@@ -1112,7 +1297,10 @@ pub(crate) fn spawn_external_terminal(
     _resume: Option<String>,
     _mode: Option<String>,
 ) -> Result<(), String> {
-    Err("external terminals aren't supported on Windows yet — use the embedded terminal".to_string())
+    Err(
+        "external terminals aren't supported on Windows yet — use the embedded terminal"
+            .to_string(),
+    )
 }
 
 /// Launch an instrumented `claude` session in a generic external terminal app
@@ -1194,7 +1382,12 @@ pub(crate) fn open_terminal_here(workdir: String, _engine: String) -> Result<(),
         return Err(format!("not a directory: {workdir}"));
     }
     // Windows Terminal opens a new tab/window rooted at a directory via `-d`.
-    if sys_command("wt.exe").arg("-d").arg(&workdir).spawn().is_ok() {
+    if sys_command("wt.exe")
+        .arg("-d")
+        .arg(&workdir)
+        .spawn()
+        .is_ok()
+    {
         return Ok(());
     }
     // Fallback: `cmd /c start` spawns a *new console window* (a bare Command::spawn
@@ -1234,7 +1427,8 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
         }
     }
     // Terminal.app / iTerm both open a new window at a directory passed to `open -a`.
-    let app_name = if engine == "iterm" && std::path::Path::new("/Applications/iTerm.app").exists() {
+    let app_name = if engine == "iterm" && std::path::Path::new("/Applications/iTerm.app").exists()
+    {
         "iTerm"
     } else {
         "Terminal"
@@ -1252,22 +1446,38 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
 /// decides what a PTY's child actually receives, which is why the encoding decision
 /// lives here rather than in any one spawner or in the frontend.
 #[tauri::command]
-pub(crate) fn write_pty(state: State<AppState>, session_id: String, data: String) -> Result<(), String> {
+pub(crate) fn write_pty(
+    state: State<AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     let mut map = state.sessions.lock().unwrap();
     if let Some(s) = map.get_mut(&session_id) {
         let payload = pty_payload(&s.win32_input, &data);
-        s.writer.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+        s.writer
+            .write_all(payload.as_bytes())
+            .map_err(|e| e.to_string())?;
         s.writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub(crate) fn resize_pty(state: State<AppState>, session_id: String, rows: u16, cols: u16) -> Result<(), String> {
+pub(crate) fn resize_pty(
+    state: State<AppState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
     let map = state.sessions.lock().unwrap();
     if let Some(s) = map.get(&session_id) {
         s.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1310,7 +1520,12 @@ pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
         .lock()
         .unwrap()
         .iter()
-        .map(|(id, s)| LiveSession { id: id.clone(), kind: s.kind, provider: s.provider.clone(), workdir: s.workdir.clone() })
+        .map(|(id, s)| LiveSession {
+            id: id.clone(),
+            kind: s.kind,
+            provider: s.provider.clone(),
+            workdir: s.workdir.clone(),
+        })
         .collect()
 }
 
@@ -1328,11 +1543,19 @@ pub(crate) struct ScrollbackSnapshot {
 /// reload (#47 stage 2). Read under the same lock the reader appends under, so
 /// the returned seq is exact — see `ScrollBuf` for why that matters.
 #[tauri::command]
-pub(crate) fn read_scrollback(state: State<AppState>, session_id: String) -> Result<ScrollbackSnapshot, String> {
+pub(crate) fn read_scrollback(
+    state: State<AppState>,
+    session_id: String,
+) -> Result<ScrollbackSnapshot, String> {
     let map = state.sessions.lock().unwrap();
-    let s = map.get(&session_id).ok_or_else(|| format!("no such session: {session_id}"))?;
+    let s = map
+        .get(&session_id)
+        .ok_or_else(|| format!("no such session: {session_id}"))?;
     let (bytes, seq) = s.scrollback.lock().unwrap().snapshot();
-    Ok(ScrollbackSnapshot { data: STANDARD.encode(&bytes), seq })
+    Ok(ScrollbackSnapshot {
+        data: STANDARD.encode(&bytes),
+        seq,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1564,7 +1787,13 @@ fn fold_io(
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
     now: std::time::Instant,
 ) -> Folded {
-    let mut f = Folded { read_bps: 0.0, write_bps: 0.0, read: 0, written: 0, primed: false };
+    let mut f = Folded {
+        read_bps: 0.0,
+        write_bps: 0.0,
+        read: 0,
+        written: 0,
+        primed: false,
+    };
     for &(pid, r, w) in readings {
         f.read = f.read.saturating_add(r);
         f.written = f.written.saturating_add(w);
@@ -1596,13 +1825,17 @@ mod tests {
     fn ascii_input_is_never_rewritten() {
         for s in [
             "hunter2\r",
-            "\x03",                       // ^C
-            "\x1b[A\x1b[B\x1b[C\x1b[D",   // arrows
-            "\x1b[200~pasted\x1b[201~",   // bracketed paste, markers included
-            "\x1bOA",                     // SS3
+            "\x03",                     // ^C
+            "\x1b[A\x1b[B\x1b[C\x1b[D", // arrows
+            "\x1b[200~pasted\x1b[201~", // bracketed paste, markers included
+            "\x1bOA",                   // SS3
             "~!@#$%^&*()_+-=[]{}|;':\",./<>?`\\",
         ] {
-            assert_eq!(win32_input_encode(s), s, "rewrote an ASCII-only write: {s:?}");
+            assert_eq!(
+                win32_input_encode(s),
+                s,
+                "rewrote an ASCII-only write: {s:?}"
+            );
         }
     }
 
@@ -1644,7 +1877,10 @@ mod tests {
             "\x1b[200~\x1b[0;0;233;1;0;1_\x1b[0;0;233;0;0;1_\x1b[201~"
         );
         // An OSC's payload is the app's business, terminator included.
-        assert_eq!(win32_input_encode("\x1b]11;rgb:00/00/00\x07"), "\x1b]11;rgb:00/00/00\x07");
+        assert_eq!(
+            win32_input_encode("\x1b]11;rgb:00/00/00\x07"),
+            "\x1b]11;rgb:00/00/00\x07"
+        );
     }
 
     /// The flag is latched from ConPTY's own announcement, and only that. A PTY that
@@ -1655,14 +1891,24 @@ mod tests {
         let mut carry = Vec::new();
         note_win32_input_mode(b"\x1b[?25h hello", &mut carry, &flag);
         assert!(!flag.load(Ordering::Relaxed), "latched on unrelated output");
-        assert_eq!(pty_payload(&flag, "ä"), "ä", "should still be the untouched path");
+        assert_eq!(
+            pty_payload(&flag, "ä"),
+            "ä",
+            "should still be the untouched path"
+        );
 
         note_win32_input_mode(b"\x1b[6n\x1b[?9001h\x1b[?1004h", &mut carry, &flag);
         assert!(flag.load(Ordering::Relaxed));
-        assert_eq!(pty_payload(&flag, "ä"), "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_");
+        assert_eq!(
+            pty_payload(&flag, "ä"),
+            "\x1b[0;0;228;1;0;1_\x1b[0;0;228;0;0;1_"
+        );
 
         note_win32_input_mode(b"\x1b[?9001l", &mut carry, &flag);
-        assert!(!flag.load(Ordering::Relaxed), "withdrawal must be honoured too");
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "withdrawal must be honoured too"
+        );
     }
 
     /// The announcement split across two reads is still seen. Missing it is silent and
@@ -1674,7 +1920,10 @@ mod tests {
         note_win32_input_mode(b"junk\x1b[?90", &mut carry, &flag);
         assert!(!flag.load(Ordering::Relaxed));
         note_win32_input_mode(b"01h more", &mut carry, &flag);
-        assert!(flag.load(Ordering::Relaxed), "a split announcement was missed");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a split announcement was missed"
+        );
     }
 
     // ---------- the round trip, over a real PTY ----------
@@ -1696,7 +1945,13 @@ mod tests {
         println!("READY");
         let got = read_secret();
         // Hex, so the report survives the terminal it travels over.
-        println!("GOT:{}", got.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!(
+            "GOT:{}",
+            got.as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
     }
@@ -1762,7 +2017,11 @@ mod tests {
         // no-break space a passphrase copied out of a document carries".
         let cases: [(&str, &str, &str); 4] = [
             ("plain typed", "hunter2\r", "hunter2"),
-            ("pasted", "\x1b[200~Correct-Horse-42\x1b[201~\r", "Correct-Horse-42"),
+            (
+                "pasted",
+                "\x1b[200~Correct-Horse-42\x1b[201~\r",
+                "Correct-Horse-42",
+            ),
             ("non-ascii", "sëcrét✓§\r", "sëcrét✓§"),
             ("no-break space", "ab\u{a0}cd\r", "ab\u{a0}cd"),
         ];
@@ -1780,7 +2039,12 @@ mod tests {
     fn round_trip(send: &str) -> String {
         use std::time::{Duration, Instant};
         let pair = native_pty_system()
-            .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 30,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty");
         let mut cmd = CommandBuilder::new(std::env::current_exe().expect("current_exe"));
         cmd.arg("--exact");
@@ -1814,7 +2078,9 @@ mod tests {
                     let _ = g.write_all(b"\x1b[1;1R");
                     let _ = g.flush();
                 }
-                o2.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+                o2.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
             }
         });
 
@@ -1828,7 +2094,11 @@ mod tests {
             }
             false
         };
-        assert!(wait_for("READY"), "child never started: {}", out.lock().unwrap());
+        assert!(
+            wait_for("READY"),
+            "child never started: {}",
+            out.lock().unwrap()
+        );
         std::thread::sleep(Duration::from_millis(200));
         {
             let payload = pty_payload(&flag, send);
@@ -1881,7 +2151,10 @@ mod tests {
                 }
             }
             let whole: Vec<u8> = chunks.concat();
-            assert_eq!(replay, whole, "split at chunk {split} lost or doubled bytes");
+            assert_eq!(
+                replay, whole,
+                "split at chunk {split} lost or doubled bytes"
+            );
         }
     }
 
@@ -1894,7 +2167,10 @@ mod tests {
         sb.push(&vec![b'x'; SCROLLBACK_MAX]);
         let (bytes, _) = sb.snapshot();
         assert!(bytes.len() <= SCROLLBACK_MAX);
-        assert!(bytes.iter().all(|&b| b == b'x'), "the old line must be gone, not the fill");
+        assert!(
+            bytes.iter().all(|&b| b == b'x'),
+            "the old line must be gone, not the fill"
+        );
     }
 
     /// An evicted buffer starts mid-line — likely mid escape sequence, which on
@@ -1905,14 +2181,21 @@ mod tests {
     fn snapshot_trims_to_a_newline_only_after_eviction() {
         let mut sb = ScrollBuf::new();
         sb.push(b"first\nsecond\n");
-        assert_eq!(sb.snapshot().0, b"first\nsecond\n", "no eviction, nothing to trim");
+        assert_eq!(
+            sb.snapshot().0,
+            b"first\nsecond\n",
+            "no eviction, nothing to trim"
+        );
 
         let mut sb = ScrollBuf::new();
         // Fill so that eviction leaves a torn fragment ahead of a clean line.
         sb.push(&vec![b'a'; SCROLLBACK_MAX]);
         sb.push(b"\ncomplete line\n");
         let (bytes, _) = sb.snapshot();
-        assert!(bytes.starts_with(b"complete line\n"), "the torn front must go");
+        assert!(
+            bytes.starts_with(b"complete line\n"),
+            "the torn front must go"
+        );
     }
 
     /// One alternate-screen repaint can be 100% newline-free; trimming would then
@@ -1938,7 +2221,10 @@ mod tests {
         let mut samples = HashMap::new();
         // First poll: both agents seen, nothing to difference against yet.
         let first = fold_io(&[(10, 50_000_000, 0), (11, 1_000, 0)], &mut samples, t0);
-        assert!(!first.primed, "no previous reading, so the rate is unknown, not zero");
+        assert!(
+            !first.primed,
+            "no previous reading, so the rate is unknown, not zero"
+        );
         assert_eq!(first.read_bps, 0.0);
 
         // Second poll: pid 11 is gone; pid 10 read another MiB in one second.
@@ -1960,8 +2246,16 @@ mod tests {
         let t1 = t0 + std::time::Duration::from_secs(1);
         let mut samples = HashMap::new();
         fold_io(&[(1, 0, 0), (2, 0, 0)], &mut samples, t0);
-        let f = fold_io(&[(1, 1024 * 1024, 512), (2, 1024 * 1024, 512)], &mut samples, t1);
-        assert!((f.read_bps - 2.0 * 1024.0 * 1024.0).abs() < 1.0, "got {}", f.read_bps);
+        let f = fold_io(
+            &[(1, 1024 * 1024, 512), (2, 1024 * 1024, 512)],
+            &mut samples,
+            t1,
+        );
+        assert!(
+            (f.read_bps - 2.0 * 1024.0 * 1024.0).abs() < 1.0,
+            "got {}",
+            f.read_bps
+        );
         assert_eq!(f.read, 2 * 1024 * 1024, "lifetime totals add too");
         assert_eq!(f.written, 1024);
     }
@@ -1972,10 +2266,7 @@ mod tests {
     #[test]
     fn retiring_a_pid_banks_its_bytes_instead_of_losing_them() {
         let now = std::time::Instant::now();
-        let mut samples = HashMap::from([
-            (7u32, (900u64, 100u64, now)),
-            (8u32, (5u64, 6u64, now)),
-        ]);
+        let mut samples = HashMap::from([(7u32, (900u64, 100u64, now)), (8u32, (5u64, 6u64, now))]);
         let live = HashSet::from([8u32]);
         let mut retired = (0u64, 0u64);
         retire_missing(&mut samples, &live, &mut retired);
@@ -1986,7 +2277,11 @@ mod tests {
 
         // And a second sweep must not double-count what it already banked.
         retire_missing(&mut samples, &live, &mut retired);
-        assert_eq!(retired, (900, 100), "already-retired bytes are not banked twice");
+        assert_eq!(
+            retired,
+            (900, 100),
+            "already-retired bytes are not banked twice"
+        );
     }
 
     /// The retirement key is the session roster, not `owned_pids` — shells and tasks
@@ -2007,14 +2302,26 @@ mod tests {
             // The counter grows a little each poll, the way a real pane's does.
             let reading = [(42u32, 1_000_000 + poll * 1_000, 500 + poll)];
             retire_missing(&mut samples, &live, &mut retired);
-            let f = fold_io(&reading, &mut samples, t0 + std::time::Duration::from_secs(poll));
-            assert_eq!(f.read, 1_000_000 + poll * 1_000, "the live total is the reading");
+            let f = fold_io(
+                &reading,
+                &mut samples,
+                t0 + std::time::Duration::from_secs(poll),
+            );
+            assert_eq!(
+                f.read,
+                1_000_000 + poll * 1_000,
+                "the live total is the reading"
+            );
         }
         assert_eq!(retired, (0, 0), "a pane still in the roster banks nothing");
 
         // Only when it leaves the roster do its bytes retire — once, at the last reading.
         retire_missing(&mut samples, &HashSet::new(), &mut retired);
-        assert_eq!(retired, (1_004_000, 504), "and then exactly its final sample");
+        assert_eq!(
+            retired,
+            (1_004_000, 504),
+            "and then exactly its final sample"
+        );
     }
 
     /// The inspector's I/O readout is only worth showing if the platform actually
@@ -2120,12 +2427,17 @@ mod tests {
     /// cmd's quoting rules for no reason.
     #[test]
     fn windows_only_spawns_real_executables_directly() {
-        for exe in ["node.exe", r"C:\Program Files\nodejs\node.exe", "PYTHON.EXE", "foo.com"] {
+        for exe in [
+            "node.exe",
+            r"C:\Program Files\nodejs\node.exe",
+            "PYTHON.EXE",
+            "foo.com",
+        ] {
             assert!(win_runs_directly(exe), "{exe} is directly executable");
         }
         for script in [
             r"C:\Program Files\nodejs\npm.cmd",
-            r"C:\Program Files\nodejs\npm",   // the extensionless bash script beside it
+            r"C:\Program Files\nodejs\npm", // the extensionless bash script beside it
             r"C:\tools\build.bat",
             r"C:\tools\deploy.ps1",
         ] {
@@ -2141,8 +2453,18 @@ mod tests {
     /// `--permission-mode` is what ask-me-each-time already means.
     #[test]
     fn permission_mode_is_whitelisted_and_the_standard_mode_passes_no_flag() {
-        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
-            assert_eq!(permission_mode_arg(Some(m)), Some(m), "{m} should reach the command line");
+        for m in [
+            "plan",
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
+            assert_eq!(
+                permission_mode_arg(Some(m)),
+                Some(m),
+                "{m} should reach the command line"
+            );
         }
         // The standard mode is spelled by silence, whichever name it arrives under.
         assert_eq!(permission_mode_arg(None), None);
@@ -2155,8 +2477,17 @@ mod tests {
         assert_eq!(permission_mode_arg(Some("acceptedits")), None);
         assert_eq!(permission_mode_arg(Some("PLAN")), None);
         // Nothing that could do something in a shell script gets through.
-        for hostile in ["plan; rm -rf /", "plan --dangerously-skip-permissions", "$(id)", "plan\nrm x"] {
-            assert_eq!(permission_mode_arg(Some(hostile)), None, "{hostile:?} must not reach a command line");
+        for hostile in [
+            "plan; rm -rf /",
+            "plan --dangerously-skip-permissions",
+            "$(id)",
+            "plan\nrm x",
+        ] {
+            assert_eq!(
+                permission_mode_arg(Some(hostile)),
+                None,
+                "{hostile:?} must not reach a command line"
+            );
         }
     }
 
@@ -2182,11 +2513,21 @@ mod tests {
                 .arg("--version")
                 .env("PATH", augmented_path())
                 .output()
-                .unwrap_or_else(|e| panic!("could not run `claude` at {claude:?}: {e}\n\
-                     This test needs Claude Code installed and on PATH."))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "could not run `claude` at {claude:?}: {e}\n\
+                     This test needs Claude Code installed and on PATH."
+                    )
+                })
         };
 
-        for m in ["plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
+        for m in [
+            "plan",
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
             let out = try_mode(m);
             assert!(
                 out.status.success(),
@@ -2220,7 +2561,10 @@ mod tests {
         let labels: Vec<String> = AGENTS.iter().map(|a| a.label.to_lowercase()).collect();
         let mut sorted = labels.clone();
         sorted.sort();
-        assert_eq!(labels, sorted, "AGENTS is the picker's order — keep it sorted by label");
+        assert_eq!(
+            labels, sorted,
+            "AGENTS is the picker's order — keep it sorted by label"
+        );
     }
 
     #[test]
@@ -2229,22 +2573,40 @@ mod tests {
         let mut labels = std::collections::HashSet::new();
         let mut marks = std::collections::HashSet::new();
         for a in AGENTS {
-            assert!(!a.id.is_empty() && !a.label.is_empty() && !a.bin.is_empty() && !a.mark.is_empty(), "{} has an empty field", a.id);
+            assert!(
+                !a.id.is_empty() && !a.label.is_empty() && !a.bin.is_empty() && !a.mark.is_empty(),
+                "{} has an empty field",
+                a.id
+            );
             // The id is the wire value `spawn_agent` takes and the key the frontend
             // stores on a pane, so it has to be a stable slug rather than a display
             // name that might get prettied up later.
             assert!(
-                a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                a.id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
                 "agent id {:?} must be a lowercase ascii slug",
                 a.id
             );
             assert!(ids.insert(a.id), "duplicate agent id {:?}", a.id);
-            assert!(labels.insert(a.label), "duplicate agent label {:?}", a.label);
-            // The mark is the only thing distinguishing two rows at a glance, so a
-            // duplicate is exactly as bad as a duplicate label — and far easier to
-            // introduce, since `Codex`, `Cursor`, `Cline` and `Copilot` all want "Co".
-            assert_eq!(a.mark.chars().count(), 2, "agent mark {:?} must be two characters", a.mark);
-            assert!(marks.insert(a.mark), "duplicate agent mark {:?} ({})", a.mark, a.id);
+            assert!(
+                labels.insert(a.label),
+                "duplicate agent label {:?}",
+                a.label
+            );
+            // Keep the compatibility field well-formed and collision-free even though
+            // current frontends paint a provider-owned SVG instead.
+            assert_eq!(
+                a.mark.chars().count(),
+                2,
+                "agent mark {:?} must be two characters",
+                a.mark
+            );
+            assert!(
+                marks.insert(a.mark),
+                "duplicate agent mark {:?} ({})",
+                a.mark,
+                a.id
+            );
         }
     }
 
@@ -2262,8 +2624,15 @@ mod tests {
     #[test]
     fn provider_manifest_names_real_agents_and_known_capabilities() {
         const KNOWN: &[&str] = &[
-            "session-state", "activity", "context", "usage", "permissions", "resume",
-            "history", "external-terminal",
+            "session-state",
+            "activity",
+            "context",
+            "usage",
+            "permissions",
+            "resume",
+            "history",
+            "external-terminal",
+            "launch-permissions",
         ];
         let providers = provider_manifest();
         for (id, provider) in &providers {
@@ -2293,7 +2662,10 @@ mod tests {
         // The lookup `spawn_agent` refuses on. A frontend that sent a label, a binary
         // name or a stale id must not fall through to launching *something*.
         for bogus in ["", "Codex", "cursor-agent", "claude", "opencode2"] {
-            assert!(agent_spec(bogus).is_none(), "{bogus:?} should not resolve to an agent");
+            assert!(
+                agent_spec(bogus).is_none(),
+                "{bogus:?} should not resolve to an agent"
+            );
         }
     }
 
@@ -2307,11 +2679,18 @@ mod tests {
         assert_eq!(list.len(), AGENTS.len(), "list_agents must not filter");
         for info in list {
             let spec = agent_spec(info.id).expect("list_agents invented an id");
-            assert_eq!((spec.label, spec.bin, spec.mark), (info.label, info.bin, info.mark));
+            assert_eq!(
+                (spec.label, spec.bin, spec.mark),
+                (info.label, info.bin, info.mark)
+            );
             // A `Some` path is a promise the agent will start, so it has to be a real
             // file — that is what the picker lets you click.
             if let Some(p) = &info.path {
-                assert!(std::path::Path::new(p).is_file(), "{} reported {p}, not a file", info.id);
+                assert!(
+                    std::path::Path::new(p).is_file(),
+                    "{} reported {p}, not a file",
+                    info.id
+                );
             }
         }
     }
@@ -2322,5 +2701,4 @@ mod tests {
         // fallback. If this ever returns Some, every agent is in every picker.
         assert!(resolve_cli("episko-definitely-not-a-real-binary").is_none());
     }
-
 }

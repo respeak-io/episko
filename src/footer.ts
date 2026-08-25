@@ -14,8 +14,8 @@ import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { dlog } from "./debug";
 import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
-import { forecast5h, forecast7d, rl, type Forecast } from "./rl";
-import { phaseText, statusKey, type Engine, type Sess } from "./types";
+import { forecastWin, type Forecast } from "./rl";
+import { hasAgentCapability, isAgent, phaseText, statusKey, type AgentRateLimit, type Engine, type Sess } from "./types";
 import { costPopHtml, ioFigures, ioPopHtml, liveIo, setTokenScanning, tokenScanning, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
 import { renderSettings, setTab, settingsOpen } from "./settings";
@@ -25,8 +25,9 @@ import { keyActionDef, shortcutRows } from "./keys";
 import { enginePopHtml, shortPopHtml, type ShortcutRow } from "./footerview";
 import { FOOT_SEGS, footShown } from "./footprefs";
 import {
-  availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, termEngine,
+  activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, termEngine,
 } from "./state";
+import { providerAdapter } from "./providers";
 import {
   daySpend, setTokenDays, todayKey, tokenDays, tokenScanAt, usage, usageDetail,
   type DayUsage,
@@ -44,8 +45,16 @@ export function renderFoot() {
   const total = usage[todayKey()] || 0;
   $("fSessions").textContent = String(sessions.size);
   $("fCost").textContent = "$" + total.toFixed(2);
-  paintFootRl("fRl", "fRlReset", forecast5h());
-  paintFootRl("fRl7", "fRl7Reset", forecast7d());
+  const limits = selectedLimits();
+  const one = limits?.windows[0]; const two = limits?.windows[1];
+  $("fLimitOwner").textContent = limits ? `${limits.label} limits` : "limits";
+  $("fRlLabel").textContent = limitShort(one?.windowMins ?? 300);
+  $("fRl7Label").textContent = limitShort(two?.windowMins ?? 10080);
+  $("fUsageSeg").title = limits
+    ? `${limits.label} usage limits${limits.forecast ? " & forecast" : ""} · click for detail`
+    : "No integrated usage limits for the selected pane";
+  paintFootRl("fRl", "fRlReset", one?.forecast ?? emptyForecast());
+  paintFootRl("fRl7", "fRl7Reset", two?.forecast ?? emptyForecast());
   paintFootIo();
   $("fEngine").textContent = engineDef(termEngine).label;
   applyFootPrefs();
@@ -54,6 +63,42 @@ export function renderFoot() {
   // day's spend ticks up under the pointer instead of going stale the moment it opens.
   if ($("costPop").classList.contains("show")) renderCostPop();
   if ($("ioPop").classList.contains("show")) renderIoPop();
+}
+
+interface LimitWindowView extends AgentRateLimit { forecast: Forecast }
+interface SelectedLimits { label: string; forecast: boolean; reported: boolean; windows: LimitWindowView[] }
+
+const emptyForecast = (): Forecast => forecastWin(null, null, null);
+const limitShort = (mins: number | null): string => mins === 300 ? "5h"
+  : mins === 10080 ? "7d" : mins != null && mins % 1440 === 0 ? `${mins / 1440}d`
+    : mins != null && mins % 60 === 0 ? `${mins / 60}h` : mins != null ? `${mins}m` : "limit";
+const limitName = (mins: number | null): [string, string] => mins === 300
+  ? ["Session", "5-hour window"] : mins === 10080 ? ["Weekly", "7-day window"]
+    : [limitShort(mins), "usage window"];
+
+function selectedLimits(): SelectedLimits | null {
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s || !isAgent(s) || !hasAgentCapability(s, "usage")) return null;
+  const adapter = providerAdapter(s.provider ?? "");
+  const specialized = adapter?.rateLimitForecasts?.();
+  const source = specialized?.length
+    ? specialized.map((window) => ({
+        usedPercent: window.forecast.used ?? 0, resetsAt: window.forecast.resetTs,
+        windowMins: window.windowMins, forecast: window.forecast,
+      }))
+    : [...s.rateLimits]
+        .sort((a, b) => (a.windowMins ?? Number.MAX_SAFE_INTEGER) - (b.windowMins ?? Number.MAX_SAFE_INTEGER))
+        .map((window) => ({
+          ...window,
+          forecast: forecastWin(window.usedPercent, window.resetsAt, null, window.windowMins == null ? undefined : window.windowMins * 60),
+        }));
+  const windows = source.slice(0, 2);
+  return {
+    label: adapter?.label ?? s.provider ?? "Agent",
+    forecast: !!specialized?.length,
+    reported: windows.some((window) => window.forecast.used != null),
+    windows,
+  };
 }
 
 /// Today's totals on the bar; every other window is in the popover.
@@ -124,12 +169,16 @@ function paintFootRl(pctId: string, resetId: string, f: Forecast) {
 let lastUsagePop = "", lastCostPop = "", lastAttnPop = "";
 
 function renderUsagePop() {
-  const noData = rl.h5 == null && rl.d7 == null;
-  const html = `<div class="up-h">Claude usage limits</div>
-    ${usageRow("Session", "5-hour window", forecast5h())}
-    ${usageRow("Weekly", "7-day window", forecast7d())}
-    <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live · account-wide</span></div>
-    ${noData ? `<div class="up-note">Appears once a running session reports a statusLine.</div>` : ""}`;
+  const limits = selectedLimits();
+  const rows = limits?.windows.map((window) => {
+    const [title, sub] = limitName(window.windowMins);
+    return usageRow(title, sub, window.forecast);
+  }).join("") ?? "";
+  const html = `<div class="up-h">${esc(limits ? `${limits.label} usage limits` : "Usage limits")}</div>
+    ${rows}
+    <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live${limits ? ` · ${esc(limits.label)} account` : ""}</span></div>
+    ${!limits ? `<div class="up-note">Select an integrated agent session to see its account limits.</div>`
+      : !limits.reported ? `<div class="up-note">Waiting for ${esc(limits.label)} to report account limits.</div>` : ""}`;
   if (html === lastUsagePop) return;
   lastUsagePop = html;
   $("usagePop").innerHTML = html;

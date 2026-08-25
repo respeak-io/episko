@@ -14,11 +14,12 @@
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
-import { agentCapabilitySummary, CLAUDE_CLI, type Engine, type PermMode } from "./types";
+import { agentCapabilitySummary, type Engine } from "./types";
+import { agentLogo } from "./providers/logos";
 import {
-  allAgents, ALL_PERM_MODES, attnPrefs, availEngines, defaultAgent, engineDef, footPrefs,
+  allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   keyPrefs, missingAgents,
-  peekPrefs, permMode,
+  peekPrefs, permissionModeFor,
   setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -53,6 +54,7 @@ import { costPopHtml, ioPopHtml, usagePanelHtml, usageRow } from "./usageview";
 import { enginePopHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
 import { setUsageRange } from "./usage";
+import { providerAdapter, providerPermissionMode } from "./providers";
 
 // What this dialog changes but does not own. Every entry is somebody else's
 // setter; main.ts hands them over at startup and until then they do nothing.
@@ -73,7 +75,7 @@ export interface SettingsHost {
   setWtGroup: (m: WtGroup) => void;
   // Same reason as setWtGroup: the app-level one (./actions), which persists and
   // announces — state.ts's same-named setter only assigns.
-  setPermMode: (m: PermMode) => void;
+  setPermMode: (provider: string, mode: string) => void;
   setDefaultAgent: (id: string) => void;
   // Ditto. ./actions clamps through ./peek, persists and repaints the sidebar.
   setPeekPrefs: (p: PeekPrefs) => void;
@@ -105,6 +107,25 @@ function agentHint(): string {
       : ".");
 }
 
+function permissionControl(): SetControl {
+  const agent = defaultAgentDef();
+  const provider = providerAdapter(agent.id);
+  const modes = provider?.permissionModes ?? [];
+  if (!agent.capabilities.includes("launch-permissions") || !modes.length) {
+    return {
+      kind: "note", label: `Permission mode · ${agent.label}`,
+      hint: `${agent.label} does not expose an integrated launch-policy picker. Configure its permissions in the agent's own terminal or config.`,
+    };
+  }
+  const active = providerPermissionMode(agent.id, permissionModeFor(agent.id)) ?? modes[0];
+  return {
+    kind: "seg", set: `permmode:${agent.id}`, label: `Permission mode · ${provider?.label ?? agent.label}`,
+    hint: "The policy a new session starts with. It is stored separately for each integrated agent; changing agents above restores that agent's last choice.",
+    active: () => active.id,
+    segs: () => modes.map((mode) => ({ value: mode.id, label: mode.label, sub: mode.sub, glyph: mode.glyph })),
+  };
+}
+
 let host: SettingsHost = {
   startTour: () => {},
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
@@ -118,15 +139,13 @@ export function setSettingsHost(h: SettingsHost) { host = h; }
 // pattern as #wtDlg / #palette). Every control is a small declarative descriptor
 // that writes its cc-* key through the SAME setter the rest of the app uses, so a
 // change here is instantly live and persisted — there is no separate settings store.
-type SetSeg = { value: string; label: string; sub?: string; glyph?: string };
+type SetSeg = { value: string; label: string; sub?: string; glyph?: string; logo?: string };
 // A control is a segmented picker (radio-style), the font stepper, or the worktree-
 // grouping preview grid (segmented pick shown as live mini-sidebars instead of text).
 type SetControl =
-  // `dim` greys a control that still *works* but currently decides nothing — the
-  // permission mode when the agent isn't Claude. Deliberately not `disabled`: it edits
-  // a stored preference, so hiding or blanking it would turn "your mode is kept" into
-  // a lie the moment you switched agent, which is exactly the reasoning that keeps the
-  // Keys picker readable with the master switch off.
+  // `dim` greys a control that still has a stored value but currently decides nothing
+  // (today, an external launch engine under a provider that must stay embedded).
+  // Deliberately not `disabled`: switching back restores the choice.
   | { kind: "seg"; set: string; label: string; hint?: string; dim?: () => boolean; active: () => string; segs: () => SetSeg[] }
   | { kind: "font"; label: string; hint?: string }
   | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
@@ -323,20 +342,18 @@ const SET_TABS: SetTab[] = [
       // when there is only one answer.
       { kind: "seg", set: "agent", label: "Agent",
         hint: agentHint(),
-        active: () => defaultAgent,
+        // Paint what a launch resolves, not a stale persisted id for an agent that is
+        // no longer installed. The available rows and selected row now agree.
+        active: () => defaultAgentDef().id,
         segs: () => allAgents().map((a) => ({
-          value: a.id, label: a.label, glyph: a.mark,
+          value: a.id, label: a.label, logo: agentLogo(a.id),
           sub: agentCapabilitySummary(a),
         })) },
       { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens. Providers without external-terminal support stay embedded.",
-        dim: () => !(allAgents().find((a) => a.id === defaultAgent) ?? CLAUDE_CLI).capabilities.includes("external-terminal"),
+        dim: () => !defaultAgentDef().capabilities.includes("external-terminal"),
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
-      { kind: "seg", set: "permmode", label: "Permission mode",
-        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there; this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
-        dim: () => defaultAgent !== CLAUDE_CLI.id,
-        active: () => permMode,
-        segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
+      permissionControl(),
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
@@ -973,17 +990,17 @@ function renderSetControl(c: SetControl): string {
     if (!segs.length) return `<div class="set-group">${head}<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div></div>`;
     const opts = segs.map((s) =>
       `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}" title="${esc(s.sub || s.label)}">` +
-        `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
+        `${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
     return `<div class="set-group">${head}<div class="chips">${opts}</div></div>`;
   }
   const active = c.active();
-  // `--permission-mode` is a `claude` flag; under any other agent the control is still
-  // yours to set but decides nothing until you switch back, and saying so with opacity
-  // beats a hint nobody reads twice.
+  // A dimmed setting still has a real stored value; it simply does not affect the
+  // current provider or layout. Permission policies are provider-specific controls now
+  // and use an explanatory note when an agent offers no integrated picker.
   const dim = c.dim?.() ? " set-dim" : "";
   const opts = c.segs().map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}">` +
-      `<span class="seg-top">${s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
+      `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
       `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`
   ).join("");
   return `<div class="set-group${dim}">${head}<div class="seg">${opts}</div></div>`;
@@ -993,7 +1010,7 @@ function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
-  else if (set === "permmode") host.setPermMode(val as PermMode);
+  else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {

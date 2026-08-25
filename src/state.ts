@@ -27,7 +27,7 @@ import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
-import type { AgentCli, DiffStat, Engine, ExtSession, PermMode, Res, Restorable, Sess, WtHead } from "./types";
+import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
 
 export interface Favorite { name: string; path: string }
@@ -251,7 +251,15 @@ export function setAvailEngines(l: Engine[]) { availEngines = l; }
 // owns the table and probe). Rows remain present when their binary is missing so the
 // provider picker can explain exactly what it looked for.
 export let availAgents: AgentCli[] = [];
-export function setAvailAgents(l: AgentCli[]) { availAgents = l; }
+let finishAgentDiscovery: (() => void) | null = null;
+/** Fresh launches wait for the one startup probe rather than silently resolving a
+ * persisted non-Claude preference against an empty catalogue and starting Claude. */
+export const agentDiscoveryReady = new Promise<void>((resolve) => { finishAgentDiscovery = resolve; });
+export function setAvailAgents(l: AgentCli[]) {
+  availAgents = l;
+  finishAgentDiscovery?.();
+  finishAgentDiscovery = null;
+}
 /// Only the ones that will actually start. `availAgents` is the whole catalogue now,
 /// so every surface that offers a *choice* filters through this; the project picker is
 /// the one place that reads the unfiltered list, because explaining what is missing is
@@ -270,7 +278,7 @@ export function allAgents(): AgentCli[] { return [CLAUDE_CLI, ...installedAgents
 export function missingAgents(): AgentCli[] { return availAgents.filter((a) => !agentInstalled(a)); }
 // --- which agent a new session runs -------------------------------------------
 // The third fact about a launch, beside where its terminal opens (`termEngine`) and
-// how it starts (`permMode`), and persisted exactly like them. Claude Code is the
+// how it starts (`permissionModes`), and persisted exactly like them. Claude Code is the
 // default *value* rather than a hardcoded choice — see `pickAgent` in ./types for the
 // resolution order and why an uninstalled agent falls back instead of failing.
 export let defaultAgent: string = localStorage.getItem("cc-agent") || CLAUDE_CLI.id;
@@ -285,7 +293,7 @@ export function setProjectAgent(colorKey: string, id: string | null) {
   if (id) agentByProject[colorKey] = id; else delete agentByProject[colorKey];
 }
 /// The agent a launch in this project starts. Read at the launch site, never stored on
-/// a `Sess` — the same rule `permMode` follows, and for the same reason: it is a
+/// a `Sess` — the same rule `permissionModes` follows, and for the same reason: it is a
 /// preference, and recording it on a session would be a second copy that can go stale.
 export function effectiveAgent(colorKey: string): AgentCli {
   return pickAgent(colorKey, defaultAgent, agentByProject, availAgents);
@@ -297,29 +305,28 @@ export function effectiveAgent(colorKey: string): AgentCli {
 export function defaultAgentDef(): AgentCli { return pickAgent("", defaultAgent, {}, availAgents); }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";
 export function setTermEngine(e: Engine) { termEngine = e; }
-// --- how a new session starts (claude --permission-mode) -----------------------
-// A persisted preference like the engine above, and the same split: the type is in
-// ./types (it crosses to the backend), the label table stays in the UI layer.
-// Labels follow Claude Code's own names for these modes, so the picker and the
-// indicator the REPL shows after ⇧⇥ can't read as two different things.
-//
-// Ordered by how much the mode hands over: Manual asks about everything, Bypass
-// about nothing. The last three stop Claude asking, and therefore stop Episko's
-// permission cards too — the hint in Settings › Sessions says so, since a pane that
-// never raises one looks identical to a pane nobody has asked anything.
-export interface PermModeDef { id: PermMode; label: string; sub: string; glyph: string }
-export const ALL_PERM_MODES: PermModeDef[] = [
-  { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇" },
-  { id: "plan",              label: "Plan",         sub: "Reads and plans; runs nothing until you accept",         glyph: "⊙" },
-  { id: "acceptEdits",       label: "Accept edits", sub: "File edits go through; commands still ask",              glyph: "✎" },
-  { id: "auto",              label: "Auto",         sub: "A model classifier answers the prompts for you",         glyph: "◈" },
-  { id: "dontAsk",           label: "Don't ask",    sub: "Never prompts · anything not pre-approved is denied",    glyph: "⊘" },
-  { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠" },
-];
-export function permModeDef(id: PermMode): PermModeDef { return ALL_PERM_MODES.find((m) => m.id === id) || ALL_PERM_MODES[0]; }
-export let permMode: PermMode = (localStorage.getItem("cc-perm-mode") as PermMode) || "default";
-if (!ALL_PERM_MODES.some((m) => m.id === permMode)) permMode = "default";
-export function setPermMode(m: PermMode) { permMode = m; }
+// --- how each provider starts -------------------------------------------------
+// Permission policies are provider-owned launch facts, so preferences are keyed by
+// provider rather than forcing every CLI into Claude's vocabulary. Mode definitions
+// and validation live in ./providers; this module only owns the persisted primitive
+// state. The old single Claude key is read as a one-way migration.
+function loadPermissionModes(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem("cc-perm-modes") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, mode]) => typeof mode === "string")) as Record<string, string>;
+  } catch { return {}; }
+}
+const storedPermissionModes = loadPermissionModes();
+const legacyPermMode = localStorage.getItem("cc-perm-mode") || "default";
+if (!storedPermissionModes[CLAUDE_CLI.id]) storedPermissionModes[CLAUDE_CLI.id] = legacyPermMode;
+export const permissionModes = storedPermissionModes;
+export function permissionModeFor(provider: string): string {
+  return permissionModes[provider] || "default";
+}
+export function setProviderPermissionMode(provider: string, mode: string) {
+  permissionModes[provider] = mode;
+}
 // Uncommitted-changes cache, keyed by folder rather than session, because it feeds
 // the sidebar's per-project dot and the external inspector's diff card as well as
 // the active session: `Sess.git` only stays fresh for the session on stage, so

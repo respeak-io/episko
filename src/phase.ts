@@ -17,6 +17,7 @@ import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
+import { clearPermissionState, pendingPermissionIds } from "./permissions";
 
 // A turn ending is exactly when a project's run-on-stop rule gets to check the
 // agent's work — but launching that run means task discovery, dependency chains and
@@ -220,10 +221,10 @@ export function riskLevel(tool: string, input: any): Risk {
 // which case a later lifecycle event, not a button, is our signal to reset). If a
 // blocking request is still held server-side, release it so it doesn't leak.
 export function clearPending(s: Sess) {
-  if (s.pendingPermId) {
-    resolveProviderPermission(s, s.pendingPermId, "terminal").catch(() => {});
+  for (const id of pendingPermissionIds(s)) {
+    resolveProviderPermission(s, id, "terminal").catch(() => {});
   }
-  s.attention = null; s.pendingPermId = null; s.pendingCmd = ""; s.pendRisk = null;
+  clearPermissionState(s);
 }
 
 // The one place that decides how a turn ended, because two events reach it and only
@@ -393,6 +394,13 @@ export function applyStatusline(s: Sess, data: any) {
     [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
     onRlUpdate("d7", p, pr, rl.d7Reset);
   }
+  // Feed the same normalized per-session shape every control-plane adapter uses. The
+  // global Claude copy remains the account-wide merge/forecast authority, while this
+  // makes shared inspector/footer surfaces independent of statusLine field names.
+  s.rateLimits = [
+    ...(rl.h5 == null ? [] : [{ usedPercent: rl.h5, resetsAt: rl.h5Reset, windowMins: 300 }]),
+    ...(rl.d7 == null ? [] : [{ usedPercent: rl.d7, resetsAt: rl.d7Reset, windowMins: 10080 }]),
+  ];
   // Keep the worktree flag if the statusline reports one, but the branch label
   // itself comes from the live git HEAD poll (refreshBranches), not this field —
   // otherwise the two fight and the label flickers.

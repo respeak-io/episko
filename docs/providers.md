@@ -18,9 +18,9 @@ as terminal-only. Never infer trusted state by scraping a TUI's text.
 - `src/providers/manifest.json` is the single capability matrix consumed by the
   frontend and Rust's `list_agents`. A capability is a user-visible promise, not a
   transport detail.
-- `src/providers/index.ts` is the frontend registry for normalized event and history
-  adapters. Shared modules call the registry rather than importing `codex.ts` or a
-  future vendor module.
+- `src/providers/index.ts` is the frontend registry for normalized event/history
+  adapters and provider-owned launch-policy choices. Shared modules call the registry
+  rather than importing `codex.ts` or a future vendor module.
 - `src/providers/<provider>.ts` translates native payloads into `AgentEvent` and maps
   public history data into `HistEntry` / transcript messages.
 - `src/providers/control.ts` owns provider-specific approval routing.
@@ -68,6 +68,19 @@ Example: a remaining-quota card should consume normalized rate-limit windows. Cl
 may fill them from statusLine and Codex from App Server, but the card should know
 neither fact.
 
+Two shared-state rules are easy to lose when adding a second control plane:
+
+- Runtime approvals form a neutral FIFO on `Sess`. The inspector projects one head
+  request while preserving later requests from parallel tools or child agents; resolving
+  one promotes the next. A provider adapter supplies opaque request ids and its control
+  boundary answers them.
+- Account-wide quota may fan out between panes only when their non-null opaque
+  `rateLimitScope` values match. The provider boundary derives that scope only from a
+  stable native account identity, without exposing it; an auth *mode* alone is not an
+  identity and must stay local. Shared code compares scopes, never vendor ids. A null
+  update clears panes that shared the owner's previous scope so an account switch
+  cannot leave sibling panes displaying the old quota.
+
 ## Adding an integrated provider
 
 Terminal-only support begins with one `AgentSpec` row in `pty.rs`. First-class support
@@ -82,9 +95,13 @@ also requires all of the following:
    reconciliation if `history` / `resume` are advertised.
 6. Verify permission decisions return through `providers/control.ts` if `permissions`
    is advertised.
-7. Add native-payload fixtures for events, history and failures. Test launch/resume
+7. If `launch-permissions` is advertised, expose provider-owned choices in the
+   frontend registry and whitelist every one at the backend launch boundary. Approval
+   routing (`permissions`) and starting policy (`launch-permissions`) are separate
+   promises.
+8. Add native-payload fixtures for events, history and failures. Test launch/resume
    argument construction in Rust and verify both macOS and Windows CI.
-8. Run the manual session checklist in `RELEASE.md`: start, prompt, tool activity,
+9. Run the manual session checklist in `RELEASE.md`: start, prompt, tool activity,
    approval, failure, context/usage/cost, close, history and resume.
 
 The manifest and registry must have exactly the same integrated provider ids. CI also

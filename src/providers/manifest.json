@@ -6,6 +6,7 @@
       "context",
       "usage",
       "permissions",
+      "launch-permissions",
       "resume",
       "history",
       "external-terminal"
@@ -18,6 +19,7 @@
       "context",
       "usage",
       "permissions",
+      "launch-permissions",
       "resume",
       "history"
     ]

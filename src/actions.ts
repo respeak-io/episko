@@ -23,14 +23,14 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
   attnPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
-  peekPrefs, permMode,
-  permModeDef, projGroups,
+  peekPrefs, permissionModes,
+  projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
   agentByProject, agentDef, defaultAgent, effectiveAgent,
   setDefaultAgent as setDefaultAgentState, setProjectAgent as setProjectAgentState,
-  setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  setPeekPrefs as setPeekPrefsState, setProviderPermissionMode as setPermissionModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -46,8 +46,10 @@ import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
-import type { PermMode } from "./types";
+import { CLAUDE_CLI } from "./types";
 import { resolveProviderPermission } from "./providers/control";
+import { removePermission } from "./permissions";
+import { providerAdapter, providerPermissionMode } from "./providers";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
@@ -79,8 +81,8 @@ export async function openProjectFolder(key: string) {
 }
 
 // The inspector's Context rows: click a file to open it, ⌂ to show it in the file
-// manager. Both take an absolute path straight off a hook payload — which is exactly
-// why both surface the backend's error rather than swallowing it. An agent's file set
+// manager. Both take the absolute path normalized as an event enters session state —
+// which is exactly why both surface the backend's error rather than swallowing it. An agent's file set
 // outlives the files in it: it reads a path in a worktree that is later removed, writes
 // a temp file it then deletes, and the row for either is still sitting in the card. A
 // silent no-op there reads as a broken button; "no such file" reads as the truth.
@@ -125,7 +127,8 @@ export function removeFavorite(path: string) {
   renderAll();
 }
 export function resolvePermission(id: string, behavior: string) {
-  const owner = [...sessions.values()].find((s) => s.pendingPermId === id);
+  const owner = [...sessions.values()].find((s) => s.pendingPermId === id
+    || s.pendingPermissions.some((pending) => pending.id === id));
   if (owner) {
     resolveProviderPermission(owner, id, behavior).catch(() => {});
   } else {
@@ -133,7 +136,7 @@ export function resolvePermission(id: string, behavior: string) {
     // session object to dispatch through, so release that legacy transport directly.
     invoke("resolve_permission", { id, behavior }).catch(() => {});
   }
-  if (owner) { owner.pendingPermId = null; owner.attention = null; owner.pendingCmd = ""; owner.pendRisk = null; }
+  if (owner) removePermission(owner, id);
   renderAll();
 }
 
@@ -282,12 +285,18 @@ export function setProjectAgent(colorKey: string, id: string | null) {
   renderAll();
 }
 
-export function setPermMode(m: PermMode) {
-  setPermModeState(m);
-  localStorage.setItem("cc-perm-mode", permMode);
-  toast(permMode === "default"
-    ? "New sessions ask before acting"
-    : `New sessions start in ${permModeDef(permMode).label} mode`);
+export function setPermMode(provider: string, requested: string) {
+  const mode = providerPermissionMode(provider, requested);
+  if (!mode) return;
+  setPermissionModeState(provider, mode.id);
+  localStorage.setItem("cc-perm-modes", JSON.stringify(permissionModes));
+  // Keep the old Claude key for a downgrade and for existing local tooling that reads
+  // it. New code never uses it as another provider's preference.
+  if (provider === CLAUDE_CLI.id) localStorage.setItem("cc-perm-mode", mode.id);
+  const label = providerAdapter(provider)?.label || provider;
+  toast(mode.id === "default"
+    ? `New ${label} sessions follow ${mode.label}`
+    : `New ${label} sessions start in ${mode.label} mode`);
   renderSettings(); // keep the settings picker in sync if it's open
 }
 
