@@ -21,7 +21,7 @@ const dk = (back: number) => {
 };
 
 const hist = (o: Partial<HistEntry> = {}): HistEntry => ({
-  session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
+  provider: "claude", session_id: "s1", cwd: "/w/epi", project: "epi", branch: "main",
   title: "a session", last_prompt: "", last_active: NOW / 1000, bytes: 10, exists: true,
   repo_root: "/w/epi", ...o,
 });

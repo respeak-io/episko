@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyTouch, bumpTally, fileLabel, groupTouches, otherTools, shortTool, touchPath, touchTool,
+  absoluteTouchPath, applyTouch, bumpTally, fileLabel, groupTouches, otherTools, shortTool, touchPath, touchTool,
 } from "../src/files";
 import type { FileTouch } from "../src/types";
 
@@ -10,6 +10,19 @@ const edit = (l: FileTouch[], p: string, t = 1000) => applyTouch(l, "Edit", { fi
 const write = (l: FileTouch[], p: string, resp: unknown = null, t = 1000) =>
   applyTouch(l, "Write", { file_path: p }, resp, t);
 const kindOf = (l: FileTouch[], p: string) => l.find((f) => f.path === p)?.kind;
+
+describe("absoluteTouchPath", () => {
+  it("resolves provider-relative paths against the session workdir", () => {
+    expect(absoluteTouchPath("src/app.ts", "/w/episko")).toBe("/w/episko/src/app.ts");
+    expect(absoluteTouchPath("src\\app.ts", "C:\\work\\episko")).toBe("C:\\work\\episko\\src\\app.ts");
+  });
+
+  it("preserves absolute POSIX, Windows and UNC paths", () => {
+    expect(absoluteTouchPath("/w/episko/app.ts", "/other")).toBe("/w/episko/app.ts");
+    expect(absoluteTouchPath("C:\\work\\app.ts", "/other")).toBe("C:\\work\\app.ts");
+    expect(absoluteTouchPath("\\\\server\\share\\app.ts", "C:\\other")).toBe("\\\\server\\share\\app.ts");
+  });
+});
 
 describe("touchTool", () => {
   it("classifies the file tools and only the file tools", () => {

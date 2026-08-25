@@ -90,8 +90,8 @@ Tick these in order — each depends on the one above.
       *inside it*.
 - [ ] **The statusLine half arrives**, which the hook counter does not tell you —
       hooks log a line each, statusLine deliberately does not, and `rx`/`routed` climb
-      happily on hooks alone. The evidence is the inspector's **model / context % /
-      cost / duration**, the footer meters, and the **5h / 7d rate-limit windows**
+      happily on hooks alone. The evidence is the inspector's **model / context %**,
+      the footer's **cost / duration** and **5h / 7d rate-limit windows**
       being populated rather than `–`. All of them ride this one path, so they fail
       together and silently; a healthy-looking pane is not evidence.
       **Costs nothing to check:** launch a session and read the inspector *without
@@ -196,6 +196,81 @@ a broken alert is indistinguishable from a switched-off one.
       edit). Set it back to **Manual** afterwards — every launch, including a restore,
       reads this preference. Worth one pass in an *external* engine too, since that is
       the only path where the flag goes through a generated shell script.
+
+### Running servers
+
+The whole feature reads a payload field and a file layout that are **not ours** —
+`tool_response.backgroundTaskId`, and the log Claude Code writes beside the transcript.
+The rules are unit-tested against captured fixtures, but a release of Claude Code that
+renames either would leave every test green and the pill permanently dark, so this is
+the one section here that is checking somebody else's contract.
+
+- [ ] **A dev server appears.** In a session, prompt: *"start the dev server in the
+      background"* (any project with one). Within a few seconds the header grows a
+      `◉ 1` pill, left of the reactor, and it turns **green** once the server prints its
+      URL. Grey-and-never-green is the failure that matters: it means the shell was seen
+      but its log was not, so check `bg_log_path` against the real
+      `<tmp>/claude/<slug>/<uuid>/tasks/` layout before shipping.
+- [ ] **The URL opens.** Click the pill, click the URL chip — your browser opens the
+      running site. The row names the project and the command with the `cd …&&` prefix
+      stripped.
+- [ ] **The peek is live.** Click the row to expand it, then hit the site in the
+      browser. New lines appear in the log peek within ~4s (a request log, an HMR line).
+- [ ] **`◨` jumps** to the session that started it, and closes the popover.
+- [ ] **Stop asks rather than kills.** Click `✕` on a live row: the session takes the
+      stage with `Stop the background task <id>…` **prefilled and not sent**. Press
+      Enter; the agent runs `TaskStop` and the pill drops. It must never kill the
+      process directly — the point is that the agent knows its server is gone.
+- [ ] **A crash stays on screen.** Start a dev server on a port that is already taken
+      (start two). The second exits within seconds: its row must **stay**, dimmed, with
+      `exited 1` where the URL was, and the pill must go **red** rather than dropping
+      the count. `✕` on that row dismisses it and asks nobody.
+- [ ] **`/clear` does not lose a running server.** With a server up, `/clear` the
+      session. Claude mints a new session directory; the row must keep its URL and its
+      peek, because the log path was captured at start. A row that goes grey here is
+      the transcript path being re-derived — the one trap this feature has.
+- [ ] **The poll is not re-reading the world.** With a server up and idle, the 🐞
+      console's paint counter must stay flat. Every four seconds Episko asks for the
+      log's length; an unchanged log must cost no paint.
+
+The other half comes from Episko's own runnables, and shares none of the plumbing above
+— no hook, no log file, no poll. Its evidence is the pane's own output as it streams.
+
+- [ ] **A task you ran shows up too.** `▶ Run` a dev-server task (`just dev`, a VS Code
+      task, an npm script). Once it prints its URL the row appears, marked `▶`, and the
+      pill counts it. A task that is *not* a server — `tsc --watch`, a test run — must
+      **not** appear at all: its pane already says everything there is to say.
+- [ ] **Its URL survives a busy log.** Leave the task running and edit a file until the
+      pane has scrolled well past 40 lines of HMR output. The URL must still be there.
+      Losing it is the tail being rescanned instead of latched — the trap this half has.
+- [ ] **Its Stop really stops.** `✕` on a `▶` row kills the task and closes its pane,
+      exactly as the pane's own `✕` does — no prefilled message, no agent involved.
+- [ ] **A restart follows the port.** Change the dev server's port in its config and let
+      it restart itself; the row must follow to the new URL rather than keep the old one.
+
+The third source asks the kernel rather than reading anything, and it is the one that
+needs checking on **both** OSes: `session_ports` leans on `listeners`, whose Windows,
+macOS and Linux halves are three separate implementations of the same question.
+
+- [ ] **A server nobody announced still shows.** Open a plain `❯ Terminal` pane and run
+      a dev server in it by hand. Within ~4s a row appears marked `◎`, named after the
+      process (`node`, `python`), with a `localhost:<port>` button that opens. This is
+      the only way that server has ever been visible, and it is the check that proves
+      the ancestry walk reaches — the process sits many hops below the pane.
+- [ ] **One server is one row.** Run something that opens several sockets (`wrangler
+      dev` is the reference case: it holds five, four of them a debugger and
+      kernel-assigned control channels). Exactly one row must appear, on the port you
+      would actually open. Extra rows in the 49152+ range mean `usefulPort` is not being
+      applied before the join.
+- [ ] **A pane that went quiet gets its address filled in.** Have an agent background a
+      server whose banner Episko cannot parse. The row should start at `starting…` and,
+      on the next poll, gain `localhost:<port>` from the scan rather than staying blank.
+- [ ] **A second server in the same pane does NOT get guessed at.** With two servers
+      under one pane and neither announced, both must appear as their own `◎` rows —
+      nothing should adopt an address it cannot be sure of.
+- [ ] **It costs nothing when idle.** With no panes open the scan must not run at all
+      (the roster is checked first). With panes open and no servers, the pill stays
+      hidden and the paint counter stays flat.
 
 ### Identity across rotations
 

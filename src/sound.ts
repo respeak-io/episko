@@ -98,7 +98,7 @@ export interface SoundEventDef {
 
 export const SOUND_EVENTS: SoundEventDef[] = [
   { id: "permission", glyph: "◆", label: "Permission asked", priority: 3, tone: "alert", on: true,
-    hint: "Claude is blocked and doing nothing until you answer." },
+    hint: "The agent is blocked and doing nothing until you answer." },
   { id: "question", glyph: "◇", label: "Notification", priority: 2, tone: "ping", on: true,
     hint: "Anything else the session raises: a question, a nudge, a plan to accept." },
   { id: "done", glyph: "●", label: "Your turn", priority: 2, tone: "chime", on: true,
@@ -238,9 +238,14 @@ export function soundFor(p: SoundPrefs, ev: SoundEvent, now: number, g: SoundGat
 /// `applyHook` runs and again after, because the state machine is the thing that
 /// knows what happened — re-deriving it from the raw payload here would be a second
 /// copy of ./phase, and the second copy is always the one that gets it wrong.
-export interface SoundSnap { phase: Phase; attention: string | null; apiErrAt: number | null }
+export interface SoundSnap {
+  phase: Phase; attention: string | null; apiErrAt: number | null;
+  /// Whether the revive watchdog already has a schedule for this session — see the
+  /// `error` rule in `hookSound` for what it suppresses and why.
+  reviving: boolean;
+}
 export const soundSnap = (s: Sess): SoundSnap =>
-  ({ phase: s.phase, attention: s.attention, apiErrAt: s.apiErr?.at ?? null });
+  ({ phase: s.phase, attention: s.attention, apiErrAt: s.apiErr?.at ?? null, reviving: !!s.revive });
 
 /**
  * What (if anything) a telemetry event changed that is worth a noise.
@@ -261,7 +266,13 @@ export function hookSound(before: SoundSnap, after: SoundSnap): SoundEvent | nul
   if (after.attention && after.attention !== before.attention) {
     return /permission/i.test(after.attention) ? "permission" : "question";
   }
-  if (after.apiErrAt !== null && after.apiErrAt !== before.apiErrAt) return "error";
+  // A failure the revive watchdog is already handling is not news. The FIRST one still
+  // rings — `Sess.revive` is null until ./actions schedules against it, which is a tick
+  // later — and so does the moment it gives up, which ./actions plays by hand. What this
+  // silences is the four or five in between: an outage that Episko rode out and resumed
+  // from is a log line, not five alarms through the bedroom wall at 04:00, and a person
+  // who woke to those would switch the sounds off and lose the alerts that matter.
+  if (after.apiErrAt !== null && after.apiErrAt !== before.apiErrAt) return after.reviving ? null : "error";
   if (after.phase === before.phase) return null;
   if (after.phase === "done") return "done";
   if (after.phase === "ended") return "ended";
@@ -270,7 +281,7 @@ export function hookSound(before: SoundSnap, after: SoundSnap): SoundEvent | nul
 }
 
 /// A pane's process exited. A task's exit code IS its verdict; anything else just
-/// stopped. (A claude session normally rings this from `SessionEnd` a moment earlier
+/// stopped. (A Claude session normally rings this from `SessionEnd` a moment earlier
 /// — `SOUND_REPEAT_MS` is what makes the pair one sound.)
 export const exitSound = (kind: SessKind, code: number): SoundEvent =>
   kind === "task" ? (code === 0 ? "taskDone" : "taskFail") : "ended";

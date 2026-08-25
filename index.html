@@ -20,6 +20,12 @@
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
         <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
+          <!--
+            Running servers. Left of the reactor because it is the calmer of the two:
+            the reactor is "something wants you now", this is "something is still up".
+            Hidden entirely when the count is zero (see renderServers).
+          -->
+          <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
             <button class="caf-main" id="cafMain" aria-label="Keep this computer awake">
@@ -156,15 +162,15 @@
         <span class="fdiv" data-fdiv="cost"></span>
         <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
         <span class="fdiv" data-fdiv="limits"></span>
-        <span class="fseg fclick" id="fUsageSeg" title="Claude usage limits & forecast · click for detail">
-          <span class="flabel">limits</span>
-          <b id="fRl">–</b><span class="fsub">5h</span><span class="freset" id="fRlReset"></span>
+        <span class="fseg fclick" id="fUsageSeg" title="Usage limits for the selected agent · click for detail">
+          <span class="flabel" id="fLimitOwner">limits</span>
+          <b id="fRl">–</b><span class="fsub" id="fRlLabel">5h</span><span class="freset" id="fRlReset"></span>
           <span class="fmid">·</span>
-          <b id="fRl7">–</b><span class="fsub">7d</span><span class="freset" id="fRl7Reset"></span>
+          <b id="fRl7">–</b><span class="fsub" id="fRl7Label">7d</span><span class="freset" id="fRl7Reset"></span>
           <span class="fcaret">▴</span>
         </span>
         <span class="fdiv" data-fdiv="io"></span>
-        <span class="fseg fclick" id="fIoSeg" title="What today's claude sessions have read and written · click for the live rates and every window recorded">
+        <span class="fseg fclick" id="fIoSeg" title="What today's embedded sessions have read and written · click for the live rates and every window recorded">
           <span class="flabel">disk</span>
           <b id="fIoR">–</b><span class="fsub">read</span>
           <span class="fmid">·</span>
@@ -233,6 +239,9 @@
         <div class="wt-title"><b id="wtTitle">New session</b><span class="wt-proj" id="wtProj"></span></div>
         <div class="wt-headrow">
           <span class="wt-path" id="wtPath"></span>
+          <!-- Only shown when a launch here is NOT Claude Code (see openWt): the chip
+               means "something about this launch is different", not furniture. -->
+          <span class="wt-eng wt-agent" id="wtAgent" hidden></span>
           <span class="wt-eng" id="wtEng"></span>
           <!-- Only shown when the launch is NOT the standard ask-me mode (see openWt). -->
           <span class="wt-eng" id="wtMode" hidden></span>
@@ -332,11 +341,22 @@
 
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
-        <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span></div>
+        <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span>
+          <!-- findings about the change rather than about any one file in it: said once,
+               here, rather than repeated on every source row -->
+          <span class="diff-sethealth" id="diffSetHealth" hidden></span></div>
+        <!-- the findings as text, for handing to a session that can act on them -->
+        <button class="diff-fold" id="diffCopy" hidden>copy findings</button>
+        <button class="diff-fold" id="diffMode" hidden>side by side</button>
         <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
-      <div class="diff-body" id="diffBody"></div>
+      <!-- The index and the stream, the two halves a pull request review has. The rail
+           is hidden for a single-file diff, where there is nothing to index. -->
+      <div class="diff-main">
+        <nav class="diff-rail" id="diffRail" hidden aria-label="Changed files"></nav>
+        <div class="diff-body" id="diffBody"></div>
+      </div>
     </div>
 
     <!--
@@ -425,6 +445,7 @@
     <div class="menupop" id="enginePop"></div>
     <div class="menupop cafpop" id="cafPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
+    <div class="menupop svrpop" id="svrPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop costpop" id="costPop"></div>
     <div class="menupop iopop" id="ioPop"></div>

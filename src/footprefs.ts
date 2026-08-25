@@ -30,7 +30,7 @@ export const FOOT_SEGS: readonly FootSegDef[] = [
   { id: "sessions", el: "fSessionsSeg", label: "Session count", hint: "How many panes are open." },
   { id: "cost", el: "fCostSeg", label: "Today's spend", hint: "What today has cost so far; opens the split by project and session." },
   { id: "limits", el: "fUsageSeg", label: "Usage limits", hint: "The 5-hour and 7-day windows, with a forecast and a countdown to each reset." },
-  { id: "io", el: "fIoSeg", label: "Disk I/O", hint: "What today's claude sessions have read and written; opens the live rates and every window recorded." },
+  { id: "io", el: "fIoSeg", label: "Disk I/O", hint: "What today's embedded sessions have read and written; opens the live rates and every window recorded." },
   { id: "engine", el: "fEngineSeg", label: "Where new sessions open", hint: "The launch engine, and the picker for it." },
   { id: "shortcuts", el: "fShortSeg", label: "Shortcuts", hint: "The keyboard cheat sheet." },
   { id: "debug", el: "dbgBtn", label: "Debug console", hint: "The 🐞 button: the in-app event log and live state." },

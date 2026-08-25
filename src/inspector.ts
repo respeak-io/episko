@@ -15,14 +15,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, stageGen } from "./dom";
 import { esc, tilde } from "./format";
-import { apiErrText, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
+import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { activeId, sessions } from "./state";
+import { activeId, revivePrefs, sessions } from "./state";
+import { reviveStatus } from "./revive";
 // The task card's three actions. They took a host object while they lived in
 // main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, gaugesHtml,
+  contextGaugeHtml, contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml,
   planHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
 
@@ -52,6 +53,7 @@ export function setCtxMode(m: string) {
 
 export function renderInspector(s: Sess | null) {
   if (s?.kind === "shell") { renderShellInspector(s); return; }
+  if (s && isAgent(s) && !hasSessionState(s)) { renderAgentInspector(s); return; }
   if (s?.kind === "task") { renderTaskInspector(s); return; }
   const pill = $("iPill"); const k = s ? statusKey(s) : "idle";
   pill.className = "pill " + k;
@@ -62,26 +64,32 @@ export function renderInspector(s: Sess | null) {
   // ACT — a pending permission is the only thing that should ever jump the queue.
   if (s.attention) {
     const risk = s.pendingPermId && s.pendRisk ? `<span class="risk ${s.pendRisk}">${RISK_LABEL[s.pendRisk]}</span>` : "";
+    const queued = s.pendingPermissions.length > 1 ? ` · ${s.pendingPermissions.length - 1} more queued` : "";
     const permBtns = s.pendingPermId
       ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
       : "";
-    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
+    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention + queued)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
   } else if (s.phase === "error" && s.apiErr) {
     // Right behind it: a turn the API killed. Nothing is happening and nothing will,
     // and the glyph alone can't say whether that means "wait a minute" or "your key
     // is dead" — so the reason and what to do about it go on the card.
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
-    const note = creds
-      ? "Claude Code can't reach the API with these credentials. Fix them in the terminal, then send the prompt again."
-      : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.";
-    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note">${note}</div></div>`);
+    // What the watchdog is doing about it, when it is doing anything. It REPLACES the
+    // note rather than sitting beside it: "send the prompt again to pick it back up" and
+    // "retrying in 2m" are contradictory instructions, and the card would be telling you
+    // to do the thing it is about to do for you.
+    const rev = reviveStatus(s, revivePrefs, Date.now());
+    const note = rev ?? (creds
+      ? "The agent can't reach its API with these credentials. Fix them in the terminal, then send the prompt again."
+      : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.");
+    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note${rev ? " revive" : ""}">${esc(note)}</div></div>`);
   }
   // Above the vital, and above the working set it contradicts: everything below reads
   // the folder the session was launched in, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));                                        // state, dwell, current tool
   html.push(fanoutHtml(s));                                       // the fleet it launched, if any
-  html.push(gaugesHtml(s));                                       // TRACK — context + cost
+  html.push(contextGaugeHtml(s));                                 // TRACK — context
   if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
   // What's changed on disk, and how the branch sits against its upstream. Shown
   // for any repo session — a clean tree that's behind is exactly what you want to
@@ -140,7 +148,24 @@ function renderShellInspector(s: Sess) {
       <div class="ext-hl">❯ Plain shell</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      <div class="ext-note">A regular login shell running inside Episko, with no Claude and no telemetry. Handy for commands you don't want to run inside a session.</div>
+      <div class="ext-note">A regular login shell running inside Episko, with no coding-agent telemetry. Handy for commands you don't want to run inside a session.</div>
+    </div>`);
+}
+
+// Terminal-only provider fallback. Integrated agents take the rich inspector path;
+// this card says plainly why a provider without a control-plane adapter cannot.
+function renderAgentInspector(s: Sess) {
+  const ended = s.phase === "ended";
+  const label = s.title || s.provider || "agent";
+  const pill = $("iPill"); pill.className = "pill " + (ended ? "ended" : "idle");
+  $("iPillTxt").textContent = ended ? "exited" : "running";
+  paintInspector(`
+    <div class="ext-card">
+      <div class="ext-hl">» ${esc(label)}</div>
+      <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
+      ${s.branch ? `<div class="ext-meta"><span class="label">Branch</span><span class="ell">${esc(s.branch)}</span></div>` : ""}
+      <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
+      <div class="ext-note">${esc(label)} is running in an Episko pane in this checkout. This provider currently uses the terminal-only adapter, so Episko cannot show its phase, usage or context.</div>
     </div>`);
 }
 
@@ -156,7 +181,7 @@ function renderTaskInspector(s: Sess) {
   // terminal can't do. Only agents, and only when the run actually failed.
   // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
   // into, so offering the handoff there would fail at the click.
-  const candidates = failed ? [...sessions.values()].filter((x) => isAgent(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
+  const candidates = failed ? [...sessions.values()].filter((x) => hasSessionState(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
   // A run-on-stop failure goes back to the session whose turn it was checking — and
   // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
   // type into), offer nothing rather than misdirecting the output to an unrelated

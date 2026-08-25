@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && tsc -p tsconfig.test.json && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
@@ -19,6 +19,7 @@
     "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "1.94.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/node": "^26.3.0",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",

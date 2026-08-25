@@ -372,6 +372,7 @@ mod tests {
         app.manage(AppState {
             port,
             sessions: Mutex::new(HashMap::new()),
+            agent_runtimes: Mutex::new(HashMap::new()),
             owned_pids: Mutex::new(HashSet::new()),
             io_samples: Mutex::new(HashMap::new()),
             io_retired: Mutex::new((0, 0)),

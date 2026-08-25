@@ -1,8 +1,8 @@
 # Episko
 
-![Episko: many parallel Claude Code sessions, each in its own terminal, with live telemetry](docs/shot-cockpit.png)
+![Episko: parallel coding-agent sessions, each in its own terminal, with live telemetry](docs/shot-cockpit.png)
 
-**Run a whole flock of [Claude Code](https://claude.com/claude-code) sessions at once.** Episko is a native desktop app that gives every agent its own real terminal and streams back what each one is doing (phase, model, context use, cost, the tool it's running right now) so a dozen agents are as easy to mind as one chat.
+**Run a whole flock of coding-agent sessions at once.** Episko is a native desktop app that gives every agent its own real terminal and, for integrated providers, streams back phase, model, context use, usage, approvals and live activity so a dozen agents are as easy to mind as one chat. Claude Code and Codex are first-class providers; other installed CLIs use the same pane with a terminal-only adapter.
 
 **[episko.dev](https://episko.dev)** · [Download](https://github.com/respeak-io/episko/releases/latest) · macOS + Windows · free and open source
 
@@ -11,19 +11,20 @@
 ## What it does
 
 - **Every session in one view.** A sidebar of projects and their sessions, each with a status glyph and context %, sorted so whatever needs you floats up. Sessions that need a decision are called out in the header and the tray. Projects can be grouped under your own headings (*Work*, *Side*) and a group folds to one line that still carries the most urgent glyph it hides.
-- **Real terminals all the way down.** Each session is a genuine PTY running the actual `claude` TUI: type into it, watch it think. Render it embedded ([xterm.js](https://xtermjs.org/)) or hand it to [Ghostty](https://ghostty.org/), Terminal.app or iTerm2. Plain shell panes too, for when you just need a prompt next to an agent.
-- **Answer permission prompts in-app.** When Claude asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal, instead of hunting for which window is blocked. You also pick the permission mode a session *starts* in.
-- **Live telemetry per session.** Model, context window use, cost, time in state, the running tool, and a short history of recent tool calls with latencies, plus per-session CPU/RAM/disk I/O and a git summary of what's changed.
+- **Real terminals all the way down.** Each session is a genuine PTY running the provider's actual TUI: type into it, watch it think. Claude can render embedded ([xterm.js](https://xtermjs.org/)) or in Ghostty, Terminal.app or iTerm2; Codex currently stays embedded so its App Server connection remains attached. Plain shell panes too, for when you just need a prompt next to an agent.
+- **Answer permission prompts in-app.** When Claude or Codex asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal, instead of hunting for which window is blocked. Starting permission/sandbox policy is stored separately for each integrated agent.
+- **Live telemetry per session.** Model, context window use, time in state, the running tool, and recent activity with latencies. Claude adds exact dollar cost; Codex adds live token usage, an API-equivalent cost estimate and its own rate-limit windows. Both share the git working set and inspector.
 - **A dashboard per project.** Click a project for its week: commits and sessions summarised a day at a time, open issues and pull requests, the repo's checkouts, shared notes, and what it all cost. [See below](#every-project-has-a-homepage).
 - **Send an agent at a GitHub issue.** Dispatch from the dashboard and Episko creates the worktree, sends the prompt, and writes a claim to the issue so a colleague's agent doesn't start the same work twice, then hands the issue back when the session ends.
-- **Usage limits, before you hit them.** Your 5-hour and weekly limits with reset times, and a forecast that warms from amber to red when your current pace won't make it.
+- **Usage limits, before you hit them.** The footer follows the selected agent, names whose 5-hour and weekly account windows it is showing, and keeps Claude's burn forecast from amber to red.
 - **A usage dashboard.** Daily spend as a contribution heatmap, tokens by model, token composition (cache reads vs. input vs. output), and cost attributed per project.
 - **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout. A session also notices when its agent drifts to *another* checkout mid-task, and offers the repair: follow it there, or move the conversation back.
 - **A commit graph per project.** Right-click a project → *Commit graph…* for its lanes, merges, branch and tag labels. It reads a page at a time and fetches the next as you scroll, so opening it on a huge repo costs the same as on a small one.
 - **Sessions started elsewhere show up too.** Claude Code sessions launched outside Episko are discovered and listed read-only, with jump-to-terminal on macOS (the exact tab) and Windows (the hosting window).
-- **A whole-machine history.** Every Claude Code session on this machine, Episko's or otherwise, read from Claude's own transcripts: searchable, scoped by project and day, reopenable where it left off.
-- **Survives a restart.** Episko's launch id *is* Claude's `--session-id`, so resuming replays Claude's own transcript, with nothing to capture and nothing to lose. Even a webview reload rebuilds every pane and re-adopts the still-running processes, scrollback included.
+- **A whole-machine history.** Claude transcripts and Codex App Server threads in one searchable list, scoped by project and day and reopenable where each provider left off. Claude sessions started elsewhere are included too.
+- **Survives a restart.** Episko remembers each provider and resume id, then asks Claude to resume its transcript or Codex to resume its thread. Even a webview reload rebuilds every live agent pane and re-adopts its still-running process, scrollback included.
 - **Run the project's own tasks**: VS Code tasks, a `justfile`, package scripts, a Makefile and more, in the same panes, with a run's exit code as its status. [See below](#run-your-projects-tasks-too).
+- **Other agents, in the same panes.** Which agent a session runs is a setting, not a question you answer every time: pick it in Settings › Sessions, override it per project, and `⌘N` obeys. Episko discovers Codex, OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity, Devin, Cline, Pi and more. The capability label beside each one says whether its inspector is connected or terminal-only; adding another first-class provider is an adapter, not another session model.
 - **Command palette** (`⌘K`), a **settings window** (`⌘,`), per-project accent colours and icons, favourites and drag ordering, a daily cost rollup you can open by project and session, a *What's new* screen after updates, and a `caffeinate` toggle so long runs don't sleep.
 
 ## Every project has a homepage
@@ -39,7 +40,7 @@ The dashboard degrades by what the folder can offer: a GitHub repo gets all of i
 
 ## Run your project's tasks, too
 
-Agents aren't the only thing worth watching. Episko runs the task definitions your project **already ships**, with no new file to write and no editor required, in the same PTY panes it uses for Claude sessions:
+Agents aren't the only thing worth watching. Episko runs the task definitions your project **already ships**, with no new file to write and no editor required, in the same PTY panes it uses for coding-agent sessions:
 
 `.episko/tasks.toml` · `.vscode/tasks.json` · `.vscode/launch.json` · `package.json` scripts · `justfile` · `Taskfile.yml` · `mise.toml` · `Makefile` · `Cargo.toml`
 
@@ -57,7 +58,7 @@ A task inspector offers re-run / pin / stop / **send output to a session**, so a
 
 ## How it works
 
-On each Claude launch Episko writes a throwaway `--settings` file whose `statusLine` command and lifecycle `hooks` POST to a tiny `tiny_http` server bound to an ephemeral localhost port. There is no global `~/.claude` mutation and no transcript-file scraping; instrumentation is per-launch and vanishes with the temp file.
+On each Claude launch Episko writes a throwaway `--settings` file whose `statusLine` command and lifecycle `hooks` POST to a tiny `tiny_http` server bound to an ephemeral localhost port. On each Codex launch it starts a loopback App Server and connects both Episko's observer and the real `codex --remote` TUI. Both transports normalize into the same provider-neutral event reducer; terminal-only providers simply omit capabilities they cannot supply.
 
 Every POST is tagged with the launch id Episko chose, so telemetry routes to the right pane before any output appears, and keeps routing after `/clear`, `/compact` or `/resume`, each of which makes Claude mint a **new** runtime `session_id`. The permission hook is the one blocking call: the server holds the request open until you answer.
 
@@ -73,7 +74,7 @@ Every POST is tagged with the launch id Episko chose, so telemetry routes to the
 
 ## Install
 
-Grab the latest build from the [Releases page](https://github.com/respeak-io/episko/releases/latest). You need [Claude Code](https://claude.com/claude-code) installed and on your `PATH`.
+Grab the latest build from the [Releases page](https://github.com/respeak-io/episko/releases/latest). Install [Claude Code](https://claude.com/claude-code), Codex, or another supported coding-agent CLI on your `PATH`; Claude remains the default until you choose another provider.
 
 ### macOS (Apple silicon)
 
@@ -101,7 +102,7 @@ Episko keeps itself current after install: it checks the latest GitHub release o
 
 - [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/)
 - [Rust](https://www.rust-lang.org/tools/install) (stable) + the [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your platform
-- [Claude Code](https://claude.com/claude-code) on your `PATH`
+- At least one supported coding agent on your `PATH` ([Claude Code](https://claude.com/claude-code), Codex, or a terminal-only provider)
 
 ### Run it
 
@@ -167,4 +168,4 @@ Release builds target Apple silicon (`aarch64`) and Windows x64. Intel Macs aren
 
 [MIT](./LICENSE) © Respeak GmbH, Karlsruhe
 
-Episko is an independent project, not affiliated with, endorsed, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
+Episko is an independent project, not affiliated with, endorsed, or sponsored by the agent providers it supports. Product names and logos belong to their respective owners. Claude and Claude Code are trademarks of Anthropic, PBC.

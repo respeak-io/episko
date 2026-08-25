@@ -276,7 +276,7 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
   });
   it("resolves each label, in the order declared", () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set()).map((d) => d.label)).toEqual(["b", "a"]);
+    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set())?.map((d) => d.label)).toEqual(["b", "a"]);
   });
   // null and [] are different answers: "I could not resolve these" vs "there are
   // none". Returning [] for both is what used to run a task whose build had been
@@ -598,7 +598,7 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
     expect(taskStateText(t({ exitCode: 0 }, "done"), NOW)).toBe("1m 23s");
   });
   it("says nothing for a pane that is not a run", () => {
-    expect(taskStateText({ phase: "idle", kind: "claude" } as Sess, NOW)).toBe("");
+    expect(taskStateText({ phase: "idle", kind: "agent" } as Sess, NOW)).toBe("");
   });
 
   // The inspector's "Took" row, the sidebar column and a tiled pane's caption each had

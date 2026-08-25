@@ -1,5 +1,5 @@
 // The inspector's markup: everything the right-hand panel shows about an agent
-// session — the vital header, the context/cost gauges, the plan, the working set
+// session — the vital header, the context gauge, the plan, the working set
 // and its git buttons, the activity timeline — plus the diff viewer's hunk rows.
 //
 // The disk-I/O card used to be pinned to the bottom of this panel and is now a footer
@@ -15,12 +15,12 @@
 // git operation in flight is only ever read to grey them out. main.ts's runGit
 // sets it through setGitBusy — the state.ts convention, a live binding to read.
 
-import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
-import type { DiffHunk } from "./diff";
+import { basename, elidePath, esc, escAttr, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, isAgent, liveFanout, statusKey,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState,
+  liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { sessions } from "./state";
@@ -79,7 +79,7 @@ export function dwellText(s: Sess): string {
 // on you, so crowning it "longest waiting" would point you at the one row with nothing
 // to answer.
 function isLongestWaiting(s: Sess): boolean {
-  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && isAgent(x) && !x.attention && !bgWaiting(x));
+  const waiting = [...sessions.values()].filter((x) => x.phase === "done" && hasSessionState(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
 }
 function compactWarn(pct: number | null): { txt: string; cls: string } | null {
@@ -103,7 +103,7 @@ export function vitalHtml(s: Sess): string {
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
   // While a fleet is up, the split of it — done vs still running — says more than the
   // bare "N subagents" chip this replaces, which only ever showed the live half.
-  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${s.subagents} running`] : [])]
+  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${liveCount(s)} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
@@ -131,28 +131,34 @@ export function fanoutHtml(s: Sess): string {
   const detail = f.detail ? `<div class="fo-detail">${esc(f.detail)}</div>` : "";
   const phases = f.phases.length
     ? `<div class="fo-phases">${f.phases.map((p) => `<span class="fo-ph">${esc(p)}</span>`).join("")}</div>` : "";
+  // The leftovers a newer fan-out inherited, named apart from this run's own agents
+  // instead of being folded into its total in silence — which is how "34 / 36" managed
+  // to look like arithmetic rather than a bug. They are counted (the total above is
+  // `done + running`, and a second workflow launched over a live one is real work), but
+  // they say whose they are, and they take themselves off this card when they expire.
+  const orph = orphanAgents(s);
+  const kinds = [...new Set(orph.map((a) => a.type).filter(Boolean))].slice(0, 3).join(", ");
+  const carried = orph.length
+    ? `<div class="fo-orph"><span class="fo-og">↩</span>${orph.length} still up from an earlier run${kinds ? ` · ${esc(kinds)}` : ""}</div>` : "";
   return `<div class="fanout">
     <div class="fo-h"><span class="fo-g">◐</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
     ${detail}
     <div class="fo-bar"><i style="width:${pct}%"></i></div>
-    ${phases}</div>`;
+    ${carried}${phases}</div>`;
 }
-export function gaugesHtml(s: Sess): string {
+// Spending and account limits deliberately live in the footer: they describe the
+// active account, while this panel describes the selected session. Keep only context
+// here, where its pressure affects the conversation the user is inspecting.
+export function contextGaugeHtml(s: Sess): string {
   const ctx = s.ctxPct;
   const warn = compactWarn(ctx);
   const ctxSpark = sparkline(s.ctxHist, { lo: 0, hi: 100 });
-  const costSpark = sparkline(s.costHist, { lo: 0 });
   const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k tokens` : "context";
   const ctxFoot = warn ? `<div class="warn-line ${warn.cls}">${warn.txt}</div>` : (ctxSpark ? `<div class="gspark">${ctxSpark}</div>` : "");
-  const costFoot = costSpark ? `<div class="gspark">${costSpark}</div>` : "";
   return `<div class="gauges">
     <div class="gauge">
       <div class="grow"><svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg><div><div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div></div>
       ${ctxFoot}
-    </div>
-    <div class="gauge">
-      <div class="grow"><div><div class="gnum">${s.cost != null ? "$" + s.cost.toFixed(2) : "–"}</div><div class="glab">${s.durMs != null ? fmtDur(s.durMs) : "cost"}</div></div></div>
-      ${costFoot}
     </div>
   </div>`;
 }
@@ -273,15 +279,6 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
   </div>`;
-}
-
-export function hunkHtml(h: DiffHunk): string {
-  const rows = h.lines.map((l) => {
-    const sign = l.kind === "add" ? "+" : l.kind === "del" ? "−" : "";
-    return `<div class="dline ${l.kind}"><span class="ln">${l.oldNo ?? ""}</span><span class="ln">${l.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${esc(l.text)}</span></div>`;
-  }).join("");
-  const ctx = h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : "";
-  return `<div class="dhunk"><div class="dhh">⋯${ctx}</div>${rows}</div>`;
 }
 
 // ---------- context: what the session has been into ----------

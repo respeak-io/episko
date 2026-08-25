@@ -23,14 +23,17 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
   attnPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
-  peekPrefs, permMode,
-  permModeDef, projGroups,
+  peekPrefs, permissionModes,
+  projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
-  setPeekPrefs as setPeekPrefsState, setPermMode as setPermModeState,
+  agentByProject, agentDef, defaultAgent, effectiveAgent,
+  setDefaultAgent as setDefaultAgentState, setProjectAgent as setProjectAgentState,
+  setPeekPrefs as setPeekPrefsState, setProviderPermissionMode as setPermissionModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
+  revivePrefs, setRevivePrefs as setRevivePrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
   type SortMode, type WtGroup,
@@ -44,7 +47,13 @@ import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
-import type { PermMode } from "./types";
+import { CLAUDE_CLI } from "./types";
+import { resolveProviderPermission } from "./providers/control";
+import { removePermission } from "./permissions";
+import { providerAdapter, providerPermissionMode } from "./providers";
+import { reviveGap, reviveStep, type RevivePrefs } from "./revive";
+import { playSound } from "./chime";
+import { dlog } from "./debug";
 
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
@@ -76,8 +85,8 @@ export async function openProjectFolder(key: string) {
 }
 
 // The inspector's Context rows: click a file to open it, ⌂ to show it in the file
-// manager. Both take an absolute path straight off a hook payload — which is exactly
-// why both surface the backend's error rather than swallowing it. An agent's file set
+// manager. Both take the absolute path normalized as an event enters session state —
+// which is exactly why both surface the backend's error rather than swallowing it. An agent's file set
 // outlives the files in it: it reads a path in a worktree that is later removed, writes
 // a temp file it then deletes, and the row for either is still sitting in the card. A
 // silent no-op there reads as a broken button; "no such file" reads as the truth.
@@ -122,8 +131,16 @@ export function removeFavorite(path: string) {
   renderAll();
 }
 export function resolvePermission(id: string, behavior: string) {
-  invoke("resolve_permission", { id, behavior }).catch(() => {});
-  for (const s of sessions.values()) if (s.pendingPermId === id) { s.pendingPermId = null; s.attention = null; s.pendingCmd = ""; }
+  const owner = [...sessions.values()].find((s) => s.pendingPermId === id
+    || s.pendingPermissions.some((pending) => pending.id === id));
+  if (owner) {
+    resolveProviderPermission(owner, id, behavior).catch(() => {});
+  } else {
+    // An unrouted Claude hook can still be held open in the backend. There is no
+    // session object to dispatch through, so release that legacy transport directly.
+    invoke("resolve_permission", { id, behavior }).catch(() => {});
+  }
+  if (owner) removePermission(owner, id);
   renderAll();
 }
 
@@ -179,6 +196,95 @@ export function setSoundPrefs(p: SoundPrefs) {
   setSoundPrefsState(p);
   localStorage.setItem("cc-sound", JSON.stringify(soundPrefs));
   renderSettings();
+}
+
+// And for the revive watchdog. `renderAll` rather than `renderSettings` alone, because
+// switching it off has to take the "retrying in 2m" line back off the inspector's error
+// card immediately — a session that is no longer being retried must not go on saying it
+// is. Turning it off never cancels a schedule explicitly: `reviveStep` returns `off`
+// before it looks at anything, so every existing `Sess.revive` becomes inert on the
+// spot and is cleared by the next turn that ends cleanly.
+export function setRevivePrefs(p: RevivePrefs) {
+  setRevivePrefsState(p);
+  localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
+  renderAll();
+  renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// ---------- the revive watchdog ----------
+// The timer half of ./revive: every rule lives there and is tested, so this only asks
+// what to do and does it. Driven by a fixed interval from main.ts rather than a timeout
+// scheduled to `reviveDeadline`, for a reason specific to what this waits for — the
+// machine's network coming back is not an event anything fires, so there is nothing to
+// schedule against, and a poll is the only thing that notices.
+
+/// Whether the machine currently thinks it has a network. Weak on purpose and exactly
+/// strong enough: `navigator.onLine` only knows whether an interface is up, which is a
+/// terrible test for "is the API reachable" and a very good one for "did the Wi-Fi nap",
+/// and the second is the failure this feature was written for. A false positive costs
+/// one attempt; a false negative costs nothing at all, because being offline does not
+/// consume one (see `reviveStep`).
+const online = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
+
+/// Skip reasons worth a line in the debug console. The other six fire on every tick for
+/// every healthy session in the fleet and would bury the log within a minute; these two
+/// are the ones somebody is actually asking about at 08:00 — "it was waiting for the
+/// network" and "it had already given up".
+const LOUD_SKIPS = new Set(["offline", "exhausted"]);
+/// What each session's last skip was, so a repeated reason is logged once rather than
+/// six times a minute. Keyed by session id and cleaned as sessions go.
+const lastSkip = new Map<string, string>();
+
+/**
+ * One pass over the fleet: schedule, send, or give up on each failed session.
+ *
+ * Everything that could be wrong to do is decided by `reviveStep`; the only judgement
+ * here is about output — what gets logged, what makes a noise, and when to repaint.
+ */
+export function tickRevive() {
+  const now = Date.now(), net = online();
+  let changed = false;
+  for (const s of sessions.values()) {
+    const act = reviveStep(s, revivePrefs, now, net);
+    if (act.do === "none") {
+      if (LOUD_SKIPS.has(act.why) && lastSkip.get(s.id) !== act.why) {
+        lastSkip.set(s.id, act.why);
+        dlog("info", `revive ${s.id.slice(0, 8)} · ${act.why === "offline" ? "network is down — holding the attempt" : "gave up; waiting for you"}`);
+      }
+      continue;
+    }
+    lastSkip.delete(s.id);
+    s.revive = act.state;
+    changed = true;
+    if (act.do === "schedule") {
+      dlog("info", `revive ${s.id.slice(0, 8)} · ${s.apiErr?.kind ?? "?"} · try ${act.state.attempts + 1}/${revivePrefs.attempts} in ${reviveGap(act.state.dueAt - now)}`);
+      continue;
+    }
+    if (act.do === "giveup") {
+      // The one moment this feature is allowed to make a noise. Every failure in between
+      // was silent by design (see `soundSnap` in ./sound) — Episko was handling those,
+      // and a buzz per retry is six alarms for one outage. This is the one that means
+      // something changed for the human: nobody is coming, the session is yours.
+      dlog("warn", `revive ${s.id.slice(0, 8)} · gave up after ${act.state.attempts} tries`);
+      playSound("error");
+      continue;
+    }
+    // `do === "send"`. Two writes, exactly as the dashboard's dispatch does it: the text,
+    // then the Enter. This is the ONE place in the app that presses Enter for you —
+    // ./taskrun's `sendOutputToSession` deliberately stops at the prefill so a human
+    // commits it — and the departure is the whole point, since the entire premise here is
+    // that there is no human awake to press it.
+    dlog("info", `revive ${s.id.slice(0, 8)} · sending continue ${act.state.attempts}/${revivePrefs.attempts}`);
+    const sid = s.id;
+    void invoke("write_pty", { sessionId: sid, data: act.prompt })
+      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
+      .catch((e) => dlog("error", `revive ${sid.slice(0, 8)} · write failed: ${e}`));
+  }
+  // Closed panes leave their last skip reason behind, and this runs forever. Tiny, but a
+  // map keyed by session id that nothing ever removes from is how a long-running app
+  // grows a leak nobody looks for.
+  if (lastSkip.size > sessions.size) for (const id of lastSkip.keys()) if (!sessions.has(id)) lastSkip.delete(id);
+  if (changed) renderAll();
 }
 
 // And once more for the keyboard shortcuts. This one DOES take the full `renderAll`,
@@ -249,12 +355,41 @@ export function collapseAllProjGroups(collapsed: boolean) { commitProjGroups(col
 // it: a pane started in Bypass or Don't ask never raises a permission card at all, so
 // there is no later moment where the choice becomes visible. Only new launches move;
 // a running session keeps whatever mode it is in (Claude's ⇧⇥ owns that).
-export function setPermMode(m: PermMode) {
-  setPermModeState(m);
-  localStorage.setItem("cc-perm-mode", permMode);
-  toast(permMode === "default"
-    ? "New sessions ask before acting"
-    : `New sessions start in ${permModeDef(permMode).label} mode`);
+// Which agent a new session runs (Settings › Sessions). Persisting lives here rather
+// than in state.ts for the usual reason — a `setX` there assigns and nothing else — and
+// the toast is doing real work: this is the one preference that can turn the cockpit
+// off, so the moment you change it is the moment to say what you have just lost.
+export function setDefaultAgent(id: string) {
+  setDefaultAgentState(id);
+  localStorage.setItem("cc-agent", defaultAgent);
+  const a = agentDef(defaultAgent);
+  toast(a
+    ? `New sessions run ${a.label}${a.capabilities.includes("session-state") ? " — inspector connected" : " — terminal only"}`
+    : "New sessions use the available default agent");
+  renderSettings();
+}
+// The per-project override, set from a project's own menu. `null` clears it, which is
+// the row that says "follow the global setting" rather than a third state.
+export function setProjectAgent(colorKey: string, id: string | null) {
+  setProjectAgentState(colorKey, id);
+  localStorage.setItem("cc-agent-by-project", JSON.stringify(agentByProject));
+  const a = effectiveAgent(colorKey);
+  toast(id ? `${basename(colorKey)} runs ${a.label}` : `${basename(colorKey)} follows the default (${a.label})`);
+  renderAll();
+}
+
+export function setPermMode(provider: string, requested: string) {
+  const mode = providerPermissionMode(provider, requested);
+  if (!mode) return;
+  setPermissionModeState(provider, mode.id);
+  localStorage.setItem("cc-perm-modes", JSON.stringify(permissionModes));
+  // Keep the old Claude key for a downgrade and for existing local tooling that reads
+  // it. New code never uses it as another provider's preference.
+  if (provider === CLAUDE_CLI.id) localStorage.setItem("cc-perm-mode", mode.id);
+  const label = providerAdapter(provider)?.label || provider;
+  toast(mode.id === "default"
+    ? `New ${label} sessions follow ${mode.label}`
+    : `New ${label} sessions start in ${mode.label} mode`);
   renderSettings(); // keep the settings picker in sync if it's open
 }
 

@@ -74,7 +74,8 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      # Typechecks (tsc) and builds the frontend. Must run before cargo, because
+      # Typechecks both TS projects (`src/` and `test/` — see docs/testing.md for why
+      # they are separate) and builds the frontend. Must run before cargo, because
       # Tauri's `generate_context!` embeds `frontendDist` (../dist) at compile time
       # and errors if it's missing.
       - name: Build frontend (tsc + vite)

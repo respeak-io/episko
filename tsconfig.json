@@ -17,7 +17,15 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Ambient types: NONE automatically. Without this, TypeScript pulls in every package
+       under `node_modules/@types` — and since `@types/node` is a devDependency (for
+       `tsconfig.test.json`, which the suites need), that would hand node's globals to
+       `src/` as well. Nothing under `src/` may use them: it is bundled for a webview, so
+       a stray `process.env` has to fail here rather than at runtime. `vite/client` still
+       reaches this project through the triple-slash reference in `src/vite-env.d.ts`. */
+    "types": []
   },
   "include": ["src"]
 }

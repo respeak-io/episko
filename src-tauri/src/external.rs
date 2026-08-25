@@ -109,6 +109,91 @@ impl ProcTable {
     }
 }
 
+// ---------- which ports our sessions are actually listening on ----------
+
+/// One TCP port a session's process tree has open, as the frontend reads it.
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct SessionPort {
+    /// The Episko pane whose PTY child this socket descends from.
+    session_id: String,
+    port: u16,
+    /// The process actually holding the socket — `node.exe`, `python.exe`. It is
+    /// several hops below the pane (a real chain measured here was
+    /// `node <- cmd <- node <- cmd <- node <- cmd <- pwsh <- claude <- episko`), so
+    /// this is a leaf's name, not the command the user or the agent ran.
+    pid: u32,
+    name: String,
+}
+
+/// Collapse the several sockets one server really has down to one row per
+/// (session, port).
+///
+/// A dev server binding "everywhere" is three or four listeners: `0.0.0.0`, `[::]`,
+/// and often `127.0.0.1` and a LAN address besides — a real one measured here showed
+/// up five times. They are one server and one row. The lowest pid wins so the answer
+/// is stable across polls rather than reordering with the OS's enumeration.
+fn dedupe_ports(mut found: Vec<SessionPort>) -> Vec<SessionPort> {
+    found.sort_by(|a, b| {
+        (a.session_id.as_str(), a.port, a.pid).cmp(&(b.session_id.as_str(), b.port, b.pid))
+    });
+    found.dedup_by(|a, b| a.session_id == b.session_id && a.port == b.port);
+    found
+}
+
+/// Every TCP port listened on by a process descended from one of our panes.
+///
+/// **This is the ground truth the rest of the running-server feature only approximates.**
+/// A parsed log line is a guess about somebody else's output format; a listening socket
+/// either exists or it does not. It is also the only thing that can see a server nobody
+/// announced — one started by hand in a shell pane, or one whose banner we cannot parse
+/// — because it asks the kernel rather than the process.
+///
+/// Attribution is by ancestry, and it reaches: the chain from a `vite` leaf back to
+/// `episko.exe` measured **eight** hops on Windows (node → cmd → node → cmd → node →
+/// cmd → pwsh → claude), well inside `is_descendant_of`'s cap. What it cannot do is
+/// name a server whose chain is *broken* — an orphan whose session has exited — and
+/// that is deliberate: those have no pane to belong to, and inventing one would be
+/// worse than leaving them out.
+///
+/// Spawn-free on every platform (`GetExtendedTcpTable`, libproc, `/proc`), like
+/// `ProcTable` above, because this is polled.
+#[tauri::command]
+pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
+    // The roster first: with no panes open there is nothing any socket could belong
+    // to, and the whole scan is skipped.
+    let roster: Vec<(String, u32)> = state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(id, s)| s.pid.map(|p| (id.clone(), p)))
+        .collect();
+    if roster.is_empty() {
+        return Vec::new();
+    }
+    let Ok(all) = listeners::get_all() else { return Vec::new() };
+    let table = ProcTable::snapshot();
+    let mut found = Vec::new();
+    for l in all {
+        // TCP only, and only actually-listening sockets: SSDP, NetBIOS and mDNS are
+        // UDP and would otherwise read as somebody's dev server.
+        if l.protocol != listeners::Protocol::TCP || l.state != listeners::SocketState::Listen {
+            continue;
+        }
+        let Some((id, _)) = roster.iter().find(|(_, root)| table.is_descendant_of(l.process.pid, *root))
+        else {
+            continue;
+        };
+        found.push(SessionPort {
+            session_id: id.clone(),
+            port: l.socket.port(),
+            pid: l.process.pid,
+            name: l.process.name.clone(),
+        });
+    }
+    dedupe_ports(found)
+}
+
 /// Parse one `~/.claude/sessions/<pid>.json` registry file into an
 /// `ExternalSession` (repo_root/branch enriched later). None for malformed
 /// files and non-interactive entries (`claude -p`, SDK runs).
@@ -451,6 +536,93 @@ mod tests {
         }
     }
 
+    fn sp(session: &str, port: u16, pid: u32) -> SessionPort {
+        SessionPort { session_id: session.into(), port, pid, name: "node.exe".into() }
+    }
+
+    /// One dev server is several sockets. Vite binding "everywhere" shows up as
+    /// `0.0.0.0`, `[::]`, `127.0.0.1` and a LAN address — a real process measured on
+    /// this machine appeared five times — and every one of them is the same server and
+    /// must be one row. Without this the header would count a single `pnpm dev` as four.
+    #[test]
+    fn dedupe_ports_collapses_one_server_to_one_row() {
+        let got = dedupe_ports(vec![
+            sp("a", 5555, 64828), sp("a", 5555, 64828), sp("a", 5555, 64828),
+            sp("a", 8787, 81320),
+        ]);
+        assert_eq!(got.len(), 2, "one row per (session, port): {got:?}");
+        assert_eq!(got.iter().map(|p| p.port).collect::<Vec<_>>(), vec![5555, 8787]);
+    }
+
+    /// The same port in two panes is two servers, not one. Two worktrees of the same
+    /// repo each running their own dev server is the normal way this happens — they
+    /// cannot both hold 5555, but a `--strictPort`-less vite will land one on 5556, and
+    /// collapsing across sessions would still be wrong the moment the ports differ.
+    #[test]
+    fn dedupe_ports_keeps_the_same_port_in_two_panes_apart() {
+        let got = dedupe_ports(vec![sp("a", 5555, 1), sp("b", 5555, 2)]);
+        assert_eq!(got.len(), 2, "sessions must not collapse into each other: {got:?}");
+    }
+
+    /// The lowest pid wins, so a row does not reshuffle between polls just because the
+    /// OS enumerated its sockets in a different order.
+    #[test]
+    fn dedupe_ports_is_stable_across_enumeration_order() {
+        let a = dedupe_ports(vec![sp("s", 3000, 900), sp("s", 3000, 100)]);
+        let b = dedupe_ports(vec![sp("s", 3000, 100), sp("s", 3000, 900)]);
+        assert_eq!(a, b);
+        assert_eq!(a[0].pid, 100);
+    }
+
+    /// A contract test for somebody else's crate, on whatever OS is running the suite.
+    ///
+    /// `listeners` is the one dependency here whose whole job is a platform API we do not
+    /// own — three separate implementations (`GetExtendedTcpTable`, libproc, `/proc`) of
+    /// the same question — and it is the half of this feature that cannot be checked from
+    /// a developer's machine, because only one OS is in front of you at a time. A release
+    /// that broke its macOS arm would leave every other test in this file green while the
+    /// header's server list silently emptied.
+    ///
+    /// **So the test opens a socket and demands the crate find it.** Merely asserting that
+    /// the returned rows are well-formed would pass *vacuously* on an implementation that
+    /// returned nothing at all, which is precisely the failure being guarded against —
+    /// and "assert it found at least one" would lean on the machine happening to have a
+    /// server up. Binding our own removes both problems: the answer is known, it is ours,
+    /// and the assertion covers the whole chain this feature needs — the socket, its port,
+    /// and the owning pid that `session_ports` walks ancestry from.
+    #[test]
+    fn listeners_sees_a_socket_we_just_opened() {
+        // Port 0 → the kernel picks a free one, so this cannot collide with anything.
+        let sock = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local listener");
+        let port = sock.local_addr().unwrap().port();
+        let us = std::process::id();
+
+        let all = listeners::get_all().expect("listeners::get_all failed on this OS");
+        let mine = all.iter().find(|l| {
+            l.protocol == listeners::Protocol::TCP
+                && l.state == listeners::SocketState::Listen
+                && l.socket.port() == port
+        });
+        let mine = mine.unwrap_or_else(|| {
+            panic!(
+                "listeners did not report a socket this process is holding open on port \
+                 {port}. It saw {} listening TCP sockets. Attribution in `session_ports` \
+                 is built on this, so the header's server list is empty on this OS.",
+                all.iter()
+                    .filter(|l| l.protocol == listeners::Protocol::TCP
+                        && l.state == listeners::SocketState::Listen)
+                    .count()
+            )
+        });
+        assert_eq!(
+            mine.process.pid, us,
+            "the socket was found but attributed to pid {} rather than ours ({us}); \
+             ancestry would then place every server under the wrong pane",
+            mine.process.pid
+        );
+        drop(sock);
+    }
+
     #[test]
     fn proc_table_identity_and_ancestry() {
         // episko(100) → ghostty(200) → claude(300); unrelated claude(400) under init.
@@ -586,3 +758,4 @@ mod tests {
     }
 
 }
+

@@ -8,6 +8,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
+import providerManifest from "./providers/manifest.json";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -18,6 +19,26 @@ export type Risk = "low" | "med" | "high";
 // different questions: overloaded means wait, rate_limit means wait longer,
 // authentication_failed means go fix your credentials.
 export interface ApiErr { kind: string; detail: string; at: number }
+// What the revive watchdog has done about an `ApiErr`: the schedule for typing a
+// "carry on" back into a session whose turn the API killed while nobody was watching.
+// The shape lives here beside the failure it answers, the way `FileTouch` sits here and
+// its rules sit in ./files — every rule that reads or writes this is in ./revive, which
+// is pure and tested, and the timer that drives it is in ./actions.
+export interface ReviveState {
+  /// Continues typed for this failure streak, counted against `RevivePrefs.attempts`.
+  /// **Deliberately survives the turns it starts** — see `Sess.revive` below.
+  attempts: number;
+  /// The `ApiErr.at` this schedule was computed from; a different stamp is a new failure
+  /// and re-times the next attempt from the moment it happened.
+  errAt: number;
+  /// When the next continue is due.
+  dueAt: number;
+  /// When the last one was sent. Display only.
+  lastAt: number;
+  /// Whether "I have stopped trying" has already been announced, so the sound and the
+  /// log line fire once instead of on every tick until morning.
+  gaveUp: boolean;
+}
 // One tool call on the activity timeline. `durMs` is filled in on PostToolUse
 // (latency = the Pre→Post gap); null means still running.
 //
@@ -57,6 +78,48 @@ export const actKey = (a: Act): string => a.id || `t${a.startMs}`;
 // `at` the most recent one — together they order the list and size the "×3" badge.
 export type TouchKind = "created" | "edited" | "read";
 export interface FileTouch { path: string; kind: TouchKind; n: number; at: number }
+
+/// One background shell an agent started and left running — Claude Code's own
+/// `Bash{run_in_background:true}`, which is how every "let me start the dev server"
+/// ends up. See ./servers for how one is recognised and what the log file answers.
+///
+/// **`transcript` is captured at start and never recomputed.** The log lives beside the
+/// transcript, under the session directory Claude Code owned *at the moment the shell
+/// was spawned* — and Claude mints a new one on `/clear`, `/compact` and `/resume`. So
+/// the path is a fact about the launch, not about the session now; re-deriving it later
+/// from a rotated session would point at a directory that has never held this log.
+/// (Same trap as the `X-CC-Session` rule in CLAUDE.md, one level down.)
+export interface BgServer {
+  /// Claude Code's own `backgroundTaskId` — the id `TaskStop`/`TaskOutput` name, and
+  /// therefore the only handle that lets the *agent* be asked to stop this.
+  taskId: string;
+  /// The command the agent ran, verbatim, for the row's label.
+  cmd: string;
+  /// `transcript_path` as it stood when the shell was spawned. Half of the log's
+  /// address; the other half is `taskId`. Resolved to a real path by `read_bg_log`.
+  transcript: string;
+  startedAt: number;
+  /// Everything below is read back out of the log file by the poll, so all of it is
+  /// absent until the first read lands — and stays absent if the file never appears.
+  /// The resolved log path, echoed back by `read_bg_log` so a row can name its file.
+  log?: string;
+  /// The last localhost URL the process printed. The *last*, not the first: a dev
+  /// server that restarts itself (a vite config change) prints a fresh one, and the
+  /// stale line above it would send you to a port nothing is on.
+  url?: string;
+  /// Set once the log's closing sentinel appears — `[exited with code N]` or `[killed]`,
+  /// the latter carrying no code. A record with `ended` set is history: it stays on the
+  /// session so the popover can say "this one is finished", and is what keeps a crashed
+  /// dev server from silently disappearing off the count.
+  ended?: number; exit?: number | null;
+  /// Last few lines of the log, for the row's expanded peek.
+  tail?: string[];
+  /// The log's length at the last read. A background log is append-only, so handing
+  /// this back to `read_bg_log` turns the steady-state poll — a dev server nobody is
+  /// hitting, whose log has not moved in an hour — into one `metadata()` call instead
+  /// of a 32 KiB read.
+  len?: number;
+}
 // A single item from a TodoWrite payload (the plan Claude keeps for itself).
 export interface Todo { content: string; status: string }
 // Uncommitted "working set" summary from the git_diffstat backend command, plus
@@ -77,6 +140,38 @@ export interface StatusFile {
 // A DiffStat with the files behind it. `entries` is capped backend-side while `dirty`
 // is not, so `dirty - entries.length` is what a list says it left out.
 export interface WorkingSet extends DiffStat { entries: StatusFile[] }
+
+// ---- what a change did to the shape of the code (health.rs -> ./health) ----
+// Facts only. Which of them are worth a chip is ./health's decision, and the thresholds
+// are its table — the same split `project_facts` has with ./dash.
+// One function the change went into. `cognitive` is an approximation of Cognitive
+// Complexity (no AST on the Rust side by design), used only to compare a function with
+// the ones around it.
+export interface FnSpan { name: string; start: number; end: number; code_lines: number; cognitive: number }
+// A block of six or more added lines that already exists somewhere else in the project.
+export interface DupHit { line: number; other_path: string; other_line: number }
+// One changed file, measured. `measured` false means the file could not be read — it was
+// deleted, binary, or over the size cap — and every number below it is meaningless; the
+// UI must show nothing there rather than a row of confident zeroes.
+export interface FileHealth {
+  path: string; code_lines: number; code_added: number;
+  max_nesting: number; nesting_line: number;
+  worst_fn: FnSpan | null; longest_fn: FnSpan | null;
+  dups: DupHit[]; measured: boolean;
+}
+// `p90_code_lines` is the project's own 90th percentile, because "big" is relative or it
+// is nothing. `truncated` means the caps cut the sweep short, so a duplicate may have
+// been missed — said out loud rather than left to read as a clean result.
+// The project's own thresholds, from a `[health]` table in `.episko/episko.toml`. Every
+// field optional and absent meaning "use the default" — ./health's `clampHealth` is what
+// turns this into a complete table, and it refuses a 0 rather than honouring it.
+export interface HealthPolicy {
+  cognitive?: number; nesting?: number; longFn?: number; sizeAdd?: number;
+}
+export interface HealthReport {
+  files: FileHealth[]; p90_code_lines: number; indexed: number; truncated: boolean;
+  prefs: HealthPolicy;
+}
 // One checkout of a repo as `worktree_heads` reports it — path, the branch on its
 // HEAD, and whether the directory is still on disk. Read from files rather than from
 // `git worktree list`, so it is cheap enough to poll; see the Rust side for why.
@@ -122,12 +217,42 @@ export interface Fanout {
   /// `meta.phases[].title`, in order.
   phases: string[];
   since: number;
-  /// Cumulative, unlike `Sess.subagents` — which stays the *live* count and is the one
-  /// owner of that number. started − done is not it: an agent that never stopped would
+  /// Cumulative, unlike `Sess.agents` — which holds the agents still up and is the one
+  /// owner of that set. started − done is not it: an agent that never stopped would
   /// make the two disagree, and the display asks both questions separately.
   started: number; done: number;
   /// The last `SubagentStart`/`Stop`. What the grace window in `liveFanout` measures.
   lastAt: number;
+}
+// One agent a fan-out spawned: what `SubagentStart` announces and `SubagentStop` retires.
+//
+// Identity, not a counter — the same argument as pairing a tool call's Pre and Post by
+// `tool_use_id`. Both hooks carry `agent_id` and `agent_type`, so an agent can be retired
+// by name instead of by decrementing a number, and the difference shows up in exactly the
+// case a count gets wrong: a Stop that never arrives is then a *named* agent still
+// outstanding rather than an unexplained gap between two figures, which is what lets the
+// card say "2 left over — Explore, code-reviewer" instead of quietly inflating a total.
+//
+// A payload with no `agent_id` still has to work (an older CLI, a hook we mis-read), so
+// `startAgent` mints a synthetic id and `stopAgent` retires the oldest agent outstanding.
+// That keeps one mechanism rather than a counter beside a map: two owners of one number
+// is how the count drifted in the first place.
+export interface Agent {
+  /// `agent_type` — "Explore", "general-purpose", a workflow's `agentType`. Empty when
+  /// the payload carried none. The only thing that can *name* a leftover.
+  type: string;
+  /// When its `SubagentStart` landed.
+  since: number;
+  /// 0 while this agent belongs to the fan-out now running. Otherwise **when a newer
+  /// fan-out superseded the run that spawned it**, from which point it is believed on
+  /// its own short clock (`ORPHAN_DEAD_MS`) rather than the live run's hour.
+  ///
+  /// This field is the reported bug. Four agents an interrupt killed at 19:30 were
+  /// inherited by a fresh 34-agent run: `startFanout` restarts `started`/`done` but the
+  /// live count carried over whole, so the tally read **"34 / 36"** with the run long
+  /// finished — and could not expire, because every one of the new run's own events
+  /// re-stamped the `lastAt` those leftovers were being measured against.
+  orphanedAt: number;
 }
 // Disk I/O for one session's `claude` process: rates over the gap since the previous
 // sample, plus lifetime totals. `primed` is false on the first reading, when there is
@@ -163,27 +288,158 @@ export interface GitActionResult {
 // What `purge_worktree_folder` answers: did the folder go, and if not, who is left.
 export interface PurgeResult { gone: boolean; stranded: Stranded | null }
 // What a pane actually contains. All three run in an identical PTY; the kind is
-// what decides whether telemetry, cost and git actions apply to it.
-//   claude — an instrumented `claude` session (the only kind with telemetry)
+// the durable product concept, while an agent's provider and capabilities decide
+// which integrations apply to it.
+//   agent — any coding-agent CLI, from a fully integrated provider to a terminal-only
+//           fallback
 //   shell  — a plain login shell (❯ Terminal)
 //   task   — one run of a Runnable (▶ Run), whose exit code becomes done/error
 // Note `external` is orthogonal: it means "the terminal lives in Ghostty/iTerm
-// rather than an embedded pane", and only ever applies to a claude session.
-export type SessKind = "claude" | "shell" | "task";
+// rather than an embedded pane". Provider capabilities decide whether that is
+// available, rather than the session kind growing another provider-specific arm.
+export type SessKind = "agent" | "shell" | "task";
+// Features a provider adapter can supply to the shared session model. These are
+// intentionally user-facing capabilities, not transport names: Claude hooks, the
+// Codex App Server and a future OpenCode server can all produce `session-state`
+// without the UI knowing which protocol delivered it.
+export const AGENT_CAPABILITIES = [
+  "session-state", "activity", "context", "usage", "permissions", "resume",
+  "history", "external-terminal", "launch-permissions",
+] as const;
+export type AgentCapability = typeof AGENT_CAPABILITIES[number];
+
+type ProviderManifestEntry = { capabilities: string[] };
+const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
+const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
+
+/**
+ * The checked-in provider matrix is shared with Rust's CLI catalogue. Validate it
+ * here as it crosses into typed frontend state: a misspelled capability must fail at
+ * startup/tests rather than quietly turning a feature off in half of the app.
+ */
+export function providerCapabilities(id: string): AgentCapability[] {
+  const capabilities = PROVIDER_MANIFEST[id]?.capabilities ?? [];
+  for (const capability of capabilities) {
+    if (!AGENT_CAPABILITY_SET.has(capability)) {
+      throw new Error(`unknown capability ${capability} for provider ${id}`);
+    }
+  }
+  return [...capabilities] as AgentCapability[];
+}
+// One coding-agent CLI Episko knows about, as `list_agents` reports it — the whole
+// catalogue, installed or not. `path` is where it is, or **null** for "this machine
+// hasn't got it": those rows are shown, greyed and inert, rather than dropped, because
+// a missing row reads as "Episko doesn't support Codex" and sends somebody to the
+// issue tracker. `bin` is what was looked for, which is the only useful thing to say
+// about an agent that wasn't found. `mark` remains part of the backend catalogue wire
+// shape for compatibility; visible brand assets live at the frontend provider boundary.
+export interface AgentCli {
+  id: string; label: string; mark: string; bin: string; path: string | null;
+  capabilities: AgentCapability[];
+}
+// Provider-normalized token accounting for one live conversation. `total` is the
+// cumulative thread reading; `last` is the most recent model call and therefore the
+// best available context-window reading for providers such as Codex. Claude can leave
+// this null because its statusLine already fills the legacy context/cost fields.
+export interface AgentTokenBreakdown {
+  totalTokens: number; inputTokens: number; cachedInputTokens: number;
+  cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number;
+}
+export interface AgentTokenUsage {
+  total: AgentTokenBreakdown; last: AgentTokenBreakdown; contextWindow: number | null;
+}
+export interface AgentRateLimit {
+  usedPercent: number; resetsAt: number | null; windowMins: number | null;
+}
+// One provider-neutral approval request. Control-plane providers can raise several in
+// parallel (including from child agents), so Sess keeps a queue rather than treating
+// the latest request as the only one that exists. The legacy scalar fields remain the
+// projection the existing inspector/palette render; ./permissions keeps them synced to
+// the queue's head.
+export interface PendingPermission {
+  id: string; tool: string; command: string; risk: Risk;
+}
+// One provider-owned launch policy offered through the shared Sessions setting.
+// The id is deliberately just a string: it is meaningful only to that provider's
+// adapter and is whitelisted again at the backend launch boundary. `asks` answers the
+// narrower UI question of whether an approval card can still appear in this mode.
+export interface AgentPermissionMode {
+  id: string; label: string; sub: string; glyph: string; asks: boolean;
+}
+export function agentCapabilitySummary(a: AgentCli): string {
+  if (!a.capabilities.includes("session-state")) return "terminal only";
+  const features = [
+    a.capabilities.includes("usage") ? "usage" : "phase",
+    a.capabilities.includes("context") ? "context" : "",
+    a.capabilities.includes("permissions") ? "permissions" : "",
+  ].filter(Boolean);
+  return features.join(", ") || "integrated";
+}
+/// Can this one actually be launched? The single place the null-path convention is
+/// read, so no caller has to remember which way round it goes.
+export const agentInstalled = (a: AgentCli) => a.path !== null;
+// Claude Code as an entry in the same list, so the Settings picker and the launch path
+// can treat "which agent" as one question with one shape of answer.
+//
+// Not in the backend's AGENTS table on purpose (that table is what `spawn_agent` will
+// run, and claude must go through `spawn_claude` to be instrumented), so it is spelled
+// once here instead. `path` is empty because nothing probes for it: `resolve_claude`
+// is the app's own binary lookup and never reports "not installed" — if claude is
+// missing, Episko has bigger problems than a greyed-out row.
+export const CLAUDE_CAPABILITIES: AgentCapability[] = providerCapabilities("claude");
+export const CLAUDE_CLI: AgentCli = {
+  id: "claude", label: "Claude Code", mark: "Cc", bin: "claude", path: "",
+  capabilities: CLAUDE_CAPABILITIES,
+};
+/// Which agent a launch in `colorKey` actually starts — the project override if there
+/// is one, else the global default, else Claude.
+///
+/// The fallback is the whole reason this is a function and not a lookup. Both prefs
+/// are ids persisted in `localStorage`, and `avail` is re-probed at every startup, so
+/// either can name an agent that has since been uninstalled — at which point every
+/// launch in that project would fail on a binary that is no longer there, with the
+/// setting still cheerfully showing the name. Falling back means the worst case is "it
+/// started the wrong agent", not "⌘N stopped working".
+///
+/// A plain cascade rather than a strict one: an override naming a dead agent drops to
+/// the *default*, not straight to Claude. "My override broke, so I get my default" is
+/// what every settings system does, and Claude is the floor of that cascade rather
+/// than a special case inside it.
+export function pickAgent(colorKey: string, def: string, byProject: Record<string, string>, avail: AgentCli[]): AgentCli {
+  // `agentInstalled`, not just "is in the list": since `list_agents` began returning
+  // the whole catalogue, being *in* `avail` stopped meaning the binary is there. An id
+  // naming a listed-but-absent agent has to fall through exactly as an unknown one
+  // does, or the picker's greyed rows become launchable through the back door.
+  const known = (id: string | undefined) =>
+    id === CLAUDE_CLI.id ? CLAUDE_CLI : avail.find((a) => a.id === id && agentInstalled(a));
+  return known(byProject[colorKey]) ?? known(def) ?? CLAUDE_CLI;
+}
+
+/// Resolve the provider carried by a durable resume row. Unlike a preference, this is
+/// conversation identity: an unknown provider must not silently become Claude and
+/// consume or rewrite the wrong provider's restore row. An absent provider is the
+/// legacy Claude spelling; a known-but-uninstalled provider is returned so its normal
+/// launch error can explain what is missing while leaving the row intact.
+export function resumeAgent(provider: string | undefined, catalogue: AgentCli[]): AgentCli | undefined {
+  if (!provider || provider === CLAUDE_CLI.id) return CLAUDE_CLI;
+  return catalogue.find((agent) => agent.id === provider);
+}
 // Where a launched terminal lives. The instrumentation is identical for all four;
 // this only decides which window the PTY is attached to. The label/availability
 // table (ALL_ENGINES, available_terminals) stays in the UI layer that offers them.
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
-// How a new claude session treats tool calls at launch (`claude --permission-mode`).
-// Orthogonal to Engine: this decides what the session may do, not where its terminal
-// lives, and it applies to every engine. The spellings are Claude Code's own, because
-// they go on the command line verbatim (bar `default`, which means "pass no flag" —
-// see `permission_mode_arg` in pty.rs). Only the *starting* mode: Claude's own ⇧⇥
-// still switches mode inside a running session, and nothing here tracks that.
-export type PermMode = "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
-// Always ask through this rather than re-testing the string: whether telemetry,
-// cost and git actions apply to a pane is one decision, made in one place.
-export const isAgent = (s: Sess) => s.kind === "claude";
+export const isAgent = (s: Sess) => s.kind === "agent";
+export const isClaude = (s: Sess) => isAgent(s) && s.provider === "claude";
+// Capability checks are the shared UI boundary. `isClaude` remains for the few
+// launch/protocol decisions that really are provider-specific; phase, inspector,
+// roster and usage surfaces ask what the adapter supplies instead.
+export const hasAgentCapability = (s: Sess, capability: AgentCapability) =>
+  isAgent(s) && s.capabilities.includes(capability);
+export const hasSessionState = (s: Sess) => hasAgentCapability(s, "session-state");
+/// Stable identity wherever live provider sessions share one set. Thread ids are
+/// provider-owned, so a bare UUID is not a global key once more than one adapter exists.
+export const providerSessionKey = (provider: string | null | undefined, id: string) =>
+  `${(provider || "").toLowerCase()}:${id.toLowerCase()}`;
 // Whether the process behind a pane has exited. The pane still renders — an ended
 // row is information — but nothing behind it can change any more, so the pollers
 // skip it and the quit guard doesn't count it. Phase alone can't answer this for a
@@ -202,12 +458,20 @@ export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != nul
 //            the command the pane exists to accept.
 //   task   — while it runs. A run is a claim about a tree, and a build that starts on
 //            one branch and finishes on another has verified nothing.
-//   claude — only mid-turn: thinking, working, or holding a permission whose tool call
+//   integrated agent — only mid-turn: thinking, working, or holding a permission whose tool call
 //            fires the instant you allow it. Idle, done and error are all "the agent is
 //            waiting on you" — it is not touching the tree, and its next turn reads
 //            HEAD fresh rather than from the conversation.
+//   terminal-only agent — never, and this one is a judgement call rather than a fact.
+//            There is no control plane, so "is it mid-edit?" is genuinely
+//            unanswerable; the choice is between a switch that is occasionally unsafe
+//            and a checkout that can never be switched while a terminal-only agent pane is open,
+//            since nothing would ever report it idle again. A session lives for hours
+//            (unlike a task run, which is why that one blocks), so the permanent block
+//            is the worse of the two — and the user drove the agent here and knows
+//            whether it is working.
 export const midFlight = (s: Sess) =>
-  s.kind === "shell" ? false
+  s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) ? false
     : s.kind === "task" ? !isExited(s)
       : !!s.attention || s.phase === "working" || s.phase === "thinking";
 // ---------- background fan-outs ----------
@@ -224,9 +488,9 @@ export const midFlight = (s: Sess) =>
 /// boundary, which is worse than the bug this fixes. It is generous because the cost of
 /// being late is one stale minute, and the cost of being early is a lie.
 export const FANOUT_GRACE_MS = 90_000;
-/// The opposite bound: how long `subagents > 0` is believed with no event behind it.
+/// The opposite bound: how long an outstanding agent is believed with no event behind it.
 ///
-/// The live count is differenced from fire-and-forget hooks, and a `SubagentStop` can
+/// The live set is built from fire-and-forget hooks, and a `SubagentStop` can
 /// genuinely never come — an interrupted workflow's agents, a turn the API killed, a
 /// silently dropped POST (`curl -s` + async by design). Every miss skews the count up
 /// and nothing ever skews it down, so without a ceiling one lost Stop pinned the
@@ -237,17 +501,50 @@ export const FANOUT_GRACE_MS = 90_000;
 /// dims until its next event, because that event re-stamps `lastAt` and revives the
 /// readout. `applyHook` zeroes the count itself off this same answer.
 export const FANOUT_DEAD_MS = 3_600_000;
+/// How long an agent *inherited* from a superseded fan-out is still believed to be up.
+///
+/// Much shorter than `FANOUT_DEAD_MS`, and deliberately. That hour is safe for a live
+/// fleet because any real event re-stamps `lastAt` and revives the readout — an orphan
+/// has no such event, since the run that would have reported its Stop has already been
+/// replaced. So the hour that protects a fleet only protects a ghost here. Fifteen
+/// minutes still covers the real case (a second workflow launched over one still
+/// finishing) while keeping a killed agent from hiding a finished session from the
+/// reactor badge for the rest of the evening, which is the whole of the bug.
+export const ORPHAN_DEAD_MS = 900_000;
+/// The agents believed to be up right now: everything outstanding, minus the leftovers
+/// of a superseded run that have since gone quiet past their own window.
+///
+/// Every surface that used to read a `subagents` counter reads this instead, and it is a
+/// function rather than a field because the expiry is a *time*: a session sitting `done`
+/// with a stale fleet receives no hooks at all, so a repair that only ran on the next
+/// event would never run — which is precisely the state that stayed wrong.
+export function liveAgents(s: Sess, now = Date.now()): Agent[] {
+  const out: Agent[] = [];
+  for (const a of s.agents.values()) if (!a.orphanedAt || now - a.orphanedAt < ORPHAN_DEAD_MS) out.push(a);
+  return out;
+}
+export function liveCount(s: Sess, now = Date.now()): number {
+  let n = 0;  // counted in place, not `liveAgents(…).length`: this is on the paint path,
+  for (const a of s.agents.values()) {         // asked of every session on every pass.
+    if (!a.orphanedAt || now - a.orphanedAt < ORPHAN_DEAD_MS) n++;
+  }
+  return n;
+}
+/// The leftovers specifically — inherited, still inside their window. What the card
+/// names apart from the running fan-out's own agents, so "34 / 36" can say which two.
+export const orphanAgents = (s: Sess, now = Date.now()): Agent[] =>
+  liveAgents(s, now).filter((a) => a.orphanedAt);
 /// The session's fan-out if it is still in flight, else null.
 ///
-/// `subagents > 0` has to be sufficient on its own — a workflow agent can run eighteen
+/// A live agent has to be sufficient on its own — a workflow agent can run eighteen
 /// minutes without the parent seeing a single `Subagent*` event in between, so a rule
 /// that only trusted recent activity would drop the longest runs first. Sufficient,
 /// but not forever: past `FANOUT_DEAD_MS` of silence the count is what's suspect, and
 /// the fleet is written off however high it reads.
 export function liveFanout(s: Sess, now = Date.now()): Fanout | null {
-  if (!isAgent(s) || !s.fanout) return null;
+  if (!hasSessionState(s) || !s.fanout) return null;
   if (now - s.fanout.lastAt >= FANOUT_DEAD_MS) return null;
-  return s.subagents > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
+  return liveCount(s, now) > 0 || now - s.fanout.lastAt < FANOUT_GRACE_MS ? s.fanout : null;
 }
 /// Is the fan-out the whole story — i.e. the conversation itself has nothing in flight?
 ///
@@ -267,13 +564,13 @@ export function bgWaiting(s: Sess, now = Date.now()): boolean {
 export function fanoutTally(s: Sess, now = Date.now()): { done: number; total: number } | null {
   const f = liveFanout(s, now);
   if (!f) return null;
-  const total = Math.max(f.started, f.done + s.subagents);
+  const total = Math.max(f.started, f.done + liveCount(s, now));
   return total > 1 || bgWaiting(s, now) ? { done: Math.min(f.done, total), total } : null;
 }
 /// What a background fan-out is called in prose. The lull case says the run is alive
 /// without naming a count, because during a stage boundary there is no count to name.
-export function fanoutText(s: Sess): string {
-  const n = s.subagents;
+export function fanoutText(s: Sess, now = Date.now()): string {
+  const n = liveCount(s, now);
   if (n) return `${n} agent${n === 1 ? "" : "s"} working`;
   return s.fanout?.name ? "workflow running" : "background work";
 }
@@ -304,7 +601,7 @@ export const apiErrText = (e: ApiErr) => API_ERR_TEXT[e.kind] ?? (e.kind.replace
 // turn broke, "API overloaded" also tells you it wasn't your fault and to retry.
 export const phaseText = (s: Sess, now = Date.now()) =>
   s.phase === "error" && s.apiErr ? apiErrText(s.apiErr)
-    : bgWaiting(s, now) ? fanoutText(s)
+    : bgWaiting(s, now) ? fanoutText(s, now)
       : PILL_TEXT[s.phase];
 
 /// How long a run has taken: wall-clock while it is going, and **frozen at its exit**
@@ -368,13 +665,13 @@ export interface Runnable {
 
 export interface Sess {
   id: string; project: string; accent: string; workdir: string; colorKey: string;
-  // resumeId = the id `claude --resume` must target. It starts equal to `id` (we
-  // launch with --session-id id) but tracks Claude's *runtime* id, which rotates
-  // on /clear, /compact and /resume — each rotation opening a NEW transcript file.
-  // Restoring `id` after a compaction would resurrect the pre-compaction thread.
+  // The provider's durable conversation/thread id, as distinct from Episko's pane id.
+  // Claude rotates it on /clear, /compact and /resume; Codex supplies its thread id
+  // after App Server starts. Restoring always targets this provider-owned identity.
   resumeId: string;
   branch: string; worktree: string | null; title: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
+  pendingPermissions: PendingPermission[];
   /// When this pane entered the "needs you" set, and **0 when it is not in it** —
   /// maintained in exactly one place (`syncAttn` in ./grouping) rather than at each of
   /// the four events that can put it there. It is not `phaseSince`: a permission is
@@ -385,10 +682,12 @@ export interface Sess {
   /// against nothing else — to answer "have you looked at this since it started wanting
   /// you", which is what stops the reactor badge counting turns you have already read.
   seenAt: number;
-  /// Agents running in this session's name RIGHT NOW — `SubagentStart` minus
-  /// `SubagentStop`. The live count and nothing else; the cumulative tally, the run's
+  /// Agents running in this session's name RIGHT NOW, by `agent_id` — added by
+  /// `SubagentStart`, retired by `SubagentStop`. Read it through `liveAgents`/`liveCount`
+  /// rather than by `.size`: an agent a *newer* fan-out inherited is still in here while
+  /// it ages out, and only those two apply that window. The cumulative tally, the run's
   /// name and its phases live on `fanout` beside it.
-  subagents: number;
+  agents: Map<string, Agent>;
   /// The background fleet this session launched, from the first `SubagentStart` (or the
   /// `Workflow` call that named it) until the next turn clears it. Null for the great
   /// majority of sessions, which never fan out. See `Fanout` for why it exists.
@@ -397,6 +696,16 @@ export interface Sess {
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.
   apiErr: ApiErr | null;
+  /// What the revive watchdog has done about the failure above: how many continues it
+  /// has typed for this streak and when the next one is due. Null for the great majority
+  /// of sessions, which never fail — and always null while the feature is switched off,
+  /// which is what keeps every surface that reads it quiet on a default install.
+  ///
+  /// Cleared in exactly one place (`endTurn` in ./phase, on the success branch), NOT by
+  /// `newTurn`: a continue Episko typed *is* a new turn, so clearing it there would reset
+  /// the attempt counter on every retry and flatten the backoff ladder into a fixed-rate
+  /// hammer. See ./revive for the whole state machine.
+  revive: ReviveState | null;
   // Set when the agent's work has moved to a *different* checkout of this repo than the
   // one the session was launched in — by either route, see `Drift.via` above and
   // ./gitwatch for the two signals. Display-only either way: nothing here changes
@@ -406,6 +715,11 @@ export interface Sess {
   // inspector's button closes, not one Episko opened.
   drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
+  tokenUsage: AgentTokenUsage | null;
+  rateLimits: AgentRateLimit[];
+  // Opaque provider/account identity supplied by the integration boundary. Account-wide
+  // quota updates are shared only between sessions with the same non-null scope.
+  rateLimitScope: string | null;
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
@@ -414,6 +728,11 @@ export interface Sess {
   /// — nothing here is written to disk or read back, so a restart starts them empty.
   /// See ./files for the rules and the inspector's Context card for what draws them.
   files: FileTouch[]; tally: Record<string, number>;
+  /// Background shells this session started and has not stopped — the dev servers,
+  /// watchers and long-running processes an agent leaves behind. Fed from PostToolUse
+  /// like `files` above, and display-only in the same way: nothing here survives a
+  /// restart, because the process it describes is a child of the session's own tree.
+  servers: BgServer[];
   // `gl` is the pane's WebGL renderer addon while it holds a pooled context —
   // attached on activation, released when the pool evicts it or the pane exits (see
   // attachWebgl in ./terminal). Held here rather than inside terminal.ts because it
@@ -425,10 +744,21 @@ export interface Sess {
   // snapshot's seq is already inside it and is dropped on flush; see adoptSession
   // in ./panes for the whole protocol.
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
+  /// Stable provider slug for an agent pane (`AgentCli.id`), null for shells/tasks.
+  /// Capabilities are copied at launch so every session remains self-describing even
+  /// if the installed-provider catalogue is refreshed or the adapter disconnects.
+  provider: string | null;
+  capabilities: AgentCapability[];
   // task panes only
   run?: {
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
+    /// The localhost URL this run announced, if it is a server — `just dev`, a VS Code
+    /// task, an npm script. **Latched as the output streams, never rescanned from
+    /// `tail`**, which is a rolling 40 lines: a dev server's banner scrolls out of it
+    /// within seconds of the first HMR line, so a URL read off the tail would appear
+    /// and then silently vanish. See `taskServerUrl` in ./servers.
+    url?: string;
     /// When the process exited. Without it the elapsed readout is `Date.now() -
     /// startedAt` forever, so a run that took 400ms reads "1m 23s" a minute later —
     /// the duration has to be frozen at the exit, not recomputed on every repaint.
@@ -464,20 +794,20 @@ export interface ExtSession {
 }
 
 // ---------- restorable sessions ----------
-// Episko's launch uuid IS Claude's --session-id, so every session we launch already
-// has a transcript at ~/.claude/projects/<enc(workdir)>/<id>.jsonl. Restoring is
-// therefore not about capturing conversation state — Claude already has it — but
-// about remembering which sessions were on screen at quit, and with what identity.
+// Restore remembers which resumable provider sessions were on screen at quit. Claude
+// resumes its transcript; Codex resumes its App Server thread. The roster stores the
+// provider so a later preference change cannot reopen a conversation in the wrong CLI.
 /// One embedded PTY as the BACKEND holds it (`live_sessions`). Meaningful to the
 /// frontend only where its own map falls short — after a webview reload, when the
 /// map is empty and every one of these is an orphan (#47).
-export interface LiveSess { id: string; kind: string; workdir: string }
+export interface LiveSess { id: string; kind: string; provider: string | null; workdir: string }
 
 export interface Restorable {
   id: string;          // the original launch uuid (roster key, stable across restarts)
-  resumeId: string;    // what to hand `claude --resume`
+  resumeId: string;    // what to hand the provider's resume operation
+  provider: string;
   project: string; workdir: string; colorKey: string;
   worktree: string | null; branch: string;
-  title: string;       // last known label; refreshed from the transcript on load
+  title: string;       // last known label; refreshed from provider history when possible
   lastActivity: number;
 }

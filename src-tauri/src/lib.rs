@@ -7,9 +7,11 @@
 //   Code's hooks + statusLine POST live status/cost/context to a local HTTP
 //   server — no global config mutation, no transcript parsing.
 
+mod agent;
 mod external;
 mod files;
 mod git;
+mod health;
 mod github;
 mod icons;
 mod notes;
@@ -18,18 +20,18 @@ mod pty;
 mod summarize;
 mod tasks;
 mod telemetry;
-mod usage;
 #[cfg(test)]
 mod testutil;
+mod usage;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Mutex;
 
 use portable_pty::{ChildKiller, MasterPty};
-use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
 use tauri::menu::SubmenuBuilder;
+use tauri::menu::{IconMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -47,11 +49,14 @@ pub(crate) struct Session {
     /// Working directory this session runs in. Lets `remove_worktree` refuse to
     /// delete a worktree that still has a live embedded session inside it.
     workdir: String,
-    /// Which spawner made this pane: "claude" | "shell" | "task". The frontend's
-    /// `Sess.kind` is the authority in normal operation; this copy exists for the
-    /// one state where the frontend has no `Sess` — a reload orphan — so adoption
-    /// can rebuild claude panes and leave shells and tasks alone (#47 stage 2).
+    /// Durable pane kind: "agent" | "shell" | "task". Agent identity lives in
+    /// `provider`, so adding a provider never grows another kind discriminator.
+    /// This backend copy exists for reload-orphan adoption (#47 stage 2).
     kind: &'static str,
+    /// Stable coding-agent provider id ("claude", "codex", ...), or `None` for a
+    /// shell/task. Kept beside kind so an orphaned PTY remains self-describing while
+    /// the frontend session map is being rebuilt.
+    provider: Option<String>,
     /// The recent raw output of this PTY (see `pty::ScrollBuf`), shared with the
     /// reader thread. What lets a pane rebuilt after a webview reload start with
     /// its scrollback instead of blank.
@@ -68,6 +73,11 @@ pub(crate) struct Session {
 pub(crate) struct AppState {
     port: u16,
     sessions: Mutex<HashMap<String, Session>>,
+    /// Provider sidecars and control channels keyed by Episko's stable pane id.
+    /// A Codex pane owns one loopback app-server beside its PTY; terminal-only
+    /// providers have no entry. Kept outside `Session` because its lifecycle also
+    /// owns an observer thread and JSON-RPC control plane, not just a child killer.
+    agent_runtimes: Mutex<HashMap<String, agent::AgentRuntime>>,
     /// PIDs of the `claude` processes Episko spawned in an embedded PTY. Matched
     /// against the on-disk session registry so our own sessions never masquerade
     /// as "external" — robust to the session id changing under /resume or /clear
@@ -98,7 +108,6 @@ pub(crate) struct AppState {
     caffeinate: Mutex<Option<KeepAwake>>,
 }
 
-
 /// Persist a debug snapshot (JSON built by the frontend) to a fixed, discoverable
 /// path so an external tool — or an LLM agent debugging the running app — can read
 /// live state and the recent event log. Returns the path written.
@@ -127,8 +136,6 @@ fn log_frontend(level: String, msg: String) {
     }
 }
 
-
-
 // ---------- app quit ----------
 
 /// Actually terminate the app. The Cmd+Q accelerator is bound to our own menu
@@ -156,12 +163,19 @@ fn confirm_quit(app: AppHandle) {
 enum TrayRow {
     /// A clickable session. `id` is the session id the `sid` catch-all in the tray's
     /// menu handler turns back into a `tray-select`.
-    Session { id: String, label: String, shape: String, rgb: [u8; 3] },
+    Session {
+        id: String,
+        label: String,
+        shape: String,
+        rgb: [u8; 3],
+    },
     /// A project heading, rendered as a *disabled* item — the standard macOS idiom,
     /// and it keeps every session one click away where a submenu per project would
     /// cost a hover each. Disabled also means it fires no `MenuEvent`, which matters:
     /// the handler treats every id it doesn't recognise as a session to select.
-    Header { label: String },
+    Header {
+        label: String,
+    },
     Sep,
 }
 
@@ -194,12 +208,21 @@ fn update_tray(
                         .map_err(|e| e.to_string())?;
                     mb.item(&it)
                 }
-                TrayRow::Session { id, label, shape, rgb } => {
+                TrayRow::Session {
+                    id,
+                    label,
+                    shape,
+                    rgb,
+                } => {
                     // NOT a template image: muda hands the icon to AppKit untouched,
                     // and a template one would be re-tinted to the menu's text colour,
                     // which is the exact greyness this replaces. (The *tray* icon in
                     // `run()` is a template on purpose — it must adapt to the bar.)
-                    let icon = tauri::image::Image::new_owned(crate::icons::glyph_rgba(shape, *rgb), 32, 32);
+                    let icon = tauri::image::Image::new_owned(
+                        crate::icons::glyph_rgba(shape, *rgb),
+                        32,
+                        32,
+                    );
                     let it = IconMenuItemBuilder::with_id(id.clone(), label)
                         .icon(icon)
                         .build(&app)
@@ -309,14 +332,15 @@ pub fn run() {
             // (a git poll, a task launch) would otherwise pay for it inline.
             platform::warm_shell_path();
 
-            let server = tiny_http::Server::http("127.0.0.1:0")
-                .expect("bind telemetry server on 127.0.0.1");
+            let server =
+                tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server on 127.0.0.1");
             let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
             log::info!("telemetry server on 127.0.0.1:{port}");
 
             app.manage(AppState {
                 port,
                 sessions: Mutex::new(HashMap::new()),
+                agent_runtimes: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
                 io_samples: Mutex::new(HashMap::new()),
                 io_retired: Mutex::new((0, 0)),
@@ -384,8 +408,9 @@ pub fn run() {
                 .build()?;
             // Monochrome `>_` glyph, rendered as a macOS template image so it
             // adapts to the light/dark menu bar. Falls back to the app icon.
-            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
-                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
+                    .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(true)
@@ -517,12 +542,15 @@ pub fn run() {
             pty::kill_session,
             pty::live_sessions,
             pty::read_scrollback,
+            pty::read_bg_log,
+            external::session_ports,
             git::git_branch,
             git::git_head,
             git::git_diffstat,
             git::git_working_set,
             git::git_changed,
             files::project_files,
+            health::project_health,
             git::git_diff,
             git::git_graph,
             git::git_commit_message,
@@ -531,6 +559,9 @@ pub fn run() {
             git::create_worktree,
             platform::set_caffeinate,
             telemetry::resolve_permission,
+            agent::resolve_agent_request,
+            agent::refresh_agent_state,
+            agent::agent_history,
             git::list_worktrees,
             git::worktree_heads,
             git::remove_worktree,
@@ -558,6 +589,7 @@ pub fn run() {
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,
+            pty::spawn_agent,
             tasks::discover_runnables,
             tasks::rescan_runnables,
             tasks::save_episko_task,
@@ -567,6 +599,7 @@ pub fn run() {
             tasks::list_task_overrides,
             tasks::episko_tasks_file,
             pty::available_terminals,
+            pty::list_agents,
             pty::spawn_external_terminal,
             pty::open_terminal_here,
             external::list_external_sessions,

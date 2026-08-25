@@ -13,6 +13,214 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **The dev servers your agents leave running, in the header.** When an agent backgrounds a
+  shell — which is how `pnpm dev`, `uvicorn` and every watcher gets started — Episko now sees
+  it, reads the log that shell is writing, and shows a count beside the reactor. The pill goes
+  green once something has actually announced a URL. Open it and each row names the project and
+  the command, offers the URL as a button that opens your browser, jumps to the session that
+  started it, and expands to the last lines of its output. **Stop** asks that session's agent to
+  run `TaskStop` rather than killing the process behind its back, so the agent stops believing
+  it still has a server. A server that **crashes** — the port was already taken, which is the
+  commonest way this goes wrong — turns the pill red and keeps its row until you dismiss it,
+  rather than dropping the count back to zero and saying nothing. Nothing new is instrumented:
+  it all rides the `PostToolUse` hook Episko already receives, and an idle server's log costs
+  one length check rather than a read.
+
++ **A session the API kills overnight can now carry on by itself.** A 529, or a Wi-Fi
+  interface that power-saved itself at 03:40, ends the turn — and the session then sits at
+  its prompt until somebody types at it, which if it happened at midnight means eight
+  hours of nothing. Settings › Sessions › *Carry on after an API error* (off until you
+  switch it on) waits and sends a carry-on for you, on a backoff ladder you set: first
+  wait, multiplier, per-wait cap, how many tries before it gives up, and how much to
+  scatter each wait so a fleet killed by one outage doesn't come back in lockstep and
+  become the next one. The panel shows the ladder those five numbers produce and the
+  outage it rides out — about half an hour on the shipped defaults. It never types into a
+  session that is asking you something, never retries what waiting cannot fix (bad
+  credentials, billing, a malformed request), and while the machine has no network at all
+  it holds its attempts rather than spending them. The inspector's error card counts down
+  to the next try; the only noise it makes is the moment it gives up and hands the session
+  back to you.
+
++ **And it asks the kernel, not just the output.** Episko now walks every listening TCP port
+  back up the process tree to the pane it came from, so a server shows up whether or not
+  anything announced it — including one you started by hand in a shell pane, and one whose
+  banner Episko cannot parse. Where a port and a pane's own words agree, the words win (they
+  carry the scheme and any base path); where a pane started something and went quiet, the one
+  unexplained port under it fills in the address; anything left over gets a row of its own.
+  Debugger and kernel-assigned sockets are filtered out, so one `wrangler dev` is one row
+  rather than five.
+
++ **Tasks you ran yourself are in there too.** A `just dev`, a VS Code task or an npm script
+  launched from **▶ Run** joins the same list the moment it prints a URL, marked `▶` so you can
+  tell it apart — and because Episko owns that terminal, its **Stop** really does stop it. A
+  task only appears once it is serving: it already has a pane and a sidebar row, and the one
+  thing those cannot give you is an address to click.
+
++ **The diff tells you what the change did to the code, not just what it says.** Every
+  changed file now carries a row of findings above its first hunk, and the index marks the
+  files that earned them, so you can see which one to open first. Click a finding to go to
+  the line that earned it.
+
+  Seven rules, and the one that matters most is **duplication**: six or more lines you just
+  added that already exist somewhere else in the project, named with the file and line they
+  are a copy of. It is the thing linters are not configured to look for and the thing that
+  most reliably goes wrong in generated code. Beside it: **silenced errors** (a new bare
+  `except:`, an empty `catch`, `as any`, `@ts-ignore`), the **complexity** and **nesting**
+  of the functions your change actually went into, a **long function**, a file that is now
+  **among the largest in this project** — measured against the project's own distribution
+  rather than a number somebody picked — and, once beside the totals, whether **no test
+  changed**.
+
+  Nothing here blocks anything, and nothing is a score. A file the measurement could not
+  read says nothing rather than showing zeroes, and comments and blank lines are stripped
+  before anything is counted, so a well-documented file is not mistaken for a big one.
+
++ **Thresholds are yours.** A `[health]` block in `.episko/episko.toml` sets `cognitive`,
+  `nesting`, `long_fn` and `size_add` for a project; anything you leave out keeps its
+  default. Committable, so a team's thresholds travel with the repo.
+
++ **A finding stays put, and you can hand it to an agent.** Clicking a chip used to flash
+  its line for a second and fade out, which told you the click registered and nothing else.
+  Now it *selects*: every line the finding covers lights up and stays lit while you read
+  around it, the chip stays lit with it, and a finding in several places walks to the next
+  one each time you click it. The chips ride along with the file header as you scroll, so
+  the control is still there when you arrive.
+
+  And **copy findings** puts the whole list on the clipboard as text written to be pasted
+  into a session — every finding names its file and its line, so the agent that made the
+  change can go and fix it.
+
++ **Only the words that actually changed are highlighted.** A `-`/`+` pair is now matched up
+  and the difference marked inside the line, so a one-argument change reads as a one-argument
+  change instead of two whole red and green lines. A line that was rewritten rather than
+  edited is left plain, deliberately: marking nine fragments of it says less than the row's
+  colour already did.
+
++ **Side by side.** A **side by side** button in the diff's header puts the old and new
+  versions in two columns; the choice is remembered. Pairing is by similarity rather than by
+  position, which is what keeps a changed line opposite its real counterpart when an agent
+  added a few comment lines above it.
+
++ **Episko runs the other agents too, and which one is a setting.** Settings › Sessions
+  gains *Agent*, sitting above *Launch engine* and *Permission mode* because it is the
+  outermost of the three: what a session runs, then where its terminal opens, then how
+  it starts. Claude Code is now the default **value** rather than a hardcoded choice, and
+  the alternatives are the coding-agent CLIs actually installed on your machine — Codex,
+  OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity,
+  Devin, Cline, Pi and the rest, twenty-one in all. Only agents found on your PATH are
+  offered, so the picker never promises a binary you haven't got.
+
+  The agents you *haven't* installed are listed too, folded below the ones you have and
+  greyed, each saying which binary Episko searched your PATH for. A row that simply
+  wasn't there read as "Episko doesn't support Codex" — which is a support ticket, not
+  an answer.
+
+  Any project can override the choice from its own right-click menu (*Agent · Codex*),
+  keyed to the repo so every worktree of it agrees. `⌘N`, the new-session dialog and a worktree
+  launch all obey. Uninstall an agent and anything pinned to it quietly falls back
+  rather than failing to start.
+
+  What an agent pane deliberately does *not* have is a phase, a cost or a context gauge.
+  Those come from hooks Episko writes into Claude Code's own settings, and no other agent
+  reads them — so instead of a grid of dashes, the row says `»`, the inspector says which
+  agent and where, and every launch surface names the agent before you commit to it.
+  Two things ignore the setting on purpose: resuming a conversation (that is Claude's own
+  transcript), and dispatching at a GitHub issue (the claim is handed back on a hook only
+  Claude fires, so an uninstrumented agent would hold the issue forever).
+
+~ **Claude Code now gets a longer retry leash inside Episko.** Launches set
+  `CLAUDE_CODE_MAX_RETRIES=12` unless your own environment already sets it, which widens
+  the outage its own backoff rides out before the turn ends at all. A request that
+  eventually succeeds never needs the watchdog above.
+
+~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
+  you the files back to back with nothing between them, so scrolling into the middle of one
+  left nothing on screen saying which file you were in. There is now an **index down the
+  left** — one row a file, grouped by folder, marking whichever file you are currently
+  reading — and every **file header sticks** to the top while its file is under the pointer.
+  Click a row in the index to go straight there.
+
+! **A Codex turn you stopped yourself is no longer treated as an outage.** Pressing Esc
+  in a Codex session reported the turn as *failed* rather than as stopped, which put the
+  red error card on the pane — and, with *Carry on after an API error* switched on, had
+  Episko type the prompt back in and press Enter about thirty seconds later, restarting
+  the work you had just cancelled. Only a real failure is a failure now; an unfamiliar
+  status still reports as one, because losing an error is worse than over-reporting it.
+
+! **A damaged preference no longer costs you the window.** Four keys — the per-project
+  agent, project colours, favourites and the sidebar order — were parsed at startup with
+  no guard, so a value truncated by a crash mid-write (or edited by hand) threw before
+  any of the app existed: a blank window, and no way in to clear the key that caused it.
+  Each one is now read for the shape it is meant to be, and anything else is discarded on
+  its own rather than taking the session with it.
+
+! **Code health measures what it says it measures.** Four faults, each of which failed by
+  going quiet rather than by being wrong out loud. Indentation was read in the file's own
+  step, but a tie between two step sizes resolved to the largest instead of the smallest,
+  so depth came out too small and the nesting chip simply never fired. A Rust lifetime
+  (`&'a str`) was read as an opening quote, which blanked the rest of its line — taking the
+  brace with it, and skewing every span and depth measured after it in that file. CSS,
+  SCSS, Bash and Kotlin-script files were measured by the backend and then never chipped,
+  because the two halves of the source-extension list had drifted apart. A single
+  silenced error described itself as "This change addsline 42". A `#` comment in a Python
+  or shell file was read as code, so prose like `# never use a bare except:` earned a red
+  chip. And **Copy findings** rebuilt its set-level chips without the report, dropping the
+  *partial sweep* caveat from the text it hands to a session — the one line that says the
+  measurement is incomplete.
+
+! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
+  updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
+  Episko launched — so the kernel charged those bytes to a `claude` process and the
+  inspector's disk figure showed a day's work having written thirty times what it really
+  did, in the first minute, on the first launch after a few days away. The update's own
+  size now comes back out of the figure and out of the rate beside it. Only bytes a new
+  binary on disk accounts for are ever discounted, so an agent writing hard still shows up
+  as an agent writing hard.
+
+! **Keep-awake now survives the PC sleeping.** On Windows the assertion was set once and
+  never re-stated, but Windows drops a thread's execution state across suspend/resume — so
+  the first sleep ended it permanently, and because the button only re-asks the backend when
+  its *flags* change (in *Until agents idle*, one session left at `done` holds them steady
+  for days), nothing ever restored it. The cup went on steaming over a machine that idle-slept
+  every half hour. The thread that owns the assertion now re-states it every 30s.
+
+! **A reload no longer strands the assertion.** Reloading the webview while caffeinated
+  restarted the button with no memory of it, leaving the backend holding the machine awake
+  with the cup painted off — and nothing short of quitting could stop it. Startup now clears
+  it explicitly.
+
+! **A finished session no longer hides behind a previous run's agents.** Launching a second
+  fan-out restarts the run's counters but inherited whatever the last one left running, so
+  agents an interrupt had killed rode the new run's tally — a pane read **34 / 36 with all
+  34 of that run finished**, and went on reading it, because every one of the new run's own
+  events refreshed the hour those leftovers were being measured against. The number was the
+  cheap half: a session that had been waiting on a human since 19:57 was reported as busy,
+  so it never reached the reactor badge, the tray title or the palette's *Needs you*. Agents
+  are now tracked by the `agent_id` the hooks carry rather than counted, so an inherited one
+  ages out on its own clock, its completion is credited to the run that actually spawned it,
+  and the fleet card, the row tooltip and the debug snapshot each say how many agents belong
+  to an earlier run and what kind they were.
+
+! **The findings say what they mean.** Pointing the rules at real code rather than at test
+  fixtures turned up five things they got wrong, all now fixed: a Rust function was named
+  after its visibility keyword rather than itself (`pub`, for the whole backend); a
+  changelog entry *describing* a swallowed error was flagged as one, along with the pattern
+  list itself; the complexity and length findings could point at a line the diff does not
+  show, so clicking them did nothing visible; on a test file the longest "function" was
+  always the `describe` wrapping it; and nesting was counted differently in braced and
+  indented languages — 2-space Python and YAML reported half their real depth and so never
+  tripped it at all. Depth is now "levels inside this function" in both, and file size is
+  compared against the project's *code* rather than against its documentation. Three more
+  since: documentation quoting the code it documents was reported as a duplicate of it, a
+  copy whose function was renamed slipped past the duplicate rule, and a diff too large to
+  read in full left the findings quietly covering fewer files than the change did.
+
+! **‹ Back in a project menu's drill-down goes back instead of shutting the menu.**
+  Found while adding the agent picker beside it: `#ctxMenu` carries three click
+  listeners, and stopping propagation never stopped its *siblings* — so the listener
+  after the one that handled ‹ Back saw the same click, found the menu reopened, and
+  closed it again. *Move to group → ‹ Back* had done this since the drill-down shipped.
+
 ## 0.21.0 — 2026-08-21
 
 A first run that explains itself, ⌘P to find any file in a project, and a tool call you

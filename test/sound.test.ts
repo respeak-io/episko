@@ -20,7 +20,7 @@ function allOn(over: Partial<SoundPrefs> = {}): SoundPrefs {
 }
 
 const snap = (over: Partial<SoundSnap> = {}): SoundSnap =>
-  ({ phase: "working", attention: null, apiErrAt: null, ...over });
+  ({ phase: "working", attention: null, apiErrAt: null, reviving: false, ...over });
 
 describe("the catalogue", () => {
   it("gives every event a tone that exists and a real priority", () => {
@@ -239,6 +239,17 @@ describe("hookSound", () => {
     const before = snap({ phase: "error", apiErrAt: T });
     expect(hookSound(before, snap({ phase: "error", apiErrAt: T + 60_000 }))).toBe("error");
   });
+  it("stays quiet for a failure the revive watchdog is already handling", () => {
+    // An outage Episko rides out and resumes from is a log line, not five alarms through
+    // the bedroom wall at 04:00 — and somebody woken by those switches the sounds off
+    // and loses the permission alert too. The FIRST failure still rings (`revive` is null
+    // until the watchdog schedules against it, a tick later), and ./actions plays "error"
+    // by hand at the moment it gives up. This silences only the retries in between.
+    const before = snap({ phase: "error", apiErrAt: T, reviving: true });
+    expect(hookSound(before, snap({ phase: "error", apiErrAt: T + 60_000, reviving: true }))).toBeNull();
+    // The first one, before any schedule exists, is unaffected.
+    expect(hookSound(snap({ phase: "working" }), snap({ phase: "error", apiErrAt: T }))).toBe("error");
+  });
 
   it("stays quiet when a retry clears the failure", () => {
     const before = snap({ phase: "error", apiErrAt: T });
@@ -256,12 +267,12 @@ describe("hookSound", () => {
 });
 
 describe("soundSnap", () => {
-  it("reads the three fields the decision needs off a live session", () => {
+  it("reads the four fields the decision needs off a live session", () => {
     const s = {
       phase: "error", attention: "permission: Bash",
       apiErr: { kind: "overloaded", detail: "", at: T },
     } as unknown as Sess;
-    expect(soundSnap(s)).toEqual({ phase: "error", attention: "permission: Bash", apiErrAt: T });
+    expect(soundSnap(s)).toEqual({ phase: "error", attention: "permission: Bash", apiErrAt: T, reviving: false });
     expect(soundSnap({ phase: "idle", attention: null, apiErr: null } as unknown as Sess).apiErrAt).toBeNull();
   });
 });
@@ -274,9 +285,11 @@ describe("exitSound", () => {
   });
 
   it("treats anything else as merely having stopped, whatever the code", () => {
-    expect(exitSound("claude", 0)).toBe("ended");
-    expect(exitSound("claude", 1)).toBe("ended");
     expect(exitSound("shell", 0)).toBe("ended");
+    // An agent pane has no verdict to report — only a task's exit code is one, and
+    // reading a codex exit as taskFail would ring the failure chime on every quit.
+    expect(exitSound("agent", 0)).toBe("ended");
+    expect(exitSound("agent", 130)).toBe("ended");
   });
 });
 

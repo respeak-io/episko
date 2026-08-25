@@ -18,7 +18,7 @@
 // names nothing.
 
 import { invoke } from "@tauri-apps/api/core";
-import { phaseText, statusKey, type Sess } from "./types";
+import { hasSessionState, isAgent, phaseText, statusKey, type Sess } from "./types";
 import { needsYouSessions, projectList, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
 import { dlog } from "./debug";
@@ -68,11 +68,14 @@ function classRgb(cls: string): [number, number, number] {
 
 // A shell pane is not a phase, so it gets its own glyph here exactly as it does in
 // the sidebar (`sidebarview.ts` line 62) — the tray used to spell every kind of pane
-// with the phase vocabulary, which drew a live shell as an idle agent.
+// with the phase vocabulary, which drew a live shell as an idle agent. An agent pane
+// is the same argument again: `»` mirrors the sidebar's, and the two tables have to
+// be changed together or the tray silently disagrees with the rail beside it.
 function rowIcon(s: Sess): { shape: string; cls: string } {
   const k = statusKey(s);
-  if (s.kind === "shell") {
-    return s.phase === "ended" ? { shape: SHAPE.ended, cls: GCLASS.ended } : { shape: "chevron", cls: "g-idle" };
+  const bare = s.kind === "shell" ? "chevron" : isAgent(s) && !hasSessionState(s) ? "dchevron" : "";
+  if (bare) {
+    return s.phase === "ended" ? { shape: SHAPE.ended, cls: GCLASS.ended } : { shape: bare, cls: "g-idle" };
   }
   return { shape: SHAPE[k] ?? "disc", cls: GCLASS[k] ?? "g-idle" };
 }

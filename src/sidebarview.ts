@@ -13,7 +13,8 @@
 
 import { basename, esc, relTime, tilde } from "./format";
 import {
-  apiErrText, fanoutTally, statusKey, taskStateText, type ExtSession, type Restorable, type Sess,
+  apiErrText, fanoutTally, hasSessionState, isAgent, liveCount, orphanAgents, statusKey,
+  taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
   accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId,
@@ -122,17 +123,23 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
     ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
     : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
   // shells have no telemetry phase — show a terminal prompt glyph (a dot once exited).
+  // A terminal-only agent has none either, so it takes a doubled chevron:
+  // same family (a terminal with no phase behind it), visibly not the same thing.
   // tasks keep the status glyphs: an exit code *is* a done/error phase, so a red
   // build reads exactly like a broken session in the rail.
-  const glyph = s.kind === "shell" ? (s.phase === "ended" ? GLYPH.ended : "❯") : GLYPH[k];
-  const gcls = s.kind === "shell" ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
+  const bare = s.kind === "shell" ? "❯" : isAgent(s) && !hasSessionState(s) ? "»" : "";
+  const glyph = bare ? (s.phase === "ended" ? GLYPH.ended : bare) : GLYPH[k];
+  const gcls = bare ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
   const chipHtml = chip ? clusterChip(chip) : "";
   // A red ✕ says the turn broke; the row's tooltip says why, because "API overloaded"
   // and "auth failed" are the same glyph and completely different problems.
   const fan = fanoutTally(s);
+  // Named on the row too, not just in the card: the tooltip is where you check a tally
+  // that looks wrong, so it has to be able to say which agents aren't this run's.
+  const carried = fan ? orphanAgents(s).length : 0;
   const tip = s.phase === "error" && s.apiErr
     ? `${label} · ${apiErrText(s.apiErr)}`
-    : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${s.subagents} running`
+    : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${liveCount(s)} running${carried ? ` (${carried} from an earlier run)` : ""}`
       : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
   // The row stays under the checkout the session was *launched* in — that is its
   // identity, and where `--resume` goes. This is what says the agent's writes have
@@ -315,7 +322,7 @@ function dormantRow(d: Restorable): string {
   const label = d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
   const when = relTime(d.lastActivity);
   const tip = busy
-    ? "This session is running somewhere else right now, so resuming it would interleave both transcripts"
+    ? "This provider session is already running, so it cannot be resumed twice"
     : `Restore this session · last active ${when}`;
   return `<div class="srow pastrow${busy ? " busy" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
     <span class="sglyph g-ended">·</span>
@@ -332,4 +339,3 @@ function extRow(e: ExtSession, chip?: WtCluster): string {
     <span class="ext-tag" title="Running outside Episko · Claude v${esc(e.version)} · pid ${e.pid}">ext</span>
     <span class="sjump" data-jump="${e.pid}" title="Jump to its terminal ↗">↗</span></div>`;
 }
-

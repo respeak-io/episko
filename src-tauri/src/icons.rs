@@ -203,6 +203,19 @@ fn shape_sdf(shape: &str, x: f32, y: f32) -> f32 {
         "cross" => seg_dist(x, y, -6.5, -6.5, 6.5, 6.5).min(seg_dist(x, y, -6.5, 6.5, 6.5, -6.5)) - 1.5,
         // `❯` a live shell pane — not a phase, which is why it isn't a dot at all.
         "chevron" => seg_dist(x, y, -5.5, -7.5, 4.0, 0.0).min(seg_dist(x, y, 4.0, 0.0, -5.5, 7.5)) - 1.6,
+        // `»` a live pane running somebody else's agent. The same stroke as the shell's
+        // chevron, doubled: it belongs to that family (a terminal with no phase behind
+        // it) rather than to the dots, and the pair reads apart from the single at 16
+        // logical pixels where a hollow-vs-filled distinction would not. Deliberately
+        // *not* a diamond variant — `◆` is the one glyph in this menu that means drop
+        // what you are doing, and a near-miss of it on an idle pane is the one
+        // confusion worth designing out.
+        "dchevron" => {
+            let v = |ax: f32| {
+                seg_dist(x, y, ax - 4.0, -6.0, ax, 0.0).min(seg_dist(x, y, ax, 0.0, ax - 4.0, 6.0))
+            };
+            v(-1.0).min(v(5.0)) - 1.3
+        }
         // `·` ended. Small rather than grey-and-full-size, so it stays quiet even
         // when the theme puts a light ground under it.
         "small" => len - 4.5,
@@ -274,7 +287,7 @@ mod tests {
     #[test]
     fn each_shape_draws_something_different() {
         let alpha = |s: &str| glyph_rgba(s, [255, 255, 255]).chunks(4).map(|p| p[3] as u32).sum::<u32>();
-        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small", "half"];
+        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small", "half", "dchevron"];
         let mut seen: Vec<u32> = names.iter().map(|s| alpha(s)).collect();
         let before = seen.len();
         seen.sort_unstable();
@@ -291,6 +304,14 @@ mod tests {
         let half = glyph_rgba("half", [255, 255, 255]);
         assert_eq!(half[(16 * 32 + 11) * 4 + 3], 255, "the left half of ◐ is filled");
         assert_eq!(half[(16 * 32 + 21) * 4 + 3], 0, "the right half of ◐ is not");
+        // `»` is two strokes with a gap, and the gap is the whole difference from `❯`.
+        // Composed from one closure called twice, so an offset typo collapses it into a
+        // single fat chevron that means "shell" — a wrong answer the alpha-sum check
+        // above would happily accept.
+        let dch = glyph_rgba("dchevron", [255, 255, 255]);
+        let row = |col: usize| dch[(16 * 32 + col) * 4 + 3];
+        assert!(row(14) > 0 && row(20) > 0, "» draws both chevrons");
+        assert_eq!(row(17), 0, "» keeps a gap between them");
     }
 
     /// A status the frontend gains before this list does must still draw *a* glyph.
@@ -322,4 +343,3 @@ mod tests {
     }
 
 }
-

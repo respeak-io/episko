@@ -13,10 +13,13 @@
 // so a renderSettings() rebuild never drops it mid-hover.
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
-import { basename, esc, tilde } from "./format";
-import type { Engine, PermMode } from "./types";
+import { basename, esc, escAttr, tilde } from "./format";
+import { agentCapabilitySummary, type Engine } from "./types";
+import { agentLogo } from "./providers/logos";
 import {
-  ALL_PERM_MODES, attnPrefs, availEngines, engineDef, footPrefs, keyPrefs, peekPrefs, permMode,
+  allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
+  keyPrefs, missingAgents,
+  peekPrefs, permissionModeFor, revivePrefs,
   setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -25,6 +28,12 @@ import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
 } from "./attn";
+import {
+  isDefaultRevivePrefs, REVIVE_ATTEMPTS_RANGE, REVIVE_BASE_RANGE, REVIVE_DEFAULTS,
+  REVIVE_FACTOR_RANGE, REVIVE_FACTOR_STEP, REVIVE_JITTER_RANGE, REVIVE_JITTER_STEP,
+  REVIVE_KINDS, REVIVE_MAX_RANGE, reviveBaseStep, reviveGap, reviveMaxStep, revivePlan,
+  reviveWindowMs, type ReviveKind, type RevivePrefs,
+} from "./revive";
 import { LIT_COLOR } from "./sidebarview";
 import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
 import {
@@ -51,6 +60,7 @@ import { costPopHtml, ioPopHtml, usagePanelHtml, usageRow } from "./usageview";
 import { enginePopHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
 import { setUsageRange } from "./usage";
+import { providerAdapter, providerPermissionMode } from "./providers";
 
 // What this dialog changes but does not own. Every entry is somebody else's
 // setter; main.ts hands them over at startup and until then they do nothing.
@@ -71,7 +81,8 @@ export interface SettingsHost {
   setWtGroup: (m: WtGroup) => void;
   // Same reason as setWtGroup: the app-level one (./actions), which persists and
   // announces — state.ts's same-named setter only assigns.
-  setPermMode: (m: PermMode) => void;
+  setPermMode: (provider: string, mode: string) => void;
+  setDefaultAgent: (id: string) => void;
   // Ditto. ./actions clamps through ./peek, persists and repaints the sidebar.
   setPeekPrefs: (p: PeekPrefs) => void;
   // Ditto again — ./actions clamps through ./sound, persists and repaints this window.
@@ -85,13 +96,51 @@ export interface SettingsHost {
   // And for the status bar's segments — ./actions flips one through ./footprefs,
   // persists the hidden list, and repaints the bar.
   setFootSeg: (id: FootSeg) => void;
+  // And for the revive watchdog — ./actions clamps through ./revive, persists, and
+  // repaints (the inspector's error card carries the countdown, so `renderAll`).
+  setRevivePrefs: (p: RevivePrefs) => void;
 }
+/// The Agent control's hint. Computed rather than fixed because the sentence that
+/// matters depends on the machine: with nothing else installed, "what a new session
+/// runs" is a row with one option and the useful half is that twenty-one others exist
+/// and where to look for them. Without this, the only place that fact is written is a
+/// picker you have no reason to open.
+function agentHint(): string {
+  const missing = missingAgents().length;
+  return "What a new session runs — ⌘N, the new-session dialog and a worktree launch all "
+    + "follow this. Each row lists the integrations its provider exposes; providers without "
+    + "a control-plane adapter still get a real terminal, worktree and project tools. "
+    + "Per-project overrides live on a project's own menu"
+    + (missing
+      ? `, which also lists the ${missing} agents Episko supports that aren't on your PATH, and the binary it looked for.`
+      : ".");
+}
+
+function permissionControl(): SetControl {
+  const agent = defaultAgentDef();
+  const provider = providerAdapter(agent.id);
+  const modes = provider?.permissionModes ?? [];
+  if (!agent.capabilities.includes("launch-permissions") || !modes.length) {
+    return {
+      kind: "note", label: `Permission mode · ${agent.label}`,
+      hint: `${agent.label} does not expose an integrated launch-policy picker. Configure its permissions in the agent's own terminal or config.`,
+    };
+  }
+  const active = providerPermissionMode(agent.id, permissionModeFor(agent.id)) ?? modes[0];
+  return {
+    kind: "seg", set: `permmode:${agent.id}`, label: `Permission mode · ${provider?.label ?? agent.label}`,
+    hint: "The policy a new session starts with. It is stored separately for each integrated agent; changing agents above restores that agent's last choice.",
+    active: () => active.id,
+    segs: () => modes.map((mode) => ({ value: mode.id, label: mode.label, sub: mode.sub, glyph: mode.glyph })),
+  };
+}
+
 let host: SettingsHost = {
   startTour: () => {},
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
-  setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {},
+  setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setRevivePrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -99,11 +148,14 @@ export function setSettingsHost(h: SettingsHost) { host = h; }
 // pattern as #wtDlg / #palette). Every control is a small declarative descriptor
 // that writes its cc-* key through the SAME setter the rest of the app uses, so a
 // change here is instantly live and persisted — there is no separate settings store.
-type SetSeg = { value: string; label: string; sub?: string; glyph?: string };
+type SetSeg = { value: string; label: string; sub?: string; glyph?: string; logo?: string };
 // A control is a segmented picker (radio-style), the font stepper, or the worktree-
 // grouping preview grid (segmented pick shown as live mini-sidebars instead of text).
 type SetControl =
-  | { kind: "seg"; set: string; label: string; hint?: string; active: () => string; segs: () => SetSeg[] }
+  // `dim` greys a control that still has a stored value but currently decides nothing
+  // (today, an external launch engine under a provider that must stay embedded).
+  // Deliberately not `disabled`: switching back restores the choice.
+  | { kind: "seg"; set: string; label: string; hint?: string; dim?: () => boolean; active: () => string; segs: () => SetSeg[] }
   | { kind: "font"; label: string; hint?: string }
   | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
   // The sidebar's peek: one switch, two millisecond steppers, and a mini-sidebar you
@@ -121,6 +173,11 @@ type SetControl =
   // One control for the same reason `peek` is one — they are one decision, and the
   // preview row is only honest sitting directly under the stepper that sets it.
   | { kind: "attn"; label: string; hint?: string }
+  // The revive watchdog: the master switch, five knobs and the ladder they produce.
+  // One control for the same reason `peek` and `attn` are one — the numbers mean
+  // nothing individually, and the only question anybody actually has ("does this get
+  // me through the night?") is answered by the preview underneath all five of them.
+  | { kind: "revive"; label: string; hint?: string }
   // A single on/off switch, optionally over a preview of what it governs.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean; preview?: () => string }
   // Prose with no control under it — a rule that governs the group below it and would
@@ -293,18 +350,31 @@ const SET_TABS: SetTab[] = [
   {
     id: "sessions", label: "Sessions", glyph: "▤",
     controls: () => [
-      { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
+      // First, because it is the outermost of the three: what runs, then where its
+      // terminal opens, then how it starts. A machine with no other agent installed
+      // still sees the row — it says what Episko runs, which is worth knowing even
+      // when there is only one answer.
+      { kind: "seg", set: "agent", label: "Agent",
+        hint: agentHint(),
+        // Paint what a launch resolves, not a stale persisted id for an agent that is
+        // no longer installed. The available rows and selected row now agree.
+        active: () => defaultAgentDef().id,
+        segs: () => allAgents().map((a) => ({
+          value: a.id, label: a.label, logo: agentLogo(a.id),
+          sub: agentCapabilitySummary(a),
+        })) },
+      { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens. Providers without external-terminal support stay embedded.",
+        dim: () => !defaultAgentDef().capabilities.includes("external-terminal"),
         active: () => termEngine,
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
-      { kind: "seg", set: "permmode", label: "Permission mode",
-        hint: "The mode a new session starts in. ⇧⇥ inside a session still switches mode from there; this only decides where it begins. The last three stop Claude asking at all, which also means no permission cards here.",
-        active: () => permMode,
-        segs: () => ALL_PERM_MODES.map((m) => ({ value: m.id, label: m.label, sub: m.sub, glyph: m.glyph })) },
+      permissionControl(),
       { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
         active: () => sortMode,
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
       { kind: "attn", label: "When a session wants you",
         hint: "A turn finishing, a turn the API killed, a permission, a failed run. The row lights up in the rail for a few seconds, and the ⌂ badge in the header queues them all up. Hover the preview to see the light." },
+      { kind: "revive", label: "Carry on after an API error",
+        hint: "A 529 or a dropped Wi-Fi ends the turn, and the session then waits at its prompt — for eight hours, if it happened at midnight. Switched on, Episko waits and types a carry-on for you. It never types into a session that is asking you something, and it never retries a failure that can't be fixed by waiting (bad credentials, billing, a malformed request)." },
     ],
   },
   {
@@ -620,7 +690,7 @@ function renderAttnControl(): string {
     <div class="peeksub set-inline">
       <div class="set-itxt">
         <div class="set-glabel">Clear it when you open the session</div>
-        <div class="set-hint">Going to a session takes it out of the badge, the tray and the palette's “Needs you”. A blocking permission stays until you actually answer it — looking at one doesn't unblock Claude. Off means the badge only empties when the sessions in it move on by themselves.</div>
+        <div class="set-hint">Going to a session takes it out of the badge, the tray and the palette's “Needs you”. A blocking permission stays until you actually answer it — looking at one doesn't unblock the agent. Off means the badge only empties when the sessions in it move on by themselves.</div>
       </div>
       <button class="sw${p.clearOnOpen ? " on" : ""}" data-setattn="clear" role="switch" aria-checked="${p.clearOnOpen}"></button>
     </div>
@@ -629,6 +699,93 @@ function renderAttnControl(): string {
       : "The highlight is off, so a finished session is announced by its glyph and the badge alone. The queue order and the clearing rule above still apply.")}</div>
   </div>`;
 }
+// ---------- the revive watchdog ----------
+// Five numbers that nobody can evaluate individually, and one sentence that says what
+// they add up to. The ladder preview below them is the whole design of this panel: the
+// question a person actually has is "will this get me to breakfast", and "factor 2,
+// cap 15m, 6 attempts" does not answer it in any head. `reviveWindowMs` does.
+
+/// One stepper row. `cmd` is the data-setrevive verb; the two buttons carry ±.
+function rvStepper(label: string, cmd: string, shown: string, atMin: boolean, atMax: boolean): string {
+  return `<div class="set-font peekstep">
+    <span class="peekstep-l">${esc(label)}</span>
+    <button class="set-fbtn" data-setrevive="${cmd}:-1" ${atMin ? "disabled" : ""} aria-label="Less">−</button>
+    <span class="set-fval mono">${esc(shown)}</span>
+    <button class="set-fbtn" data-setrevive="${cmd}:1" ${atMax ? "disabled" : ""} aria-label="More">+</button>
+  </div>`;
+}
+
+/// The ladder as chips, plus the only figure that matters. A rung sitting ON the cap is
+/// marked, because that is the moment raising `attempts` stops buying reach and starts
+/// buying repetition — invisible in the numbers, obvious the second you see four chips
+/// in a row reading the same thing.
+function reviveLadderHtml(p: RevivePrefs): string {
+  const plan = revivePlan(p);
+  const chips = plan.map((ms, i) =>
+    `<span class="rv-rung${ms >= p.maxMs && p.factor > 1 ? " capped" : ""}" title="Attempt ${i + 1}">${esc(reviveGap(ms))}</span>`).join("");
+  return `<div class="rv-ladder">
+    <div class="rv-rungs">${chips}</div>
+    <div class="rv-total">Rides out an outage of about <b>${esc(reviveGap(reviveWindowMs(p)))}</b>, then leaves the session for you.</div>
+  </div>`;
+}
+
+function renderReviveControl(): string {
+  const p = revivePrefs;
+  const none = p.kinds.length === 0;
+  return `<div class="rvbox${p.enabled ? "" : " off"}">
+    <div class="peekrow rv-steps">
+      ${rvStepper("First wait", "base", reviveGap(p.baseMs), p.baseMs <= REVIVE_BASE_RANGE.min, p.baseMs >= REVIVE_BASE_RANGE.max)}
+      ${rvStepper("Then × ", "factor", p.factor.toFixed(2).replace(/\.?0+$/, ""), p.factor <= REVIVE_FACTOR_RANGE.min, p.factor >= REVIVE_FACTOR_RANGE.max)}
+      ${rvStepper("Never longer than", "max", reviveGap(p.maxMs), p.maxMs <= REVIVE_MAX_RANGE.min, p.maxMs >= REVIVE_MAX_RANGE.max)}
+    </div>
+    <div class="peekrow rv-steps">
+      ${rvStepper("Give up after", "att", `${p.attempts} ${p.attempts === 1 ? "try" : "tries"}`, p.attempts <= REVIVE_ATTEMPTS_RANGE.min, p.attempts >= REVIVE_ATTEMPTS_RANGE.max)}
+      ${rvStepper("Scatter by", "jit", `${p.jitterPct}%`, p.jitterPct <= REVIVE_JITTER_RANGE.min, p.jitterPct >= REVIVE_JITTER_RANGE.max)}
+      <button class="set-freset" data-setrevive="reset" ${isDefaultRevivePrefs(p) ? "disabled" : ""}>Reset</button>
+    </div>
+    ${reviveLadderHtml(p)}
+    <div class="sndwhen">
+      <div class="peekstep-l">Failures worth retrying</div>
+      <div class="chips">${REVIVE_KINDS.map((k) =>
+        `<button class="chip-opt ${p.kinds.includes(k.id) ? "on" : ""}" data-setrevive="kind:${k.id}" title="${escAttr(k.hint)}">`
+        + `<span class="seg-glyph">${k.glyph}</span>${esc(k.label)}</button>`).join("")}</div>
+    </div>
+    <div class="peekhint">${esc(!p.enabled
+      ? "Off: a turn the API kills stays killed, and the session waits at its prompt until you send it something. That is what every version of Episko before this one did."
+      : none
+        ? "Nothing is ticked, so nothing will ever be retried — the switch above is on but this panel has no work. Tick at least one kind of failure."
+        : "Scatter keeps a fleet from retrying in lockstep: six sessions killed by the same 529 would otherwise all come back in the same second and be the overload. While the machine has no network at all, waiting costs no attempts — the ladder resumes the moment it is back.")}</div>
+  </div>`;
+}
+
+/**
+ * A press in the revive panel. Everything routes through `host.setRevivePrefs`, which
+ * clamps, persists and repaints — so the markup above is always drawn from the stored
+ * value and the ladder preview is never a step behind the button that changed it.
+ */
+function applyReviveSetting(cmd: string) {
+  const p = revivePrefs;
+  if (cmd === "reset") { host.setRevivePrefs({ ...REVIVE_DEFAULTS, enabled: p.enabled }); return; }
+  if (cmd === "toggle") { host.setRevivePrefs({ ...p, enabled: !p.enabled }); return; }
+  const [verb, a] = cmd.split(":");
+  const dir = Number(a);
+  // The two millisecond knobs step in proportion to where they already are — 5s at the
+  // bottom of a range whose top is four hours would be hundreds of presses. Clamping is
+  // `clampRevivePrefs`’ job either way; the buttons disable at the bounds.
+  if (verb === "base") host.setRevivePrefs({ ...p, baseMs: p.baseMs + dir * reviveBaseStep(p.baseMs) });
+  else if (verb === "max") host.setRevivePrefs({ ...p, maxMs: p.maxMs + dir * reviveMaxStep(p.maxMs) });
+  else if (verb === "factor") host.setRevivePrefs({ ...p, factor: p.factor + dir * REVIVE_FACTOR_STEP });
+  else if (verb === "att") host.setRevivePrefs({ ...p, attempts: p.attempts + dir });
+  else if (verb === "jit") host.setRevivePrefs({ ...p, jitterPct: p.jitterPct + dir * REVIVE_JITTER_STEP });
+  else if (verb === "kind") {
+    const k = a as ReviveKind;
+    // No "at least one has to stay on" rule here, unlike the provider picker: an empty
+    // list is a coherent choice (the switch stays on, nothing qualifies yet), and the
+    // hint under the panel says so outright rather than a toast refusing the click.
+    host.setRevivePrefs({ ...p, kinds: p.kinds.includes(k) ? p.kinds.filter((x) => x !== k) : [...p.kinds, k] });
+  }
+}
+
 /**
  * A press in the attention panel. Everything routes through `host.setAttnPrefs`, which
  * clamps, persists and re-renders this window — so the markup above is always painted
@@ -895,6 +1052,14 @@ function renderSetControl(c: SetControl): string {
   if (c.kind === "guide") {
     return `<div class="set-group">${head}${renderGuideControl()}</div>`;
   }
+  if (c.kind === "revive") {
+    // Same shape again — but note the switch here governs the WHOLE control, unlike
+    // `attn`'s, which governs only its highlight. Off means this panel does nothing at
+    // all, which is why `renderReviveControl` dims itself and says so.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${revivePrefs.enabled ? " on" : ""}" data-setrevive="toggle" role="switch"`
+      + ` aria-checked="${revivePrefs.enabled}"></button></div>${renderReviveControl()}</div>`;
+  }
   if (c.kind === "sound") {
     // Same shape as `peek` above: the master switch rides the label row, the panel it
     // governs sits under it, because they are one decision.
@@ -936,23 +1101,28 @@ function renderSetControl(c: SetControl): string {
     if (!segs.length) return `<div class="set-group">${head}<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div></div>`;
     const opts = segs.map((s) =>
       `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}" title="${esc(s.sub || s.label)}">` +
-        `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
+        `${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
     return `<div class="set-group">${head}<div class="chips">${opts}</div></div>`;
   }
   const active = c.active();
+  // A dimmed setting still has a real stored value; it simply does not affect the
+  // current provider or layout. Permission policies are provider-specific controls now
+  // and use an explanatory note when an agent offers no integrated picker.
+  const dim = c.dim?.() ? " set-dim" : "";
   const opts = c.segs().map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}">` +
-      `<span class="seg-top">${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
+      `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
       `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`
   ).join("");
-  return `<div class="set-group">${head}<div class="seg">${opts}</div></div>`;
+  return `<div class="set-group${dim}">${head}<div class="seg">${opts}</div></div>`;
 }
 // Dispatch a segmented pick to the existing setter, then repaint the picker.
 function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
-  else if (set === "permmode") host.setPermMode(val as PermMode);
+  else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
+  else if (set === "agent") host.setDefaultAgent(val);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
   else if (set === "prov") {
     const p = val as Provider;
@@ -1146,6 +1316,8 @@ $("setBody").addEventListener("click", (e) => {
   // obvious. It changes nothing, so it does not fall through to a setting.
   const ad = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
   if (ad) { attnDemoReplay(ad); return; }
+  const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
+  if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");

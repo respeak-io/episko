@@ -19,6 +19,7 @@ import { esc } from "./format";
 import { dlog } from "./debug";
 
 import { sessions } from "./state";
+import { hasSessionState, isAgent } from "./types";
 
 // Three things it needs from the layer that owns the footer and the repaint.
 let host: { closeFootMenus: (keep?: string) => void; renderFoot: () => void; renderAll: () => void } =
@@ -83,10 +84,13 @@ function cafPersist() {
   localStorage.setItem("cc-caf-timer", String(cafTimerSec));
   localStorage.setItem("cc-caf-await", cafAgentsAwait ? "1" : "0");
 }
-// Is any real (non-shell) session doing work worth staying awake for?
+// Is any real (instrumented) session doing work worth staying awake for?
+// Panes with no telemetry are skipped outright rather than left to fail the phase
+// tests below: their phase is `idle` for life, so the tests would answer correctly
+// today and silently start voting the moment anything else writes to that field.
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
-    if (s.kind === "shell" || s.phase === "ended") continue;
+    if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) || s.phase === "ended") continue;
     if (s.phase === "working" || s.phase === "thinking") return true;
     if (cafAgentsAwait && (!!s.attention || s.phase === "done")) return true;
   }
@@ -105,6 +109,16 @@ function cafArmTimer() {
   if (cafArmed && cafPreset(cafPresetId).kind === "timer") {
     cafTimerHandle = window.setTimeout(() => { cafArmed = false; reconcileCaf(); toast("Caffeinate ended"); }, cafTimerSec * 1000);
   }
+}
+// Clear any assertion the backend is still holding for us. A reload (⌘R) restarts
+// this module — cafArmed false, cafAssertKey "" — but leaves the Rust side untouched,
+// and reconcileCaf() then computes key "" against cafAssertKey "", sees no change and
+// invokes nothing. So a reload while caffeinated stranded the assertion: held forever,
+// with the cup painted off and no way to stop it short of quitting the app. Call this
+// once at boot, where "caffeinate always starts off" is decided (see main.ts). It is a
+// no-op against a backend holding nothing.
+export function initCaf() {
+  invoke("set_caffeinate", { active: false, flags: [] }).catch(() => {});
 }
 export function reconcileCaf() {
   const flags = cafDesiredFlags();

@@ -27,8 +27,9 @@
 import { $, IS_MAC } from "./dom";
 import { dlog } from "./debug";
 import { needsYouSessions } from "./grouping";
-import { activeId, FAVORITES, permMode, sessions } from "./state";
-import { isAgent } from "./types";
+import { activeId, FAVORITES, permissionModeFor, sessions } from "./state";
+import { hasSessionState } from "./types";
+import { providerPermissionMode } from "./providers";
 import {
   type Chapter, CHAPTERS, chapterKey, isDone, parseTourState, pickerChapters, planFor,
   recordDone, shouldOfferPicker, shouldOfferRelease, stepApplies, stepBlocked, stepSatisfied,
@@ -124,21 +125,27 @@ function world(): TourWorld {
   const stage = !($("dashPane") as HTMLElement).hidden ? "dash"
     : !($("extPane") as HTMLElement).hidden ? "ext"
       : activeId ? "session" : "none";
+  const provider = stage === "session" && act?.kind === "agent" ? act.provider ?? "" : "";
+  const permission = provider
+    ? providerPermissionMode(provider, permissionModeFor(provider))
+    : null;
 
   return {
     projects: FAVORITES.length,
     sessions: live.length,
     phase: act?.phase ?? "",
     // A shell pane and a task pane are sessions too, and neither has any of the cards
-    // the inspector chapter is about — so this is `isAgent` and a stage check, not
+    // the inspector chapter is about — so this is a capability and stage check, not
     // "is there a session".
-    agentOnStage: stage === "session" && !!act && isAgent(act),
+    agentOnStage: stage === "session" && !!act && hasSessionState(act),
+    provider,
+    permissionCanAsk: permission?.asks ?? false,
     permPending: perm,
     permAnswered: sawPermAnswered,
     // The preference new sessions launch with, which is the one the session this
     // chapter just started is running under. A `Sess` does not carry its own mode, and
     // this is the honest answer for the only session the tour is ever about.
-    permMode,
+    permMode: permission?.id ?? "default",
     // Straight from the function the badge itself renders off, rather than a second
     // opinion about what "needs you" means: a step that lights `#attnBadge` has to ask
     // the same question the element does or it lights a `display:none` box.

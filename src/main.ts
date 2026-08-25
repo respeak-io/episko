@@ -4,7 +4,10 @@ import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { isAgent, isExited } from "./types";
+import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
+import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
+import { providerAdapter } from "./providers";
+import { queuePermission } from "./permissions";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -27,12 +30,17 @@ import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setKeyPrefs, setPeekPrefs,
-  setPermMode,
-  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, toggleInsp, toggleProjGroup,
-  toggleRail, toggleTheme,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
+  setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
+  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, tickRevive,
+  toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
+import { taskServerUrl } from "./servers";
+import {
+  closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
+  setServersRepaint, setServersSetActive,
+} from "./serversui";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
@@ -69,7 +77,7 @@ import {
 } from "./debug";
 import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
-import { closeCafPop, reconcileCaf, setCafHost } from "./caffeinate";
+import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
@@ -98,7 +106,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailEngines,
+  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
@@ -205,6 +213,13 @@ setSidebarRenderAll(renderAll);
 // rows here, and the reactor badge puts a pane on the stage.
 setFooterCloseColorPop(closeColorPop);
 setFooterSetActive(setActive);
+// The running-server pill lives in the header but joins the footer's popover family
+// (only one menu open at a time), puts a pane on the stage, and repaints itself off a
+// poll rather than off telemetry — three things it cannot reach from where it sits.
+setServersCloseMenus(closeFootMenus);
+setServersSetActive(setActive);
+setServersRepaint(renderAll);
+setServersCloseSession(closeSession);
 // A palette row can do almost anything the app can do, so the ⌘K UI takes one host
 // rather than a dozen setters — the settings.ts deviation, for the same reason.
 /// ⌘P — the explorer, on whatever owns the stage. Keyed by folder like the peek, and
@@ -220,10 +235,10 @@ setPaletteHost({
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles,
 });
-// Same reasoning, seven callees: a context-menu row starts panes and edits the project
+// Same reasoning, eight callees: a context-menu row starts panes and edits the project
 // list, none of which the menu owns.
 setProjMenuHost({
-  renderAll, requestLaunch, launchWorktree, launchShell, openProjectFolder,
+  renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite,
 });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
@@ -244,7 +259,8 @@ setMirrorRenderAll(renderAll);
 // what it can reach back for.
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setRevivePrefs,
   startTour: startChapter,
   setFootSeg,
 });
@@ -463,7 +479,7 @@ function renderAllNow() {
   // at all — so the stamp every attention surface below reads is refreshed here, once,
   // rather than at each of them. See syncAttn in ./grouping.
   syncAttn();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderServers(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
   // for. No-ops unless a group is actually tiled.
@@ -538,7 +554,13 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   if (s.run) {
     const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
-      if (line.trim()) s.run.tail.push(line.trimEnd());
+      if (!line.trim()) continue;
+      s.run.tail.push(line.trimEnd());
+      // …and if this run is a server — `just dev`, a VS Code task, an npm script — the
+      // URL it announces is latched HERE, as it streams, rather than read back off the
+      // tail: the tail is the rolling 40 lines below, and a dev server's banner is gone
+      // from it within seconds of the first HMR line. See taskServerUrl in ./servers.
+      s.run.url = taskServerUrl(s.run.url, line);
     }
     if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
   }
@@ -575,11 +597,14 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     dlog(code === 0 ? "info" : "warn", `task ${s.run!.id} exit ${code}`);
   } else {
     s.phase = "ended";
-    s.term?.writeln(`\r\n\x1b[90m[${s.kind === "shell" ? "shell" : "claude"} exited: code ${code}]\x1b[0m`);
-    // Reclaim an ended claude pane's scrollback the moment nobody is looking at it;
+    // Name what actually exited. "claude exited" under a `codex` pane is a small lie
+    // that costs a real minute when the pane is one of six on the stage.
+    const what = s.kind === "shell" ? "shell" : isAgent(s) ? (s.provider ?? "agent") : "task";
+    s.term?.writeln(`\r\n\x1b[90m[${what} exited: code ${code}]\x1b[0m`);
+    // Reclaim an ended resumable agent pane's scrollback the moment nobody is looking at it;
     // the pane you watched end keeps its buffer until it leaves the stage (setActive
-    // trims on the way off). See trimScrollback for why claude panes only.
-    if (isAgent(s) && activeId !== s.id) trimScrollback(s);
+    // trims on the way off). See trimScrollback for why provider-backed panes only.
+    if (hasSessionState(s) && activeId !== s.id) trimScrollback(s);
   }
   // A task's exit code is its verdict; anything else just stopped. After the branches
   // above so a task has its `exitCode` before this reads the kind, and in one place
@@ -620,6 +645,48 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   queueRosterSave();
   renderAll();
 });
+// Integrated non-Claude providers arrive through one raw transport event and their
+// own small adapter. Everything after the adapter is the same shared session model,
+// sounds, roster persistence, inspector and tray that Claude's hook reducer drives.
+listen<ProviderEvent>("agent-event", (e) => {
+  const raw = e.payload;
+  const s = sessions.get(raw.sessionId);
+  if (!s || s.provider !== raw.provider) {
+    telem.dropped++;
+    dlog("warn", `${raw.provider} event for unrouted session ${raw.sessionId?.slice(0, 8) || "?"}: dropped`);
+    return;
+  }
+  const adapter = providerAdapter(raw.provider)?.events;
+  if (!adapter) { dlog("warn", `no event adapter for provider ${raw.provider}`); return; }
+  const events = adapter(raw);
+  // This is deliberately protocol-neutral: every integrated provider emits native
+  // lifecycle methods, while its adapter owns their spelling and mapping. It tells a
+  // dev build whether an item reached the UI but was unsupported, without logging the
+  // command, file path, or tool payload.
+  if (raw.method === "item/started" || raw.method === "item/completed") {
+    const item = raw.params?.item;
+    const itemType = typeof item?.type === "string" ? item.type : "unknown";
+    const mapped = events.map((event) => event.type).join(", ");
+    dlog(events.length ? "info" : "warn", `${raw.provider} ${raw.method} · ${itemType}${mapped ? ` → ${mapped}` : " ignored"}`);
+  }
+  if (!events.length) return;
+  telem.rx++; telem.routed++;
+  const before = soundSnap(s);
+  const limitsBefore = s.rateLimits.map((x) => ({ ...x }));
+  const resumeBefore = s.resumeId;
+  for (const event of events) applyAgentEventToFleet(s, event, sessions.values());
+  if (s.resumeId !== resumeBefore) {
+    dlog("info", `${s.provider} session ${s.id.slice(0, 8)} thread → ${s.resumeId.slice(0, 8)}`);
+    flushRoster();
+  } else queueRosterSave();
+  const sound = hookSound(before, soundSnap(s));
+  if (sound) playSound(sound);
+  if (s.rateLimits.some((w) => limitCrossed(
+    limitsBefore.find((b) => b.windowMins === w.windowMins)?.usedPercent ?? null,
+    w.usedPercent,
+  ) !== null)) playSound("limit");
+  renderAll();
+});
 // menu-bar (tray) menu → jump to the clicked session
 listen<string>("tray-select", (e) => { const id = e.payload; if (sessions.has(id)) setActive(id); });
 // blocking permission request — Claude is waiting for our decision
@@ -628,10 +695,10 @@ listen<{ id: string; data: any }>("permission", (e) => {
   const sid: string | undefined = data.session_id?.toLowerCase?.();
   const s = sid ? sessions.get(sid) : undefined;
   if (!s) { dlog("warn", `permission for unrouted session ${sid ? sid.slice(0, 8) : "?"}: auto-deferred to terminal`); invoke("resolve_permission", { id, behavior: "terminal" }).catch(() => {}); return; }
-  s.attention = `permission: ${data.tool_name || ""}`;
-  s.pendingCmd = permCmd(data);
-  s.pendingPermId = id;
-  s.pendRisk = riskLevel(data.tool_name, data.tool_input);
+  queuePermission(s, {
+    id, tool: data.tool_name || "", command: permCmd(data),
+    risk: riskLevel(data.tool_name, data.tool_input),
+  });
   // The one alert the whole feature is for: Claude is stopped until this is answered,
   // and nothing else in the app can reach you from another window. The matching
   // `PermissionRequest` hook usually rings a beat earlier or later — `SOUND_REPEAT_MS`
@@ -658,6 +725,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
+  if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that OPENS this popover must be spared here, or the same click that
   // opened it closes it again and the control reads as dead. `[data-dashbrtrunk]` is the
@@ -922,15 +990,19 @@ listen("quit-requested", async () => {
   // isExited, not `phase !== "ended"`: a finished task's phase is done/error, so the
   // old test counted every failed run as "1 task still running" in the quit dialog.
   const live = [...sessions.values()].filter((s) => !isExited(s));
-  const agents = live.filter((s) => isAgent(s)).length;
+  const agents = live.filter(hasSessionState).length;
   const terms = live.filter((s) => s.kind === "shell").length;
   const runs = live.filter((s) => s.kind === "task").length;
-  const total = agents + terms + runs;
+  // Counted apart from `agents`, which means sessions with structured state. Quitting
+  // ends a terminal-only pane too, and leaving it out would understate what the button does.
+  const clis = live.filter((s) => isAgent(s) && !hasSessionState(s)).length;
+  const total = agents + terms + runs + clis;
   if (total === 0) { await invoke("confirm_quit"); return; }
   const parts: string[] = [];
   if (agents) parts.push(`${agents} running ${agents === 1 ? "session" : "sessions"}`);
   if (terms) parts.push(`${terms} ${terms === 1 ? "terminal" : "terminals"}`);
   if (runs) parts.push(`${runs} ${runs === 1 ? "task" : "tasks"}`);
+  if (clis) parts.push(`${clis} ${clis === 1 ? "agent" : "agents"}`);
   const ok = await ask(`${listPhrase(parts)} still running. Quitting ends ${total === 1 ? "it" : "them"}.`, {
     title: "Quit Episko?",
     kind: "warning",
@@ -959,6 +1031,19 @@ FAVORITES.forEach((f) => probeIcon(f.path));
 
 // discover which external terminals are installed, so the footer/palette only
 // offers ones that actually work (embedded is always available).
+// ...and the coding-agent catalogue, each entry saying whether it is on this machine.
+// The whole list, not just the hits: a picker that can only show what you already have
+// cannot answer "why is Codex not here?". One probe per run — the answer changes when
+// you install something, which is not a thing to poll for.
+const agentDiscovery = invoke<AgentCli[]>("list_agents").then((list) => {
+  setAvailAgents(list);
+  const on = list.filter((a) => a.path !== null).map((a) => a.id);
+  dlog("info", `agents on PATH: ${on.length ? on.join(", ") : "none"} (of ${list.length} known)`);
+}).catch((e) => {
+  setAvailAgents([]); // release launch/adoption even when the probe itself failed
+  dlog("warn", `agent discovery failed: ${e}`);
+});
+
 invoke<string[]>("available_terminals").then((ids) => {
   setAvailEngines(ALL_ENGINES.map((e) => e.id).filter((id) => id === "embedded" || ids.includes(id)));
   if (!availEngines.includes(termEngine)) { setTermEngine("embedded"); localStorage.setItem("cc-term-engine", termEngine); }
@@ -983,7 +1068,7 @@ setInterval(() => {
 setInterval(() => {
   if (mirror) return;
   const s = activeId ? sessions.get(activeId) ?? null : null;
-  if (!s || !isAgent(s)) return;
+  if (!s || !hasSessionState(s)) return;
   tickDwell(s);
 }, 1000);
 
@@ -1010,6 +1095,27 @@ setInterval(() => {
 // It carries no `git_diffstat` — see `pollIo`.
 setInterval(() => { void pollIo(); }, 60_000);
 
+// Re-read the background logs of every server still running. 4s rather than the
+// telemetry cadence: this is a file read per server, and the two things it is watching
+// for — a URL appearing a second after a dev server boots, and the sentinel that says
+// one has died — are both fine to learn about a beat late. It returns before touching
+// the disk when nothing is running, which is the overwhelming majority of the time.
+setInterval(() => { void pollServers(); }, 4000);
+
+// The revive watchdog: bring back sessions whose turn an API error killed while nobody
+// was watching. Every rule is in ./revive and the pass itself is ./actions' `tickRevive`;
+// this is only the clock. It ships switched off, so on a default install the tick is a
+// `for` loop over the fleet that returns "off" on the first line and costs nothing.
+//
+// A POLL RATHER THAN A TIMEOUT, which is the opposite of what ./attn's highlight does,
+// and for a reason specific to what this is waiting for: the two events that should wake
+// it — the network coming back, and a rung falling due — only one of them is an event at
+// all. Nothing fires when a napping Wi-Fi interface reassociates at 04:12, so a schedule
+// built around `reviveDeadline` would sit there with an overdue attempt it had no reason
+// to re-examine. Ten seconds is the granularity of "how soon after the internet returns",
+// and it is the only thing that number decides — the ladder's own waits are minutes wide.
+setInterval(tickRevive, 10_000);
+
 // discover Claude Code sessions running outside Episko and keep them fresh.
 refreshExternals();
 setInterval(refreshExternals, 3000);
@@ -1018,7 +1124,7 @@ setInterval(refreshExternals, 3000);
 // and only THEN reconcile the roster: an adopted id is live again, so it must not
 // also come back as a dormant row (#47). A normal start finds no orphans and the
 // await is one empty IPC round-trip.
-void adoptOrphans().finally(() => void loadDormants());
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants());
 // Nothing else persists the roster on the way out: closeSession and the telemetry
 // tick both save, but a quit with live, quiet sessions would otherwise write nothing.
 window.addEventListener("beforeunload", flushRoster);
@@ -1045,8 +1151,11 @@ initSidebarPeek();
 // rather than opening on top of it. `initTour` says whether it did.
 initChangelog(initTour());
 initFileDrop();
-// caffeinate always starts off — the assertion is bound to the last run's process
-// (`-w <pid>` on macOS, the parked thread on Windows) and died with it; renderAll's
-// reconcileCaf() paints the button. Note this is the ONE place agent-mode could
-// auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
+// caffeinate always starts off — on a cold start the assertion is bound to the last
+// run's process (`-w <pid>` on macOS, the parked thread on Windows) and died with it;
+// renderAll's reconcileCaf() paints the button. Note this is the ONE place agent-mode
+// could auto-assert on launch — but cafArmed is false at boot, so it stays dormant.
+// initCaf() covers the case a dead process doesn't: a webview reload leaves the backend
+// asserting with nothing on this side left to remember it, so say so explicitly.
+initCaf();
 renderAll();

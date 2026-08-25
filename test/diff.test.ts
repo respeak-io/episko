@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePatch } from "../src/diff";
+import { alignHunk, parsePatch, tokenize, wordDiff, type DiffHunk, type DiffLine, type Span } from "../src/diff";
 
 // Patches are built from real `git` output shapes. Lines are joined rather than
 // written as template literals because diff bodies contain backticks and ${…}.
@@ -222,5 +222,145 @@ describe("parsePatch", () => {
       ["README.md", "deleted"],
       ["src/x.js", "modified"],
     ]);
+  });
+});
+
+// ---------- what a reader gets: the word diff and the line pairing ----------
+//
+// These are the two judgement calls in the module, and both fail *quietly*: a bad
+// pairing hangs a mark on the wrong line, and a bad threshold either lights a rewritten
+// line up like confetti or marks nothing at all. Neither throws and neither is visible
+// in a screenshot of a diff you don't already know the answer to.
+
+const line = (kind: "ctx" | "add" | "del", text: string): DiffLine =>
+  ({ kind, text, oldNo: kind === "add" ? null : 1, newNo: kind === "del" ? null : 1 });
+const hunk = (...lines: DiffLine[]): DiffHunk => ({ header: "", lines });
+/// The marked text of one side, which is what the reader actually sees.
+const marks = (spans: Span[] | null) => (spans ?? []).filter((s) => s.changed).map((s) => s.text);
+
+describe("tokenize", () => {
+  it("keeps identifiers whole and every other character apart", () => {
+    expect(tokenize("a.foo($x, 1)")).toEqual(["a", ".", "foo", "(", "$x", ",", " ", "1", ")"]);
+  });
+  it("runs of whitespace are one token, so indentation is never marked piecemeal", () => {
+    expect(tokenize("    if (x)")).toEqual(["    ", "if", " ", "(", "x", ")"]);
+  });
+  it("has no tokens for an empty line", () => expect(tokenize("")).toEqual([]));
+});
+
+describe("wordDiff", () => {
+  it("marks only what moved, on both sides", () => {
+    const w = wordDiff("const a = one(x);", "const a = two(x);")!;
+    expect(marks(w.a)).toEqual(["one"]);
+    expect(marks(w.b)).toEqual(["two"]);
+  });
+
+  it("marks an insertion in the middle without touching the shared ends", () => {
+    const w = wordDiff('const L = ["a", "b"];', 'const L = ["a", "mid", "b"];')!;
+    expect(marks(w.a)).toEqual([]);
+    expect(marks(w.b).join("")).toContain("mid");
+    // the unchanged spans are the whole line minus the insertion, not a scattering
+    expect(w.b.filter((s) => !s.changed).map((s) => s.text).join("")).toBe('const L = ["a", "b"];');
+  });
+
+  it("returns null when there is nothing to say", () => {
+    expect(wordDiff("same", "same")).toBeNull();
+    expect(wordDiff("", "x")).toBeNull();
+    expect(wordDiff("x", "")).toBeNull();
+  });
+
+  it("refuses a rewritten line rather than lighting nine fragments of it", () => {
+    // Two prose lines that share only articles. Positional pairing puts them together
+    // and the reader gets no help from `the`, `is` and `a` being highlighted — this is
+    // the shape that made the first cut of the feature unreadable.
+    expect(wordDiff(
+      "// Which window the inspector's read/written total covers. `run` is the figure",
+      "// Whether the panel is open — and, when it is, a `Date.now()` it opened at",
+    )).toBeNull();
+  });
+
+  it("absorbs a short gap between two changes instead of leaving confetti", () => {
+    // `foo` and `x` change with `(` between them: three marks would be two too many.
+    const w = wordDiff("a.foo(x);", "a.bar(y);")!;
+    expect(marks(w.b)).toEqual(["bar(y"]);
+  });
+
+  it("still marks a long line whose ends match", () => {
+    const pad = "x".repeat(80);
+    const w = wordDiff(`${pad} one ${pad}`, `${pad} two ${pad}`)!;
+    expect(marks(w.a)).toEqual(["one"]);
+  });
+
+  it("a span list always reassembles into the line it came from", () => {
+    const a = "  return s < 60 ? `${s}s` : `${m}m`;", b = "  return s < 90 ? `${s}s` : `${m}m`;";
+    const w = wordDiff(a, b)!;
+    expect(w.a.map((s) => s.text).join("")).toBe(a);
+    expect(w.b.map((s) => s.text).join("")).toBe(b);
+  });
+});
+
+describe("alignHunk", () => {
+  it("keeps git's order in the unified list", () => {
+    const { unified } = alignHunk(hunk(
+      line("ctx", "keep"), line("del", "a"), line("del", "b"), line("add", "A"), line("add", "B"),
+    ));
+    expect(unified.map((c) => [c.line.kind, c.line.text]))
+      .toEqual([["ctx", "keep"], ["del", "a"], ["del", "b"], ["add", "A"], ["add", "B"]]);
+  });
+
+  it("puts a context line on both sides of one row", () => {
+    const { rows } = alignHunk(hunk(line("ctx", "keep")));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].left).toBe(rows[0].right); // one cell, so the two halves cannot drift
+  });
+
+  it("leaves the overhang of an uneven replacement one-sided", () => {
+    const { rows } = alignHunk(hunk(line("del", "gone"), line("add", "new one"), line("add", "new two")));
+    expect(rows.map((r) => [r.left?.line.text ?? null, r.right?.line.text ?? null]))
+      .toContainEqual([null, "new two"]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it("pairs a changed line with its real counterpart, not with the comment added above it", () => {
+    // The single most common shape an agent's edit has, and the one positional pairing
+    // gets wrong: the changed line is the LAST addition, not the first.
+    const { rows, unified } = alignHunk(hunk(
+      line("del", "const L = [\"a\", \"b\"];"),
+      line("add", "// why this list is what it is"),
+      line("add", "// and a second line about it"),
+      line("add", "const L = [\"a\", \"mid\", \"b\"];"),
+    ));
+    const paired = rows.find((r) => r.left && r.right)!;
+    expect(paired.left!.line.text).toContain("const L");
+    expect(paired.right!.line.text).toContain("mid");
+    // the two comment lines get a blank left half rather than a bogus partner
+    expect(rows.filter((r) => !r.left)).toHaveLength(2);
+    // and the marks reached the unified list too — both renderings share one cell
+    const u = unified.find((c) => c.line.text.includes("mid"))!;
+    expect(marks(u.spans).join("")).toContain("mid");
+  });
+
+  it("marks nothing when a replacement has no partner at all", () => {
+    const { rows, unified } = alignHunk(hunk(line("add", "brand new line")));
+    expect(rows).toEqual([{ left: null, right: unified[0] }]);
+    expect(unified[0].spans).toBeNull();
+  });
+
+  it("pairs positionally once a replacement is too big to be worth aligning", () => {
+    // Over the run cap this falls back rather than running a 200x200 table; the fallback
+    // must still produce one row per line and lose nothing.
+    const dels = Array.from({ length: 70 }, (_, i) => line("del", `old ${i}`));
+    const adds = Array.from({ length: 70 }, (_, i) => line("add", `new ${i}`));
+    const { rows, unified } = alignHunk(hunk(...dels, ...adds));
+    expect(rows).toHaveLength(70);
+    expect(unified).toHaveLength(140);
+    expect(rows[0].left!.line.text).toBe("old 0");
+    expect(rows[0].right!.line.text).toBe("new 0");
+  });
+
+  it("survives a hunk of nothing but context", () => {
+    const { rows, unified } = alignHunk(hunk(line("ctx", "a"), line("ctx", "b")));
+    expect(rows).toHaveLength(2);
+    expect(unified.every((c) => c.spans === null)).toBe(true);
   });
 });
