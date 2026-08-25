@@ -25,6 +25,7 @@ Markers: `+` new · `~` changed · `!` fixed
   rather than dropping the count back to zero and saying nothing. Nothing new is instrumented:
   it all rides the `PostToolUse` hook Episko already receives, and an idle server's log costs
   one length check rather than a read.
+
 + **A session the API kills overnight can now carry on by itself.** A 529, or a Wi-Fi
   interface that power-saved itself at 03:40, ends the turn — and the session then sits at
   its prompt until somebody types at it, which if it happened at midnight means eight
@@ -39,20 +40,6 @@ Markers: `+` new · `~` changed · `!` fixed
   it holds its attempts rather than spending them. The inspector's error card counts down
   to the next try; the only noise it makes is the moment it gives up and hands the session
   back to you.
-
-~ **Claude Code now gets a longer retry leash inside Episko.** Launches set
-  `CLAUDE_CODE_MAX_RETRIES=12` unless your own environment already sets it, which widens
-  the outage its own backoff rides out before the turn ends at all. A request that
-  eventually succeeds never needs the watchdog above.
-
-! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
-  updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
-  Episko launched — so the kernel charged those bytes to a `claude` process and the
-  inspector's disk figure showed a day's work having written thirty times what it really
-  did, in the first minute, on the first launch after a few days away. The update's own
-  size now comes back out of the figure and out of the rate beside it. Only bytes a new
-  binary on disk accounts for are ever discounted, so an agent writing hard still shows up
-  as an agent writing hard.
 
 + **And it asks the kernel, not just the output.** Episko now walks every listening TCP port
   back up the process tree to the pane it came from, so a server shows up whether or not
@@ -141,12 +128,36 @@ Markers: `+` new · `~` changed · `!` fixed
   transcript), and dispatching at a GitHub issue (the claim is handed back on a hook only
   Claude fires, so an uninstrumented agent would hold the issue forever).
 
+~ **Claude Code now gets a longer retry leash inside Episko.** Launches set
+  `CLAUDE_CODE_MAX_RETRIES=12` unless your own environment already sets it, which widens
+  the outage its own backoff rides out before the turn ends at all. A request that
+  eventually succeeds never needs the watchdog above.
+
 ~ **The diff overlay reviews like a pull request.** Expanding a working set used to give
   you the files back to back with nothing between them, so scrolling into the middle of one
   left nothing on screen saying which file you were in. There is now an **index down the
   left** — one row a file, grouped by folder, marking whichever file you are currently
   reading — and every **file header sticks** to the top while its file is under the pointer.
   Click a row in the index to go straight there.
+
+! **Code health measures what it says it measures.** Four faults, each of which failed by
+  going quiet rather than by being wrong out loud. Indentation was read in the file's own
+  step, but a tie between two step sizes resolved to the largest instead of the smallest,
+  so depth came out too small and the nesting chip simply never fired. A Rust lifetime
+  (`&'a str`) was read as an opening quote, which blanked the rest of its line — taking the
+  brace with it, and skewing every span and depth measured after it in that file. CSS,
+  SCSS, Bash and Kotlin-script files were measured by the backend and then never chipped,
+  because the two halves of the source-extension list had drifted apart. And a single
+  silenced error described itself as "This change addsline 42".
+
+! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
+  updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
+  Episko launched — so the kernel charged those bytes to a `claude` process and the
+  inspector's disk figure showed a day's work having written thirty times what it really
+  did, in the first minute, on the first launch after a few days away. The update's own
+  size now comes back out of the figure and out of the rate beside it. Only bytes a new
+  binary on disk accounts for are ever discounted, so an agent writing hard still shows up
+  as an agent writing hard.
 
 ! **Keep-awake now survives the PC sleeping.** On Windows the assertion was set once and
   never re-stated, but Windows drops a thread's execution state across suspend/resume — so

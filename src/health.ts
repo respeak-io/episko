@@ -180,8 +180,15 @@ export function isTestPath(p: string): boolean {
 /// that makes the same chip on a source file easier to skip past.
 export function isSourcePath(p: string): boolean {
   const ext = p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCase() : "";
+  // Must match `is_code_file` in health.rs, which says so in its own doc comment: the
+  // backend decides which files it measures and indexes, this decides which of those may
+  // carry a chip, and a file only one side calls source is measured and then never spoken
+  // about. `kts`, `bash`, `css` and `scss` had drifted out of this half — so a CSS change
+  // was measured, counted into `p90_code_lines`, and then took the early return below and
+  // earned no chip at all.
   const CODE = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "go", "py", "rb", "java",
-    "c", "h", "cc", "cpp", "hpp", "cs", "swift", "kt", "scala", "php", "dart", "sh"];
+    "c", "h", "cc", "cpp", "hpp", "cs", "swift", "kt", "kts", "scala", "php", "dart",
+    "sh", "bash", "css", "scss"];
   return CODE.includes(ext);
 }
 
@@ -262,7 +269,7 @@ export function fileChips(
       id: "silenced",
       sev: "bad",
       text: silenced.length === 1 ? "silenced error" : `silenced ×${silenced.length}`,
-      title: `This change adds ${silenced.length === 1 ? "" : `${silenced.length} places where an error is swallowed:\n`}`
+      title: `This change adds ${silenced.length === 1 ? "an error that is swallowed at " : `${silenced.length} places where an error is swallowed:\n`}`
         + silenced.map((s) => `line ${s.line}: ${s.what}`).join("\n"),
       places: silenced.map((s) => s.line),
       lines: silenced.map((s) => s.line),
