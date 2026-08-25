@@ -13,11 +13,11 @@
 // so a renderSettings() rebuild never drops it mid-hover.
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
-import { basename, esc, tilde } from "./format";
+import { basename, esc, escAttr, tilde } from "./format";
 import type { Engine, PermMode } from "./types";
 import {
   ALL_PERM_MODES, attnPrefs, availEngines, engineDef, keyPrefs, peekPrefs, permMode,
-  setTermFontSize,
+  revivePrefs, setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
@@ -25,6 +25,12 @@ import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
 } from "./attn";
+import {
+  isDefaultRevivePrefs, REVIVE_ATTEMPTS_RANGE, REVIVE_BASE_RANGE, REVIVE_DEFAULTS,
+  REVIVE_FACTOR_RANGE, REVIVE_FACTOR_STEP, REVIVE_JITTER_RANGE, REVIVE_JITTER_STEP,
+  REVIVE_KINDS, REVIVE_MAX_RANGE, reviveBaseStep, reviveGap, reviveMaxStep, revivePlan,
+  reviveWindowMs, type ReviveKind, type RevivePrefs,
+} from "./revive";
 import { LIT_COLOR } from "./sidebarview";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
@@ -76,12 +82,15 @@ export interface SettingsHost {
   // And for the finish highlight — ./actions clamps through ./attn, persists, and
   // repaints everything downstream of the needs-you set.
   setAttnPrefs: (p: AttnPrefs) => void;
+  // And for the revive watchdog — ./actions clamps through ./revive, persists, and
+  // repaints (the inspector's error card carries the countdown, so `renderAll`).
+  setRevivePrefs: (p: RevivePrefs) => void;
 }
 let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setRevivePrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -111,6 +120,11 @@ type SetControl =
   // One control for the same reason `peek` is one — they are one decision, and the
   // preview row is only honest sitting directly under the stepper that sets it.
   | { kind: "attn"; label: string; hint?: string }
+  // The revive watchdog: the master switch, five knobs and the ladder they produce.
+  // One control for the same reason `peek` and `attn` are one — the numbers mean
+  // nothing individually, and the only question anybody actually has ("does this get
+  // me through the night?") is answered by the preview underneath all five of them.
+  | { kind: "revive"; label: string; hint?: string }
   // A single on/off switch.
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
@@ -156,6 +170,8 @@ const SET_TABS: SetTab[] = [
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
       { kind: "attn", label: "When a session wants you",
         hint: "A turn finishing, a turn the API killed, a permission, a failed run. The row lights up in the rail for a few seconds, and the ⌂ badge in the header queues them all up. Hover the preview to see the light." },
+      { kind: "revive", label: "Carry on after an API error",
+        hint: "A 529 or a dropped Wi-Fi ends the turn, and the session then waits at its prompt — for eight hours, if it happened at midnight. Switched on, Episko waits and types a carry-on for you. It never types into a session that is asking you something, and it never retries a failure that can't be fixed by waiting (bad credentials, billing, a malformed request)." },
     ],
   },
   {
@@ -470,6 +486,93 @@ function renderAttnControl(): string {
       : "The highlight is off, so a finished session is announced by its glyph and the badge alone. The queue order and the clearing rule above still apply.")}</div>
   </div>`;
 }
+// ---------- the revive watchdog ----------
+// Five numbers that nobody can evaluate individually, and one sentence that says what
+// they add up to. The ladder preview below them is the whole design of this panel: the
+// question a person actually has is "will this get me to breakfast", and "factor 2,
+// cap 15m, 6 attempts" does not answer it in any head. `reviveWindowMs` does.
+
+/// One stepper row. `cmd` is the data-setrevive verb; the two buttons carry ±.
+function rvStepper(label: string, cmd: string, shown: string, atMin: boolean, atMax: boolean): string {
+  return `<div class="set-font peekstep">
+    <span class="peekstep-l">${esc(label)}</span>
+    <button class="set-fbtn" data-setrevive="${cmd}:-1" ${atMin ? "disabled" : ""} aria-label="Less">−</button>
+    <span class="set-fval mono">${esc(shown)}</span>
+    <button class="set-fbtn" data-setrevive="${cmd}:1" ${atMax ? "disabled" : ""} aria-label="More">+</button>
+  </div>`;
+}
+
+/// The ladder as chips, plus the only figure that matters. A rung sitting ON the cap is
+/// marked, because that is the moment raising `attempts` stops buying reach and starts
+/// buying repetition — invisible in the numbers, obvious the second you see four chips
+/// in a row reading the same thing.
+function reviveLadderHtml(p: RevivePrefs): string {
+  const plan = revivePlan(p);
+  const chips = plan.map((ms, i) =>
+    `<span class="rv-rung${ms >= p.maxMs && p.factor > 1 ? " capped" : ""}" title="Attempt ${i + 1}">${esc(reviveGap(ms))}</span>`).join("");
+  return `<div class="rv-ladder">
+    <div class="rv-rungs">${chips}</div>
+    <div class="rv-total">Rides out an outage of about <b>${esc(reviveGap(reviveWindowMs(p)))}</b>, then leaves the session for you.</div>
+  </div>`;
+}
+
+function renderReviveControl(): string {
+  const p = revivePrefs;
+  const none = p.kinds.length === 0;
+  return `<div class="rvbox${p.enabled ? "" : " off"}">
+    <div class="peekrow rv-steps">
+      ${rvStepper("First wait", "base", reviveGap(p.baseMs), p.baseMs <= REVIVE_BASE_RANGE.min, p.baseMs >= REVIVE_BASE_RANGE.max)}
+      ${rvStepper("Then × ", "factor", p.factor.toFixed(2).replace(/\.?0+$/, ""), p.factor <= REVIVE_FACTOR_RANGE.min, p.factor >= REVIVE_FACTOR_RANGE.max)}
+      ${rvStepper("Never longer than", "max", reviveGap(p.maxMs), p.maxMs <= REVIVE_MAX_RANGE.min, p.maxMs >= REVIVE_MAX_RANGE.max)}
+    </div>
+    <div class="peekrow rv-steps">
+      ${rvStepper("Give up after", "att", `${p.attempts} ${p.attempts === 1 ? "try" : "tries"}`, p.attempts <= REVIVE_ATTEMPTS_RANGE.min, p.attempts >= REVIVE_ATTEMPTS_RANGE.max)}
+      ${rvStepper("Scatter by", "jit", `${p.jitterPct}%`, p.jitterPct <= REVIVE_JITTER_RANGE.min, p.jitterPct >= REVIVE_JITTER_RANGE.max)}
+      <button class="set-freset" data-setrevive="reset" ${isDefaultRevivePrefs(p) ? "disabled" : ""}>Reset</button>
+    </div>
+    ${reviveLadderHtml(p)}
+    <div class="sndwhen">
+      <div class="peekstep-l">Failures worth retrying</div>
+      <div class="chips">${REVIVE_KINDS.map((k) =>
+        `<button class="chip-opt ${p.kinds.includes(k.id) ? "on" : ""}" data-setrevive="kind:${k.id}" title="${escAttr(k.hint)}">`
+        + `<span class="seg-glyph">${k.glyph}</span>${esc(k.label)}</button>`).join("")}</div>
+    </div>
+    <div class="peekhint">${esc(!p.enabled
+      ? "Off: a turn the API kills stays killed, and the session waits at its prompt until you send it something. That is what every version of Episko before this one did."
+      : none
+        ? "Nothing is ticked, so nothing will ever be retried — the switch above is on but this panel has no work. Tick at least one kind of failure."
+        : "Scatter keeps a fleet from retrying in lockstep: six sessions killed by the same 529 would otherwise all come back in the same second and be the overload. While the machine has no network at all, waiting costs no attempts — the ladder resumes the moment it is back.")}</div>
+  </div>`;
+}
+
+/**
+ * A press in the revive panel. Everything routes through `host.setRevivePrefs`, which
+ * clamps, persists and repaints — so the markup above is always drawn from the stored
+ * value and the ladder preview is never a step behind the button that changed it.
+ */
+function applyReviveSetting(cmd: string) {
+  const p = revivePrefs;
+  if (cmd === "reset") { host.setRevivePrefs({ ...REVIVE_DEFAULTS, enabled: p.enabled }); return; }
+  if (cmd === "toggle") { host.setRevivePrefs({ ...p, enabled: !p.enabled }); return; }
+  const [verb, a] = cmd.split(":");
+  const dir = Number(a);
+  // The two millisecond knobs step in proportion to where they already are — 5s at the
+  // bottom of a range whose top is four hours would be hundreds of presses. Clamping is
+  // `clampRevivePrefs`’ job either way; the buttons disable at the bounds.
+  if (verb === "base") host.setRevivePrefs({ ...p, baseMs: p.baseMs + dir * reviveBaseStep(p.baseMs) });
+  else if (verb === "max") host.setRevivePrefs({ ...p, maxMs: p.maxMs + dir * reviveMaxStep(p.maxMs) });
+  else if (verb === "factor") host.setRevivePrefs({ ...p, factor: p.factor + dir * REVIVE_FACTOR_STEP });
+  else if (verb === "att") host.setRevivePrefs({ ...p, attempts: p.attempts + dir });
+  else if (verb === "jit") host.setRevivePrefs({ ...p, jitterPct: p.jitterPct + dir * REVIVE_JITTER_STEP });
+  else if (verb === "kind") {
+    const k = a as ReviveKind;
+    // No "at least one has to stay on" rule here, unlike the provider picker: an empty
+    // list is a coherent choice (the switch stays on, nothing qualifies yet), and the
+    // hint under the panel says so outright rather than a toast refusing the click.
+    host.setRevivePrefs({ ...p, kinds: p.kinds.includes(k) ? p.kinds.filter((x) => x !== k) : [...p.kinds, k] });
+  }
+}
+
 /**
  * A press in the attention panel. Everything routes through `host.setAttnPrefs`, which
  * clamps, persists and re-renders this window — so the markup above is always painted
@@ -732,6 +835,14 @@ function renderSetControl(c: SetControl): string {
       + `<button class="sw${attnPrefs.highlight ? " on" : ""}" data-setattn="highlight" role="switch"`
       + ` aria-checked="${attnPrefs.highlight}"></button></div>${renderAttnControl()}</div>`;
   }
+  if (c.kind === "revive") {
+    // Same shape again — but note the switch here governs the WHOLE control, unlike
+    // `attn`'s, which governs only its highlight. Off means this panel does nothing at
+    // all, which is why `renderReviveControl` dims itself and says so.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${revivePrefs.enabled ? " on" : ""}" data-setrevive="toggle" role="switch"`
+      + ` aria-checked="${revivePrefs.enabled}"></button></div>${renderReviveControl()}</div>`;
+  }
   if (c.kind === "sound") {
     // Same shape as `peek` above: the master switch rides the label row, the panel it
     // governs sits under it, because they are one decision.
@@ -949,6 +1060,8 @@ $("setBody").addEventListener("click", (e) => {
   // obvious. It changes nothing, so it does not fall through to a setting.
   const ad = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
   if (ad) { attnDemoReplay(ad); return; }
+  const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
+  if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");

@@ -45,6 +45,32 @@ use crate::tasks;
 use crate::telemetry::write_instrument_settings;
 use crate::{AppState, Session};
 
+/// How many times Claude Code retries a request of its own accord before it gives up
+/// and ends the turn with `StopFailure`.
+///
+/// Its retry classifier already covers the whole transient set — 429 and 5xx, plus the
+/// connection errors (`ENOTFOUND`, `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`,
+/// `ENETUNREACH`, `EHOSTUNREACH`) that a laptop's Wi-Fi napping produces — so raising
+/// the ceiling costs nothing on a healthy connection and buys real time on a sick one.
+/// Every retry is spaced by Claude Code's own exponential backoff, so this is a wider
+/// window rather than a busier one.
+///
+/// This is the first of Episko's two defences against an overnight outage and by far the
+/// cheaper: a request that eventually succeeds never ends the turn, so the conversation
+/// never needs reviving at all. The frontend watchdog (`src/revive.ts`) is what picks up
+/// the outages that outlast even this.
+const CLAUDE_RETRY_CEILING: &str = "12";
+
+/// Apply the ceiling above, **without overriding a value the user set themselves**.
+/// Anyone who has put `CLAUDE_CODE_MAX_RETRIES` in their shell profile has a reason for
+/// the number they chose, and a launcher quietly replacing it would be the kind of thing
+/// that takes an afternoon to find.
+fn apply_retry_ceiling(cmd: &mut CommandBuilder) {
+    if std::env::var_os("CLAUDE_CODE_MAX_RETRIES").is_none() {
+        cmd.env("CLAUDE_CODE_MAX_RETRIES", CLAUDE_RETRY_CEILING);
+    }
+}
+
 /// Force a UTF-8 locale on a PTY child. A macOS app launched from Finder inherits no
 /// `LANG`, so the child falls back to the C/POSIX locale and mangles non-ASCII output
 /// (UTF-8 rendered as Mac Roman — `ü`→`√º`, emoji shredded). Terminal.app/iTerm set a
@@ -166,6 +192,7 @@ pub(crate) fn spawn_claude(
     cmd.env("COLORTERM", "truecolor");
     cmd.env("CC_LAUNCHER_SESSION", &session_id);
     apply_utf8_locale(&mut cmd);
+    apply_retry_ceiling(&mut cmd);
 
     log::info!(
         "spawn claude · {session_id} · {workdir}{}{}",

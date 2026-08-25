@@ -2589,3 +2589,35 @@ select.in-ctl { cursor: pointer; }
 .cl-lede code { font: 12px var(--font-mono); color: var(--accent-ink); }
 .cl-foot { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 15px; border-top: 1px solid var(--hair); background: var(--bg-2); font: 10.5px var(--font-mono); color: var(--muted-2); }
 @media (max-width: 640px) { .cl-body { grid-template-columns: 1fr; } .cl-rail { display: none; } }
+
+/* ---- the revive watchdog (Settings › Sessions) --------------------------------
+   Same parts as the peek and attention controls above (.peekrow, .peekstep,
+   .peekhint), so the three read as one family; what is new is the ladder, which is
+   the only part of this panel that answers the question people actually have. */
+.rvbox { display: flex; flex-direction: column; gap: 13px; margin-top: 11px; }
+/* The switch governs the WHOLE control here, unlike .attnbox's — with it off nothing
+   below does anything, so dimming only half would be a lie. The hint keeps full
+   contrast on purpose: with the panel off it is the one line still worth reading. */
+.rvbox.off .peekrow, .rvbox.off .rv-ladder, .rvbox.off .sndwhen { opacity: .5; }
+.rvbox .set-fbtn[disabled] { opacity: .35; cursor: default; }
+.rvbox .set-fbtn[disabled]:hover { border-color: var(--hair-strong); background: var(--surface); }
+.rvbox .set-freset[disabled] { opacity: .35; cursor: default; }
+.rvbox .set-freset[disabled]:hover { color: var(--muted); border-color: var(--hair); }
+/* Two rows of steppers rather than one: five of them on a line wrap unpredictably at
+   the dialog's width, and a stepper split across lines is unreadable. */
+.rv-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.rv-ladder { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border: 1px solid var(--hair); border-radius: 9px; background: var(--surface); }
+.rv-rungs { display: flex; flex-wrap: wrap; gap: 5px; }
+/* Each rung is the wait BEFORE that attempt. Monospace so a row of them lines up as a
+   shape you can read at a glance — the doubling is the point, and proportional digits
+   hide it. */
+.rv-rung { font: 11px var(--font-mono); color: var(--muted); background: var(--bg); border: 1px solid var(--hair); border-radius: 5px; padding: 2px 7px; }
+/* A rung pinned to the cap. Without this, four identical chips look like a bug rather
+   than like the ceiling doing its job — and they are the signal that more attempts have
+   stopped buying reach. */
+.rv-rung.capped { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.rv-total { font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+.rv-total b { color: var(--text); font-weight: 600; }
+/* The inspector's error card, when the watchdog owns the outcome: this note replaces
+   "send the prompt again" and must not read as the same passive advice. */
+.attn-note.revive { color: var(--accent-ink); font-weight: 600; }

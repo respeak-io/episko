@@ -13,6 +13,26 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A session the API kills overnight can now carry on by itself.** A 529, or a Wi-Fi
+  interface that power-saved itself at 03:40, ends the turn — and the session then sits at
+  its prompt until somebody types at it, which if it happened at midnight means eight
+  hours of nothing. Settings › Sessions › *Carry on after an API error* (off until you
+  switch it on) waits and sends a carry-on for you, on a backoff ladder you set: first
+  wait, multiplier, per-wait cap, how many tries before it gives up, and how much to
+  scatter each wait so a fleet killed by one outage doesn't come back in lockstep and
+  become the next one. The panel shows the ladder those five numbers produce and the
+  outage it rides out — about half an hour on the shipped defaults. It never types into a
+  session that is asking you something, never retries what waiting cannot fix (bad
+  credentials, billing, a malformed request), and while the machine has no network at all
+  it holds its attempts rather than spending them. The inspector's error card counts down
+  to the next try; the only noise it makes is the moment it gives up and hands the session
+  back to you.
+
+~ **Claude Code now gets a longer retry leash inside Episko.** Launches set
+  `CLAUDE_CODE_MAX_RETRIES=12` unless your own environment already sets it, which widens
+  the outage its own backoff rides out before the turn ends at all. A request that
+  eventually succeeds never needs the watchdog above.
+
 ! **A Claude Code self-update no longer reads as 300 MiB of agent churn.** Claude Code
   updates itself by writing a whole new ~290 MiB binary, and it does that inside a session
   Episko launched — so the kernel charged those bytes to a `claude` process and the

@@ -86,13 +86,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 57 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 58 modules
 
-**No framework, and no longer one file.** 57 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 58 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (twenty-five, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (twenty-six, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -121,6 +121,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
 | `keys.ts` | the bindable actions, a chord's parse/format/match, what happens when a rebind takes a chord somebody else had, and what the master switch turns off |
+| `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -130,7 +131,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the three spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 56 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 57 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -202,6 +203,7 @@ And the things that hold however the files are arranged:
   which a permission does not move. Don't fold the filter into `needsYou`: `syncAttn`
   asks that one, and the two would then flip each other every paint (`docs/architecture.md`).
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
+- **Episko presses Enter for you in exactly one place**, and it must stay one: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed. Everything else that puts text in a terminal — `sendOutputToSession`, the dashboard's dispatch, `handToTerminal` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about.
 
 ## Deep dives (`docs/`)
 
@@ -214,7 +216,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
-- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), and History.
+- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas) and the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items).
 - **`docs/sounds.md`**: sound alerts. The hard part is playing one sound instead of six: the same moment reaches the frontend twice *by design*, so every play is gated, except that a more urgent event still gets through the burst window, which is the point. Anything that fires on routine activity ships switched off.
 
