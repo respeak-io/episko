@@ -7,7 +7,8 @@ name: release
 # their updater artifact. Every job targets the SAME tag, so tauri-action appends
 # its assets to the one GitHub Release and merges each platform into a single
 # latest.json the app's updater reads. The minisign key signs the updater artifacts
-# on every platform (OS code-signing is separate and not configured).
+# on every platform. OS code-signing is separate and OPT-IN per platform: each leg
+# detects its own secret and builds unsigned when it is absent (src-tauri/SIGNING.md).
 on:
   push:
     tags:
@@ -76,6 +77,32 @@ jobs:
         if: steps.sign.outputs.enabled == 'true'
         run: cargo install trusted-signing-cli
 
+      # macOS code-signing + notarization (Apple Developer ID) is OPT-IN on the same
+      # pattern: gated on APPLE_CERTIFICATE. Without it the mac leg builds ad-hoc
+      # signed exactly as before, and users clear quarantine by hand.
+      - name: Detect macOS signing secrets
+        id: macsign
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # notarytool wants the App Store Connect key as a FILE, so the base64 secret is
+      # materialised into the runner's temp dir and its path exported for the build
+      # step and the DMG step below. $RUNNER_TEMP is wiped when the job ends.
+      - name: Materialise the App Store Connect API key
+        if: steps.macsign.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          KEY="$RUNNER_TEMP/AuthKey.p8"
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 --decode > "$KEY"
+          chmod 600 "$KEY"
+          echo "APPLE_API_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+
       # Install instructions ride in every release body so the top-of-list (latest)
       # release always carries them — GitHub cannot pin a release, so "always in the
       # newest one" is the equivalent. A tag with no changelog section still releases:
@@ -106,6 +133,13 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # Apple Developer ID: the bundler imports the .p12 into a temporary keychain
+          # itself, then notarizes the .app with the API key and staples the ticket.
+          # All inert on Windows and when the secrets are absent.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Episko ${{ github.ref_name }}"
@@ -122,4 +156,35 @@ jobs:
           # When Windows signing is enabled, merge the signCommand overlay via
           # --config so tauri-action signs the .exe, NSIS setup, and .msi; otherwise
           # pass the matrix args unchanged (unsigned, as today).
-          args: ${{ steps.sign.outputs.enabled == 'true' && format('{0} --config src-tauri/tauri.signing.conf.json', matrix.args) || matrix.args }}
+          # The signingIdentity lives in the overlay rather than tauri.conf.json so a
+          # local `tauri build` stays ad-hoc and needs no certificate.
+          args: >-
+            ${{ steps.sign.outputs.enabled == 'true' && format('{0} --config src-tauri/tauri.signing.conf.json', matrix.args)
+             || steps.macsign.outputs.enabled == 'true' && format('{0} --config src-tauri/tauri.macos.signing.conf.json', matrix.args)
+             || matrix.args }}
+
+      # tauri-action notarizes and staples the .app, then builds the .dmg FROM that
+      # stapled app — but never notarizes the disk image itself, and the .dmg is what
+      # users download, so it is the file carrying the quarantine flag. Unnotarized it
+      # still raises "Apple could not verify this app is free of malware" on the first
+      # open, which is the whole friction signing exists to remove. Verified with
+      #   spctl -a -t open --context context:primary-signature -vv <dmg>
+      # ('-t install' is for installer packages and reports a misleading verdict on a
+      # disk image). The updater's .app.tar.gz needs nothing: the ticket is a plain
+      # file at Contents/CodeResources, stapled before the tarball is made.
+      - name: Notarize and staple the DMG
+        if: steps.macsign.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$DMG" --wait \
+            --key-id "${{ secrets.APPLE_API_KEY }}" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "${{ secrets.APPLE_API_ISSUER }}"
+          xcrun stapler staple "$DMG"
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+          # tauri-action already uploaded the un-stapled .dmg under this name.
+          gh release upload "${{ github.ref_name }}" "$DMG" --clobber
