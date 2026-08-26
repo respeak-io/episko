@@ -101,13 +101,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 76 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 77 modules
 
 **No framework, and no longer one file.** 76 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (thirty-one, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty-two, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -145,6 +145,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
 | `keys.ts` | the bindable actions, a chord's parse/format/match, what happens when a rebind takes a chord somebody else had, and what the master switch turns off |
 | `footprefs.ts` | which segments the status bar shows: the table, the store, its repair, and why three of them have no switch |
+| `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
 
@@ -276,6 +277,22 @@ And the things that hold however the files are arranged:
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
+- **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
+  one-off.** Each pins the WebView2 compositor to the monitor's refresh rate for as long
+  as it exists — 144Hz on a Windows desktop against the 60 this was designed at, which is
+  why the complaint arrived from Windows and not from the Mac. Two rules follow. **A
+  dialog that stays mounted at `opacity: 0` must not keep its blur**: seventeen do (that
+  is what lets them fade), and each was a live render surface for a panel nobody can see,
+  so the blur is gated on `:not(.show)`. And **the switches are ./motion's table and
+  nothing else** — `fx-still` (cancel), `fx-flat` (no blur) and `fx-idle` (paused while
+  the window is in the background, applied by main.ts's `onFocusChanged`), all put on
+  `<html>` by ./actions' `applyFx`. `fx-still` is a deliberate *superset* of the OS's own
+  `prefers-reduced-motion: reduce` — it flattens every transition where reduce names
+  eight and tames a ninth — but the two must agree on the four **substitutes**, the
+  places where an animation carries a state rather than decorating one and ending it
+  would delete information; `test/motion.test.ts` fails if those lists drift apart.
+  The cancel and the pause are separate on purpose — a paused animation resumes
+  mid-cycle, where a cancelled one would restart every session's glyph in lockstep.
 - **Persistence is all `localStorage`**, every key prefixed `cc-`; `grep '"cc-'` for the current set.
   **Every read of one narrows rather than trusts.** `state.ts` reads its preferences at
   module scope in the module everything else imports, so a `JSON.parse` that throws there

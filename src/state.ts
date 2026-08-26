@@ -31,6 +31,7 @@ import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
+import { parseMotionPrefs, type MotionPrefs } from "./motion";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -428,3 +429,17 @@ export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, pr
 // permanently, so there is nothing left to cycle and nothing left to expand.
 export let footPrefs: FootPrefs = parseFootPrefs(localStorage.getItem("cc-foot"));
 export function setFootPrefs(p: FootPrefs) { footPrefs = p; }
+
+// Which visual effects are allowed to cost a GPU frame. The table, its repair and every
+// mutation of it are in ./motion; this is only where the parsed value lives and what
+// `applyFx` reads. Written through ./actions' `setFx`, per the
+// setters-assign-and-nothing-else rule.
+export let motionPrefs: MotionPrefs = parseMotionPrefs(localStorage.getItem("cc-motion"));
+export function setMotionPrefs(p: MotionPrefs) { motionPrefs = p; }
+
+// Whether the app window currently has focus. Not persisted — it is a fact about right
+// now, not a preference — and held here rather than read from `document.hasFocus()` at
+// each use because the webview and the OS window disagree during a drag, and the OS is
+// the one that decides whether you can see the animation.
+export let winFocused = true;
+export function setWinFocused(v: boolean) { winFocused = v; }
