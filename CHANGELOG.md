@@ -13,21 +13,14 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-~ **macOS builds are signed by Respeak GmbH and notarized by Apple.** Installing is now
-  download, drag, open — the `xattr -dr com.apple.quarantine` dance is gone, and so is the
-  first-launch block. The reason this was worth doing is less visible than Gatekeeper:
-  macOS ties a folder-access grant to an app's *designated requirement*, and an ad-hoc
-  bundle has none that outlives a build — its requirement is literally the hash of that one
-  binary. So every release looked like a brand-new app and re-asked for Documents, Desktop,
-  Downloads and the microphone, which at a release every other day meant permission prompts
-  that never stayed answered no matter how often you clicked Allow. Signed, the requirement
-  names the team and the bundle id instead, which survives every rebuild and a certificate
-  renewal. **One last round of prompts on first launch after updating** — the old grants were
-  keyed to hashes that no longer exist — and then they stick. Signing is opt-in in CI and
-  gated on the certificate secret, so a fork or a local `tauri build` still produces an
-  ad-hoc bundle and needs no Apple account. The `.dmg` is notarized separately from the
-  `.app`, because the bundler notarizes what goes *inside* the disk image and not the image
-  itself, and the disk image is the file that carries the quarantine flag.
+## 0.23.0 — 2026-08-26
+
+**Signed and notarized by Apple.** Nothing to clear on install.
+
+~ macOS builds carry a Developer ID certificate, so the `xattr -dr com.apple.quarantine`
+  step is gone — download, drag, open.
+! Folder and microphone permissions stay granted across updates. An ad-hoc build got a new
+  identity every release, so macOS treated each one as a new app and asked again.
 
 ## 0.22.0 — 2026-08-25
 
