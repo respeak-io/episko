@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.23.0 — 2026-08-26
+
+macOS builds are signed by Respeak GmbH and notarized by Apple, so installing is
+download-drag-open and the permission prompts finally stay answered.
+
 ~ **macOS builds are signed by Respeak GmbH and notarized by Apple.** Installing is now
   download, drag, open — the `xattr -dr com.apple.quarantine` dance is gone, and so is the
   first-launch block. The reason this was worth doing is less visible than Gatekeeper:
