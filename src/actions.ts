@@ -15,8 +15,8 @@ import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
-import { refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell } from "./panes";
+import { applyScrollback, refit } from "./terminal";
+import { activeCwd, closeSession, launch, launchShell, shelveSession } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
@@ -34,11 +34,16 @@ import {
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
+  vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
+  termScrollback, setTermScrollback as setTermScrollbackState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
+  motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
+import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
+import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
   renameGroup, setCollapsed, type GroupStore,
@@ -47,7 +52,7 @@ import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
-import { CLAUDE_CLI } from "./types";
+import { canShelve, CLAUDE_CLI, midWork, phaseText } from "./types";
 import { resolveProviderPermission } from "./providers/control";
 import { removePermission } from "./permissions";
 import { providerAdapter, providerPermissionMode } from "./providers";
@@ -130,6 +135,25 @@ export function removeFavorite(path: string) {
   saveFavorites();
   renderAll();
 }
+/// Shelve one session, asking first if it is in the middle of something.
+///
+/// The verb three surfaces trigger — the stage header's ⇩, the palette's row, and
+/// nothing else owns it — which is what puts it here rather than in ./panes beside the
+/// mechanism it calls. The confirmation is the whole difference from `shelveSession`:
+/// the sign-off sheet calls that one directly, having already asked about the fleet.
+export async function shelveSessionAsked(id: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (canShelve(s) && midWork(s)) {
+    const ok = await ask(
+      `${s.title || s.project} is still going — ${phaseText(s)}\n\nShelving stops it now. The conversation is kept and comes back from the sidebar, but the turn it is in the middle of will not finish.`,
+      { title: "Shelve a working session?", kind: "warning", okLabel: "Shelve it", cancelLabel: "Leave it running" },
+    );
+    if (!ok) return;
+  }
+  if (shelveSession(id)) toast("Shelved · resume it from the sidebar");
+}
+
 export function resolvePermission(id: string, behavior: string) {
   const owner = [...sessions.values()].find((s) => s.pendingPermId === id
     || s.pendingPermissions.some((pending) => pending.id === id));
@@ -209,6 +233,54 @@ export function setRevivePrefs(p: RevivePrefs) {
   localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
   renderAll();
   renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// And for the vitals recorder. `renderSettings` alone, like the sounds above: the series
+// has exactly one surface, the tab the switch is on. ./debug reads `vitalsPrefs` live on
+// its tick, so nothing has to be pushed to it and no interval is rebuilt — see the note
+// on `tickVitals` for why that matters more here than it looks.
+export function setVitalsPrefs(p: VitalsPrefs) {
+  setVitalsPrefsState(p);
+  localStorage.setItem("cc-vitals", vitalsPrefsJson(vitalsPrefs));
+  renderSettings();
+}
+
+// The scrollback limit, pushed onto every pane already open as well as stored for the
+// next one. `renderSettings` alone: xterm redraws its own viewport when the buffer
+// changes and nothing else in the app displays a line count — the Diagnostics readout
+// picks the new total up on its next sample rather than being repainted at it.
+export function setScrollback(lines: number) {
+  setTermScrollbackState(lines);
+  localStorage.setItem("cc-scrollback", String(termScrollback));
+  applyScrollback(sessions.values(), termScrollback);
+  renderSettings();
+}
+
+// The webview's inspector. Nothing to persist and nothing to repaint — the window it
+// opens is the browser's, not ours.
+export function openDevtools() {
+  void invoke("open_devtools").catch((e) => { dlog("warn", `devtools open failed: ${e}`); toast("Could not open the inspector"); });
+}
+
+/// Reload the interface, keeping every session.
+///
+/// This is the documented workaround for the renderer going sluggish after a long day,
+/// and it is a button rather than folklore for one reason: it *looks* like it should
+/// kill your fleet, so without something in the app saying otherwise nobody reaches for
+/// it. Nothing is lost — the backend owns the PTYs, and `adoptOrphans` re-adopts every
+/// pane from `live_sessions` on the way back up, replaying each one's scrollback from the
+/// backend's own ring.
+///
+/// Asked rather than done, because "every pane rebuilds itself" is a visible few seconds
+/// and a keystroke mid-prompt would be lost in it.
+export async function reloadUi() {
+  const ok = await ask(
+    "Reload the interface?\n\nEvery session keeps running — the terminals are held by Episko itself and each pane is re-adopted with its scrollback.\n\nThis clears whatever the interface has accumulated, which is what makes it responsive again.",
+    { title: "Reload interface", kind: "info", okLabel: "Reload", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  dlog("info", "reloading the webview by request (Settings › Diagnostics)");
+  location.reload();
 }
 
 // ---------- the revive watchdog ----------
@@ -417,6 +489,38 @@ export function setFootSeg(id: FootSeg) {
   setFootPrefs(toggleFootSeg(footPrefs, id));
   localStorage.setItem("cc-foot", footPrefsJson(footPrefs));
   renderAll();
+}
+
+/// Switch one visual effect on or off.
+///
+/// Here rather than in ./state for the usual reason: a setter there assigns and nothing
+/// else, so the persist and — in this case — the class that actually makes the change
+/// visible belong to the call site, and this is it.
+export function setFx(id: VisualFx) {
+  setMotionPrefsState(toggleFx(motionPrefs, id));
+  localStorage.setItem("cc-motion", motionPrefsJson(motionPrefs));
+  applyFx();
+}
+
+/// Put the current effect state on `<html>`, where the stylesheet reads it.
+///
+/// Every class ./motion can produce is removed before the current set is added, rather
+/// than each site toggling its own: the two inputs (the prefs and the window's focus)
+/// change independently and at unrelated moments, so a per-class toggle would need every
+/// caller to know about every class. Called on startup, on a pref change, and on each
+/// focus change.
+export function applyFx() {
+  const root = document.documentElement;
+  root.classList.remove(...ALL_FX_CLASSES);
+  root.classList.add(...rootFxClasses(motionPrefs, winFocused));
+}
+
+/// The window gained or lost focus. Cheap enough to call on every event — `applyFx` is
+/// three class operations and the browser no-ops a class list that did not change.
+export function setWindowFocused(v: boolean) {
+  if (v === winFocused) return;
+  setWinFocusedState(v);
+  applyFx();
 }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is

@@ -20,7 +20,7 @@ import { setEngine } from "./footer";
 import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
-import { hasSessionState, isAgent, taskStateText, type Runnable, type Sess } from "./types";
+import { canShelve, hasSessionState, isAgent, taskStateText, type Runnable, type Sess } from "./types";
 import { allProjects, attnPending, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
@@ -41,6 +41,7 @@ let host: {
   resolvePermission: (id: string, behavior: string) => void;
   openPlainTerminal: () => void;
   closeSession: (id: string) => void;
+  shelveSession: (id: string) => void;
   addProject: () => void;
   cycleSort: () => void;
   toggleInsp: () => void;
@@ -52,7 +53,7 @@ let host: {
   openProjectFiles: () => void;
 } = {
   setActive: () => {}, resolvePermission: () => {},
-  openPlainTerminal: () => {}, closeSession: () => {}, addProject: () => {},
+  openPlainTerminal: () => {}, closeSession: () => {}, shelveSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   toggleTheme: () => {}, requestLaunch: () => {},
   revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
@@ -99,6 +100,10 @@ function sessionActions(s: Sess): PalItem[] {
     // clean up its worktree (and merged branch) without dropping to a shell.
     if (s.worktree) a.push(mk("Remove this worktree…", "⌫", () => removeWorktreeSession(s)));
   }
+  // Above Close, and only where it can be kept: shelving is the softer of the two and
+  // the one you want offered first, but on a shell or a terminal-only agent the row
+  // would promise a resume that does not exist (`canShelve` in ./types).
+  if (canShelve(s)) a.push(mk("Shelve session · stop it, keep the row", "⇩", () => host.shelveSession(s.id)));
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));
   return a;
 }

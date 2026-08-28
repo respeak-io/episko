@@ -28,9 +28,11 @@ import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
+import { clampScrollback, clampVitalsPrefs, type VitalsPrefs } from "./perf";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
+import { parseMotionPrefs, type MotionPrefs } from "./motion";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -268,6 +270,15 @@ export function setDormants(l: Restorable[]) { dormants = l; }
 // expose the same resume/thread id without hiding each other's history row.
 export let backendLive: ReadonlySet<string> = new Set();
 export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
+// Whether the local telemetry server is currently listening (backend
+// `telemetry-health`). It can die on a single accept error and be re-bound a moment
+// later — see serve_telemetry — and while it is down *every* Claude pane goes quiet
+// at once: no phase, no context, no files, no tools, and no error either, because
+// the hooks are fire-and-forget over `curl -s`. Which is exactly why this is state
+// rather than a log line: the rail's answer for a session it has heard nothing from
+// is a perfectly confident `○ idle`, and nothing else on screen contradicts it.
+export let telemetryUp = true;
+export function setTelemetryUp(v: boolean) { telemetryUp = v; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
 export interface EngineDef { id: Engine; label: string; sub: string }
@@ -428,3 +439,30 @@ export const ioAll: Res = { readBps: 0, writeBps: 0, readMb: 0, writtenMb: 0, pr
 // permanently, so there is nothing left to cycle and nothing left to expand.
 export let footPrefs: FootPrefs = parseFootPrefs(localStorage.getItem("cc-foot"));
 export function setFootPrefs(p: FootPrefs) { footPrefs = p; }
+
+// Which visual effects are allowed to cost a GPU frame. The table, its repair and every
+// mutation of it are in ./motion; this is only where the parsed value lives and what
+// `applyFx` reads. Written through ./actions' `setFx`, per the
+// setters-assign-and-nothing-else rule.
+export let motionPrefs: MotionPrefs = parseMotionPrefs(localStorage.getItem("cc-motion"));
+export function setMotionPrefs(p: MotionPrefs) { motionPrefs = p; }
+
+// Whether the app window currently has focus. Not persisted — it is a fact about right
+// now, not a preference — and held here rather than read from `document.hasFocus()` at
+// each use because the webview and the OS window disagree during a drag, and the OS is
+// the one that decides whether you can see the animation.
+export let winFocused = true;
+export function setWinFocused(v: boolean) { winFocused = v; }
+
+// Whether the frontend records its own weight on a timer, and how often. One JSON blob
+// under cc-vitals for the same reason as cc-attn above: two fields that are only ever set
+// together, from one switch and one picker in the same group. The model — what is
+// sampled, what each counter is allowed to accuse, and the log line — is ./perf's.
+export let vitalsPrefs: VitalsPrefs = clampVitalsPrefs(safeParse(localStorage.getItem("cc-vitals")));
+export function setVitalsPrefs(p: VitalsPrefs) { vitalsPrefs = clampVitalsPrefs(p); }
+
+// Lines of scrollback each new terminal keeps. Read here and applied by ./panes at
+// creation and by ./terminal to the panes already open, so a change reaches a fleet
+// that has been up for hours — which is the only fleet the setting is for.
+export let termScrollback: number = clampScrollback(localStorage.getItem("cc-scrollback"));
+export function setTermScrollback(n: number) { termScrollback = clampScrollback(n); }

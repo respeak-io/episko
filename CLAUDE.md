@@ -61,6 +61,7 @@ Three hard constraints shape this code:
 - **The hooks run no shell; the statusLine cannot avoid one.** A command hook takes an **exec form** (`command` plus an `args` array, each element delivered verbatim), so the hooks spawn `curl` and nothing else (the shell form it replaced paid a PowerShell launch per hook event). The statusLine gets no such escape: Claude Code defines neither `args` nor `shell` for it and routes it through **Git Bash whenever Git Bash is installed** (else PowerShell), so that one command must parse in *either* shell: no `&` call operator, no `$null`, no `Write-Output`, and forward slashes. Get that wrong and there is no error, just every figure the statusLine carries (model, context %, cost, duration, **the rate limits**) gone at once while the hooks keep phases flowing. That shipped once.
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
+- **The server must be supervised, and it must come back on the SAME port.** `tiny_http`'s accept thread `break`s out of its loop on *any* `accept()` error, and `IncomingRequests::next()` is `self.server.recv().ok()` — so one `Err` becomes a `None` that ends the `for` loop, drops the `Server` and closes the socket. One `ECONNABORTED` did exactly that after six days of uptime and it stayed dead for fourteen hours: `AppState.port` still held the number, so every session launched afterwards got an instrument file pointing at a closed socket and sat at `idle` with no model, context, files or tools. Nothing anywhere said so — the hooks are `async` and everything uses `curl -s`. So `run_telemetry_server` is wrapped in **`serve_telemetry`**, which re-binds and re-binds *that port*: an instrument file is written at launch and never revisited, so reclaiming the number revives every running pane on its next statusLine, while a fresh port would only help future launches (it takes one only after ~a minute of failures, and then updates the now-**`AtomicU16`** `AppState.port`). Re-binding **must sleep first** — `tiny_http`'s `Drop` pokes its accept thread but never joins it, so the old listener is briefly still bound and `SO_REUSEADDR` does not help against a *listening* socket. Both transitions emit `telemetry-health`, which raises the top bar's red badge; a fleet nobody can hear must never look like a quiet one.
 
 ## Backend (`src-tauri/src/`): sixteen modules
 
@@ -74,7 +75,7 @@ Three hard constraints shape this code:
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger; everything read out of `~/.claude` |
 | `pty.rs` | the four launch engines, Claude's permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output), `stream_pty_session`, the PTY lifecycle |
 | `agent.rs` | provider control planes beside a PTY: Codex App Server observer, launch-policy/approval routing and public history calls |
-| `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server`, `resolve_permission` |
+| `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server` + the `serve_telemetry` supervisor that re-binds it, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
 | `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus, `session_ports` (which TCP ports a pane's process tree is listening on) |
 | `github.rs` | `gh`: issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force |
@@ -101,13 +102,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 76 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 79 modules
 
-**No framework, and no longer one file.** 76 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 79 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (thirty-one, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty-three, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -116,7 +117,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `providers/index.ts` | provider registry: normalized event adapters plus history/read/restore contracts used by shared UI |
 | `providers/control.ts` | provider-specific approval routing, kept out of shared actions and reducers |
 | `providers/codex.ts` | Codex App Server methods/items → normalized events, plus public thread history mapping |
-| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints |
+| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints. So is `cleanTitle` — the OSC title minus Claude's spinner — because that table tracks somebody else's release and belongs where it can be tested |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent), plus what a *reader* needs from a hunk: which deletion became which addition (by similarity, not by position), and which words inside that pair moved — including when marking them would be noise |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
@@ -145,18 +146,20 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
 | `keys.ts` | the bindable actions, a chord's parse/format/match, what happens when a rebind takes a chord somebody else had, and what the master switch turns off |
 | `footprefs.ts` | which segments the status bar shows: the table, the store, its repair, and why three of them have no switch |
+| `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
+| `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 76 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 79 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -276,6 +279,22 @@ And the things that hold however the files are arranged:
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
+- **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
+  one-off.** Each pins the WebView2 compositor to the monitor's refresh rate for as long
+  as it exists — 144Hz on a Windows desktop against the 60 this was designed at, which is
+  why the complaint arrived from Windows and not from the Mac. Two rules follow. **A
+  dialog that stays mounted at `opacity: 0` must not keep its blur**: seventeen do (that
+  is what lets them fade), and each was a live render surface for a panel nobody can see,
+  so the blur is gated on `:not(.show)`. And **the switches are ./motion's table and
+  nothing else** — `fx-still` (cancel), `fx-flat` (no blur) and `fx-idle` (paused while
+  the window is in the background, applied by main.ts's `onFocusChanged`), all put on
+  `<html>` by ./actions' `applyFx`. `fx-still` is a deliberate *superset* of the OS's own
+  `prefers-reduced-motion: reduce` — it flattens every transition where reduce names
+  eight and tames a ninth — but the two must agree on the four **substitutes**, the
+  places where an animation carries a state rather than decorating one and ending it
+  would delete information; `test/motion.test.ts` fails if those lists drift apart.
+  The cancel and the pause are separate on purpose — a paused animation resumes
+  mid-cycle, where a cancelled one would restart every session's glyph in lockstep.
 - **Persistence is all `localStorage`**, every key prefixed `cc-`; `grep '"cc-'` for the current set.
   **Every read of one narrows rather than trusts.** `state.ts` reads its preferences at
   module scope in the module everything else imports, so a `JSON.parse` that throws there
@@ -286,6 +305,20 @@ And the things that hold however the files are arranged:
   `strList` / `favList` / a `clamp*`, never a bare `JSON.parse`, and discard a bad value on
   its own rather than letting it take the session (`test/state.test.ts`).
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash. The durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
+- **A leak that takes fifteen hours cannot be diagnosed from a snapshot.** `dbgSnapshot`
+  is state-of-now, so the *growth* half is **Settings › Diagnostics** (./perf decides,
+  ./debug samples): one reading every few minutes, teed into the rolling `episko.log` via
+  `log_frontend` — **never `dlog`**, which would push real events out of the 400-entry
+  ring the panel exists to show. Three rules. It **ships off** and the tab says why, since
+  the recorder has to be armed before the day it is needed. A counter's `kind` decides
+  what it may accuse: only an unbounded `growth` one, never a `level` (scrollback lines
+  saturate at their ceiling by design) or a `rate` (a total that counts is not a leak) —
+  the health.ts rule, one level down. And **no verdict under half an hour or across a
+  reload**: a busy turn makes any counter look alarming, and the reload that fixes this
+  bug resets every one of them to zero, which reads as a cure. The tab's other three rows
+  are the inspector (the `devtools` Cargo feature ships it in release builds), the
+  scrollback limit, and the reload itself — a button because it *looks* like it kills
+  your fleet and does not.
 
 ## App-wide rules
 
@@ -399,7 +432,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
-- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
+- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, shelving (a shelved session becomes the same restorable row a quit writes — never a second kind of row — and the dormant entry must go on the list *before* `closeSession` flushes the roster), and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
 - **`docs/providers.md`**: the provider contract, shared capability matrix, adapter/backend boundaries, feature checklist and the definition of done for adding first-class agents.
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas), the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items), and the OS dialogs Episko stopped drawing (`confirm.ts` — a native box cannot mark its destructive button; the file picker is the one that stays).
 - **`docs/tour.md`**: the guided tour. It opens on the *absence* of `cc-tour` and never after an update; a release intro is a chapter with a `since`, not a second mechanism; the veil is `pointer-events:none` so the lit control is the live one, and it must never join `SCRIM_DLGS`; a missing anchor skips a step **unless the step is waiting**, because a waiting step's anchor is usually what it is waiting for. **Write a step against the app, never against a mock, and walk it before you believe it** — every bug this feature has had was a card pointing confidently at something that was not there.

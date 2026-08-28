@@ -13,6 +13,33 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Shelve a session: ⇩ in the stage header stops it and leaves its row behind, where ⟲
+  picks the conversation back up — the same row a restart already produced.
++ Sign off shelves the whole fleet at once, from the top bar. Sessions still working are
+  kept by default; shells and tasks with nothing to resume are offered for closing.
++ A red *telemetry* badge in the top bar when the hook server is down, so a screen of
+  frozen readings can no longer look like a quiet fleet.
++ Settings › Appearance › Visual effects: switches for animations, background blur, and
+  whether Episko keeps animating once the window is behind something else.
++ Settings › Diagnostics samples what the interface weighs — DOM nodes, heap, canvases,
+  terminal buffers — into `episko.log`, so a slow leak survives the reload that fixes it.
++ The web inspector ships in release builds, opened from Settings › Diagnostics.
+  `EPISKO_SOURCEMAP=1 pnpm tauri build` makes its profiles name our own functions.
++ Terminal scrollback is a setting — 1,000, 4,000 or the previous 8,000 lines per pane.
+  Lowering it applies to the panes already open.
++ **Reload the interface**, as a button that says what it does. It was always the fix for
+  a sluggish window and never killed your fleet.
+~ Episko stops animating while the window is behind something else, and picks up where it
+  left off. An animation you cannot see is telling you nothing.
+! The telemetry server no longer dies for good on one network hiccup, leaving every
+  session at `idle` with no model, context, files or tools. It re-binds its own port.
+! A session in a worktree no longer becomes a project of its own after a reload. A second
+  Ctrl+R during boot saved an empty roster over the identities it had not read yet.
+! Claude Code 2.1.250 animates its window title with ◐◑◒◓; those frames were landing in
+  the sidebar in front of session names.
+! Seventeen dialogs, popovers and scrims no longer blur what is behind them while closed
+  — each held a live GPU surface to frost a panel nobody could see.
+
 ## 0.23.0 — 2026-08-26
 
 **Signed and notarized by Apple.** Nothing to clear on install.

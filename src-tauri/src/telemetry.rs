@@ -41,11 +41,108 @@ fn query_param(url: &str, key: &str) -> Option<String> {
     })
 }
 
+/// How long to wait before the *n*th attempt to re-bind the telemetry port.
+///
+/// Doubles from a second and caps at thirty. The cap matters more than the ladder:
+/// the common cause of a failed re-bind is a TIME_WAIT window measured in tens of
+/// seconds, so retrying forever at a bounded interval gets the port back on its own,
+/// while a ladder with no ceiling would still be sleeping ten minutes later.
+fn rebind_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1u64 << attempt.min(5))
+}
+
+/// Attempts (≈ a minute at the ladder above) on the *original* port before giving up
+/// on it and taking a fresh ephemeral one. Staying put is strongly preferred: every
+/// instrument file already on disk names the old port, so re-binding it revives every
+/// running pane at once, whereas a new port only helps sessions launched after it.
+const REBIND_GIVE_UP: u32 = 8;
+
+/// Get a listener back, and say which port it landed on.
+///
+/// **Sleeps before the first attempt, and that is not politeness.** `tiny_http`'s
+/// `Drop` sets its close flag and pokes the accept thread awake, but never joins it —
+/// so the old `TcpListener` is still bound for a short unbounded moment after the
+/// `Server` is gone, and an immediate re-bind fails with `EADDRINUSE`. `SO_REUSEADDR`
+/// (which `std`'s `TcpListener::bind` sets for us on unix) covers a socket in
+/// TIME_WAIT; it does nothing about one that is still *listening*. A second is nothing
+/// against a ~10s statusLine cadence, so the wait is free.
+fn rebind_telemetry(port: u16) -> (tiny_http::Server, u16) {
+    let mut attempt = 0u32;
+    loop {
+        std::thread::sleep(rebind_delay(attempt));
+        // Past the give-up point, ask for an ephemeral port instead: the original is
+        // held by something else and is not coming back.
+        let want = if attempt >= REBIND_GIVE_UP { 0 } else { port };
+        match tiny_http::Server::http(("127.0.0.1", want)) {
+            Ok(s) => {
+                let got = s.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
+                return (s, got);
+            }
+            Err(e) => {
+                log::warn!("telemetry: re-bind of 127.0.0.1:{want} failed (attempt {attempt}): {e}");
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Keep a telemetry server listening for the life of the app.
+///
+/// `run_telemetry_server` returns whenever its listener dies, and **one transient
+/// error is enough**: `tiny_http`'s accept thread `break`s out of its loop on any
+/// `accept()` error, pushes the error into the queue, and `IncomingRequests::next()`
+/// is `self.server.recv().ok()` — so the `Err` becomes a `None` that ends the `for`
+/// loop, drops the `Server`, and closes the socket. Nothing retries and nothing
+/// complains.
+///
+/// That is not hypothetical. A single `ECONNABORTED` ("Software caused connection
+/// abort", errno 53) took the server down after six days of uptime and it never came
+/// back: `AppState.port` still held the dead number, so every session launched over
+/// the following fourteen hours got an instrument file pointing at a closed socket and
+/// sat at `idle` with no model, no context, no files and no tools. The whole path is
+/// silent by design — the hooks are `"async": true` and both hooks and statusLine use
+/// `curl -s` — so a refused connection produces no output anywhere, on either side.
+///
+/// So: re-bind, and re-bind **the same port**, because that is what makes the outage
+/// transient rather than terminal. The instrument files are written at launch and
+/// never revisited, so a pane that was deaf during the gap starts reporting again on
+/// its next statusLine (~10s) without being relaunched. Only after `REBIND_GIVE_UP`
+/// failures do we take a new port and publish it, so that at least new launches work.
+///
+/// Both transitions are announced to the frontend as `telemetry-health`, because the
+/// original failure's real cost was that nothing on screen said anything was wrong.
+pub(crate) fn serve_telemetry<R: Runtime>(server: tiny_http::Server, app: AppHandle<R>) {
+    let mut server = server;
+    loop {
+        // Returns only when the listener is gone.
+        run_telemetry_server(server, app.clone());
+
+        let port = app.state::<AppState>().port.load(std::sync::atomic::Ordering::Relaxed);
+        log::error!("telemetry: listener on 127.0.0.1:{port} died; re-binding");
+        let _ = app.emit("telemetry-health", serde_json::json!({ "up": false, "port": port }));
+
+        let (next, now) = rebind_telemetry(port);
+        server = next;
+        if now != port {
+            // Everything already launched is permanently deaf at this point; say so
+            // rather than letting the recovery read as a clean one.
+            log::error!("telemetry: could not reclaim {port}, now on {now} — sessions launched before this stay silent until relaunched");
+            app.state::<AppState>().port.store(now, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            log::info!("telemetry: listener back on 127.0.0.1:{now}");
+        }
+        let _ = app.emit("telemetry-health", serde_json::json!({ "up": true, "port": now, "moved": now != port }));
+    }
+}
+
 /// Receive hook + statusLine POSTs from Claude Code and forward each to the
 /// frontend as a `telemetry` event. Every request carries Episko's stable launch
 /// id (`X-CC-Session` header, or `?sid=` for the permission hook); we force it onto
 /// the payload as `session_id` so the frontend routes by it — immune to Claude
 /// rotating its own runtime session_id on /clear, /compact or /resume.
+///
+/// **Returns when the listener dies**, which is a thing that happens — see
+/// `serve_telemetry`, which is what production runs and what puts it back.
 ///
 /// Generic over the runtime so the tests can drive the real server against
 /// `tauri::test::mock_app()`; production passes the concrete `AppHandle<Wry>`.
@@ -370,7 +467,7 @@ mod tests {
         let server = tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server");
         let port = server.server_addr().to_ip().expect("ip address").port();
         app.manage(AppState {
-            port,
+            port: std::sync::atomic::AtomicU16::new(port),
             sessions: Mutex::new(HashMap::new()),
             agent_runtimes: Mutex::new(HashMap::new()),
             owned_pids: Mutex::new(HashSet::new()),
@@ -735,6 +832,63 @@ mod tests {
         // The held request is consumed by answering: a second decision (a double
         // click, a stale dialog) is a no-op rather than a panic on a gone request.
         resolve_permission(app.state(), id, "allow".to_string());
+    }
+
+    // ---------- surviving a dead listener ----------
+
+    /// The premise of the whole recovery: after a listener dies we get **the same port**
+    /// back, which is what revives every already-launched pane rather than only the ones
+    /// started afterwards. Every instrument file on disk names that number and none of
+    /// them is ever rewritten, so if this stops holding the fix is worth nothing.
+    ///
+    /// Driven through `rebind_telemetry` rather than a bare `Server::http`, because the
+    /// wait is part of the answer: `tiny_http`'s `Drop` never joins its accept thread,
+    /// so for a moment after the `Server` is gone the old listener is still bound and an
+    /// immediate re-bind fails with `EADDRINUSE` — which is exactly what this test did
+    /// before it was pointed at the real path.
+    ///
+    /// Served-then-closed, not merely bound: the request leaves a socket whose *local*
+    /// end is the port being reclaimed, which is the TIME_WAIT case on top of the racing
+    /// listener.
+    #[test]
+    fn the_telemetry_port_can_be_reclaimed_after_its_listener_dies() {
+        let first = tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server");
+        let port = first.server_addr().to_ip().expect("ip address").port();
+
+        // Answer one request and drop the listener, exactly as the accept-error path
+        // leaves things.
+        let served = std::thread::spawn(move || {
+            let rq = first.recv().expect("one request");
+            let _ = rq.respond(tiny_http::Response::from_string(""));
+        });
+        read_response(
+            open_post(port, "/hook", &[("X-CC-Session", "ours")], r#"{"hook_event_name":"Stop"}"#),
+            std::time::Duration::from_secs(5),
+        );
+        served.join().expect("server thread");
+
+        let (again, got) = rebind_telemetry(port);
+        assert_eq!(
+            got, port,
+            "the telemetry port must be reclaimable once its listener dies — serve_telemetry's \
+             recovery, and every instrument file already on disk, name this number"
+        );
+        assert_eq!(again.server_addr().to_ip().expect("ip address").port(), port);
+    }
+
+    /// The ladder backs off and then stops growing. The ceiling is the load-bearing
+    /// half: the usual reason a re-bind fails is a TIME_WAIT window of tens of seconds,
+    /// so an uncapped doubling would still be asleep long after the port came free.
+    #[test]
+    fn rebind_delay_backs_off_to_a_ceiling() {
+        let ladder: Vec<u64> = (0..9).map(|n| rebind_delay(n).as_secs()).collect();
+        assert_eq!(ladder, vec![1, 2, 4, 8, 16, 32, 32, 32, 32]);
+        assert!(
+            ladder.iter().take(REBIND_GIVE_UP as usize).sum::<u64>() >= 60,
+            "give up on the original port only after a real wait — a port held by a \
+             TIME_WAIT window comes back on its own, and moving ports strands every \
+             session already launched"
+        );
     }
 
     // ---------- the CLI contract, against the real `claude` ----------

@@ -236,6 +236,42 @@ html.win .wctl { display: flex; }
 .cafpop .caf-switch .caf-knob { position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
 .cafpop .caf-switch.on { background: var(--accent-wash); border-color: var(--accent-line); }
 .cafpop .caf-switch.on .caf-knob { transform: translateX(13px); background: var(--accent-ink); }
+/* sign off: the top-bar button and its sheet */
+.ibtn.signoff .so-ic { width: 15px; height: 15px; }
+.ibtn.signoff:hover .so-ic .so-arrow { transform: translateY(1px); }
+@media (prefers-reduced-motion: no-preference) { .ibtn.signoff .so-ic .so-arrow { transition: transform .15s; } }
+/* Wider than the other popovers because its rows carry a name AND a state, and the
+   name is a project plus a title. It also has to stay reachable on a short window:
+   the fleet it lists is exactly as long as the fleet you are signing off. */
+.sopop { min-width: 320px; max-width: 320px; gap: 0; padding: 9px; max-height: min(70vh, 560px); overflow-y: auto; }
+.sopop .so-head { display: flex; flex-direction: column; gap: 3px; padding: 2px 2px 9px; }
+.sopop .so-head b { font: 650 12px var(--font-ui); color: var(--text); }
+.sopop .so-head span { font-size: 10.5px; line-height: 1.45; color: var(--muted-2); }
+.sopop .so-grp { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--hair); }
+.sopop .so-sw-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sopop .so-sw-lbl { font: 600 11px var(--font-ui); color: var(--text); }
+.sopop .so-note { font-size: 10px; line-height: 1.45; color: var(--muted-2); }
+.sopop .caf-switch { flex: none; width: 30px; height: 17px; border-radius: 999px; cursor: pointer; padding: 0; border: 1px solid var(--hair-strong); background: var(--surface-2); position: relative; transition: background .15s, border-color .15s; }
+.sopop .caf-switch .caf-knob { position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.sopop .caf-switch.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.sopop .caf-switch.on .caf-knob { transform: translateX(13px); background: var(--accent-ink); }
+.sopop .so-list { display: flex; flex-direction: column; gap: 1px; }
+.sopop .so-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 10.5px; }
+.sopop .so-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.sopop .so-st { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
+.sopop .so-more { color: var(--muted-2); font-style: italic; }
+/* What each list is about to have done to it, said in colour as well as in words:
+   `so-kept` is the one group the sheet is NOT going to touch, and it has to be
+   distinguishable at a glance from the two it is. */
+.sopop .so-ok .so-row { background: var(--surface); }
+.sopop .so-cut .so-row { background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
+.sopop .so-cut .so-st { color: var(--st-attention); }
+.sopop .so-kept .so-row { opacity: .5; }
+.sopop .so-go { margin-top: 11px; width: 100%; height: 30px; border-radius: 8px; cursor: pointer; font: 650 11.5px var(--font-ui); color: var(--accent-ink); background: var(--accent-wash); border: 1px solid var(--accent-line); }
+.sopop .so-go:hover { background: color-mix(in srgb, var(--accent-wash) 70%, var(--accent-line)); }
+.sopop .so-go[disabled] { cursor: default; color: var(--muted-2); background: var(--surface); border-color: var(--hair); }
+.sopop .so-empty { padding: 6px 4px; font-size: 10.5px; line-height: 1.5; color: var(--muted-2); }
+
 @media (prefers-reduced-motion: no-preference) { .attn-badge .bdot { animation: pulse 1.5s ease-in-out infinite; } }
 
 /* left rail */
@@ -1864,6 +1900,33 @@ select.in-ctl { cursor: pointer; }
 .set-freset { margin-left: 6px; height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer; font: 600 11px var(--font-ui); color: var(--muted); background: transparent; border: 1px solid var(--hair); }
 .set-freset:hover { color: var(--text); border-color: var(--hair-strong); }
 
+/* ---------- Diagnostics tab ---------- */
+/* The action button: a settings row whose right-hand control is a verb rather than a
+   switch. Sized to `.sw`'s row so a tab that mixes the two still reads as one list. */
+.set-abtn { flex: none; height: 30px; padding: 0 14px; border-radius: 8px; cursor: pointer; font: 650 11.5px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--hair-strong); }
+.set-abtn:hover { border-color: var(--accent-line); background: var(--surface-2); }
+.set-abtn.danger { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 34%, transparent); }
+.set-abtn.danger:hover { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
+
+/* The growth readout under the recording switch. A panel rather than bare rows because
+   it is the one thing on this tab that is a *reading* and not a control, and the border
+   is what stops it being read as another settable row. */
+.set-vitals { margin-top: 10px; padding: 11px 12px; border: 1px solid var(--hair); border-radius: 10px; background: var(--bg-2); }
+.sv-verdict { font-size: 11.5px; line-height: 1.45; color: var(--muted); max-width: 62ch; }
+.sv-verdict.sv-warn { color: var(--st-working); font-weight: 600; }
+.sv-tbl { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+.sv-tbl th { text-align: right; font-weight: 600; color: var(--muted-2); padding: 0 0 5px; border-bottom: 1px solid var(--hair); }
+.sv-tbl th:first-child { text-align: left; }
+.sv-tbl td { text-align: right; padding: 4px 0; color: var(--muted); border-bottom: 1px solid var(--hair); }
+.sv-tbl td:first-child { text-align: left; color: var(--text); }
+.sv-tbl tr:last-child td { border-bottom: 0; }
+/* Only a flagged row takes colour — see the note on `vitalsPreview`. */
+.sv-tbl tr.sv-bad td, .sv-tbl tr.sv-bad td:first-child { color: var(--st-working); }
+/* The kind, set small beside the name so "level" and "growth" are readable as a property
+   of the counter rather than as another column to scan. */
+.sv-kind { margin-left: 7px; font: 600 9.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted-2); }
+.sv-foot { margin-top: 9px; font-size: 10.5px; color: var(--muted-2); max-width: 62ch; line-height: 1.45; }
+
 /* ---------- Usage analytics tab ---------- */
 .setdlg.wide { width: min(1120px, 96vw); height: min(884px, 92vh); }
 .u-pane { display: flex; flex-direction: column; gap: 16px; }
@@ -2316,6 +2379,19 @@ select.in-ctl { cursor: pointer; }
    goes green and pulses (there is a port up you can go and look at). Counting only the
    second would hide a dev server that crashed on boot; colouring them the same would
    make `sleep 45` look like a running site. */
+/* Telemetry down. Shaped like the server pill beside it, but permanently in the error
+   colour — it has exactly one state and it is bad, so there is nothing to encode. The
+   pulse is what makes it noticed against a screen full of panes that look fine, but it
+   is decoration on top of a badge that is already red, bordered and tinted: it is not
+   one of the four places an animation carries the whole of a state, so it goes with
+   everything else under `fx-still` and pauses with everything else under `fx-idle`
+   (both below). Losing it costs emphasis, not information. */
+.tel-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); border: 1px solid color-mix(in srgb, var(--st-error) 36%, transparent); }
+.tel-badge.show { display: flex; }
+.tel-badge:hover { background: color-mix(in srgb, var(--st-error) 22%, transparent); }
+.tel-badge .tel-ic { font-size: 10px; line-height: 1; }
+@media (prefers-reduced-motion: no-preference) { .tel-badge.show .tel-ic { animation: pulse 1.6s ease-in-out infinite; } }
+
 .svr-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); border: 1px solid color-mix(in srgb, var(--muted) 26%, transparent); }
 .svr-badge.show { display: flex; }
 .svr-badge:hover { background: color-mix(in srgb, var(--muted) 16%, transparent); }
@@ -3247,3 +3323,107 @@ select.in-ctl { cursor: pointer; }
 /* The inspector's error card, when the watchdog owns the outcome: this note replaces
    "send the prompt again" and must not read as the same passive advice. */
 .attn-note.revive { color: var(--accent-ink); font-weight: 600; }
+
+/* ==========================================================================
+   Visual effects — Settings › Appearance, and the background pause
+   ==========================================================================
+   Episko's window sits open all day, usually behind an editor, usually with
+   nothing happening in it. Two things in this stylesheet cost a GPU frame
+   whether or not anything moved: an infinite animation, which pins the
+   WebView2 compositor to the monitor's refresh rate for as long as it runs,
+   and a `backdrop-filter`, which forces its own render surface and a readback
+   of everything behind it. Both are two-and-a-half times the work on a 144Hz
+   Windows desktop that they are on the 60Hz Mac this was designed on, which is
+   why the complaint arrived from Windows.
+
+   The classes come from ./motion via ./actions' `applyFx`; the ids and their
+   labels live in that table, so a switch added there is a switch here and
+   nowhere else. */
+
+/* ---- a closed dialog is not a backdrop ----------------------------------
+   Unconditional, and not a preference: seventeen dialogs, popovers and scrims
+   stay mounted at `opacity: 0` rather than `display: none`, because that is
+   what lets them fade. A transparent layer paints nothing — but a
+   `backdrop-filter` on it still promotes a render surface and keeps a
+   backdrop root alive, so the app was carrying seventeen live blur surfaces
+   at rest to fade in at most one of them.
+
+   Gating on `:not(.show)` rather than adding `visibility: hidden` to each
+   deliberately: `.show` is already the universal open flag (`.cfm` is the one
+   that also flips visibility, and it needed a `visibility 0s .14s` transition
+   of its own to keep its fade). Touching seventeen `transition` shorthands to
+   repeat that trick is a lot of risk for a fade nobody sees; removing the
+   filter costs nothing, because the thing it blurs is invisible anyway. */
+.expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .graphdlg:not(.show),
+.scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
+.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .cfm-scrim:not(.show),
+.cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
+.cl-dlg:not(.show) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* ---- fx-flat: background blur off ---------------------------------------
+   Decoration only, so this is the cheapest thing to give up and the first row
+   most people will reach for. The frosted panels get their solid surface
+   colour instead of a translucent one: in every case the translucency is the
+   *last* layer of a `background` shorthand, i.e. the background-color, so one
+   `background-color` here replaces it and leaves the gradient sheen on top
+   alone. The scrims keep their own translucency — a scrim that went opaque
+   would hide the app rather than dim it. */
+:root.fx-flat *, :root.fx-flat *::before, :root.fx-flat *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+:root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg,
+:root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
+:root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
+:root.fx-flat .setdlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
+:root.fx-flat .dsh, :root.fx-flat .cl-dlg, :root.fx-flat .tour-card,
+:root.fx-flat .colorpop, :root.fx-flat .menupop, :root.fx-flat .dbg-panel,
+:root.fx-flat .gcommit, :root.fx-flat .run-grp, :root.fx-flat .bk-h {
+  background-color: var(--panel);
+}
+
+/* ---- fx-still: animations off -------------------------------------------
+   A universal rule rather than a second list of selectors to keep in step with
+   the `reduce` blocks: running every animation to its end in a thousandth of a
+   millisecond cancels the infinite ones outright, and no animation added later
+   can be one this misses.
+
+   It is deliberately a *superset* of `prefers-reduced-motion: reduce`, not a
+   copy of it. Reduce kills eight transitions by name and merely tames a ninth
+   (`.setdlg` keeps its fade and loses only the resize); this flattens all of
+   them. That is the right answer for a row labelled Animations — somebody who
+   turns it off wants the app to stop moving, not to stop moving in eight
+   specific places — and it costs nothing at rest either way, since a
+   transition only runs for the 160ms after you click something. What the two
+   must agree on is the *substitutes* below, because those are information.
+
+   The four exceptions below are the places where an animation was carrying
+   the whole of a state rather than decorating one, so ending it instantly
+   would delete information. Their values are the ones the matching `reduce`
+   blocks already chose — `test/motion.test.ts` fails if the two lists drift. */
+:root.fx-still *, :root.fx-still *::before, :root.fx-still *::after {
+  animation-delay: 0s !important;
+  animation-duration: .001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-delay: 0s !important;
+  transition-duration: .001ms !important;
+}
+:root.fx-still .srow.lit { background: color-mix(in srgb, var(--lit-c, var(--st-done)) 18%, transparent); }
+:root.fx-still .pgroup.arming .parm { opacity: 0; }
+:root.fx-still .wt-sk i { opacity: .6; }
+:root.fx-still .u-spin { border-top-color: var(--accent); }
+
+/* ---- fx-idle: paused while the window is in the background --------------
+   `animation-play-state` rather than the cancellation above, and that is the
+   whole difference between the two: this one is temporary and reversible, so
+   a pulse must come back mid-cycle where it stopped rather than restarting
+   every session's glyph in lockstep the moment you click back into the
+   window. Transitions are left alone — they are already over by the time you
+   have looked away, and pausing one mid-fade would strand a dialog at half
+   opacity until you returned. */
+:root.fx-idle *, :root.fx-idle *::before, :root.fx-idle *::after {
+  animation-play-state: paused !important;
+}

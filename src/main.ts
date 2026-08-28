@@ -14,7 +14,7 @@ import { updateTray } from "./tray";
 import {
   closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeIoPop, closeShortPop,
   closeUsagePop,
-  refreshTokens, renderAttn, renderFoot, setEngine, setFooterCloseColorPop,
+  refreshTokens, renderAttn, renderFoot, renderTelemetry, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
 import { closePalette, openPalette, setPaletteHost } from "./palui";
@@ -32,7 +32,9 @@ import {
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
-  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, tickRevive,
+  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
+  setCmpBase, shelveSessionAsked, tickRevive,
+  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -47,7 +49,8 @@ import {
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, runGit,
-  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons, toggleRunGroup,
+  scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
+  syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -73,11 +76,12 @@ import {
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
-  toggleDbg,
+  toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
+import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
@@ -107,7 +111,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
+  setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine, vitalsPrefs,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
@@ -156,6 +160,10 @@ void (async () => {
 // `IS_WIN` (a user-agent read) would hand a Chrome tab three buttons that can
 // only throw.
 if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "win" : "linux");
+// Paint the stored visual-effect switches onto <html> before the first frame, so a
+// machine that has turned animation off never gets one — a class added after the first
+// paint would start every infinite animation and then cancel it.
+applyFx();
 
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
 // platforms (everything rendered from TS goes through MOD/chord instead, which now
@@ -231,7 +239,7 @@ function openProjectFiles() {
   void openExplorer(wd, basename(wd));
 }
 setPaletteHost({
-  setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
+  setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles,
 });
@@ -241,6 +249,9 @@ setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite,
 });
+// Sign off joins the same popover family, and the two verbs it is made of live in
+// ./panes — which it cannot import without closing a cycle through ./footer.
+setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
 setTaskRunSetActive(setActive);
 setTaskRunCloseSession(closeSession);
@@ -262,7 +273,9 @@ setSettingsHost({
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
   setRevivePrefs,
   startTour: startChapter,
-  setFootSeg,
+  setFootSeg, setFx,
+  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
+  vitalsDrift: currentDrift,
 });
 // The tour drives the app the way a user would, so the two things it cannot do itself
 // are typing into a pane and opening the window it just told you about.
@@ -479,7 +492,7 @@ function renderAllNow() {
   // at all — so the stamp every attention surface below reads is refreshed here, once,
   // rather than at each of them. See syncAttn in ./grouping.
   syncAttn();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
   // for. No-ops unless a group is actually tiled.
@@ -613,6 +626,39 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   renderAll();
 });
 
+// The hook server went away, or came back (./telemetry.rs `serve_telemetry`). While it
+// is gone every Claude pane is frozen mid-reading with nothing on the row to say so, so
+// the badge goes up immediately — but the *toast* waits, because a re-bind usually lands
+// within a second or two and interrupting the user twice to report a blip they never saw
+// is its own kind of noise. Announce only an outage long enough to have cost something,
+// and only then bother announcing the recovery.
+let telemDownAt = 0;
+let telemToast: number | undefined;
+listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) => {
+  const { up, port, moved } = e.payload;
+  setTelemetryUp(up);
+  clearTimeout(telemToast);
+  if (!up) {
+    telemDownAt = Date.now();
+    telem.outages++;
+    dlog("error", `telemetry server on :${port} died — every session is blind until it re-binds`);
+    telemToast = window.setTimeout(() => {
+      toast("Telemetry server down — session readings are frozen");
+    }, 3000);
+  } else {
+    const downMs = telemDownAt ? Date.now() - telemDownAt : 0;
+    dlog(moved ? "error" : "info",
+      moved
+        ? `telemetry server could not reclaim its port and is now on :${port} — sessions launched earlier stay silent until relaunched`
+        : `telemetry server back on :${port} after ${Math.round(downMs / 1000)}s`);
+    // A moved port is not a recovery for anything already running, so it says so
+    // whatever the outage lasted.
+    if (moved) toast("Telemetry moved port — relaunch running sessions to restore their readings");
+    else if (downMs >= 3000) toast(`Telemetry server back after ${Math.round(downMs / 1000)}s`);
+  }
+  renderAll();
+});
+
 listen<{ kind: string; data: any }>("telemetry", (e) => {
   const { kind, data } = e.payload; if (!data) return;
   telem.rx++;
@@ -721,6 +767,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
   if (!t.closest("#cafPop, #caf")) closeCafPop();
+  if (!t.closest("#soPop, #signoffBtn")) closeSignoffPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
@@ -839,6 +886,36 @@ if (IS_TAURI && (IS_MAC || IS_WIN)) {
   void win.onResized(() => { void syncWin(); });
   void syncWin();
 }
+
+// Stop animating while you are looking at something else.
+//
+// Every infinite animation in the stylesheet keeps the WebView2 compositor producing
+// frames at the monitor's refresh rate for as long as it runs, and none of them are
+// telling you anything while the window is behind your editor — which, for a fleet
+// watcher, is most of the day. So focus drives a class on <html> (see ./motion) and the
+// stylesheet pauses the lot.
+//
+// Tauri's `onFocusChanged` rather than the DOM's `focus`/`blur` where it exists: the
+// webview fires those for its own internal focus moves (clicking from a pane into the
+// sidebar blurs the textarea), and what matters here is the OS window, which is the only
+// thing that decides whether the animation is on a screen anybody is looking at. The DOM
+// pair is the fallback for `pnpm dev` in a plain browser, where there is no Tauri window
+// to ask.
+//
+// `visibilitychange` is a third source and not a duplicate of either: minimising leaves
+// a window "focused" as far as some compositors are concerned, and a fully occluded
+// window is the case where the saving is total.
+if (IS_TAURI) {
+  void getCurrentWindow().onFocusChanged(({ payload }) => setWindowFocused(payload));
+} else {
+  window.addEventListener("focus", () => setWindowFocused(true));
+  window.addEventListener("blur", () => setWindowFocused(false));
+}
+document.addEventListener("visibilitychange", () => {
+  // Only ever a way to *lose* animation, never to regain it: coming back visible does
+  // not mean coming back focused, and the focus listener above is what says so.
+  if (document.hidden) setWindowFocused(false);
+});
 $("railCollapse").addEventListener("click", toggleRail);
 $("railSort").addEventListener("click", cycleSort);
 $("inspBtn").addEventListener("click", toggleInsp);
@@ -867,6 +944,10 @@ $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 // ✕ closes whatever is on the stage. On the dashboard that is the dashboard — it
 // does not touch the project.
+// ⇩ stops this session and leaves its row on the shelf. Beside ✕ because they are the
+// two ways to be done with a pane, and the difference between them is exactly whether
+// you expect to come back.
+$("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessionAsked(activeId); });
 $("btnClose").addEventListener("click", () => {
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
   if (activeId) closeSession(activeId);
@@ -1025,6 +1106,10 @@ window.addEventListener("unhandledrejection", (e) => dlog("error", `unhandled re
 dlog("info", "app started");
 flushDebug();
 setInterval(flushDebug, 4000);
+// The vitals recorder. A fixed short tick that asks ./debug whether a sample is due,
+// rather than an interval rebuilt whenever the cadence changes — see `tickVitals` for
+// why an interval this feature depends on must never be cleared and recreated.
+setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 
 // scour each known project for a favicon/logo once, so the sidebar shows real icons
 FAVORITES.forEach((f) => probeIcon(f.path));

@@ -96,6 +96,52 @@ Restore remembers what resumable provider conversations were on screen rather th
 - **The roster is a convenience layer rather than a system of record**: Claude transcripts and Codex thread history remain the durable sources.
 - **The stage has one owner**: `activeId` and `mirror` (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive; timer-driven inspector repaints must bail on `mirror`, and not merely on the external case; `stageGroup` is a modifier rather than another owner. **`takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`**. Openers hiding rivals by hand shipped two-of-four complete: both panes are `position:absolute; inset:0` with **no z-index**, so DOM order decides and a missed hide puts the mirror *behind* an opaque pane, reading as "the click only changed the colours". `insp-mini` is dashboard-only. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 
+## Shelving (⇩) and sign off
+
+The middle answer between leaving a session open and closing it. A shelved session's
+process, PTY and WebGL context are given back; its **row stays in the sidebar** under
+its project, one click from carrying on. `canShelve` (./types) is the single gate:
+`isAgent` + not `external` + a workdir + the `resume` capability.
+
+- **A shelved session is not a new kind of object.** `shelveSession` (./panes) builds
+  the same `Restorable` a quit already writes (`rosterEntry`, ./mirror) and puts it in
+  `dormants`, so it inherits the read-only mirror, the ⟲ button, `dormantBusy`, the
+  `cc-restore` persistence and the provider reconcile at boot for nothing. The copy is
+  the union of the two ways in ("shelved", never "from your last run"), because with
+  one row shape a reader cannot be told which it is — and does not need to be.
+- **The dormant row goes on before the pane comes down.** `closeSession` ends in
+  `flushRoster`, which keeps only the dormants that are not also live; an entry added
+  first survives the very flush its own close triggers, one added after loses the race.
+- **`backendLive` is pruned by hand at the same moment.** `kill_session` drops the PTY
+  synchronously, but `backendLive` is a 3s poll — so for three seconds `dormantBusy`
+  would paint the fresh row "busy" and refuse the resume the shelve just made possible.
+- **External sessions cannot be shelved, and that is the point.** `kill_session` cannot
+  reach a process in the user's own Terminal, so the row would go while the agent ran on.
+- **The verb and the mechanism are separate on purpose.** `shelveSession` (./panes) is
+  the pane operation; `shelveSessionAsked` (./actions) is the verb the ⇩ button and the
+  palette row trigger, and the confirmation is the whole difference between them. The
+  sign-off sheet calls the mechanism directly, having already asked about the fleet.
+- **`midWork` is what a shelve interrupts**, and it is wider than `midFlight` by exactly
+  one case: a turn that ended while its fan-out runs on is `done` with no attention.
+  Both shelve paths read it, so the single-session warning and the sign-off sheet cannot
+  disagree about which sessions are still working.
+
+**Sign off** (./signoff, top bar beside caffeinate) is the bulk half. It opens a *sheet*
+rather than an `ask()`, because the answer is not yes/no: two of the three groups it
+lists are exceptions the user has to be able to change first. Sessions still working are
+**kept** by default (the cost of stopping a turn is work you redo; the cost of leaving a
+session up is what the feature exists to reduce), and shells/tasks — which can only be
+closed, never shelved — are offered for closing with the switch **on**, listed by name.
+Neither switch is remembered: both are answers about tonight's fleet, and a remembered
+"close my shells" would kill a dev server three weeks later. The headline counts what the
+switches have left selected, so it and the button can never disagree.
+
+Two seams are load-bearing. ./signoff reaches `shelveSession`/`closeSession` through its
+**host** rather than importing ./panes, because ./footer must close its popover and
+./panes imports ./footer — a direct import closes the ring. And `#extPane`'s bar is
+written per opener (`renderExtHeader` / `renderPastHeader`), since one pane now serves a
+session running in another terminal *and* one running nowhere at all.
+
 ## History (`◷`, ⌘⇧H)
 
 Answers "reopen the one I closed", which the roster cannot. It joins Claude's transcript scan (including IDE/terminal sessions) with Codex `thread/list`; selecting a Codex row uses `thread/read`, and resume carries the provider id. `history.ts` owns provider-neutral rules, `historyui.ts` the dialog, and each provider adapter maps its public history shape.

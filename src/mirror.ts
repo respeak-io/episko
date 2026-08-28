@@ -50,14 +50,33 @@ export function setMirrorRenderAll(fn: typeof renderAll) { renderAll = fn; }
 // The roster is "what was open when Episko last closed". Closing a session removes
 // it — an explicit close means done, so only survivors come back. Shell panes are
 // excluded: a login shell has no provider conversation to resume.
-function rosterEntry(s: Sess): Restorable {
+//
+// Exported because *shelving* (./panes) builds the same row from a live session and
+// puts it on the list immediately, rather than waiting for a quit to do it. A shelved
+// row and a leftover from last night are deliberately the same object: both mean "not
+// running, and one click from carrying on", and a second kind of row would only make
+// the shelf harder to read.
+export function rosterEntry(s: Sess): Restorable {
   return {
     id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: s.workdir,
     colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
     title: s.title, lastActivity: s.lastActivity, provider: s.provider || "claude",
   };
 }
+// The roster may not be WRITTEN before this run has READ it, and that is not tidiness.
+// `sessions` and `dormants` are both empty until `adoptOrphans` and `loadDormants` have
+// run, so a save landing before them writes `[]` over the identities every live pane is
+// about to be rebuilt from. A reload's `beforeunload` is exactly such a save, and two
+// Ctrl+R inside the boot window (adoption waits on the `list_agents` PATH probe, ~1s of
+// it) is all it takes: the second unload wipes the roster, the surviving boot adopts
+// every pane with `meta: null`, and each falls back to its workdir. For a pane launched
+// in a repo root that fallback is invisible — the workdir IS the colorKey there — but a
+// pane in a WORKTREE becomes its own top-level project named after the folder, and
+// `adoptSession` then persists that as its identity, so it survives every later restart.
+// Shipped; found by four `app started` lines 1.5s apart in episko.log.
+let rosterReady = false;
 function saveRoster() {
+  if (!rosterReady) return;
   const open = [...sessions.values()].filter((s) => hasAgentCapability(s, "resume") && s.workdir).map(rosterEntry);
   // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
   // restores only some of them doesn't quietly discard the rest.
@@ -215,8 +234,10 @@ export function openDormant(id: string) {
 }
 export function renderPastHeader(d: Restorable) {
   ($("btnClose") as HTMLButtonElement).hidden = true;
+  ($("btnShelve") as HTMLButtonElement).hidden = true;
+  $("extViewTxt").textContent = "Read-only mirror · shelved, not running · ⟲ Resume to carry on";
   $("hProj").textContent = d.project;
-  const hb = $("hBranch"); hb.textContent = "restorable"; hb.hidden = false; hb.classList.add("ext-chip");
+  const hb = $("hBranch"); hb.textContent = "shelved"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = d.title || "";
   $("hPath").textContent = tilde(d.workdir);
 }
@@ -230,15 +251,15 @@ export function renderPastInspector(d: Restorable) {
        <div class="ext-note">${esc(d.provider || "claude")} picks the conversation back up where it left off. A long session may compact its context first.</div>`;
   $("inspector").innerHTML = `
     <div class="ext-card">
-      <div class="ext-hl">· ${esc(d.provider || "claude")} · from your last run</div>
+      <div class="ext-hl">· ${esc(d.provider || "claude")} · shelved</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
       ${action}
-      <button class="ext-forget-btn" data-forget="${esc(d.id)}">Remove from list</button>
-      <div class="ext-note">Removing only clears this row from Episko. The provider's conversation remains in its own history.</div>
+      <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
+      <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
     </div>`;
 }
 export function resumeDormant(id: string) {
@@ -267,24 +288,34 @@ export function forgetDormant(id: string) {
 // machine that shuts down with six sessions open touches all six files at once, and
 // believing the file stamped every one of those rows with the reboot.
 export async function loadDormants() {
-  let roster: Restorable[] = [];
-  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
-  if (!Array.isArray(roster) || !roster.length) return;
-  const live = new Set([...sessions.keys()]);
-  const candidates: Restorable[] = [];
-  for (const r of roster) {
-    if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
-    if (live.has(r.id)) continue;
-    if (!r.resumeId) r.resumeId = r.id;
-    if (!r.provider) r.provider = "claude"; // roster written before provider support
-    candidates.push(r);
+  try {
+    let roster: Restorable[] = [];
+    try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
+    if (!Array.isArray(roster) || !roster.length) return;
+    const live = new Set([...sessions.keys()]);
+    const candidates: Restorable[] = [];
+    for (const r of roster) {
+      if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
+      if (live.has(r.id)) continue;
+      if (!r.resumeId) r.resumeId = r.id;
+      if (!r.provider) r.provider = "claude"; // roster written before provider support
+      candidates.push(r);
+    }
+    const found = await reconcileProviderRestorables(candidates);
+    found.sort((a, b) => b.lastActivity - a.lastActivity);
+    setDormants(found);
+    if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
+  } finally {
+    // Whatever this run found — rows, an empty roster, or a provider that threw — the
+    // roster has now been read and every pane it identifies has been adopted, so a save
+    // can no longer erase what nothing has seen yet. In a `finally` because the only
+    // thing worse than saving too early is never saving again: this flag is the single
+    // gate on persistence, so no path out of here may skip it. The flush that follows
+    // is what rebuilds a roster an earlier boot window had already emptied.
+    rosterReady = true;
+    flushRoster();
+    renderAll();
   }
-  const found = await reconcileProviderRestorables(candidates);
-  found.sort((a, b) => b.lastActivity - a.lastActivity);
-  setDormants(found);
-  if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
-  flushRoster();
-  renderAll();
 }
 export function jumpExternal(pid: number) {
   invoke("focus_external_session", { pid }).catch((e) => toast("jump failed: " + e));
@@ -329,6 +360,8 @@ function renderTranscript(msgs: { role: string; text: string }[], initial: boole
 }
 export function renderExtHeader(e: ExtSession) {
   ($("btnClose") as HTMLButtonElement).hidden = true;
+  ($("btnShelve") as HTMLButtonElement).hidden = true;
+  $("extViewTxt").textContent = "Read-only mirror · this session runs in another terminal";
   $("hProj").textContent = basename(e.cwd);
   const hb = $("hBranch"); hb.textContent = "external"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = e.name || "";

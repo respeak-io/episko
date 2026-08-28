@@ -24,16 +24,17 @@ import { $, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
-import { basename, esc, tilde } from "./format";
+import { basename, cleanTitle, esc, tilde } from "./format";
 import {
-  CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited, providerCapabilities, resumeAgent,
+  canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
+  providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
-  attachWebgl, claudeInput, cleanTitle, clipboardKeys, detachWebgl, fitSession, MONO,
+  attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
   refit, shellKeys, trimScrollback, winClaudePaste,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
@@ -42,18 +43,18 @@ import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
-import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
+import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates, rosterEntry } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
-import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
+import { adoptIdentity, nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
-  sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
-  termFontSize, worktreesByRepo, wtSig,
+  sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
+  termFontSize, termScrollback, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 
@@ -72,7 +73,7 @@ function launchPermission(agent: AgentCli) {
 // adoption of a reload orphan, so the two cannot drift on options or key wiring.
 function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -89,7 +90,7 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // launches and reload adoption both go through this constructor so input cannot drift.
 function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -282,8 +283,11 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const provider = o.provider || m?.provider || "claude";
   const providerDef = provider === "claude" ? CLAUDE_CLI : agentDef(provider);
   const capabilities = providerDef?.capabilities ?? providerCapabilities(provider);
-  const project = m?.project || basename(o.workdir) || "session";
-  const colorKey = m?.colorKey ?? o.workdir;
+  // Only a roster-less orphan pays for this, and it is one spawn-free read of the
+  // repo's checkouts: enough for a pane in a worktree to adopt under its REPO rather
+  // than mint a project named after the branch folder (./grouping's `adoptIdentity`).
+  const heads = m ? [] : await invoke<WtHead[]>("worktree_heads", { dir: o.workdir }).catch(() => [] as WtHead[]);
+  const { project, colorKey, worktree, branch } = adoptIdentity(o.workdir, m, heads);
   probeIcon(colorKey);
   const pane = document.createElement("div");
   pane.className = "term-pane";
@@ -291,7 +295,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const { term, fit } = provider === "claude" ? newClaudeTerm(o.id, pane) : newAgentTerm(o.id, pane);
   const s: Sess = {
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
-    resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
+    resumeId: m?.resumeId ?? o.id, branch, worktree,
     title: m?.title ?? providerDef?.label ?? provider,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
@@ -354,7 +358,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -458,7 +462,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
   pane.appendChild(cap);
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -570,6 +574,45 @@ export function closeSession(id: string) {
   // never fires and nothing would re-measure the terminals inside.
   if (stageGroup) refit();
   renderAll();
+}
+
+/// Shelve a session: stop the process, keep the row.
+///
+/// The middle answer between the two the app used to offer. A session you leave open
+/// costs a provider process, a PTY and a WebGL context for as long as it sits there;
+/// closing it gives all three back but takes the row with them, and a conversation you
+/// mean to carry on is far easier to find in the sidebar under its project than in
+/// ◷ History among every session on the machine.
+///
+/// It is deliberately not a new kind of object. A shelved session becomes exactly the
+/// restorable row a quit already produces (`rosterEntry` → `dormants`), so it inherits
+/// the read-only transcript mirror, the ⟲ Resume button, the busy guard, the roster's
+/// persistence and its provider reconcile at boot for free.
+///
+/// **The dormant row goes on the list before the pane comes down**, and the order is
+/// load-bearing: `closeSession` ends with `flushRoster`, which keeps only the dormants
+/// that are not also live — so an entry added first survives the very flush its own
+/// close triggers, while one added after would race a save that had already dropped it.
+///
+/// `backendLive` is pruned by hand for the same reason. It is refreshed by a 3s poll,
+/// so for up to three seconds after the kill it still names a PTY the backend released
+/// synchronously — long enough for `dormantBusy` to paint the fresh row "busy" and
+/// refuse the resume you just made possible.
+export function shelveSession(id: string): boolean {
+  const s = sessions.get(id);
+  if (!s) return false;
+  if (!canShelve(s)) {
+    toast(s.external ? "That session runs in your terminal — Episko can't stop it"
+      : isAgent(s) ? `${s.provider ?? "This agent"} can't resume a conversation, so shelving it would lose it`
+        : "Only agent sessions can be shelved");
+    return false;
+  }
+  setDormants([rosterEntry(s), ...dormants.filter((d) => d.id !== s.id)]);
+  const key = providerSessionKey(s.provider, s.id);
+  if (backendLive.has(key)) setBackendLive(new Set([...backendLive].filter((k) => k !== key)));
+  dlog("info", `shelve ${s.project} · ${s.id.slice(0, 8)} · ${s.provider ?? "agent"}`);
+  closeSession(id);
+  return true;
 }
 
 /// Close every pane of one run group — the ✕ on its sidebar header.
@@ -949,6 +992,11 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
+  // ⇩ sits beside ✕ and is offered only where it means something. A shell, a task run
+  // and a terminal-only agent have nothing to resume, so the button would be a promise
+  // the row could not keep — and `canShelve` is the one place that decides, so the
+  // header, the palette and the sign-off sheet cannot drift on the answer.
+  ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset every attribute a previous session may have left on the shared chip — the
   // drift branch below sets `title`, and only one of the arms after it would clear it.
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";

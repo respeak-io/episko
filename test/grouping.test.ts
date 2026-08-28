@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  CLAUDE_CLI, isExited, midFlight, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
+  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
   type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
@@ -12,6 +12,7 @@ import {
 } from "../src/state";
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
+  adoptIdentity,
   allProjects, attnPending, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
   foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
@@ -1256,6 +1257,53 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
   });
 });
 
+describe("canShelve — which panes can be stopped and kept", () => {
+  it("takes an integrated agent with a resumable conversation", () => {
+    expect(canShelve(sess({ phase: "idle" }))).toBe(true);
+    // Phase says nothing about it: an ended pane is the clearest case for shelving,
+    // since the row is all that is left and the terminal buffer is pure cost.
+    expect(canShelve(sess({ phase: "ended" }))).toBe(true);
+    expect(canShelve(sess({ phase: "working" }))).toBe(true);
+  });
+
+  it("refuses a pane with no conversation to come back to", () => {
+    expect(canShelve(sess({ kind: "shell" }))).toBe(false);
+    expect(canShelve(taskSess("build"))).toBe(false);
+    // A terminal-only agent: `kind: "agent"`, but its adapter advertises nothing, so
+    // the ⟲ on its shelved row would be a button that can only fail.
+    expect(canShelve(sess({ kind: "agent" }))).toBe(false);
+  });
+
+  it("refuses a session running in the user's own terminal", () => {
+    // `kill_session` cannot reach it, so shelving would take the row away and leave
+    // the agent it claims to have stopped running in Ghostty.
+    expect(canShelve(sess({ external: true }))).toBe(false);
+  });
+
+  it("refuses a pane with no directory, since a resume runs in the original one", () => {
+    expect(canShelve(sess({ workdir: "" }))).toBe(false);
+  });
+});
+
+describe("midWork — what a shelve would interrupt", () => {
+  it("agrees with midFlight on a turn in progress", () => {
+    expect(midWork(sess({ phase: "working" }))).toBe(true);
+    expect(midWork(sess({ phase: "thinking" }))).toBe(true);
+    expect(midWork(sess({ phase: "idle", attention: "Bash" }))).toBe(true);
+    expect(midWork(sess({ phase: "idle" }))).toBe(false);
+    expect(midWork(sess({ phase: "ended" }))).toBe(false);
+  });
+
+  it("adds the one case midFlight misses: a finished turn whose fan-out runs on", () => {
+    // `Stop` fires while a Workflow's fleet works for another twenty minutes, so the
+    // pane is `done` with no attention — midFlight says no, and stopping it would kill
+    // the run. This is the whole reason the two functions are not one.
+    const s = sess({ phase: "done", ...fleet(12, 4), lastActivity: NOW_MS });
+    expect(midFlight(s)).toBe(false);
+    expect(midWork(s, NOW_MS)).toBe(true);
+  });
+});
+
 describe("dormantBusy — a live session must not be offered for restore", () => {
   it("is busy while an Episko pane holds it, by launch id or rotated resume id", () => {
     open(sess({ id: "a", resumeId: "rot" }));
@@ -1326,6 +1374,68 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
   it("never adopts a pane the frontend already has", () => {
     open(sess({ id: "o1" }));
     expect(orphanAdoptions([live()], [])).toEqual([]);
+  });
+});
+
+describe("adoptIdentity — which project an adopted orphan lists under", () => {
+  // What `worktree_heads` returns for a repo with one linked checkout, in the physical,
+  // normalised spelling Rust hands back.
+  const heads: WtHead[] = [
+    { path: "/w/epi", branch: "main", is_main: true, exists: true },
+    { path: "/w/.cc-worktrees/epi/feat-undo-redo", branch: "feat/undo-redo", is_main: false, exists: true },
+  ];
+
+  it("takes the roster's identity verbatim and never re-derives over it", () => {
+    // The launch identity beats anything the filesystem could say: a worktree launch
+    // deliberately pins colorKey to the repo, and a renamed project has no other home.
+    const m = dorm({ project: "Epi!", colorKey: "/w/epi", workdir: "/w/.cc-worktrees/epi/feat-undo-redo", worktree: "feat/undo-redo", branch: "feat/undo-redo" });
+    expect(adoptIdentity(m.workdir, m, heads)).toEqual({
+      project: "Epi!", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
+    });
+  });
+
+  it("files a roster-less worktree pane under its REPO, not as a project of its own", () => {
+    // The shipped bug: two fast Ctrl+R emptied the roster, every pane adopted with no
+    // meta, and this one became a top-level project named after its branch folder.
+    expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo", null, heads)).toEqual({
+      project: "epi", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
+    });
+  });
+
+  it("leaves a roster-less pane in the repo root as the project itself", () => {
+    expect(adoptIdentity("/w/epi", null, heads)).toEqual({
+      project: "epi", colorKey: "/w/epi", worktree: null, branch: "main",
+    });
+  });
+
+  it("resolves a folder INSIDE a checkout to that checkout", () => {
+    // A task declares its own cwd and a shell inherits it, so a pane can sit several
+    // folders deep in the checkout it belongs to.
+    expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo/ui/src", null, heads))
+      .toMatchObject({ colorKey: "/w/epi", worktree: "feat/undo-redo" });
+  });
+
+  it("levels the two spellings the comparison actually gets", () => {
+    // Rust normalises its side (`E:\…`, upper-cased drive); a `Sess.workdir` is however
+    // the user picked it. Compared raw, the repo stops matching its own worktree.
+    const win: WtHead[] = [
+      { path: "E:\\w\\epi", branch: "main", is_main: true, exists: true },
+      { path: "E:\\w\\.cc-worktrees\\epi\\feat", branch: "feat/x", is_main: false, exists: true },
+    ];
+    expect(adoptIdentity("e:/w/.cc-worktrees/epi/feat/", null, win))
+      .toMatchObject({ project: "epi", colorKey: "E:\\w\\epi", worktree: "feat/x" });
+  });
+
+  it("fails closed on a folder no repo claims", () => {
+    // No roster, a scratch dir, an unreadable repo — the old answer, deliberately: we
+    // will not file a pane under a repo we could not find.
+    expect(adoptIdentity("/w/scratch/thing", null, [])).toEqual({
+      project: "thing", colorKey: "/w/scratch/thing", worktree: null, branch: "",
+    });
+  });
+
+  it("names an unnamed roster entry after the key it kept", () => {
+    expect(adoptIdentity("/w/epi", dorm({ project: "", colorKey: "/w/epi" }), heads).project).toBe("epi");
   });
 });
 
