@@ -2353,9 +2353,12 @@ select.in-ctl { cursor: pointer; }
    second would hide a dev server that crashed on boot; colouring them the same would
    make `sleep 45` look like a running site. */
 /* Telemetry down. Shaped like the server pill beside it, but permanently in the error
-   colour — it has exactly one state and it is bad, so there is nothing to encode. It
-   pulses even under reduced-motion's sibling rule below because the whole point is to
-   be noticed against a screen full of panes that look fine. */
+   colour — it has exactly one state and it is bad, so there is nothing to encode. The
+   pulse is what makes it noticed against a screen full of panes that look fine, but it
+   is decoration on top of a badge that is already red, bordered and tinted: it is not
+   one of the four places an animation carries the whole of a state, so it goes with
+   everything else under `fx-still` and pauses with everything else under `fx-idle`
+   (both below). Losing it costs emphasis, not information. */
 .tel-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); border: 1px solid color-mix(in srgb, var(--st-error) 36%, transparent); }
 .tel-badge.show { display: flex; }
 .tel-badge:hover { background: color-mix(in srgb, var(--st-error) 22%, transparent); }
@@ -3293,3 +3296,107 @@ select.in-ctl { cursor: pointer; }
 /* The inspector's error card, when the watchdog owns the outcome: this note replaces
    "send the prompt again" and must not read as the same passive advice. */
 .attn-note.revive { color: var(--accent-ink); font-weight: 600; }
+
+/* ==========================================================================
+   Visual effects — Settings › Appearance, and the background pause
+   ==========================================================================
+   Episko's window sits open all day, usually behind an editor, usually with
+   nothing happening in it. Two things in this stylesheet cost a GPU frame
+   whether or not anything moved: an infinite animation, which pins the
+   WebView2 compositor to the monitor's refresh rate for as long as it runs,
+   and a `backdrop-filter`, which forces its own render surface and a readback
+   of everything behind it. Both are two-and-a-half times the work on a 144Hz
+   Windows desktop that they are on the 60Hz Mac this was designed on, which is
+   why the complaint arrived from Windows.
+
+   The classes come from ./motion via ./actions' `applyFx`; the ids and their
+   labels live in that table, so a switch added there is a switch here and
+   nowhere else. */
+
+/* ---- a closed dialog is not a backdrop ----------------------------------
+   Unconditional, and not a preference: seventeen dialogs, popovers and scrims
+   stay mounted at `opacity: 0` rather than `display: none`, because that is
+   what lets them fade. A transparent layer paints nothing — but a
+   `backdrop-filter` on it still promotes a render surface and keeps a
+   backdrop root alive, so the app was carrying seventeen live blur surfaces
+   at rest to fade in at most one of them.
+
+   Gating on `:not(.show)` rather than adding `visibility: hidden` to each
+   deliberately: `.show` is already the universal open flag (`.cfm` is the one
+   that also flips visibility, and it needed a `visibility 0s .14s` transition
+   of its own to keep its fade). Touching seventeen `transition` shorthands to
+   repeat that trick is a lot of risk for a fade nobody sees; removing the
+   filter costs nothing, because the thing it blurs is invisible anyway. */
+.expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .graphdlg:not(.show),
+.scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
+.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .cfm-scrim:not(.show),
+.cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
+.cl-dlg:not(.show) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* ---- fx-flat: background blur off ---------------------------------------
+   Decoration only, so this is the cheapest thing to give up and the first row
+   most people will reach for. The frosted panels get their solid surface
+   colour instead of a translucent one: in every case the translucency is the
+   *last* layer of a `background` shorthand, i.e. the background-color, so one
+   `background-color` here replaces it and leaves the gradient sheen on top
+   alone. The scrims keep their own translucency — a scrim that went opaque
+   would hide the app rather than dim it. */
+:root.fx-flat *, :root.fx-flat *::before, :root.fx-flat *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+:root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg,
+:root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
+:root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
+:root.fx-flat .setdlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
+:root.fx-flat .dsh, :root.fx-flat .cl-dlg, :root.fx-flat .tour-card,
+:root.fx-flat .colorpop, :root.fx-flat .menupop, :root.fx-flat .dbg-panel,
+:root.fx-flat .gcommit, :root.fx-flat .run-grp, :root.fx-flat .bk-h {
+  background-color: var(--panel);
+}
+
+/* ---- fx-still: animations off -------------------------------------------
+   A universal rule rather than a second list of selectors to keep in step with
+   the `reduce` blocks: running every animation to its end in a thousandth of a
+   millisecond cancels the infinite ones outright, and no animation added later
+   can be one this misses.
+
+   It is deliberately a *superset* of `prefers-reduced-motion: reduce`, not a
+   copy of it. Reduce kills eight transitions by name and merely tames a ninth
+   (`.setdlg` keeps its fade and loses only the resize); this flattens all of
+   them. That is the right answer for a row labelled Animations — somebody who
+   turns it off wants the app to stop moving, not to stop moving in eight
+   specific places — and it costs nothing at rest either way, since a
+   transition only runs for the 160ms after you click something. What the two
+   must agree on is the *substitutes* below, because those are information.
+
+   The four exceptions below are the places where an animation was carrying
+   the whole of a state rather than decorating one, so ending it instantly
+   would delete information. Their values are the ones the matching `reduce`
+   blocks already chose — `test/motion.test.ts` fails if the two lists drift. */
+:root.fx-still *, :root.fx-still *::before, :root.fx-still *::after {
+  animation-delay: 0s !important;
+  animation-duration: .001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-delay: 0s !important;
+  transition-duration: .001ms !important;
+}
+:root.fx-still .srow.lit { background: color-mix(in srgb, var(--lit-c, var(--st-done)) 18%, transparent); }
+:root.fx-still .pgroup.arming .parm { opacity: 0; }
+:root.fx-still .wt-sk i { opacity: .6; }
+:root.fx-still .u-spin { border-top-color: var(--accent); }
+
+/* ---- fx-idle: paused while the window is in the background --------------
+   `animation-play-state` rather than the cancellation above, and that is the
+   whole difference between the two: this one is temporary and reversible, so
+   a pulse must come back mid-cycle where it stopped rather than restarting
+   every session's glyph in lockstep the moment you click back into the
+   window. Transitions are left alone — they are already over by the time you
+   have looked away, and pausing one mid-fade would strand a dialog at half
+   opacity until you returned. */
+:root.fx-idle *, :root.fx-idle *::before, :root.fx-idle *::after {
+  animation-play-state: paused !important;
+}

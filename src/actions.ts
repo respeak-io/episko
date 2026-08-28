@@ -36,9 +36,11 @@ import {
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
+  motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
+import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
   renameGroup, setCollapsed, type GroupStore,
@@ -436,6 +438,38 @@ export function setFootSeg(id: FootSeg) {
   setFootPrefs(toggleFootSeg(footPrefs, id));
   localStorage.setItem("cc-foot", footPrefsJson(footPrefs));
   renderAll();
+}
+
+/// Switch one visual effect on or off.
+///
+/// Here rather than in ./state for the usual reason: a setter there assigns and nothing
+/// else, so the persist and — in this case — the class that actually makes the change
+/// visible belong to the call site, and this is it.
+export function setFx(id: VisualFx) {
+  setMotionPrefsState(toggleFx(motionPrefs, id));
+  localStorage.setItem("cc-motion", motionPrefsJson(motionPrefs));
+  applyFx();
+}
+
+/// Put the current effect state on `<html>`, where the stylesheet reads it.
+///
+/// Every class ./motion can produce is removed before the current set is added, rather
+/// than each site toggling its own: the two inputs (the prefs and the window's focus)
+/// change independently and at unrelated moments, so a per-class toggle would need every
+/// caller to know about every class. Called on startup, on a pref change, and on each
+/// focus change.
+export function applyFx() {
+  const root = document.documentElement;
+  root.classList.remove(...ALL_FX_CLASSES);
+  root.classList.add(...rootFxClasses(motionPrefs, winFocused));
+}
+
+/// The window gained or lost focus. Cheap enough to call on every event — `applyFx` is
+/// three class operations and the browser no-ops a class list that did not change.
+export function setWindowFocused(v: boolean) {
+  if (v === winFocused) return;
+  setWinFocusedState(v);
+  applyFx();
 }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector outright — nothing in it is

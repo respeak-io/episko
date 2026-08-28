@@ -38,6 +38,15 @@ Markers: `+` new · `~` changed · `!` fixed
   so a restart brought it back. The roster is now unwritable until the run that reads it
   has, and a pane reattached without one resolves the repo its folder is a checkout of
   rather than assuming the folder is the project.
++ Settings › Appearance › Visual effects: switches for animations, background blur, and
+  whether Episko keeps animating once the window is behind something else.
+~ Episko stops animating the moment the window loses focus, and picks up where it left
+  off when you come back. An animation you cannot see is telling you nothing, and every
+  one of them was holding the compositor at the monitor's refresh rate — which on a
+  144Hz Windows desktop is two and a half times the work it is on a 60Hz Mac.
+! Seventeen dialogs, popovers and scrims no longer blur what is behind them while they
+  are closed. They stay mounted at zero opacity so they can fade, and each was keeping a
+  live GPU render surface to frost a panel nobody could see.
 
 ## 0.23.0 — 2026-08-26
 

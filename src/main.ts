@@ -32,7 +32,8 @@ import {
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
-  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, shelveSessionAsked, tickRevive,
+  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
+  setCmpBase, shelveSessionAsked, tickRevive,
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -158,6 +159,10 @@ void (async () => {
 // `IS_WIN` (a user-agent read) would hand a Chrome tab three buttons that can
 // only throw.
 if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "win" : "linux");
+// Paint the stored visual-effect switches onto <html> before the first frame, so a
+// machine that has turned animation off never gets one — a class added after the first
+// paint would start every infinite animation and then cancel it.
+applyFx();
 
 // index.html hard-codes the mac glyphs; rewrite its static bits once on other
 // platforms (everything rendered from TS goes through MOD/chord instead, which now
@@ -267,7 +272,7 @@ setSettingsHost({
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
   setRevivePrefs,
   startTour: startChapter,
-  setFootSeg,
+  setFootSeg, setFx,
 });
 // The tour drives the app the way a user would, so the two things it cannot do itself
 // are typing into a pane and opening the window it just told you about.
@@ -878,6 +883,36 @@ if (IS_TAURI && (IS_MAC || IS_WIN)) {
   void win.onResized(() => { void syncWin(); });
   void syncWin();
 }
+
+// Stop animating while you are looking at something else.
+//
+// Every infinite animation in the stylesheet keeps the WebView2 compositor producing
+// frames at the monitor's refresh rate for as long as it runs, and none of them are
+// telling you anything while the window is behind your editor — which, for a fleet
+// watcher, is most of the day. So focus drives a class on <html> (see ./motion) and the
+// stylesheet pauses the lot.
+//
+// Tauri's `onFocusChanged` rather than the DOM's `focus`/`blur` where it exists: the
+// webview fires those for its own internal focus moves (clicking from a pane into the
+// sidebar blurs the textarea), and what matters here is the OS window, which is the only
+// thing that decides whether the animation is on a screen anybody is looking at. The DOM
+// pair is the fallback for `pnpm dev` in a plain browser, where there is no Tauri window
+// to ask.
+//
+// `visibilitychange` is a third source and not a duplicate of either: minimising leaves
+// a window "focused" as far as some compositors are concerned, and a fully occluded
+// window is the case where the saving is total.
+if (IS_TAURI) {
+  void getCurrentWindow().onFocusChanged(({ payload }) => setWindowFocused(payload));
+} else {
+  window.addEventListener("focus", () => setWindowFocused(true));
+  window.addEventListener("blur", () => setWindowFocused(false));
+}
+document.addEventListener("visibilitychange", () => {
+  // Only ever a way to *lose* animation, never to regain it: coming back visible does
+  // not mean coming back focused, and the focus listener above is what says so.
+  if (document.hidden) setWindowFocused(false);
+});
 $("railCollapse").addEventListener("click", toggleRail);
 $("railSort").addEventListener("click", cycleSort);
 $("inspBtn").addEventListener("click", toggleInsp);

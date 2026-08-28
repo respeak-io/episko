@@ -18,6 +18,7 @@ import { agentCapabilitySummary, type Engine } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
   allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
+  motionPrefs,
   keyPrefs, missingAgents,
   peekPrefs, permissionModeFor, revivePrefs,
   setTermFontSize,
@@ -36,6 +37,7 @@ import {
 } from "./revive";
 import { LIT_COLOR } from "./sidebarview";
 import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
+import { fxOn, VISUAL_FX, type VisualFx } from "./motion";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -96,6 +98,7 @@ export interface SettingsHost {
   // And for the status bar's segments — ./actions flips one through ./footprefs,
   // persists the hidden list, and repaints the bar.
   setFootSeg: (id: FootSeg) => void;
+  setFx: (id: VisualFx) => void;
   // And for the revive watchdog — ./actions clamps through ./revive, persists, and
   // repaints (the inspector's error card carries the countdown, so `renderAll`).
   setRevivePrefs: (p: RevivePrefs) => void;
@@ -140,7 +143,7 @@ let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setRevivePrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -327,6 +330,17 @@ const SET_TABS: SetTab[] = [
           { value: "dark",  label: "Dark",  glyph: "☾", sub: "Dim surfaces" },
         ] },
       { kind: "font", label: "Terminal font size", hint: "Text size in embedded terminals (also ⌘+ / ⌘− / ⌘0)." },
+      // Visual effects. The note carries the reason once rather than each row repeating
+      // it, and the rows come straight off ./motion's table — there is no second list
+      // here to fall out of step with the stylesheet.
+      {
+        kind: "note", label: "Visual effects",
+        hint: "Episko sits open all day, so anything that animates or blurs is a GPU frame spent whether or not you are looking. These cost the most on a high-refresh Windows display, where the compositor redraws 144 times a second rather than 60. Nothing here changes what the app tells you — only how it draws it.",
+      },
+      ...VISUAL_FX.map((fx): SetControl => ({
+        kind: "toggle", set: `fx:${fx.id}`, label: fx.label, hint: fx.hint,
+        on: () => fxOn(motionPrefs, fx.id),
+      })),
     ],
   },
   {
@@ -1139,6 +1153,8 @@ function applySetting(set: string, val: string) {
   // `foot:<id>` rather than seven names in this chain: the ids are ./footprefs' and
   // adding a segment there should not mean editing a switch statement here too.
   else if (set.startsWith("foot:")) host.setFootSeg(set.slice(5) as FootSeg);
+  // `fx:<id>` for the same reason as `foot:` above — the ids are ./motion's table.
+  else if (set.startsWith("fx:")) host.setFx(set.slice(3) as VisualFx);
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);
   renderSettings();
