@@ -833,6 +833,9 @@ export function renderDash(): void {
 /// on the project and live in the inspector. The header acts on what is on the stage.
 export function renderDashHeader(): void {
   ($("btnClose") as HTMLButtonElement).hidden = false;
+  // ⇩ is about a session, and a project is not one. Every taker of the stage owns the
+  // pair, so leaving this out would strand the previous session's shelve button here.
+  ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("hProj").textContent = name();
   const hb = $("hBranch");
   hb.hidden = true;

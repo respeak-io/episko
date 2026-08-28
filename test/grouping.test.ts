@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  CLAUDE_CLI, isExited, midFlight, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
+  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
   type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
@@ -1253,6 +1253,53 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
     expect(midFlight(taskSess("build", { phase: "error" }, { exitCode: 1 }))).toBe(false);
     // A background run is still a run: it holds the tree for as long as it lives.
     expect(midFlight(taskSess("watch", {}, { background: true }))).toBe(true);
+  });
+});
+
+describe("canShelve — which panes can be stopped and kept", () => {
+  it("takes an integrated agent with a resumable conversation", () => {
+    expect(canShelve(sess({ phase: "idle" }))).toBe(true);
+    // Phase says nothing about it: an ended pane is the clearest case for shelving,
+    // since the row is all that is left and the terminal buffer is pure cost.
+    expect(canShelve(sess({ phase: "ended" }))).toBe(true);
+    expect(canShelve(sess({ phase: "working" }))).toBe(true);
+  });
+
+  it("refuses a pane with no conversation to come back to", () => {
+    expect(canShelve(sess({ kind: "shell" }))).toBe(false);
+    expect(canShelve(taskSess("build"))).toBe(false);
+    // A terminal-only agent: `kind: "agent"`, but its adapter advertises nothing, so
+    // the ⟲ on its shelved row would be a button that can only fail.
+    expect(canShelve(sess({ kind: "agent" }))).toBe(false);
+  });
+
+  it("refuses a session running in the user's own terminal", () => {
+    // `kill_session` cannot reach it, so shelving would take the row away and leave
+    // the agent it claims to have stopped running in Ghostty.
+    expect(canShelve(sess({ external: true }))).toBe(false);
+  });
+
+  it("refuses a pane with no directory, since a resume runs in the original one", () => {
+    expect(canShelve(sess({ workdir: "" }))).toBe(false);
+  });
+});
+
+describe("midWork — what a shelve would interrupt", () => {
+  it("agrees with midFlight on a turn in progress", () => {
+    expect(midWork(sess({ phase: "working" }))).toBe(true);
+    expect(midWork(sess({ phase: "thinking" }))).toBe(true);
+    expect(midWork(sess({ phase: "idle", attention: "Bash" }))).toBe(true);
+    expect(midWork(sess({ phase: "idle" }))).toBe(false);
+    expect(midWork(sess({ phase: "ended" }))).toBe(false);
+  });
+
+  it("adds the one case midFlight misses: a finished turn whose fan-out runs on", () => {
+    // `Stop` fires while a Workflow's fleet works for another twenty minutes, so the
+    // pane is `done` with no attention — midFlight says no, and stopping it would kill
+    // the run. This is the whole reason the two functions are not one.
+    const s = sess({ phase: "done", ...fleet(12, 4), lastActivity: NOW_MS });
+    expect(midFlight(s)).toBe(false);
+    expect(midWork(s, NOW_MS)).toBe(true);
   });
 });
 

@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Shelve a session: ⇩ in the stage header stops it and leaves its row in the sidebar,
+  where ⟲ picks the conversation back up. The row is the same one a restart already
+  produced, so a shelved session and last night's leftovers read as one shelf.
++ Sign off (top bar, beside caffeinate) shelves the whole fleet at once. Its sheet keeps
+  sessions that are still working by default, and offers to close the shells and tasks
+  that have nothing to resume.
+
 ## 0.23.0 — 2026-08-26
 
 **Signed and notarized by Apple.** Nothing to clear on install.

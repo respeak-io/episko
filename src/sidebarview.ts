@@ -313,7 +313,10 @@ export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
   return `data-wt="${esc(c.key)}" data-root="${esc(p.path)}" data-proj="${esc(p.name)}"`
     + ` data-branch="${esc(c.branch)}"${c.isMain ? ` data-main="1"` : ""}`;
 }
-// Dormant rows always sit below the live ones, outside any worktree cluster.
+// Shelved rows always sit below the live ones, outside any worktree cluster. One row
+// shape for two ways in — a session you shelved just now (./panes `shelveSession`) and
+// one still on the roster from your last run — because both mean the same thing to the
+// reader: not running, and one click from carrying on.
 export function dormantRows(p: ProjGroup): string {
   return p.dormants.map((d) => dormantRow(d)).join("");
 }
@@ -323,12 +326,12 @@ function dormantRow(d: Restorable): string {
   const when = relTime(d.lastActivity);
   const tip = busy
     ? "This provider session is already running, so it cannot be resumed twice"
-    : `Restore this session · last active ${when}`;
+    : `Shelved · last active ${when} · click to look, ⟲ to resume`;
   return `<div class="srow pastrow${busy ? " busy" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
     <span class="sglyph g-ended">·</span>
     <span class="sbranch">${esc(label)}</span>
     <span class="past-tag">${busy ? "busy" : when}</span>
-    <span class="sclose" data-forget="${d.id}" title="Remove from list; the conversation stays on disk">✕</span></div>`;
+    <span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">✕</span></div>`;
 }
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);

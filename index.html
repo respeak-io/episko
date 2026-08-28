@@ -43,6 +43,20 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode"><span class="gl">▾</span></button>
           </div>
+          <!--
+            Sign off. Beside caffeinate because it is the other control about the
+            machine rather than about one pane — and usually the one you press when
+            you turn the cup off. A tray with something being put into it, drawn
+            rather than spelled: a glyph next to the SVG cup would read as a
+            different class of control, and the moon and power symbols that mean
+            "end of day" arrive as full-colour emoji on half the fonts we may land in.
+          -->
+          <button class="ibtn signoff" id="signoffBtn" title="Sign off · shelve your sessions" aria-label="Sign off">
+            <svg class="so-ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path class="so-arrow" d="M12 3.5v7.5m0 0 3-3m-3 3-3-3" />
+              <path d="M3.75 13.25h4l1.25 2.5h6l1.25-2.5h4v4.5a2.5 2.5 0 0 1-2.5 2.5h-11.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+            </svg>
+          </button>
           <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history"><span class="gl">◷</span></button>
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"><span class="gl">◐</span></button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings"><span class="gl">⚙</span></button>
@@ -93,6 +107,7 @@
           <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root"><span class="gl">❯</span>Terminal</button>
           <button class="act" id="btnRun" title="Run a task or script from this project"><span class="gl">▶</span>Run</button>
           <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch"><span class="gl gl-plus">＋</span>Session</button>
+          <button class="act icon" id="btnShelve" title="Shelve this session · stop it, keep it in the sidebar" hidden><span class="gl">⇩</span></button>
           <button class="act icon" id="btnClose" title="Close session" hidden><span class="gl">✕</span></button>
           <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)"><span class="gl">◨</span></button>
         </div>
@@ -108,7 +123,14 @@
             </div>
           </div>
           <div class="ext-view" id="extPane" hidden>
-            <div class="ext-view-bar"><span class="ext-view-dot"></span>Read-only mirror · this session runs in another terminal</div>
+            <!--
+              One bar, two mirrors. `#extPane` shows a session running in someone
+              else's terminal AND a shelved one that is running nowhere at all, so the
+              line is written per opener (renderExtHeader / renderPastHeader in
+              ./mirror) rather than baked in — it used to say "runs in another
+              terminal" over a session that had been stopped.
+            -->
+            <div class="ext-view-bar"><span class="ext-view-dot"></span><span id="extViewTxt">Read-only mirror</span></div>
             <div class="ext-body" id="extBody"></div>
           </div>
           <!-- The project dashboard. Nothing inside it runs until a project is
@@ -444,6 +466,7 @@
     <div class="colorpop" id="colorPop"></div>
     <div class="menupop" id="enginePop"></div>
     <div class="menupop cafpop" id="cafPop"></div>
+    <div class="menupop sopop" id="soPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop svrpop" id="svrPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>

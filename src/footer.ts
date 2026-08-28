@@ -19,6 +19,7 @@ import { forecastWin, type Forecast } from "./rl";
 import { hasAgentCapability, isAgent, phaseText, statusKey, type AgentRateLimit, type Engine, type Sess } from "./types";
 import { costPopHtml, ioFigures, ioPopHtml, liveIo, setTokenScanning, tokenScanning, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
+import { closeSignoffPop } from "./signoff";
 import { renderSettings, setTab, settingsOpen } from "./settings";
 import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
@@ -266,6 +267,7 @@ export function closeFootMenus(keep?: string) {
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
     ["costPop", closeCostPop], ["ioPop", closeIoPop], ["svrPop", closeServersPop],
+    ["soPop", closeSignoffPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }

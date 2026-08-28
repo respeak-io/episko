@@ -474,6 +474,21 @@ export const midFlight = (s: Sess) =>
   s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) ? false
     : s.kind === "task" ? !isExited(s)
       : !!s.attention || s.phase === "working" || s.phase === "thinking";
+// Whether a pane can be **shelved**: stopped now, and kept in the sidebar as a row
+// that resumes the same conversation later. Three conditions, and each one rules out
+// a pane whose shelved row would be a lie.
+//
+//   • no `resume` capability — there is nothing to come back to, so the row's ⟲ would
+//     be a button that can only fail. Shells and tasks fall out here too: a login
+//     shell has no conversation, and a task's run metadata is not resumable state.
+//   • no workdir — a resume runs in the ORIGINAL directory, so a pane without one
+//     could not be relaunched anywhere.
+//   • external — the process lives in the user's own Terminal/Ghostty window, where
+//     `kill_session` cannot reach it. Shelving one would take the row away while the
+//     agent it claims to have stopped runs on, which is the exact opposite of the
+//     point: shelving exists to free what the row is still costing you.
+export const canShelve = (s: Sess) =>
+  isAgent(s) && !s.external && !!s.workdir && hasAgentCapability(s, "resume");
 // ---------- background fan-outs ----------
 // One rule, read by six surfaces (sidebar glyph, mini-rail, tray, inspector pill and
 // card, the "needs you" set): a session whose agents are still working is not waiting
@@ -581,6 +596,13 @@ export function fanoutText(s: Sess, now = Date.now()): string {
 // lives here rather than in any one of them.
 export const statusKey = (s: Sess, now = Date.now()) =>
   s.attention ? "attention" : bgWaiting(s, now) ? "background" : s.phase;
+// What a *shelve* would interrupt. Wider than `midFlight` by exactly one case: a turn
+// that ended while its fan-out runs on is `done` with no attention, so `midFlight`
+// says no — and stopping that pane would kill a workflow with twenty agents up. It
+// lives beside `statusKey` because that is the discriminant it adds, and it is read
+// by both shelve paths (one session, and the sign-off sheet) so the warning and the
+// bulk list can never disagree about which sessions are still working.
+export const midWork = (s: Sess, now = Date.now()) => midFlight(s) || statusKey(s, now) === "background";
 // What a phase is called in prose. Read by the inspector pill, the reactor dropdown
 // and the tray menu — same three-reader argument as statusKey above, so it lives
 // beside it rather than in whichever of them was extracted first.

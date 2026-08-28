@@ -236,6 +236,42 @@ html.win .wctl { display: flex; }
 .cafpop .caf-switch .caf-knob { position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
 .cafpop .caf-switch.on { background: var(--accent-wash); border-color: var(--accent-line); }
 .cafpop .caf-switch.on .caf-knob { transform: translateX(13px); background: var(--accent-ink); }
+/* sign off: the top-bar button and its sheet */
+.ibtn.signoff .so-ic { width: 15px; height: 15px; }
+.ibtn.signoff:hover .so-ic .so-arrow { transform: translateY(1px); }
+@media (prefers-reduced-motion: no-preference) { .ibtn.signoff .so-ic .so-arrow { transition: transform .15s; } }
+/* Wider than the other popovers because its rows carry a name AND a state, and the
+   name is a project plus a title. It also has to stay reachable on a short window:
+   the fleet it lists is exactly as long as the fleet you are signing off. */
+.sopop { min-width: 320px; max-width: 320px; gap: 0; padding: 9px; max-height: min(70vh, 560px); overflow-y: auto; }
+.sopop .so-head { display: flex; flex-direction: column; gap: 3px; padding: 2px 2px 9px; }
+.sopop .so-head b { font: 650 12px var(--font-ui); color: var(--text); }
+.sopop .so-head span { font-size: 10.5px; line-height: 1.45; color: var(--muted-2); }
+.sopop .so-grp { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--hair); }
+.sopop .so-sw-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sopop .so-sw-lbl { font: 600 11px var(--font-ui); color: var(--text); }
+.sopop .so-note { font-size: 10px; line-height: 1.45; color: var(--muted-2); }
+.sopop .caf-switch { flex: none; width: 30px; height: 17px; border-radius: 999px; cursor: pointer; padding: 0; border: 1px solid var(--hair-strong); background: var(--surface-2); position: relative; transition: background .15s, border-color .15s; }
+.sopop .caf-switch .caf-knob { position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.sopop .caf-switch.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.sopop .caf-switch.on .caf-knob { transform: translateX(13px); background: var(--accent-ink); }
+.sopop .so-list { display: flex; flex-direction: column; gap: 1px; }
+.sopop .so-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 10.5px; }
+.sopop .so-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.sopop .so-st { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
+.sopop .so-more { color: var(--muted-2); font-style: italic; }
+/* What each list is about to have done to it, said in colour as well as in words:
+   `so-kept` is the one group the sheet is NOT going to touch, and it has to be
+   distinguishable at a glance from the two it is. */
+.sopop .so-ok .so-row { background: var(--surface); }
+.sopop .so-cut .so-row { background: color-mix(in srgb, var(--st-attention) 12%, transparent); }
+.sopop .so-cut .so-st { color: var(--st-attention); }
+.sopop .so-kept .so-row { opacity: .5; }
+.sopop .so-go { margin-top: 11px; width: 100%; height: 30px; border-radius: 8px; cursor: pointer; font: 650 11.5px var(--font-ui); color: var(--accent-ink); background: var(--accent-wash); border: 1px solid var(--accent-line); }
+.sopop .so-go:hover { background: color-mix(in srgb, var(--accent-wash) 70%, var(--accent-line)); }
+.sopop .so-go[disabled] { cursor: default; color: var(--muted-2); background: var(--surface); border-color: var(--hair); }
+.sopop .so-empty { padding: 6px 4px; font-size: 10.5px; line-height: 1.5; color: var(--muted-2); }
+
 @media (prefers-reduced-motion: no-preference) { .attn-badge .bdot { animation: pulse 1.5s ease-in-out infinite; } }
 
 /* left rail */

@@ -26,7 +26,8 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, esc, tilde } from "./format";
 import {
-  CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited, providerCapabilities, resumeAgent,
+  canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
+  providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -42,17 +43,17 @@ import { renderInspector } from "./inspector";
 import { renderMini, renderSidebar, revealProjGroup } from "./sidebar";
 import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
-import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
+import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates, rosterEntry } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
 import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
-  sessions, setActiveId, setDormants, setStageGroup, stageGroup, termEngine,
+  sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
@@ -572,6 +573,45 @@ export function closeSession(id: string) {
   renderAll();
 }
 
+/// Shelve a session: stop the process, keep the row.
+///
+/// The middle answer between the two the app used to offer. A session you leave open
+/// costs a provider process, a PTY and a WebGL context for as long as it sits there;
+/// closing it gives all three back but takes the row with them, and a conversation you
+/// mean to carry on is far easier to find in the sidebar under its project than in
+/// ◷ History among every session on the machine.
+///
+/// It is deliberately not a new kind of object. A shelved session becomes exactly the
+/// restorable row a quit already produces (`rosterEntry` → `dormants`), so it inherits
+/// the read-only transcript mirror, the ⟲ Resume button, the busy guard, the roster's
+/// persistence and its provider reconcile at boot for free.
+///
+/// **The dormant row goes on the list before the pane comes down**, and the order is
+/// load-bearing: `closeSession` ends with `flushRoster`, which keeps only the dormants
+/// that are not also live — so an entry added first survives the very flush its own
+/// close triggers, while one added after would race a save that had already dropped it.
+///
+/// `backendLive` is pruned by hand for the same reason. It is refreshed by a 3s poll,
+/// so for up to three seconds after the kill it still names a PTY the backend released
+/// synchronously — long enough for `dormantBusy` to paint the fresh row "busy" and
+/// refuse the resume you just made possible.
+export function shelveSession(id: string): boolean {
+  const s = sessions.get(id);
+  if (!s) return false;
+  if (!canShelve(s)) {
+    toast(s.external ? "That session runs in your terminal — Episko can't stop it"
+      : isAgent(s) ? `${s.provider ?? "This agent"} can't resume a conversation, so shelving it would lose it`
+        : "Only agent sessions can be shelved");
+    return false;
+  }
+  setDormants([rosterEntry(s), ...dormants.filter((d) => d.id !== s.id)]);
+  const key = providerSessionKey(s.provider, s.id);
+  if (backendLive.has(key)) setBackendLive(new Set([...backendLive].filter((k) => k !== key)));
+  dlog("info", `shelve ${s.project} · ${s.id.slice(0, 8)} · ${s.provider ?? "agent"}`);
+  closeSession(id);
+  return true;
+}
+
 /// Close every pane of one run group — the ✕ on its sidebar header.
 ///
 /// **Asks first if anything is still running.** One ✕ standing for a dev server, a
@@ -949,6 +989,11 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
+  // ⇩ sits beside ✕ and is offered only where it means something. A shell, a task run
+  // and a terminal-only agent have nothing to resume, so the button would be a promise
+  // the row could not keep — and `canShelve` is the one place that decides, so the
+  // header, the palette and the sign-off sheet cannot drift on the answer.
+  ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset every attribute a previous session may have left on the shared chip — the
   // drift branch below sets `title`, and only one of the arms after it would clear it.
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";

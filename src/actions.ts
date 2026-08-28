@@ -16,7 +16,7 @@ import { ask } from "./confirm";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell } from "./panes";
+import { activeCwd, closeSession, launch, launchShell, shelveSession } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
@@ -47,7 +47,7 @@ import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import type { SoundPrefs } from "./sound";
-import { CLAUDE_CLI } from "./types";
+import { canShelve, CLAUDE_CLI, midWork, phaseText } from "./types";
 import { resolveProviderPermission } from "./providers/control";
 import { removePermission } from "./permissions";
 import { providerAdapter, providerPermissionMode } from "./providers";
@@ -130,6 +130,25 @@ export function removeFavorite(path: string) {
   saveFavorites();
   renderAll();
 }
+/// Shelve one session, asking first if it is in the middle of something.
+///
+/// The verb three surfaces trigger — the stage header's ⇩, the palette's row, and
+/// nothing else owns it — which is what puts it here rather than in ./panes beside the
+/// mechanism it calls. The confirmation is the whole difference from `shelveSession`:
+/// the sign-off sheet calls that one directly, having already asked about the fleet.
+export async function shelveSessionAsked(id: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (canShelve(s) && midWork(s)) {
+    const ok = await ask(
+      `${s.title || s.project} is still going — ${phaseText(s)}\n\nShelving stops it now. The conversation is kept and comes back from the sidebar, but the turn it is in the middle of will not finish.`,
+      { title: "Shelve a working session?", kind: "warning", okLabel: "Shelve it", cancelLabel: "Leave it running" },
+    );
+    if (!ok) return;
+  }
+  if (shelveSession(id)) toast("Shelved · resume it from the sidebar");
+}
+
 export function resolvePermission(id: string, behavior: string) {
   const owner = [...sessions.values()].find((s) => s.pendingPermId === id
     || s.pendingPermissions.some((pending) => pending.id === id));

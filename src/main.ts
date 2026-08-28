@@ -32,7 +32,7 @@ import {
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
-  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, tickRevive,
+  setFootSeg, setSort, setSoundPrefs, setTheme, setWtGroup, setCmpBase, shelveSessionAsked, tickRevive,
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -47,7 +47,8 @@ import {
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, runGit,
-  scheduleDismiss, setActive, setPanesRenderAll, syncStageButtons, toggleRunGroup,
+  scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
+  syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -78,6 +79,7 @@ import {
 import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
+import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 // The commit-graph panel needs nothing from here — it is opened from the project
@@ -231,7 +233,7 @@ function openProjectFiles() {
   void openExplorer(wd, basename(wd));
 }
 setPaletteHost({
-  setActive, resolvePermission, openPlainTerminal, closeSession, addProject,
+  setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles,
 });
@@ -241,6 +243,9 @@ setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite,
 });
+// Sign off joins the same popover family, and the two verbs it is made of live in
+// ./panes — which it cannot import without closing a cycle through ./footer.
+setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
 // Run-on-stop and the task inspector's actions reach back for three pane operations.
 setTaskRunSetActive(setActive);
 setTaskRunCloseSession(closeSession);
@@ -721,6 +726,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
   if (!t.closest("#cafPop, #caf")) closeCafPop();
+  if (!t.closest("#soPop, #signoffBtn")) closeSignoffPop();
   if (!t.closest("#usagePop, #fUsageSeg")) closeUsagePop();
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
@@ -867,6 +873,10 @@ $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });
 // ✕ closes whatever is on the stage. On the dashboard that is the dashboard — it
 // does not touch the project.
+// ⇩ stops this session and leaves its row on the shelf. Beside ✕ because they are the
+// two ways to be done with a pane, and the difference between them is exactly whether
+// you expect to come back.
+$("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessionAsked(activeId); });
 $("btnClose").addEventListener("click", () => {
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
   if (activeId) closeSession(activeId);
