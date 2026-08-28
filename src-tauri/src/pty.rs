@@ -147,7 +147,7 @@ pub(crate) fn spawn_claude(
     resume: Option<String>,
     mode: Option<String>,
 ) -> Result<(), String> {
-    let port = state.port;
+    let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
     // A resume must land in the session's ORIGINAL cwd: Claude looks the id up in
     // `~/.claude/projects/<enc(cwd)>/`, so resuming from elsewhere fails with "no
     // conversation found". Creating the dir would silently produce that failure
@@ -1240,7 +1240,7 @@ pub(crate) fn spawn_ghostty(
     resume: Option<String>,
     mode: Option<String>,
 ) -> Result<(), String> {
-    let port = state.port;
+    let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("can't resume: {workdir} no longer exists"));
     }
@@ -1346,7 +1346,7 @@ pub(crate) fn spawn_external_terminal(
     resume: Option<String>,
     mode: Option<String>,
 ) -> Result<(), String> {
-    let port = state.port;
+    let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("can't resume: {workdir} no longer exists"));
     }

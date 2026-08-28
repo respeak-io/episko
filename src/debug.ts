@@ -19,7 +19,7 @@ import { esc } from "./format";
 import { rl } from "./rl";
 import {
   activeId, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
-  pastMirrorId, revivePrefs, sessions, termEngine,
+  pastMirrorId, revivePrefs, sessions, telemetryUp, termEngine,
 } from "./state";
 import { liveCount, orphanAgents, type Sess } from "./types";
 import { reviveDeadline } from "./revive";
@@ -36,7 +36,11 @@ export const dbgLog: { t: number; lvl: DbgLvl; msg: string }[] = [];
 let dbgOpen = false;
 // `renders` counts actual renderAll *paints*, which since the per-frame coalescing is
 // deliberately smaller than `rx` under load — renders ≈ rx means the batching broke.
-export const telem = { rx: 0, routed: 0, dropped: 0, renders: 0 };
+// `outages` counts how many times the hook server has had to be re-bound this run.
+// Cheap, and the one number that separates "this pane is genuinely idle" from "nothing
+// has been able to reach us for a while" — the question the 🐞 console could not answer
+// the day the server died silently and stayed dead for fourteen hours.
+export const telem = { rx: 0, routed: 0, dropped: 0, renders: 0, outages: 0 };
 export function dlog(lvl: DbgLvl, msg: string) {
   dbgLog.push({ t: Date.now(), lvl, msg });
   if (dbgLog.length > 400) dbgLog.splice(0, dbgLog.length - 400);
@@ -67,7 +71,10 @@ function dbgFanout(s: Sess): string | null {
 export function dbgSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
-    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl, telemetry: telem,
+    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl,
+    // `telemetryUp` beside the counters: a snapshot full of idle sessions means two
+    // completely different things depending on it.
+    telemetry: { ...telem, up: telemetryUp },
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: liveCount(s),
@@ -109,7 +116,7 @@ export function renderDbgPanel() {
     .map((e) => `<div class="dl ${e.lvl}"><span class="dl-t">${dbgTime(e.t)}</span><span class="dl-l">${e.lvl}</span><span class="dl-m">${esc(e.msg)}</span></div>`).join("")
     || `<div class="dbg-dim" style="padding:8px">no events yet</div>`;
   $("dbgBody").innerHTML =
-    `<div class="dbg-stats">telemetry: rx ${telem.rx} · routed ${telem.routed} · <span class="${telem.dropped ? "warn" : ""}">dropped ${telem.dropped}</span> · paints ${telem.renders} · 5h ${rl.h5 != null ? Math.round(rl.h5) + "%" : "–"}</div>
+    `<div class="dbg-stats">telemetry: rx ${telem.rx} · routed ${telem.routed} · <span class="${telem.dropped ? "warn" : ""}">dropped ${telem.dropped}</span> · paints ${telem.renders}${telemetryUp ? "" : ` · <span class="warn">SERVER DOWN</span>`}${telem.outages ? ` · outages ${telem.outages}` : ""} · 5h ${rl.h5 != null ? Math.round(rl.h5) + "%" : "–"}</div>
      <table class="dbg-tbl"><thead><tr><th>project</th><th>id</th><th>phase</th><th>ctx</th><th>cost</th><th>last event</th></tr></thead><tbody>${srows}</tbody></table>
      <div class="dbg-log">${logRows}</div>`;
 }

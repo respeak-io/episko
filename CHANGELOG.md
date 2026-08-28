@@ -19,6 +19,14 @@ Markers: `+` new · `~` changed · `!` fixed
 + Sign off (top bar, beside caffeinate) shelves the whole fleet at once. Its sheet keeps
   sessions that are still working by default, and offers to close the shells and tasks
   that have nothing to resume.
+! The telemetry server no longer dies for good on a single network hiccup. One
+  `ECONNABORTED` used to end it silently, after which every session launched sat at
+  `idle` forever with no model, context, files or tools. It now re-binds its own port,
+  so running panes recover on their own within seconds.
++ A red *telemetry* badge in the top bar when that server is down, so a screen full of
+  frozen readings can no longer look like a quiet fleet.
+! Claude Code 2.1.250 animates its window title with ◐◑◒◓; those frames were landing in
+  the sidebar in front of session names.
 
 ## 0.23.0 — 2026-08-26
 

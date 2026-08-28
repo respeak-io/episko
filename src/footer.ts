@@ -12,7 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { closeServersPop } from "./serversui";
-import { dlog } from "./debug";
+import { dlog, toggleDbg } from "./debug";
 import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecastWin, type Forecast } from "./rl";
@@ -27,7 +27,7 @@ import { keyActionDef, shortcutRows } from "./keys";
 import { enginePopHtml, shortPopHtml, type ShortcutRow } from "./footerview";
 import { FOOT_SEGS, footShown } from "./footprefs";
 import {
-  activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, termEngine,
+  activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, telemetryUp, termEngine,
 } from "./state";
 import { providerAdapter } from "./providers";
 import {
@@ -309,6 +309,24 @@ function openShortPop() {
   pop.classList.add("show");
 }
 export function closeShortPop() { $("shortPop").classList.remove("show"); }
+/// The local hook server is not listening, so nothing on screen is current.
+///
+/// Deliberately a whole-app badge rather than a mark on each affected row: while it is
+/// down *every* Claude pane is equally blind, and a per-row glyph would be claiming to
+/// know which sessions are stale — which is the same overconfidence the plain `○ idle`
+/// already commits. One statement, at the top, about the instrument rather than the
+/// readings.
+///
+/// Shown only while it is actually down; a re-bind clears it within seconds and panes
+/// resume on their next statusLine, so the steady state remains an empty corner.
+export function renderTelemetry() {
+  const b = $("telBadge");
+  b.className = telemetryUp ? "tel-badge" : "tel-badge show";
+  b.title = telemetryUp ? "" :
+    "Telemetry server is down — session status, context, files and tools are frozen "
+    + "until it re-binds. Panes keep running; nothing is lost.";
+}
+
 // Header "reactor": one rollup of the fleet's most-urgent state. Clicking it jumps
 // straight to the longest-waiting session in that state (a picker if several).
 export function renderAttn() {
@@ -369,6 +387,11 @@ $("enginePop").addEventListener("click", (e) => {
   setEngine(b.dataset.engine as Engine);
   closeEnginePop();
 });
+
+// The telemetry badge opens the 🐞 console, which is where the outage is written down
+// — how long, how many times, and whether the port moved. There is nothing to fix from
+// a popover of its own, so it hands you the log rather than growing one.
+$("telBadge").addEventListener("click", () => { closeFootMenus(); toggleDbg(true); });
 
 // Reactor click → jump straight to the longest-waiting session, or open a picker
 // if several need you.

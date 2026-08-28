@@ -37,7 +37,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(windows)]
 use crate::platform::KeepAwake;
-use crate::telemetry::run_telemetry_server;
 
 pub(crate) struct Session {
     master: Box<dyn MasterPty + Send>,
@@ -71,7 +70,15 @@ pub(crate) struct Session {
 }
 
 pub(crate) struct AppState {
-    port: u16,
+    /// The port the telemetry server is listening on, and the one baked into every
+    /// instrument file `write_instrument_settings` generates.
+    ///
+    /// Atomic rather than a plain `u16` because the server can be re-bound while the
+    /// app runs: `serve_telemetry` re-binds *this* port after a listener dies, so the
+    /// instrument files already on disk keep working, and only falls back to a fresh
+    /// ephemeral one when the old port stays unavailable — at which point new launches
+    /// have to read the new number rather than the one captured at startup.
+    port: std::sync::atomic::AtomicU16,
     sessions: Mutex<HashMap<String, Session>>,
     /// Provider sidecars and control channels keyed by Episko's stable pane id.
     /// A Codex pane owns one loopback app-server beside its PTY; terminal-only
@@ -338,7 +345,7 @@ pub fn run() {
             log::info!("telemetry server on 127.0.0.1:{port}");
 
             app.manage(AppState {
-                port,
+                port: std::sync::atomic::AtomicU16::new(port),
                 sessions: Mutex::new(HashMap::new()),
                 agent_runtimes: Mutex::new(HashMap::new()),
                 owned_pids: Mutex::new(HashSet::new()),
@@ -350,7 +357,10 @@ pub fn run() {
             });
 
             let handle = app.handle().clone();
-            std::thread::spawn(move || run_telemetry_server(server, handle));
+            // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the
+            // first accept error the OS hands tiny_http, and without a supervisor around
+            // it that is permanent and completely silent. See telemetry.rs.
+            std::thread::spawn(move || telemetry::serve_telemetry(server, handle));
 
             // ---- The window (one title bar, not two) ----
             // The app draws its own header, so the native title bar above it is a

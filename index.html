@@ -25,6 +25,14 @@
             the reactor is "something wants you now", this is "something is still up".
             Hidden entirely when the count is zero (see renderServers).
           -->
+          <!--
+            Telemetry down. Left of everything else and hidden unless it is actually
+            broken (see renderTelemetry), because while the local hook server is gone
+            every reading on this screen is stale and the rail says "idle" about it
+            with a straight face. The one condition where a badge has to out-shout the
+            panes it is describing.
+          -->
+          <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic">⚠</span><span id="telBadgeTxt">telemetry</span></button>
           <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">

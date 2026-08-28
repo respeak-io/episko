@@ -2352,6 +2352,16 @@ select.in-ctl { cursor: pointer; }
    goes green and pulses (there is a port up you can go and look at). Counting only the
    second would hide a dev server that crashed on boot; colouring them the same would
    make `sleep 45` look like a running site. */
+/* Telemetry down. Shaped like the server pill beside it, but permanently in the error
+   colour — it has exactly one state and it is bad, so there is nothing to encode. It
+   pulses even under reduced-motion's sibling rule below because the whole point is to
+   be noticed against a screen full of panes that look fine. */
+.tel-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); border: 1px solid color-mix(in srgb, var(--st-error) 36%, transparent); }
+.tel-badge.show { display: flex; }
+.tel-badge:hover { background: color-mix(in srgb, var(--st-error) 22%, transparent); }
+.tel-badge .tel-ic { font-size: 10px; line-height: 1; }
+@media (prefers-reduced-motion: no-preference) { .tel-badge.show .tel-ic { animation: pulse 1.6s ease-in-out infinite; } }
+
 .svr-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); border: 1px solid color-mix(in srgb, var(--muted) 26%, transparent); }
 .svr-badge.show { display: flex; }
 .svr-badge:hover { background: color-mix(in srgb, var(--muted) 16%, transparent); }

@@ -14,7 +14,7 @@ import { updateTray } from "./tray";
 import {
   closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeIoPop, closeShortPop,
   closeUsagePop,
-  refreshTokens, renderAttn, renderFoot, setEngine, setFooterCloseColorPop,
+  refreshTokens, renderAttn, renderFoot, renderTelemetry, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
 import { closePalette, openPalette, setPaletteHost } from "./palui";
@@ -109,7 +109,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
+  setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
@@ -484,7 +484,7 @@ function renderAllNow() {
   // at all — so the stamp every attention surface below reads is refreshed here, once,
   // rather than at each of them. See syncAttn in ./grouping.
   syncAttn();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
   // A tiled pane's caption carries live state (elapsed, exit code, the ✕ a finished run
   // keeps), and panes are outside the render-everything sweep — so it has to be asked
   // for. No-ops unless a group is actually tiled.
@@ -615,6 +615,39 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   // above so a task has its `exitCode` before this reads the kind, and in one place
   // rather than three so the two outcomes can never diverge.
   playSound(exitSound(s.kind, code));
+  renderAll();
+});
+
+// The hook server went away, or came back (./telemetry.rs `serve_telemetry`). While it
+// is gone every Claude pane is frozen mid-reading with nothing on the row to say so, so
+// the badge goes up immediately — but the *toast* waits, because a re-bind usually lands
+// within a second or two and interrupting the user twice to report a blip they never saw
+// is its own kind of noise. Announce only an outage long enough to have cost something,
+// and only then bother announcing the recovery.
+let telemDownAt = 0;
+let telemToast: number | undefined;
+listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) => {
+  const { up, port, moved } = e.payload;
+  setTelemetryUp(up);
+  clearTimeout(telemToast);
+  if (!up) {
+    telemDownAt = Date.now();
+    telem.outages++;
+    dlog("error", `telemetry server on :${port} died — every session is blind until it re-binds`);
+    telemToast = window.setTimeout(() => {
+      toast("Telemetry server down — session readings are frozen");
+    }, 3000);
+  } else {
+    const downMs = telemDownAt ? Date.now() - telemDownAt : 0;
+    dlog(moved ? "error" : "info",
+      moved
+        ? `telemetry server could not reclaim its port and is now on :${port} — sessions launched earlier stay silent until relaunched`
+        : `telemetry server back on :${port} after ${Math.round(downMs / 1000)}s`);
+    // A moved port is not a recovery for anything already running, so it says so
+    // whatever the outage lasted.
+    if (moved) toast("Telemetry moved port — relaunch running sessions to restore their readings");
+    else if (downMs >= 3000) toast(`Telemetry server back after ${Math.round(downMs / 1000)}s`);
+  }
   renderAll();
 });
 

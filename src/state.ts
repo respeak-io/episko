@@ -268,6 +268,15 @@ export function setDormants(l: Restorable[]) { dormants = l; }
 // expose the same resume/thread id without hiding each other's history row.
 export let backendLive: ReadonlySet<string> = new Set();
 export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
+// Whether the local telemetry server is currently listening (backend
+// `telemetry-health`). It can die on a single accept error and be re-bound a moment
+// later — see serve_telemetry — and while it is down *every* Claude pane goes quiet
+// at once: no phase, no context, no files, no tools, and no error either, because
+// the hooks are fire-and-forget over `curl -s`. Which is exactly why this is state
+// rather than a log line: the rail's answer for a session it has heard nothing from
+// is a perfectly confident `○ idle`, and nothing else on screen contradicts it.
+export let telemetryUp = true;
+export function setTelemetryUp(v: boolean) { telemetryUp = v; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
 export interface EngineDef { id: Engine; label: string; sub: string }
