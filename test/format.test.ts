@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  ageBucket, basename, dialogBody, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
+  ageBucket, basename, cleanTitle, dialogBody, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
   fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -235,6 +235,41 @@ describe("basename", () => {
   it("falls back to the input when there is no leaf left", () => {
     expect(basename("/")).toBe("/");
     expect(basename("")).toBe("");
+  });
+});
+
+describe("cleanTitle — the OSC title, minus Claude's spinner", () => {
+  const sess = { title: "kept", workdir: "/Users/t/proj/app", project: "app-proj" };
+
+  it("strips every spinner family Claude Code has animated", () => {
+    // Braille (the original), the eight-spoked asterisk, and — since 2.1.250 — the
+    // quadrant circles. Each of these has shipped as a live frame in front of a title.
+    for (const frame of ["⠋", "⠙", "⣿", "✳", "✻", "✽", "◐", "◑", "◒", "◓", "◔", "◕", "◴", "◷", "●", "*"]) {
+      expect(cleanTitle(`${frame} Fixing the bug`, sess)).toBe("Fixing the bug");
+    }
+  });
+
+  it("strips a whole leading run, not just one frame", () => {
+    expect(cleanTitle("◐ ✳ ⠙  Fixing the bug", sess)).toBe("Fixing the bug");
+  });
+
+  it("leaves a decoration that isn't leading alone", () => {
+    // Only the animated prefix is noise; the same character mid-title is content.
+    expect(cleanTitle("Rendering the ◐ glyph", sess)).toBe("Rendering the ◐ glyph");
+  });
+
+  it("keeps the previous title when the terminal sends only decoration", () => {
+    // A frame with no summary yet must not blank a title the row is already showing.
+    expect(cleanTitle("◐", sess)).toBe("kept");
+    expect(cleanTitle("", sess)).toBe("kept");
+  });
+
+  it("drops a title that only repeats the folder we already show", () => {
+    setHome("/Users/t");
+    expect(cleanTitle("/Users/t/proj/app", sess)).toBe("");
+    expect(cleanTitle("~/proj/app", sess)).toBe("");
+    expect(cleanTitle("app", sess)).toBe("");
+    expect(cleanTitle("app-proj", sess)).toBe("");
   });
 });
 

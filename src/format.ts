@@ -62,6 +62,39 @@ export function dialogBody(text: string): string {
 // not the whole string — otherwise the sidebar shows the full path as the name.
 export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }
 
+// ---------- a pane's title, off the terminal's OSC ----------
+
+/// The leading decoration Claude Code puts in front of its OSC title.
+///
+/// It animates a spinner there — braille dots (U+2800–U+28FF), an eight-spoked
+/// asterisk (U+2733), and since **2.1.250** the quadrant circles ◐◑◒◓ (U+25D0–U+25D3)
+/// — so the raw title arrives as a frame of animation followed by the summary. We
+/// strip any leading run of it and keep the summary; our own status is the row's
+/// coloured `.sglyph`, which is a steadier thing to read.
+///
+/// **This is a table that tracks somebody else's release, so it lives here rather than
+/// in the DOM layer and it is tested.** Each time it has fallen behind, the symptom has
+/// been the same and has read as an Episko bug: a spinner frame parked in the sidebar.
+/// Missing the braille range left the glyph flickering; missing U+25D0 put a `◐` in
+/// front of every title the day 2.1.250 shipped — and `◐` is also Episko's own
+/// `background` glyph, so the leak read as "this session has background agents up".
+/// The quadrant ranges below are covered whole (U+25D0–U+25D7, U+25F4–U+25F7) rather
+/// than frame by frame, so the next rotation through that family costs nothing.
+const TITLE_DECOR = /^(?:[\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿◐-◗◴-◷\uFE0F\u200D]|\u{1F31F})+/u;
+
+/// Claude Code sets the terminal title (OSC) to an auto-summary; keep it unless it's
+/// just the folder path/name (which we already show).
+///
+/// Takes the three fields it reads rather than a whole `Sess`, which keeps ./format
+/// free of a types.ts import — a `Sess` satisfies it structurally, so the call sites
+/// still pass one.
+export function cleanTitle(t: string, s: { title: string; workdir: string; project: string }): string {
+  const x = (t || "").replace(TITLE_DECOR, "").trim();
+  if (!x) return s.title;
+  if (x === s.workdir || x === tilde(s.workdir) || x === s.project || x === basename(s.workdir)) return "";
+  return x;
+}
+
 /// Shorten a path from the *middle*, keeping the head and the last two segments.
 ///
 /// CSS `text-overflow` can only elide the tail, which for a path drops the only part

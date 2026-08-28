@@ -24,7 +24,7 @@ import { $, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
-import { basename, esc, tilde } from "./format";
+import { basename, cleanTitle, esc, tilde } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   providerCapabilities, providerSessionKey, resumeAgent,
@@ -34,7 +34,7 @@ import {
 } from "./types";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
-  attachWebgl, claudeInput, cleanTitle, clipboardKeys, detachWebgl, fitSession, MONO,
+  attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
   refit, shellKeys, trimScrollback, winClaudePaste,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";

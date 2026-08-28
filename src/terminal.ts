@@ -17,7 +17,6 @@ import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
-import { basename, tilde } from "./format";
 import type { Sess } from "./types";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
@@ -287,21 +286,6 @@ export function refit() {
 }
 export function applyFontSize() { for (const s of sessions.values()) if (s.term) s.term.options.fontSize = termFontSize; refit(); localStorage.setItem("cc-term-font", String(termFontSize)); }
 export function bumpFont(d: number) { setTermFontSize(Math.max(8, Math.min(28, termFontSize + d))); applyFontSize(); toast(`Terminal font ${termFontSize}px`); }
-
-// Claude prepends an animated spinner to its OSC title: it cycles through braille
-// dots (U+2800-U+28FF) and an eight-spoked asterisk (U+2733), e.g. a braille dot or
-// a star before "Fixing the bug". Strip any leading run of those so the sidebar
-// shows a steady summary; our own status stays in the row's colored .sglyph column.
-// Missing the braille range is what left the title glyph flickering. (CC 2.x OSC.)
-const TITLE_DECOR = /^(?:[\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿\uFE0F\u200D]|\u{1F31F})+/u;
-// Claude Code sets the terminal title (OSC) to an auto-summary; keep it unless it's
-// just the folder path/name (which we already show).
-export function cleanTitle(t: string, s: Sess): string {
-  const x = (t || "").replace(TITLE_DECOR, "").trim();
-  if (!x) return s.title;
-  if (x === s.workdir || x === tilde(s.workdir) || x === s.project || x === basename(s.workdir)) return "";
-  return x;
-}
 
 // The WebGL/canvas renderer bakes a glyph texture atlas on first paint. If the
 // bundled Nerd Font (font-display:block) isn't ready yet, that atlas caches tofu
