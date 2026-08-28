@@ -13,59 +13,32 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-+ Shelve a session: ⇩ in the stage header stops it and leaves its row in the sidebar,
-  where ⟲ picks the conversation back up. The row is the same one a restart already
-  produced, so a shelved session and last night's leftovers read as one shelf.
-+ Sign off (top bar, beside caffeinate) shelves the whole fleet at once. Its sheet keeps
-  sessions that are still working by default, and offers to close the shells and tasks
-  that have nothing to resume.
-! The telemetry server no longer dies for good on a single network hiccup. One
-  `ECONNABORTED` used to end it silently, after which every session launched sat at
-  `idle` forever with no model, context, files or tools. It now re-binds its own port,
-  so running panes recover on their own within seconds.
-+ A red *telemetry* badge in the top bar when that server is down, so a screen full of
++ Shelve a session: ⇩ in the stage header stops it and leaves its row behind, where ⟲
+  picks the conversation back up — the same row a restart already produced.
++ Sign off shelves the whole fleet at once, from the top bar. Sessions still working are
+  kept by default; shells and tasks with nothing to resume are offered for closing.
++ A red *telemetry* badge in the top bar when the hook server is down, so a screen of
   frozen readings can no longer look like a quiet fleet.
-! Claude Code 2.1.250 animates its window title with ◐◑◒◓; those frames were landing in
-  the sidebar in front of session names.
-! **A session in a worktree no longer becomes a project of its own after a reload.**
-  Reattaching a pane needs the restore roster, which holds the identity it was launched
-  under — but the roster was writable from the first moment of a reload, when the session
-  map is still empty, so a second Ctrl+R landing inside that window (about a second, while
-  the agent probe runs) saved an empty one over it. Every pane then came back named after
-  its folder: invisible for a session launched in a repo root, where the folder *is* the
-  project, and wrong for one in a worktree, which took its branch folder to the top level
-  of the sidebar and kept it — the wrong identity was saved straight back to the roster,
-  so a restart brought it back. The roster is now unwritable until the run that reads it
-  has, and a pane reattached without one resolves the repo its folder is a checkout of
-  rather than assuming the folder is the project.
 + Settings › Appearance › Visual effects: switches for animations, background blur, and
   whether Episko keeps animating once the window is behind something else.
-~ Episko stops animating the moment the window loses focus, and picks up where it left
-  off when you come back. An animation you cannot see is telling you nothing, and every
-  one of them was holding the compositor at the monitor's refresh rate — which on a
-  144Hz Windows desktop is two and a half times the work it is on a 60Hz Mac.
-! Seventeen dialogs, popovers and scrims no longer blur what is behind them while they
-  are closed. They stay mounted at zero opacity so they can fade, and each was keeping a
-  live GPU render surface to frost a panel nobody could see.
-+ **Settings › Diagnostics — find out what the interface is holding.** Left running for a
-  day with a fleet of panes, Episko can slowly get heavier until it feels sluggish, and
-  the reload that fixes it also destroys the evidence. **Record performance vitals** takes
-  a reading every few minutes — DOM nodes, JS heap, canvases, terminal buffers, the
-  per-session structures — and writes one line per sample into the rolling `episko.log`,
-  where it survives both a crash and a reload. The tab shows the drift since recording
-  started and names anything climbing faster than a leak would have to. It ships off,
-  because the one thing it cannot do is tell you about a day it was not watching.
-+ **The web inspector, in the shipped app.** Settings › Diagnostics opens the webview's own
-  developer tools, so a heap snapshot or a CPU profile no longer needs a special relaunch
-  with a debugging port. `EPISKO_SOURCEMAP=1 pnpm tauri build` makes a build whose profiles
-  name our own functions instead of minified ones.
-+ **Terminal scrollback is now a setting** — 1,000, 4,000 or the previous 8,000 lines per
-  pane. Across a fleet this is the largest single thing a long-running Episko holds, and a
-  pane only gives it back when its session ends. Lowering it applies to the panes already
-  open.
-+ **Reload the interface**, as a button that says what it does. It was always the fix for a
-  sluggish window and always looked like it would kill your fleet: it does not, because
-  Episko itself holds the terminals and every pane is re-adopted with its scrollback.
++ Settings › Diagnostics samples what the interface weighs — DOM nodes, heap, canvases,
+  terminal buffers — into `episko.log`, so a slow leak survives the reload that fixes it.
++ The web inspector ships in release builds, opened from Settings › Diagnostics.
+  `EPISKO_SOURCEMAP=1 pnpm tauri build` makes its profiles name our own functions.
++ Terminal scrollback is a setting — 1,000, 4,000 or the previous 8,000 lines per pane.
+  Lowering it applies to the panes already open.
++ **Reload the interface**, as a button that says what it does. It was always the fix for
+  a sluggish window and never killed your fleet.
+~ Episko stops animating while the window is behind something else, and picks up where it
+  left off. An animation you cannot see is telling you nothing.
+! The telemetry server no longer dies for good on one network hiccup, leaving every
+  session at `idle` with no model, context, files or tools. It re-binds its own port.
+! A session in a worktree no longer becomes a project of its own after a reload. A second
+  Ctrl+R during boot saved an empty roster over the identities it had not read yet.
+! Claude Code 2.1.250 animates its window title with ◐◑◒◓; those frames were landing in
+  the sidebar in front of session names.
+! Seventeen dialogs, popovers and scrims no longer blur what is behind them while closed
+  — each held a live GPU surface to frost a panel nobody could see.
 
 ## 0.23.0 — 2026-08-26
 
