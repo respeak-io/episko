@@ -27,6 +27,17 @@ Markers: `+` new · `~` changed · `!` fixed
   frozen readings can no longer look like a quiet fleet.
 ! Claude Code 2.1.250 animates its window title with ◐◑◒◓; those frames were landing in
   the sidebar in front of session names.
+! **A session in a worktree no longer becomes a project of its own after a reload.**
+  Reattaching a pane needs the restore roster, which holds the identity it was launched
+  under — but the roster was writable from the first moment of a reload, when the session
+  map is still empty, so a second Ctrl+R landing inside that window (about a second, while
+  the agent probe runs) saved an empty one over it. Every pane then came back named after
+  its folder: invisible for a session launched in a repo root, where the folder *is* the
+  project, and wrong for one in a worktree, which took its branch folder to the top level
+  of the sidebar and kept it — the wrong identity was saved straight back to the roster,
+  so a restart brought it back. The roster is now unwritable until the run that reads it
+  has, and a pane reattached without one resolves the repo its folder is a checkout of
+  rather than assuming the folder is the project.
 
 ## 0.23.0 — 2026-08-26
 

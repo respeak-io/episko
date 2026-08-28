@@ -63,7 +63,20 @@ export function rosterEntry(s: Sess): Restorable {
     title: s.title, lastActivity: s.lastActivity, provider: s.provider || "claude",
   };
 }
+// The roster may not be WRITTEN before this run has READ it, and that is not tidiness.
+// `sessions` and `dormants` are both empty until `adoptOrphans` and `loadDormants` have
+// run, so a save landing before them writes `[]` over the identities every live pane is
+// about to be rebuilt from. A reload's `beforeunload` is exactly such a save, and two
+// Ctrl+R inside the boot window (adoption waits on the `list_agents` PATH probe, ~1s of
+// it) is all it takes: the second unload wipes the roster, the surviving boot adopts
+// every pane with `meta: null`, and each falls back to its workdir. For a pane launched
+// in a repo root that fallback is invisible — the workdir IS the colorKey there — but a
+// pane in a WORKTREE becomes its own top-level project named after the folder, and
+// `adoptSession` then persists that as its identity, so it survives every later restart.
+// Shipped; found by four `app started` lines 1.5s apart in episko.log.
+let rosterReady = false;
 function saveRoster() {
+  if (!rosterReady) return;
   const open = [...sessions.values()].filter((s) => hasAgentCapability(s, "resume") && s.workdir).map(rosterEntry);
   // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
   // restores only some of them doesn't quietly discard the rest.
@@ -275,24 +288,34 @@ export function forgetDormant(id: string) {
 // machine that shuts down with six sessions open touches all six files at once, and
 // believing the file stamped every one of those rows with the reboot.
 export async function loadDormants() {
-  let roster: Restorable[] = [];
-  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
-  if (!Array.isArray(roster) || !roster.length) return;
-  const live = new Set([...sessions.keys()]);
-  const candidates: Restorable[] = [];
-  for (const r of roster) {
-    if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
-    if (live.has(r.id)) continue;
-    if (!r.resumeId) r.resumeId = r.id;
-    if (!r.provider) r.provider = "claude"; // roster written before provider support
-    candidates.push(r);
+  try {
+    let roster: Restorable[] = [];
+    try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
+    if (!Array.isArray(roster) || !roster.length) return;
+    const live = new Set([...sessions.keys()]);
+    const candidates: Restorable[] = [];
+    for (const r of roster) {
+      if (!r || typeof r.id !== "string" || typeof r.workdir !== "string" || !r.workdir) continue;
+      if (live.has(r.id)) continue;
+      if (!r.resumeId) r.resumeId = r.id;
+      if (!r.provider) r.provider = "claude"; // roster written before provider support
+      candidates.push(r);
+    }
+    const found = await reconcileProviderRestorables(candidates);
+    found.sort((a, b) => b.lastActivity - a.lastActivity);
+    setDormants(found);
+    if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
+  } finally {
+    // Whatever this run found — rows, an empty roster, or a provider that threw — the
+    // roster has now been read and every pane it identifies has been adopted, so a save
+    // can no longer erase what nothing has seen yet. In a `finally` because the only
+    // thing worse than saving too early is never saving again: this flag is the single
+    // gate on persistence, so no path out of here may skip it. The flush that follows
+    // is what rebuilds a roster an earlier boot window had already emptied.
+    rosterReady = true;
+    flushRoster();
+    renderAll();
   }
-  const found = await reconcileProviderRestorables(candidates);
-  found.sort((a, b) => b.lastActivity - a.lastActivity);
-  setDormants(found);
-  if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
-  flushRoster();
-  renderAll();
 }
 export function jumpExternal(pid: number) {
   invoke("focus_external_session", { pid }).catch((e) => toast("jump failed: " + e));
