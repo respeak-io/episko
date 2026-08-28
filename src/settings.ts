@@ -19,7 +19,7 @@ import { agentLogo } from "./providers/logos";
 import {
   allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   keyPrefs, missingAgents,
-  peekPrefs, permissionModeFor, revivePrefs,
+  peekPrefs, permissionModeFor, revivePrefs, termScrollback, vitalsPrefs,
   setTermFontSize,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -36,6 +36,10 @@ import {
 } from "./revive";
 import { LIT_COLOR } from "./sidebarview";
 import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
+import {
+  driftVerdict, fmtPerHour, fmtSpanShort, leakSuspects, SCROLLBACK_OPTS, VITALS,
+  VITALS_EVERY, type VitalsDrift, type VitalsPrefs,
+} from "./perf";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -99,6 +103,16 @@ export interface SettingsHost {
   // And for the revive watchdog — ./actions clamps through ./revive, persists, and
   // repaints (the inspector's error card carries the countdown, so `renderAll`).
   setRevivePrefs: (p: RevivePrefs) => void;
+  // Diagnostics. The first two are the usual ./actions setters; the last three are not
+  // settings at all — an inspector, a reload and a reading — which is why they arrive
+  // here rather than being reached through a `cc-` key like everything above them.
+  setVitalsPrefs: (p: VitalsPrefs) => void;
+  setScrollback: (lines: number) => void;
+  openDevtools: () => void;
+  reloadUi: () => void;
+  /// The growth series so far, from ./debug's ring. A reader on the host for the same
+  /// reason `effectiveTheme` is one: this window draws it and owns none of it.
+  vitalsDrift: () => VitalsDrift | null;
 }
 /// The Agent control's hint. Computed rather than fixed because the sentence that
 /// matters depends on the machine: with nothing else installed, "what a new session
@@ -141,6 +155,8 @@ let host: SettingsHost = {
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setRevivePrefs: () => {},
+  setVitalsPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  vitalsDrift: () => null,
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -188,7 +204,12 @@ type SetControl =
   // and a `render` tab would also widen the dialog for four rows of text.
   | { kind: "guide"; label: string; hint?: string }
   // Independently-toggled values — "which providers to scan" isn't a pick-one.
-  | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string };
+  | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
+  // A button that *does* something rather than storing a choice — the inspector and the
+  // reload. It rides the same `data-set`/`data-val` join as every other control, so it
+  // needs no wiring of its own; `danger` gives it the destructive colour the confirm
+  // dialog uses, for an action somebody should read the hint before pressing.
+  | { kind: "action"; set: string; label: string; hint?: string; btn: string; danger?: boolean };
 // Most tabs are a list of declarative controls; a tab may instead supply `render`
 // for a bespoke pane (the Usage analytics tab), which also widens the dialog.
 interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[]; render?: () => string }
@@ -451,6 +472,59 @@ const SET_TABS: SetTab[] = [
     controls: () => [
       { kind: "guide", label: "Guided tour",
         hint: "Replay any chapter, any time. Nothing here opens by itself after the first run — when a release adds something worth showing, What's new offers it and you can say no." },
+    ],
+  },
+  {
+    id: "diag", label: "Diagnostics", glyph: "◔",
+    // Three things in one tab because they are one problem: what the interface weighs,
+    // how to look at it, and the two numbers that change it. The order is deliberate —
+    // recording first, because it is the only one that has to be switched on *before*
+    // the day it is needed, and every other row here is something you can reach for
+    // after the fact.
+    controls: () => [
+      {
+        kind: "note", label: "Why this tab exists",
+        hint: "Left running for a day with a fleet of panes, the interface can slowly get heavier until it feels sluggish — and a reload fixes it, which also destroys the evidence. Recording leaves a trail in the log file so the next time it happens there is something to read.",
+      },
+      {
+        kind: "toggle", set: "perf:vitals", label: "Record performance vitals",
+        hint: "Samples what the interface is holding — DOM nodes, heap, terminal buffers, the per-session structures — and writes one line per sample into Episko's rolling log, where it survives a crash and a reload. Costs a fraction of a millisecond each time.",
+        on: () => vitalsPrefs.enabled,
+        preview: () => vitalsPreview(),
+      },
+      {
+        kind: "seg", set: "perf:every", label: "Sample every",
+        hint: "How often a reading is taken. Below a minute is mostly noise from whatever turn happens to be running; above a quarter of an hour a fifteen-hour slide lands in too few points to see where it started.",
+        dim: () => !vitalsPrefs.enabled,
+        active: () => String(vitalsPrefs.everyMs),
+        segs: () => VITALS_EVERY.map((ms) => ({
+          value: String(ms),
+          label: ms < 3_600_000 ? `${ms / 60_000} min` : `${ms / 3_600_000} h`,
+          glyph: ms === 60_000 ? "◕" : ms === 300_000 ? "◑" : "◔",
+          sub: ms === 60_000 ? "Finest; four hours in memory" : ms === 300_000 ? "A full day in memory" : "Coarsest; lightest log",
+        })) },
+      {
+        kind: "note", label: "Two things that change the weight",
+        hint: "Everything above only watches. These two act — the first on what the app holds from now on, the second on what it is holding right now.",
+      },
+      {
+        kind: "seg", set: "perf:scroll", label: "Terminal scrollback",
+        hint: "Lines of history each pane keeps. Across a fleet this is the largest single thing a long-running Episko holds, and a pane only gives it back when its session ends. Lowering it applies to the panes already open and drops their oldest lines at once.",
+        active: () => String(termScrollback),
+        segs: () => SCROLLBACK_OPTS.map((n) => ({
+          value: String(n),
+          label: `${n.toLocaleString()} lines`,
+          glyph: n === 1000 ? "▁" : n === 4000 ? "▄" : "█",
+          sub: n === 1000 ? "Lightest; roughly a screen of recent history" : n === 4000 ? "Half the default" : "The default",
+        })) },
+      {
+        kind: "action", set: "perf:reload", label: "Reload the interface", btn: "Reload",
+        hint: "Rebuilds the window from scratch and gives back whatever it had accumulated. No session is lost: Episko itself holds the terminals, and every pane is re-adopted with its scrollback. This is the fix when it has already gone sluggish.",
+      },
+      {
+        kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open",
+        hint: "The webview's own developer tools. Memory takes a heap snapshot you can compare against one from just after a reload; Performance records a profile. This is what turns “something is growing” into a name.",
+      },
     ],
   },
   {
@@ -1095,6 +1169,12 @@ function renderSetControl(c: SetControl): string {
       ? `<div class="set-group"><div class="set-inline">${inner}</div>${c.preview()}</div>`
       : `<div class="set-group set-inline">${inner}</div>`;
   }
+  if (c.kind === "action") {
+    // Same row shape as a toggle, with a button where the switch would be — so a tab that
+    // mixes settings and verbs still reads as one list rather than two.
+    return `<div class="set-group set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="set-abtn${c.danger ? " danger" : ""}" data-set="${c.set}" data-val="1">${esc(c.btn)}</button></div>`;
+  }
   if (c.kind === "multi") {
     const on = c.on();
     const segs = c.segs();
@@ -1116,6 +1196,44 @@ function renderSetControl(c: SetControl): string {
   ).join("");
   return `<div class="set-group${dim}">${head}<div class="seg">${opts}</div></div>`;
 }
+// ---- Settings > Diagnostics: the growth series, drawn ----
+//
+// The verdict sentence is always shown and the table only when there is something in it,
+// because the four states this can be in are genuinely different answers and an empty
+// grid says none of them. What the table shows is first-sample against last, per counter,
+// with its kind spelled out: a `level` reading high is information, a `growth` reading
+// high is a suspect, and without that distinction the row for scrollback lines — which is
+// supposed to saturate near its ceiling — looks like the worst leak on the list.
+//
+// Only the flagged rows are coloured. Everything else is deliberately plain: this is a
+// table somebody reads once a day at most, and a column of amber arrows on counters that
+// are behaving would make the one that isn't harder to find, not easier.
+function vitalsPreview(): string {
+  const d = host.vitalsDrift();
+  const verdict = driftVerdict(vitalsPrefs, d);
+  const bad = new Set(leakSuspects(d).map((r) => r.id));
+  const cls = bad.size ? "sv-warn" : "";
+  const head = `<div class="set-vitals"><div class="sv-verdict ${cls}">${esc(verdict)}</div>`;
+  if (!d) return `${head}</div>`;
+  const rows = d.rows.map((r) => {
+    const def = VITALS.find((v) => v.id === r.id);
+    // A rate is a running total, so its start and end values are meaningless on their own
+    // and only the per-hour column says anything. Blanking the other two is the honest
+    // rendering; showing "8,123 → 20,441" invites somebody to read a leak into a counter
+    // whose whole job is to keep counting.
+    const rate = r.kind === "rate";
+    const sign = r.delta > 0 ? "+" : "";
+    return `<tr class="${bad.has(r.id) ? "sv-bad" : ""}" title="${escAttr(def?.hint ?? "")}">`
+      + `<td>${esc(r.label)}<span class="sv-kind">${r.kind}</span></td>`
+      + `<td class="mono">${rate ? "–" : r.last.toLocaleString()}</td>`
+      + `<td class="mono">${rate ? "–" : `${sign}${r.delta.toLocaleString()}`}</td>`
+      + `<td class="mono">${sign}${fmtPerHour(r.perHour)}</td></tr>`;
+  }).join("");
+  return `${head}<table class="sv-tbl"><thead><tr><th>Counter</th><th>Now</th><th>Change</th><th>Per hour</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table>`
+    + `<div class="sv-foot">${d.samples} samples over ${esc(fmtSpanShort(d.spanMs))} · the full series is in episko.log, one line per sample behind <span class="mono">vitals</span></div></div>`;
+}
+
 // Dispatch a segmented pick to the existing setter, then repaint the picker.
 function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
@@ -1139,6 +1257,13 @@ function applySetting(set: string, val: string) {
   // `foot:<id>` rather than seven names in this chain: the ids are ./footprefs' and
   // adding a segment there should not mean editing a switch statement here too.
   else if (set.startsWith("foot:")) host.setFootSeg(set.slice(5) as FootSeg);
+  // `perf:*` rather than five loose names, on the same reasoning as `foot:` above: these
+  // belong to one tab and one module, and two of them are verbs rather than settings.
+  else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
+  else if (set === "perf:every") host.setVitalsPrefs({ ...vitalsPrefs, everyMs: +val });
+  else if (set === "perf:scroll") host.setScrollback(+val);
+  else if (set === "perf:reload") { void host.reloadUi(); return; }
+  else if (set === "perf:devtools") { host.openDevtools(); return; }
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);
   renderSettings();

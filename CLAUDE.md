@@ -101,13 +101,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 76 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 77 modules
 
-**No framework, and no longer one file.** 76 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 77 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (thirty-one, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty-two, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -147,6 +147,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `footprefs.ts` | which segments the status bar shows: the table, the store, its repair, and why three of them have no switch |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
+| `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
@@ -156,7 +157,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 76 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 77 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -286,6 +287,20 @@ And the things that hold however the files are arranged:
   `strList` / `favList` / a `clamp*`, never a bare `JSON.parse`, and discard a bad value on
   its own rather than letting it take the session (`test/state.test.ts`).
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash. The durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
+- **A leak that takes fifteen hours cannot be diagnosed from a snapshot.** `dbgSnapshot`
+  is state-of-now, so the *growth* half is **Settings › Diagnostics** (./perf decides,
+  ./debug samples): one reading every few minutes, teed into the rolling `episko.log` via
+  `log_frontend` — **never `dlog`**, which would push real events out of the 400-entry
+  ring the panel exists to show. Three rules. It **ships off** and the tab says why, since
+  the recorder has to be armed before the day it is needed. A counter's `kind` decides
+  what it may accuse: only an unbounded `growth` one, never a `level` (scrollback lines
+  saturate at their ceiling by design) or a `rate` (a total that counts is not a leak) —
+  the health.ts rule, one level down. And **no verdict under half an hour or across a
+  reload**: a busy turn makes any counter look alarming, and the reload that fixes this
+  bug resets every one of them to zero, which reads as a cure. The tab's other three rows
+  are the inspector (the `devtools` Cargo feature ships it in release builds), the
+  scrollback limit, and the reload itself — a button because it *looks* like it kills
+  your fleet and does not.
 
 ## App-wide rules
 

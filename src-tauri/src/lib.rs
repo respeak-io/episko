@@ -127,6 +127,20 @@ fn write_debug_file(contents: String) -> Result<String, String> {
 /// Forwarding it here puts the whole timeline (UI + backend) in one durable,
 /// time-ordered file: after #12 the backend was crash-visible but the UI half
 /// wasn't. Fire-and-forget from the frontend; a dropped line is not worth an error.
+/// Open the webview's own inspector on the main window.
+///
+/// A command rather than a menu item or an accelerator because the inspector is not a
+/// thing to reach by accident in a shipped app: this is only ever called from Settings >
+/// Diagnostics, where the sentence next to the button says what it is for. The `devtools`
+/// Cargo feature (see Cargo.toml) is what makes the call exist in a release build at all
+/// — without it `open_devtools` is compiled out and this would not build.
+///
+/// Idempotent by way of the webview: opening an already-open inspector focuses it.
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
 #[tauri::command]
 fn log_frontend(level: String, msg: String) {
     match level.as_str() {
@@ -622,6 +636,7 @@ pub fn run() {
             platform::reveal_file,
             write_debug_file,
             log_frontend,
+            open_devtools,
             update_tray,
             confirm_quit
         ])

@@ -100,7 +100,7 @@ export function detachWebgl(s: Sess) {
   for (const c of canvases) { c.width = 0; c.height = 0; }
 }
 
-// An ended resumable agent pane keeps up to 8000 lines of scrollback it can never grow
+// An ended resumable agent pane keeps a full buffer of scrollback it can never grow
 // again, tens of MB across a day — while provider history can reopen the conversation.
 // So the buffer is reclaimed once the pane is done: immediately
 // when it ends off stage, and on the way *off* the stage when you watched it end (the
@@ -109,6 +109,22 @@ export function detachWebgl(s: Sess) {
 export function trimScrollback(s: Sess) {
   if (!s.term || s.term.options.scrollback === 0) return;
   try { s.term.options.scrollback = 0; } catch { /* pane already disposed */ }
+}
+
+// Push a changed scrollback setting onto the panes already open. The setting exists for
+// a fleet that has been up for hours, so applying it only to *new* terminals would mean
+// the one thing it can help never gets it.
+//
+// **A pane already trimmed to 0 is left alone**, which is the whole subtlety here: that
+// zero is `trimScrollback`'s deliberate reclaim on an ended pane, not a value anybody
+// chose, and handing it 4000 back would refill the buffer this app just freed. Lowering
+// the limit drops the oldest lines at once (xterm applies it on assignment); raising it
+// only sets the new ceiling, since the lines it would have kept are already gone.
+export function applyScrollback(list: Iterable<Sess>, lines: number) {
+  for (const s of list) {
+    if (!s.term || s.term.options.scrollback === 0) continue;
+    try { s.term.options.scrollback = lines; } catch { /* pane disposed mid-pass */ }
+  }
 }
 
 // The whole custom key rule for a shell pane, in one handler — xterm keeps only the

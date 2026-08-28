@@ -19,10 +19,14 @@ import { esc } from "./format";
 import { rl } from "./rl";
 import {
   activeId, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
-  pastMirrorId, revivePrefs, sessions, termEngine,
+  pastMirrorId, revivePrefs, sessions, termEngine, vitalsPrefs,
 } from "./state";
 import { liveCount, orphanAgents, type Sess } from "./types";
 import { reviveDeadline } from "./revive";
+import {
+  driftVerdict, leakSuspects, pushVitals, vitalsDrift, vitalsLine,
+  type Vitals, type VitalsDrift,
+} from "./perf";
 
 // A lightweight in-app event log + live state snapshot, surfaced via the 🐞 button
 // (in the footer) and mirrored to a fixed file (episko-debug.json) so an external
@@ -47,6 +51,74 @@ export function dlog(lvl: DbgLvl, msg: string) {
   // Fire-and-forget: the in-memory ring above is the source of truth for the panel.
   invoke("log_frontend", { level: lvl, msg }).catch(() => {});
 }
+
+// ---------- performance vitals ----------
+//
+// The in-memory half of the series ./perf models. Sampling lives here because it is the
+// one thing in the feature that reads live state — `document`, `performance.memory` and
+// every open pane's terminal buffer — and this module already owns both the snapshot and
+// the tee into the durable log.
+//
+// **The tee is deliberately `log_frontend` rather than `dlog`.** A vitals line is not an
+// event: it says nothing happened, three hundred times a day. Through `dlog` it would
+// push real events out of the 400-entry ring the debug panel exists to show, and bury
+// the unrouted-telemetry warnings that are the whole reason that ring is worth reading.
+// It still lands in `episko.log` beside them, in the same timeline, which is the only
+// place any of this had to be.
+export const vitalsRing: Vitals[] = [];
+let lastSample = 0;
+
+/// One reading of the frontend's weight. Everything here is O(panes) or a single DOM
+/// count, which is why the cadence can be measured in minutes without anybody noticing.
+function sampleVitals(): Vitals {
+  const list = [...sessions.values()];
+  const sum = (f: (s: Sess) => number) => list.reduce((n, s) => n + f(s), 0);
+  // Chromium exposes `performance.memory`; WebKit does not, and a missing heap figure is
+  // reported as 0 rather than faked — a flat zero column reads as "not available here",
+  // where an invented number would put a clean verdict on the one counter that matters
+  // most. See `heapMB`'s row in ./perf's table.
+  const mem = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+  return {
+    t: Date.now(),
+    upMs: Math.round(performance.now()),
+    dom: document.getElementsByTagName("*").length,
+    heapMB: mem ? Math.round(mem.usedJSHeapSize / 1048576) : 0,
+    canvases: document.getElementsByTagName("canvas").length,
+    files: sum((s) => s.files.length),
+    servers: sum((s) => s.servers.length),
+    termLines: sum((s) => s.term?.buffer.normal.length ?? 0),
+    panes: list.length,
+    gl: list.filter((s) => s.gl).length,
+    acts: sum((s) => s.activity.length),
+    hist: sum((s) => s.ctxHist.length + s.costHist.length),
+    paints: telem.renders,
+    events: telem.rx,
+  };
+}
+
+/// Called on a fixed short tick from main.ts; this decides whether a sample is due.
+///
+/// The cadence is checked here rather than by rebuilding a `setInterval` whenever the
+/// picker changes, for the reason every interval in this app is module-scope and
+/// permanent: an interval that is cleared and recreated from a settings handler is one
+/// stray early return away from a feature that silently stops recording, and *silently
+/// stopped recording* is indistinguishable from *nothing is leaking*.
+export function tickVitals(prefsEnabled: boolean, everyMs: number) {
+  if (!prefsEnabled) { lastSample = 0; return; }
+  const now = Date.now();
+  // A first sample the moment it is switched on, so the readout has something to say
+  // before the first interval elapses.
+  if (lastSample && now - lastSample < everyMs) return;
+  lastSample = now;
+  const v = sampleVitals();
+  pushVitals(vitalsRing, v);
+  invoke("log_frontend", { level: "info", msg: vitalsLine(v) }).catch(() => {});
+}
+
+/// What Settings › Diagnostics draws, handed over through the settings host rather than
+/// imported, so the control panel keeps taking its readings from somebody else's module.
+export function currentDrift(): VitalsDrift | null { return vitalsDrift(vitalsRing); }
+
 function dbgIssues() { return dbgLog.reduce((n, e) => n + (e.lvl === "info" ? 0 : 1), 0); }
 export function renderDbgBadge() {
   const n = dbgIssues();
@@ -96,6 +168,20 @@ export function dbgSnapshot() {
     // something, and when" is one question about the app, and an external tool reading
     // the snapshot should not have to scan the fleet to answer it.
     nextRevive: (() => { const at = reviveDeadline(sessions.values(), revivePrefs, Date.now()); return at ? new Date(at).toISOString() : null; })(),
+    // The growth series in summary — the counters themselves are in `episko.log`, one
+    // line per sample, which is the form that survives the reload this bug is fixed by.
+    // What belongs here is the standing answer: is it recording, over how long, and is
+    // anything climbing. Kept small on purpose, because `flushDebug` skips a write when
+    // the body is unchanged and a live figure in here would defeat that guard on every
+    // four-second pass.
+    vitals: (() => {
+      const d = currentDrift();
+      return {
+        recording: vitalsPrefs.enabled, everyMs: vitalsPrefs.everyMs, samples: vitalsRing.length,
+        verdict: driftVerdict(vitalsPrefs, d),
+        growing: leakSuspects(d).map((r) => `${r.id} +${Math.round(r.perHour)}/h (${r.first} → ${r.last})`),
+      };
+    })(),
     log: dbgLog.slice(-250),
   };
 }
