@@ -1900,6 +1900,33 @@ select.in-ctl { cursor: pointer; }
 .set-freset { margin-left: 6px; height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer; font: 600 11px var(--font-ui); color: var(--muted); background: transparent; border: 1px solid var(--hair); }
 .set-freset:hover { color: var(--text); border-color: var(--hair-strong); }
 
+/* ---------- Diagnostics tab ---------- */
+/* The action button: a settings row whose right-hand control is a verb rather than a
+   switch. Sized to `.sw`'s row so a tab that mixes the two still reads as one list. */
+.set-abtn { flex: none; height: 30px; padding: 0 14px; border-radius: 8px; cursor: pointer; font: 650 11.5px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--hair-strong); }
+.set-abtn:hover { border-color: var(--accent-line); background: var(--surface-2); }
+.set-abtn.danger { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 34%, transparent); }
+.set-abtn.danger:hover { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
+
+/* The growth readout under the recording switch. A panel rather than bare rows because
+   it is the one thing on this tab that is a *reading* and not a control, and the border
+   is what stops it being read as another settable row. */
+.set-vitals { margin-top: 10px; padding: 11px 12px; border: 1px solid var(--hair); border-radius: 10px; background: var(--bg-2); }
+.sv-verdict { font-size: 11.5px; line-height: 1.45; color: var(--muted); max-width: 62ch; }
+.sv-verdict.sv-warn { color: var(--st-working); font-weight: 600; }
+.sv-tbl { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+.sv-tbl th { text-align: right; font-weight: 600; color: var(--muted-2); padding: 0 0 5px; border-bottom: 1px solid var(--hair); }
+.sv-tbl th:first-child { text-align: left; }
+.sv-tbl td { text-align: right; padding: 4px 0; color: var(--muted); border-bottom: 1px solid var(--hair); }
+.sv-tbl td:first-child { text-align: left; color: var(--text); }
+.sv-tbl tr:last-child td { border-bottom: 0; }
+/* Only a flagged row takes colour — see the note on `vitalsPreview`. */
+.sv-tbl tr.sv-bad td, .sv-tbl tr.sv-bad td:first-child { color: var(--st-working); }
+/* The kind, set small beside the name so "level" and "growth" are readable as a property
+   of the counter rather than as another column to scan. */
+.sv-kind { margin-left: 7px; font: 600 9.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted-2); }
+.sv-foot { margin-top: 9px; font-size: 10.5px; color: var(--muted-2); max-width: 62ch; line-height: 1.45; }
+
 /* ---------- Usage analytics tab ---------- */
 .setdlg.wide { width: min(1120px, 96vw); height: min(884px, 92vh); }
 .u-pane { display: flex; flex-direction: column; gap: 16px; }

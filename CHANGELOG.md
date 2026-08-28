@@ -47,6 +47,25 @@ Markers: `+` new · `~` changed · `!` fixed
 ! Seventeen dialogs, popovers and scrims no longer blur what is behind them while they
   are closed. They stay mounted at zero opacity so they can fade, and each was keeping a
   live GPU render surface to frost a panel nobody could see.
++ **Settings › Diagnostics — find out what the interface is holding.** Left running for a
+  day with a fleet of panes, Episko can slowly get heavier until it feels sluggish, and
+  the reload that fixes it also destroys the evidence. **Record performance vitals** takes
+  a reading every few minutes — DOM nodes, JS heap, canvases, terminal buffers, the
+  per-session structures — and writes one line per sample into the rolling `episko.log`,
+  where it survives both a crash and a reload. The tab shows the drift since recording
+  started and names anything climbing faster than a leak would have to. It ships off,
+  because the one thing it cannot do is tell you about a day it was not watching.
++ **The web inspector, in the shipped app.** Settings › Diagnostics opens the webview's own
+  developer tools, so a heap snapshot or a CPU profile no longer needs a special relaunch
+  with a debugging port. `EPISKO_SOURCEMAP=1 pnpm tauri build` makes a build whose profiles
+  name our own functions instead of minified ones.
++ **Terminal scrollback is now a setting** — 1,000, 4,000 or the previous 8,000 lines per
+  pane. Across a fleet this is the largest single thing a long-running Episko holds, and a
+  pane only gives it back when its session ends. Lowering it applies to the panes already
+  open.
++ **Reload the interface**, as a button that says what it does. It was always the fix for a
+  sluggish window and always looked like it would kill your fleet: it does not, because
+  Episko itself holds the terminals and every pane is re-adopted with its scrollback.
 
 ## 0.23.0 — 2026-08-26
 

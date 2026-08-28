@@ -25,7 +25,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["test"] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `devtools` puts the web inspector in RELEASE builds too, not just debug ones. Episko is
+# a webview app people leave running for days, and the fault that needs it — the renderer
+# slowly saturating a core until the page is reloaded — only ever appears in a real
+# session on a real fleet, never in `tauri dev`. Without this, diagnosing it meant
+# relaunching the shipped binary under a WebView2 remote-debugging port and reading
+# minified frames. Opening it is a switch in Settings > Diagnostics, so the inspector
+# ships available rather than open. (Tauri's note: this uses private APIs on macOS, which
+# matters for the App Store and not for Developer ID distribution, which is what we do.)
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

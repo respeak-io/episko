@@ -34,6 +34,7 @@ import {
   setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
+  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -75,7 +76,7 @@ import {
 } from "./worktree";
 import {
   dbgLog, dbgSnapshot, dlog, flushDebug, renderDbgBadge, renderDbgPanel, telem,
-  toggleDbg,
+  toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
@@ -110,7 +111,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
+  setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine, vitalsPrefs,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
@@ -273,6 +274,8 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
+  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
+  vitalsDrift: currentDrift,
 });
 // The tour drives the app the way a user would, so the two things it cannot do itself
 // are typing into a pane and opening the window it just told you about.
@@ -1103,6 +1106,10 @@ window.addEventListener("unhandledrejection", (e) => dlog("error", `unhandled re
 dlog("info", "app started");
 flushDebug();
 setInterval(flushDebug, 4000);
+// The vitals recorder. A fixed short tick that asks ./debug whether a sample is due,
+// rather than an interval rebuilt whenever the cadence changes — see `tickVitals` for
+// why an interval this feature depends on must never be cleared and recreated.
+setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 
 // scour each known project for a favicon/logo once, so the sidebar shows real icons
 FAVORITES.forEach((f) => probeIcon(f.path));

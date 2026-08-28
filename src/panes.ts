@@ -54,7 +54,7 @@ import {
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
-  termFontSize, worktreesByRepo, wtSig,
+  termFontSize, termScrollback, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 
@@ -73,7 +73,7 @@ function launchPermission(agent: AgentCli) {
 // adoption of a reload orphan, so the two cannot drift on options or key wiring.
 function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -90,7 +90,7 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // launches and reload adoption both go through this constructor so input cannot drift.
 function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -358,7 +358,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
@@ -462,7 +462,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
   pane.appendChild(cap);
   const term = new Terminal({
-    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: 8000,
+    fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();

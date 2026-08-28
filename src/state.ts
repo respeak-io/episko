@@ -28,6 +28,7 @@ import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
+import { clampScrollback, clampVitalsPrefs, type VitalsPrefs } from "./perf";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
@@ -452,3 +453,16 @@ export function setMotionPrefs(p: MotionPrefs) { motionPrefs = p; }
 // the one that decides whether you can see the animation.
 export let winFocused = true;
 export function setWinFocused(v: boolean) { winFocused = v; }
+
+// Whether the frontend records its own weight on a timer, and how often. One JSON blob
+// under cc-vitals for the same reason as cc-attn above: two fields that are only ever set
+// together, from one switch and one picker in the same group. The model — what is
+// sampled, what each counter is allowed to accuse, and the log line — is ./perf's.
+export let vitalsPrefs: VitalsPrefs = clampVitalsPrefs(safeParse(localStorage.getItem("cc-vitals")));
+export function setVitalsPrefs(p: VitalsPrefs) { vitalsPrefs = clampVitalsPrefs(p); }
+
+// Lines of scrollback each new terminal keeps. Read here and applied by ./panes at
+// creation and by ./terminal to the panes already open, so a change reaches a fleet
+// that has been up for hours — which is the only fleet the setting is for.
+export let termScrollback: number = clampScrollback(localStorage.getItem("cc-scrollback"));
+export function setTermScrollback(n: number) { termScrollback = clampScrollback(n); }
