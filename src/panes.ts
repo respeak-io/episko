@@ -44,7 +44,7 @@ import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
 import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
-import { nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
+import { adoptIdentity, nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
@@ -282,8 +282,11 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const provider = o.provider || m?.provider || "claude";
   const providerDef = provider === "claude" ? CLAUDE_CLI : agentDef(provider);
   const capabilities = providerDef?.capabilities ?? providerCapabilities(provider);
-  const project = m?.project || basename(o.workdir) || "session";
-  const colorKey = m?.colorKey ?? o.workdir;
+  // Only a roster-less orphan pays for this, and it is one spawn-free read of the
+  // repo's checkouts: enough for a pane in a worktree to adopt under its REPO rather
+  // than mint a project named after the branch folder (./grouping's `adoptIdentity`).
+  const heads = m ? [] : await invoke<WtHead[]>("worktree_heads", { dir: o.workdir }).catch(() => [] as WtHead[]);
+  const { project, colorKey, worktree, branch } = adoptIdentity(o.workdir, m, heads);
   probeIcon(colorKey);
   const pane = document.createElement("div");
   pane.className = "term-pane";
@@ -291,7 +294,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const { term, fit } = provider === "claude" ? newClaudeTerm(o.id, pane) : newAgentTerm(o.id, pane);
   const s: Sess = {
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
-    resumeId: m?.resumeId ?? o.id, branch: m?.branch ?? "", worktree: m?.worktree ?? null,
+    resumeId: m?.resumeId ?? o.id, branch, worktree,
     title: m?.title ?? providerDef?.label ?? provider,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,

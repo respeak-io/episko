@@ -12,6 +12,7 @@ import {
 } from "../src/state";
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
+  adoptIdentity,
   allProjects, attnPending, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
   foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
@@ -1326,6 +1327,68 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
   it("never adopts a pane the frontend already has", () => {
     open(sess({ id: "o1" }));
     expect(orphanAdoptions([live()], [])).toEqual([]);
+  });
+});
+
+describe("adoptIdentity — which project an adopted orphan lists under", () => {
+  // What `worktree_heads` returns for a repo with one linked checkout, in the physical,
+  // normalised spelling Rust hands back.
+  const heads: WtHead[] = [
+    { path: "/w/epi", branch: "main", is_main: true, exists: true },
+    { path: "/w/.cc-worktrees/epi/feat-undo-redo", branch: "feat/undo-redo", is_main: false, exists: true },
+  ];
+
+  it("takes the roster's identity verbatim and never re-derives over it", () => {
+    // The launch identity beats anything the filesystem could say: a worktree launch
+    // deliberately pins colorKey to the repo, and a renamed project has no other home.
+    const m = dorm({ project: "Epi!", colorKey: "/w/epi", workdir: "/w/.cc-worktrees/epi/feat-undo-redo", worktree: "feat/undo-redo", branch: "feat/undo-redo" });
+    expect(adoptIdentity(m.workdir, m, heads)).toEqual({
+      project: "Epi!", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
+    });
+  });
+
+  it("files a roster-less worktree pane under its REPO, not as a project of its own", () => {
+    // The shipped bug: two fast Ctrl+R emptied the roster, every pane adopted with no
+    // meta, and this one became a top-level project named after its branch folder.
+    expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo", null, heads)).toEqual({
+      project: "epi", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
+    });
+  });
+
+  it("leaves a roster-less pane in the repo root as the project itself", () => {
+    expect(adoptIdentity("/w/epi", null, heads)).toEqual({
+      project: "epi", colorKey: "/w/epi", worktree: null, branch: "main",
+    });
+  });
+
+  it("resolves a folder INSIDE a checkout to that checkout", () => {
+    // A task declares its own cwd and a shell inherits it, so a pane can sit several
+    // folders deep in the checkout it belongs to.
+    expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo/ui/src", null, heads))
+      .toMatchObject({ colorKey: "/w/epi", worktree: "feat/undo-redo" });
+  });
+
+  it("levels the two spellings the comparison actually gets", () => {
+    // Rust normalises its side (`E:\…`, upper-cased drive); a `Sess.workdir` is however
+    // the user picked it. Compared raw, the repo stops matching its own worktree.
+    const win: WtHead[] = [
+      { path: "E:\\w\\epi", branch: "main", is_main: true, exists: true },
+      { path: "E:\\w\\.cc-worktrees\\epi\\feat", branch: "feat/x", is_main: false, exists: true },
+    ];
+    expect(adoptIdentity("e:/w/.cc-worktrees/epi/feat/", null, win))
+      .toMatchObject({ project: "epi", colorKey: "E:\\w\\epi", worktree: "feat/x" });
+  });
+
+  it("fails closed on a folder no repo claims", () => {
+    // No roster, a scratch dir, an unreadable repo — the old answer, deliberately: we
+    // will not file a pane under a repo we could not find.
+    expect(adoptIdentity("/w/scratch/thing", null, [])).toEqual({
+      project: "thing", colorKey: "/w/scratch/thing", worktree: null, branch: "",
+    });
+  });
+
+  it("names an unnamed roster entry after the key it kept", () => {
+    expect(adoptIdentity("/w/epi", dorm({ project: "", colorKey: "/w/epi" }), heads).project).toBe("epi");
   });
 });
 

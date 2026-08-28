@@ -19,10 +19,10 @@
 // See test/grouping.test.ts.
 
 import { basename } from "./format";
-import { checkoutDir } from "./gitwatch";
+import { checkoutDir, sameDir } from "./gitwatch";
 import {
   bgWaiting, hasSessionState, isAgent, providerSessionKey,
-  type ExtSession, type LiveSess, type Phase, type Restorable, type Sess,
+  type ExtSession, type LiveSess, type Phase, type Restorable, type Sess, type WtHead,
 } from "./types";
 import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
@@ -194,6 +194,50 @@ export function orphanAdoptions(back: LiveSess[], roster: Restorable[]): { id: s
   return back
     .filter((b) => b.kind === "agent" && !!b.provider && !sessions.has(b.id))
     .map((b) => ({ id: b.id, workdir: b.workdir, provider: b.provider!, meta: roster.find((r) => r?.id === b.id) ?? null }));
+}
+/// Who an adopted orphan belongs to: the project it lists under, the key everything
+/// colours and groups by, and the checkout labels that go with them.
+///
+/// The roster answers this whenever it has an entry, and nothing may second-guess it:
+/// that is the identity the pane was LAUNCHED under, which re-derivation cannot beat —
+/// a favourite's own spelling of its path, a project the user renamed, a colorKey
+/// deliberately pinned to the repo by `launchWorktree`.
+///
+/// The rest exists for the entry that ISN'T there, and it is the half that was wrong.
+/// Falling back to the workdir makes the pane its own project, which is invisible for a
+/// session launched in a repo root — the workdir IS the colorKey there — and wrong for
+/// every session in a worktree, where it mints a top-level project named after the
+/// branch folder and scatters the repo across the rail. `worktree_heads` already knows
+/// which repo a folder is a checkout of, and it is spawn-free, so the caller asks it on
+/// the one path that reaches this: a reload that found no roster.
+///
+/// Fail-closed like every other checkout resolution here. A folder no repo claims (an
+/// unreadable roster, a scratch dir) keeps the old answer and becomes its own project,
+/// because the alternative is filing a pane under a repo we could not find.
+export function adoptIdentity(workdir: string, meta: Restorable | null, heads: readonly WtHead[]): {
+  project: string; colorKey: string; worktree: string | null; branch: string;
+} {
+  if (meta?.colorKey) {
+    return {
+      project: meta.project || basename(meta.colorKey) || "session",
+      colorKey: meta.colorKey, worktree: meta.worktree, branch: meta.branch || "",
+    };
+  }
+  // The pane's own CHECKOUT, not its raw workdir: `checkoutDir` is what already places a
+  // folder sitting several levels inside one, on the same longest-match rule the sidebar
+  // clusters by. An unplaceable folder comes back untouched and every answer below
+  // collapses to the old workdir one.
+  const checkout = checkoutDir(workdir, heads);
+  const root = heads.find((w) => w.is_main)?.path ?? checkout;
+  const own = heads.find((w) => sameDir(w.path, checkout));
+  return {
+    project: basename(root) || "session",
+    colorKey: root,
+    // The shape a worktree launch records (`launchWorktree` in ./panes): null for the
+    // repo's own checkout, the branch for any other.
+    worktree: sameDir(root, checkout) ? null : own?.branch || basename(checkout),
+    branch: own?.branch || "",
+  };
 }
 export function projectList(): ProjGroup[] {
   const list = allProjects();

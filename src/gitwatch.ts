@@ -87,6 +87,13 @@ function under(dir: string, path: string): boolean {
   const d = norm(dir), p = norm(path);
   return d !== "" && (p === d || p.startsWith(d + "/"));
 }
+/// Two spellings of one directory, levelled by the `norm` above — exported so ./grouping
+/// can ask "is this checkout the repo root?" without growing a second normalisation rule
+/// for the trap the comment above describes: one side comes back resolved from Rust, the
+/// other is a `Sess.workdir` as the user spelled it.
+export function sameDir(a: string, b: string): boolean {
+  return norm(a) !== "" && norm(a) === norm(b);
+}
 
 type Checkout = { path: string; branch: string; exists: boolean };
 
