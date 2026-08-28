@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.24.0 — 2026-08-28
+
+Put the fleet down for the night and pick it up in the morning. The hook server
+survives a hiccup instead of going quiet for good, and Episko will now tell you what
+it weighs after a day left open.
+
 + Shelve a session: ⇩ in the stage header stops it and leaves its row behind, where ⟲
   picks the conversation back up — the same row a restart already produced.
 + Sign off shelves the whole fleet at once, from the top bar. Sessions still working are
@@ -41,7 +47,6 @@ Markers: `+` new · `~` changed · `!` fixed
   — each held a live GPU surface to frost a panel nobody could see.
 
 ## 0.23.0 — 2026-08-26
-
 **Signed and notarized by Apple.** Nothing to clear on install.
 
 ~ macOS builds carry a Developer ID certificate, so the `xattr -dr com.apple.quarantine`
@@ -50,7 +55,6 @@ Markers: `+` new · `~` changed · `!` fixed
   identity every release, so macOS treated each one as a new app and asked again.
 
 ## 0.22.0 — 2026-08-25
-
 Episko runs the other coding agents too, and which one starts is a setting rather
 than a question. The diff reads like a pull request and says what the change did to
 the shape of the code, the header lists the dev servers your agents left running,
