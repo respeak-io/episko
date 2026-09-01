@@ -19,6 +19,10 @@ Markers: `+` new · `~` changed · `!` fixed
   ending. Worse, `done` then swallowed every tool call that followed, so the row claimed
   *your turn* for the whole of the next turn, however long it ran.
 
+! Day spend: resuming a session whose original pane was still running re-booked the
+  whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
+  kept per pane within a conversation.
+
 ## 0.24.0 — 2026-08-28
 
 Put the fleet down for the night and pick it up in the morning. The hook server

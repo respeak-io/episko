@@ -507,8 +507,10 @@ export function applyStatusline(s: Sess, data: any) {
   const cost = data.cost?.total_cost_usd;
   // The day's increment comes from the conversation's own baseline, not from this
   // pane's last reading — a resumed session inherits Claude's running total, and a
-  // pane that started at `cost: null` would book the whole of it again. See costDelta.
-  if (typeof cost === "number") { addUsage(costDelta(s.resumeId || s.id, cost), s); s.cost = cost; pushHist(s.costHist, cost); }
+  // pane that started at `cost: null` would book the whole of it again. The pane id
+  // rides along because one conversation can have two live panes, each with its own
+  // counter, and a baseline they shared re-booked whole totals forever. See costDelta.
+  if (typeof cost === "number") { addUsage(costDelta(s.resumeId || s.id, cost, true, s.id), s); s.cost = cost; pushHist(s.costHist, cost); }
   const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
   const r5 = data.rate_limits?.five_hour;
   if (r5) {
