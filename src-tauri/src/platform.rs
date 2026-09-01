@@ -659,6 +659,71 @@ pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The probe ceiling for one `resolve_link_path` call — a millisecond of `stat` at the
+/// very worst, on a hover that already found something path-shaped.
+///
+/// It has to clear `MAX_CANDS * the base list` (24 x 24) with room to spare, because
+/// running out mid-list silently drops the *tail*: the shortest reading of a line is
+/// proposed last and is the one that usually wins, so a tight budget would look exactly
+/// like a path that does not exist.
+const LINK_PROBE_BUDGET: usize = 1024;
+
+/// Which of the paths a terminal *printed* actually exists — the backend half of the
+/// clickable-link provider (see src/termlinks.ts).
+///
+/// `cands` arrives longest-first, and the first one that resolves wins, so the answer
+/// is the most specific reading of the line rather than the first plausible prefix:
+/// given `I_Projekte/BA Reinickendorf/deck.pdf`, the whole thing beats `I_Projekte/BA`.
+/// `bases` is tried in order for a relative candidate and ignored for an absolute one.
+///
+/// This is the only thing standing between a link provider and underlining half of
+/// every sentence, so it answers about the filesystem and nothing else: no globbing,
+/// no basename search, no fuzzy match. A path that is not there is not a link.
+///
+/// Returns the winning candidate's index alongside its absolute path — the caller
+/// needs the index to know how far the underline reaches, since the candidates differ
+/// in how many words of the line they claim.
+#[tauri::command]
+pub(crate) fn resolve_link_path(bases: Vec<String>, cands: Vec<String>) -> Option<(usize, String)> {
+    let home = home_dir();
+    let mut budget = LINK_PROBE_BUDGET;
+    for (i, raw) in cands.iter().enumerate() {
+        let c = raw.trim();
+        // `.`/`..` resolve against every base and mean nothing; a one-character
+        // candidate is punctuation that survived a trim.
+        if c.len() < 2 || c == ".." {
+            continue;
+        }
+        let cand = match c.strip_prefix("~/") {
+            Some(rest) if !home.is_empty() => format!("{home}/{rest}"),
+            Some(_) => continue,
+            None => c.to_string(),
+        };
+        let p = std::path::Path::new(&cand);
+        if p.is_absolute() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            if p.exists() {
+                return Some((i, norm_path(&cand)));
+            }
+            continue;
+        }
+        for b in &bases {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            let joined = std::path::Path::new(b).join(&cand);
+            if joined.exists() {
+                return Some((i, norm_path(&joined.to_string_lossy())));
+            }
+        }
+    }
+    None
+}
+
 /// Open a file with whatever the OS has registered for it — the primary click on the
 /// inspector's Context rows.
 ///
@@ -1387,5 +1452,58 @@ mod tests {
         for bad in ["", "-", "--", "-x", "-d;", "-d -i", "36 00", "/usr/bin/evil"] {
             assert!(!valid_caffeinate_flag(bad), "{bad} must be refused");
         }
+    }
+
+    /// The whole point of `resolve_link_path`: a folder tree a person organised has
+    /// spaces in it, so the frontend cannot know where the path stopped and the
+    /// sentence started. It proposes both readings, longest first, and this function
+    /// is the only thing that actually knows.
+    #[test]
+    fn resolve_link_path_takes_the_longest_candidate_that_exists() {
+        let root = crate::testutil::scratch_dir();
+        let deep = root.join("I_Projekte/BA Reinickendorf/2_Kickoff");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deck.pdf"), b"pdf").unwrap();
+        let base = root.to_string_lossy().to_string();
+
+        // Exactly the order ./termlinks emits: the whole path, then each shorter
+        // reading of the same start. The first one is right and must win.
+        let cands = vec![
+            "I_Projekte/BA Reinickendorf/2_Kickoff/deck.pdf".to_string(),
+            "I_Projekte/BA Reinickendorf/2_Kickoff".to_string(),
+            "I_Projekte/BA".to_string(),
+        ];
+        let (i, hit) = resolve_link_path(vec![base.clone()], cands).expect("the deck resolves");
+        assert_eq!(i, 0, "the index says how far the underline reaches");
+        assert!(hit.ends_with("deck.pdf"), "resolved to {hit}");
+
+        // A prefix that IS a directory still resolves when nothing longer does — the
+        // reading is shorter, not wrong.
+        let (i, hit) = resolve_link_path(
+            vec![base.clone()],
+            vec!["I_Projekte/BA Reinickendorf/nope.pdf".to_string(), "I_Projekte/BA Reinickendorf".to_string()],
+        )
+        .expect("the folder resolves");
+        assert_eq!(i, 1);
+        assert!(hit.ends_with("Reinickendorf"), "resolved to {hit}");
+    }
+
+    /// The other half, and the one that keeps the feature off ordinary prose: nothing
+    /// is a link until disk says so. An absolute candidate skips the bases entirely.
+    #[test]
+    fn resolve_link_path_answers_nothing_for_what_is_not_there() {
+        let root = crate::testutil::scratch_dir();
+        let base = root.to_string_lossy().to_string();
+        std::fs::write(root.join("notes.md"), b"x").unwrap();
+
+        assert!(resolve_link_path(vec![base.clone()], vec!["Kurzfassung".to_string()]).is_none());
+        assert!(resolve_link_path(vec![base.clone()], vec!["docs/tour.md".to_string()]).is_none());
+        // `.` and `..` resolve against every base and mean nothing; so does a single
+        // character left behind by a punctuation trim.
+        assert!(resolve_link_path(vec![base.clone()], vec!["..".to_string(), ".".to_string()]).is_none());
+        // No bases at all is the ordinary state of a brand-new pane.
+        let abs = root.join("notes.md").to_string_lossy().to_string();
+        let (_, hit) = resolve_link_path(vec![], vec![abs]).expect("an absolute path needs no base");
+        assert!(hit.ends_with("notes.md"), "resolved to {hit}");
     }
 }

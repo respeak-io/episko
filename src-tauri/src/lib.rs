@@ -654,6 +654,8 @@ pub fn run() {
             platform::reveal_path,
             platform::open_file,
             platform::reveal_file,
+            platform::resolve_link_path,
+            pty::session_cwd,
             write_debug_file,
             log_frontend,
             open_devtools,

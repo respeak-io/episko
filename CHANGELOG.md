@@ -21,6 +21,12 @@ The header's running-server list finally reads the log Claude Code actually writ
   work login and a personal one could not both be right at once — a private repo the
   other account owns came back as *could not resolve to a Repository*, which named
   neither the account nor the fix.
++ Paths and URLs in a pane are clickable — every pane, whatever agent runs in it. A path
+  is only underlined once Episko has found it on disk, so paths with spaces, broken
+  across lines, or printed with a `\n` in them all still open.
++ A relative path resolves against where the pane's process actually is, so it keeps
+  working after a `cd`, and against the folders the session has already worked in.
++ A terminal's own OSC 8 hyperlinks now open instead of doing nothing.
 ~ The popover splits **Running servers** from **Background jobs**; only something with an
   address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
 ~ The GitHub card names the account a failed read ran as, instead of passing GitHub's
@@ -35,6 +41,8 @@ The header's running-server list finally reads the log Claude Code actually writ
   next, but its `Stop` arrives after your prompt, and Episko took that as the turn
   ending. Worse, `done` then swallowed every tool call that followed, so the row claimed
   *your turn* for the whole of the next turn, however long it ran.
+! Task manager: *Open tasks.toml* was refused by the opener's URL scope and could only
+  ever fail.
 ! Day spend: resuming a session whose original pane was still running re-booked the
   whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
   kept per pane within a conversation.

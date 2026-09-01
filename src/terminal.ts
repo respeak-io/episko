@@ -15,9 +15,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
 import type { Sess } from "./types";
+import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
 // Leads with the bundled Nerd Font (see @font-face in styles.css) so the terminal
@@ -270,6 +272,225 @@ export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
     e.stopPropagation();
     invoke("write_pty", { sessionId: id, data: "\x1bv" });
   }, true);
+}
+
+// ---------- clickable links ----------
+//
+// A pane's output is the one surface in this app where a path or a URL is *only*
+// text. The inspector's Context card already makes a file the agent wrote clickable,
+// but it is fed from PostToolUse and so cannot see what a Bash call did — a `cp`, a
+// `>`, a generated PDF — and the working-set card sees only what git sees, which
+// outside a repo is nothing. What is left is the sentence the agent typed, so that is
+// where the click has to go.
+//
+// Registered on every pane whatever runs in it: a path in Codex's output is the same
+// path, and a shell pane's `ls` is the case with no card behind it at all.
+//
+// Two mechanisms, because there are two kinds of link:
+//
+//   · **OSC 8**, the terminal-native hyperlink. xterm parses it already and hands it
+//     to `options.linkHandler` — we simply had none, so every one was inert. It stays
+//     http(s)-only (`allowNonHttpProtocols` left off, and `openHref` checks anyway):
+//     a program may put any URI it likes in an OSC 8, `javascript:` included, and a
+//     terminal pane is not the place to decide which of those are safe.
+//   · **a link provider**, for everything printed as plain text — which is all of it
+//     when the program never learned OSC 8. ./termlinks proposes; disk decides.
+
+/// The joined rows as one string, with each character's cell recorded so a match can
+/// be mapped back to a buffer range.
+interface JoinedRow { text: string; cells: { x: number; y: number }[] }
+/// Structural, because xterm exports `ILink` as a type but not a value and the
+/// interface itself is not re-exported from the package root.
+interface TermLink {
+  range: { start: { x: number; y: number }; end: { x: number; y: number } };
+  text: string;
+  activate: () => void;
+}
+type Buf = Terminal["buffer"]["active"];
+
+/// Cap on the joined text. A path is one line's worth of characters; anything past
+/// this is a paragraph, and walking it per hover is not free.
+const MAX_JOIN = 4000;
+/// How many wrap-runs to join either side of the hovered one. **Two**, not one: an
+/// agent breaks a long path at ITS spaces, and a path with two spaces in it comes out
+/// across three rows — from the middle one, joining a single run reaches one end and
+/// never the other, which is exactly what a real hover found (three separate proposals
+/// on one path, none of them the whole thing).
+const EXTRA_RUNS = 2;
+/// Hover answers, kept because the same row is re-asked on every mouse move that
+/// leaves and re-enters it. Cleared wholesale rather than aged: an entry is two
+/// strings and the cost of a miss is one `stat` sweep.
+const RESOLVED_MAX = 300;
+const resolved = new Map<string, [number, string] | null>();
+
+const runStart = (buf: Buf, y: number): number => { while (y > 0 && buf.getLine(y)?.isWrapped) y--; return y; };
+const runEnd = (buf: Buf, y: number): number => { while (y + 1 < buf.length && buf.getLine(y + 1)?.isWrapped) y++; return y; };
+
+/// The hovered row's wrap-run, plus `EXTRA_RUNS` either side, as one string.
+///
+/// The neighbours are not padding for luck. xterm's `isWrapped` marks the rows the
+/// *terminal* broke, and those join with nothing between them because the break was
+/// never in the text. But the long path in an agent's answer was already broken by
+/// the **agent**, at a space, before it ever reached us: that break is a real newline,
+/// carries no wrap flag, and the row it ends is padded out with blank cells to the
+/// full width. So a hard break joins with **one space** — the width of the padding is
+/// an artifact of the window and the path on disk has a single space there, which a
+/// literal join would turn into sixty and no candidate would survive.
+///
+/// Over-joining is safe for the same reason over-proposing is: a candidate spanning
+/// two unrelated lines does not exist, so it is never underlined.
+function joinRows(term: Terminal, y: number): JoinedRow {
+  const buf = term.buffer.active;
+  let first = runStart(buf, y);
+  for (let n = 0; n < EXTRA_RUNS && first > 0; n++) first = runStart(buf, first - 1);
+  let last = runEnd(buf, y);
+  for (let n = 0; n < EXTRA_RUNS && last + 1 < buf.length; n++) last = runEnd(buf, last + 1);
+  const text: string[] = [];
+  const cells: { x: number; y: number }[] = [];
+  const cell = buf.getNullCell();
+  for (let ly = first; ly <= last && cells.length < MAX_JOIN; ly++) {
+    // A hard break: separate the rows by the one space the padding stands for. Never
+    // an endpoint of a candidate (those are `\S+` runs), so the cell it reports is
+    // only ever passed over.
+    if (ly > first && !buf.getLine(ly)?.isWrapped) {
+      text.push(" ");
+      cells.push(cells[cells.length - 1] ?? { x: 0, y: ly });
+    }
+    const line = buf.getLine(ly);
+    if (!line) continue;
+    for (let x = 0; x < line.length; x++) {
+      line.getCell(x, cell);
+      // Width 0 is the right half of a wide glyph — one character, already counted.
+      if (cell.getWidth() === 0) continue;
+      const ch = cell.getChars() || " ";
+      // Per UTF-16 unit, so a surrogate pair or a combining mark keeps `text` and
+      // `cells` index-aligned; both halves report the cell the glyph starts in.
+      for (let i = 0; i < ch.length; i++) cells.push({ x, y: ly });
+      text.push(ch);
+    }
+    // Drop the row's trailing blanks along with it, so the separator above is the
+    // whole of the gap rather than the start of a sixty-column one.
+    while (text.length && text[text.length - 1] === " " && cells[cells.length - 1].y === ly) {
+      text.pop();
+      cells.pop();
+    }
+  }
+  return { text: text.join(""), cells };
+}
+
+/// `[start, end)` in the joined string → the 1-based buffer range xterm underlines.
+function mkRange(row: JoinedRow, start: number, end: number): TermLink["range"] | null {
+  const a = row.cells[start];
+  const b = row.cells[Math.min(end, row.cells.length) - 1];
+  if (!a || !b) return null;
+  return { start: { x: a.x + 1, y: a.y + 1 }, end: { x: b.x + 1, y: b.y + 1 } };
+}
+
+/// Where each pane's process is right now, cached briefly.
+///
+/// `Sess.workdir` is where a pane was *launched*, and for a shell that is half an
+/// answer: `cd` is most of what a shell is for, and after one every relative path the
+/// pane prints is relative to somewhere Episko has no record of. So the live cwd is
+/// asked for and put FIRST among the bases.
+///
+/// The TTL is what keeps this off the hover path in practice — a burst of hovers over
+/// one screenful asks once. It is deliberately short rather than event-driven: nothing
+/// tells us about a `cd`, since a shell reports its directory to no one.
+const CWD_TTL_MS = 3000;
+const cwds = new Map<string, { at: number; dir: string }>();
+async function liveCwd(id: string): Promise<string> {
+  const hit = cwds.get(id);
+  if (hit && Date.now() - hit.at < CWD_TTL_MS) return hit.dir;
+  let dir = "";
+  try { dir = (await invoke<string | null>("session_cwd", { sessionId: id })) ?? ""; }
+  catch { /* the pane exited between the hover and the ask */ }
+  cwds.set(id, { at: Date.now(), dir });
+  return dir;
+}
+
+/// Ask disk which proposal is real. One round trip per start position, and the answer
+/// is cached against the bases it was asked with — the file set grows as the session
+/// works, and a path that did not resolve an hour ago may resolve now.
+async function resolvePath(s: Sess | undefined, cands: PathCand[]): Promise<{ abs: string; end: number } | null> {
+  // Most authoritative first: where the process is now, the checkout its work drifted
+  // to, where it was launched. `linkBases` drops the empties and the duplicates.
+  const dirs = s ? [await liveCwd(s.id), s.drift?.dir ?? "", s.workdir] : [];
+  const bases = linkBases(dirs, (s?.files ?? []).map((f) => f.path));
+  if (!bases.length) return null;
+  const texts = cands.map((c) => c.text);
+  const key = `${bases.join("\u0002")}\u0000${texts.join("\u0001")}`;
+  let hit = resolved.get(key);
+  if (hit === undefined) {
+    try { hit = await invoke<[number, string] | null>("resolve_link_path", { bases, cands: texts }); }
+    catch (e) { dlog("warn", `resolve_link_path failed: ${e}`); hit = null; }
+    if (resolved.size > RESOLVED_MAX) resolved.clear();
+    resolved.set(key, hit);
+    // Why a path-shaped thing did not become a link, said once per distinct line
+    // (the answer is cached above, so hovering it again is silent). This is the only
+    // question this feature ever raises — "that IS a file, why is it not blue?" — and
+    // without the bases in the message it cannot be answered from the outside.
+    if (!hit) dlog("info", `link: nothing on disk for "${texts[texts.length - 1] ?? ""}" · ${bases.length} base(s), first ${bases[0] ?? "none"}`);
+  }
+  if (!hit) return null;
+  const cand = cands[hit[0]];
+  return cand ? { abs: hit[1], end: cand.end } : null;
+}
+
+async function openHref(url: string) {
+  // Belt and braces with `allowNonHttpProtocols`: this is reached from OSC 8 payloads
+  // a program controls, and the opener plugin's scope refuses the rest anyway.
+  if (!/^https?:\/\//i.test(url)) { dlog("warn", `link ignored · not http(s) · ${url.slice(0, 80)}`); return; }
+  try { await openUrl(url); }
+  catch (e) { toast("Couldn't open the link: " + e); }
+}
+
+// The terminal's twin of ./actions' `openTouchedFile`, and deliberately a copy of its
+// two lines rather than an import: ./actions imports *this* module, so the arrow has
+// to keep pointing one way. Both surface the backend's error rather than swallowing
+// it, for the reason stated there — a silent no-op reads as a broken button, while
+// "no longer there" reads as the truth.
+async function openFilePath(path: string) {
+  try { await invoke("open_file", { path }); }
+  catch (e) { toast(String(e)); }
+}
+
+async function provide(id: string, term: Terminal, y: number, cb: (links: TermLink[] | undefined) => void) {
+  const row = joinRows(term, y - 1); // provideLinks counts rows 1-based; the buffer does not
+  const hits = row.text.trim() ? findLinks(row.text) : [];
+  if (!hits.length) { cb(undefined); return; }
+  const s = sessions.get(id);
+  const out: TermLink[] = [];
+  // ./termlinks proposes freely and leaves the overlaps here, because only disk's
+  // answer says how far a path actually reaches: on `src/a.ts and docs/b.md` the first
+  // proposal's longest candidate covers the second, and almost always loses to a
+  // shorter one. Two links over the same cells would let xterm underline whichever it
+  // asked about first, so a clash is settled once — after resolution, first wins.
+  const taken: [number, number][] = [];
+  const claim = (a: number, b: number) => {
+    if (taken.some(([x, y]) => a < y && x < b)) return false;
+    taken.push([a, b]);
+    return true;
+  };
+  for (const h of hits) {
+    if (h.kind === "url") {
+      const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
+      if (range) out.push({ range, text: h.text, activate: () => { void openHref(h.text); } });
+      continue;
+    }
+    const won = await resolvePath(s, h.cands);
+    if (!won || !claim(h.start, won.end)) continue;
+    const range = mkRange(row, h.start, won.end);
+    if (range) out.push({ range, text: won.abs, activate: () => { void openFilePath(won.abs); } });
+  }
+  cb(out.length ? out : undefined);
+}
+
+/// Make this pane's output clickable. Called by every spawner right after
+/// `term.open(pane)`; unlike `attachCustomKeyEventHandler`, xterm keeps every link
+/// provider that is registered, so this composes rather than replacing.
+export function wireLinks(id: string, term: Terminal) {
+  term.options.linkHandler = { activate: (_e, text) => { void openHref(text); } };
+  term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
 }
 
 // Fit one terminal to its pane, push the new size to its PTY, and force a full

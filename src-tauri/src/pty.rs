@@ -41,7 +41,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent;
 #[cfg(not(windows))]
 use crate::platform::sh_quote;
-use crate::platform::{augmented_path, resolve_claude, sys_command};
+use crate::platform::{augmented_path, norm_path, resolve_claude, sys_command};
 use crate::tasks;
 use crate::telemetry::write_instrument_settings;
 use crate::{AppState, Session};
@@ -1675,6 +1675,32 @@ fn version_files_in(dir: &std::path::Path) -> Vec<InstallFile> {
     // by name, but a stable list keeps the payload diffable by eye in the 🐞 console.
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Where a pane's process actually is **right now**, or `None`.
+///
+/// `Session.workdir` is the directory a pane was *launched* in and never moves. That is
+/// the right answer for an agent (which does not chdir, and whose moves Episko already
+/// tracks as drift) and the wrong one for a shell, where `cd` is half of what a shell is
+/// for: after it, every relative path the pane prints is relative to somewhere Episko
+/// had no record of. So the clickable-link resolver asks here first.
+///
+/// The pid is the PTY child — the login shell itself, not whatever it is running — so
+/// this is exactly what `pwd` would say. `None` for a pane that has exited between the
+/// hover and this call, which is ordinary and not worth an error.
+#[tauri::command]
+pub(crate) fn session_cwd(state: State<AppState>, session_id: String) -> Option<String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = state.sessions.lock().unwrap().get(&session_id)?.pid?;
+    let spid = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[spid]),
+        true,
+        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+    );
+    let cwd = sys.process(spid)?.cwd()?;
+    Some(norm_path(&cwd.to_string_lossy()))
 }
 
 /// App-wide **disk I/O**: every embedded-PTY `claude` process Episko owns, summed into

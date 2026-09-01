@@ -102,13 +102,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 79 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 81 modules
 
-**No framework, and no longer one file.** 79 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 81 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (thirty-three, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (thirty-nine, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -125,6 +125,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
 | `toolio.ts` | what a tool call *was* and what came back: the three response shapes worth modelling by hand, the generic dump for everything else, the cap both sides are cut to as they land, and what Copy hands over |
+| `termlinks.ts` | what in a pane's output is worth a click: where a URL ends and the sentence's punctuation begins, and — for a path — the ordered readings it might be, since a folder a person named has spaces in it. Proposals only; disk decides |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
@@ -159,7 +160,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 79 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 81 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -189,6 +190,20 @@ And the things that hold however the files are arranged:
   phase vocabulary and drew a live shell as an idle agent.
 - **A pane's WebGL context comes from a small LRU pool** (`attachWebgl`/`detachWebgl` in `terminal.ts`, `GL_POOL_MAX` = 8). Both simpler designs (a context per pane for life, dispose-per-deactivation) were tried and are wrong; `docs/architecture.md` says why, along with the ended-pane scrollback rules.
 - **A claude pane's keystrokes are filtered before the PTY sees them.** They go through `claudeInput` in `terminal.ts`, which swallows a fast double `^C`. xterm keeps only **one** `attachCustomKeyEventHandler` per pane: a new key rule belongs in `claudeInput`/`winClaudePaste` (claude), `shellKeys` (shell) or `clipboardKeys` (task), never in a second handler.
+- **A path in a pane is only a link once disk says so.** ./termlinks proposes readings
+  of a line (a folder a person named has spaces in it, the agent may have broken the path
+  across lines of its own, and a `printf` puts a literal `\n` inside the token),
+  `resolve_link_path` answers which exists, and nothing is underlined until one does.
+  That check is the whole safety margin: it is what lets the proposals be greedy, and it
+  is why there must be no second "does this look like a path?" test at a call site — the
+  same half-off switch the sound rule warns about, one layer down. A relative candidate is
+  tried against the pane's **live cwd first** (`session_cwd` — a shell that has `cd`ed
+  reports its directory to nobody), then its drift dir, then its workdir, then the
+  ancestors of everything in its Context card, which is what resolves a path an agent
+  shortened against a root it never ran in. `wireLinks` runs on **every** pane (claude,
+  agent, shell, task): a path in Codex's output is the same path, and a shell pane has no
+  Context card behind it at all. The OSC 8 half stays http(s)-only, because a program
+  chooses that URI, not us.
 - **Copy/paste in a shell or task pane is Ctrl+Shift+C/V**, read/written via `tauri-plugin-clipboard-manager` (never `navigator.clipboard`, which raises OS permission prompts) and pasted through `term.paste` (never `write_pty`, since bracketed paste and `\r\n`→`\r` must still apply).
 - **A `[data-*]` branch is only reachable if its attribute is ALSO in the dispatcher's
   `closest()` selector.** One selector decides what `el` is; an unlisted attribute means

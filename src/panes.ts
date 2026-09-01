@@ -35,7 +35,7 @@ import {
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
-  refit, shellKeys, trimScrollback, winClaudePaste,
+  refit, shellKeys, trimScrollback, winClaudePaste, wireLinks,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -81,6 +81,7 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   // No WebGL here: setActive attaches a pooled context the moment the pane is on
   // stage — a context per pane for life is the 16-context cliff (see attachWebgl).
   term.open(pane);
+  wireLinks(id, term);
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
   winClaudePaste(id, term, pane);
   return { term, fit };
@@ -95,6 +96,7 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
   });
   const fit = new FitAddon();
   term.loadAddon(fit); term.open(pane);
+  wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   term.attachCustomKeyEventHandler(clipboardKeys(term));
   return { term, fit };
@@ -364,6 +366,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
   term.attachCustomKeyEventHandler(shellKeys(id, term));
@@ -468,6 +471,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  wireLinks(id, term);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   // …and a run's output is the thing you most want out of a pane, so it copies too.

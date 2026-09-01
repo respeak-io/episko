@@ -22,7 +22,6 @@
 // launches through: Run prefills and goes, ⋯ Run with parameters… always asks.
 
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
@@ -582,9 +581,14 @@ $("mgrClose").addEventListener("click", closeTaskManager);
 $("mgrNew").addEventListener("click", () => startMgrEdit(null));
 $("mgrSave").addEventListener("click", () => { void saveMgrTask(); });
 $("mgrBack").addEventListener("click", () => { mgrEdit = null; renderMgr(); });
+// `open_file`, not the opener plugin: `openUrl` is scope-checked against
+// `opener:default`, which allows `mailto:`, `tel:`, `http://` and `https://` and
+// nothing else — so the `file://` URL this used to build was refused every time and
+// the button could only ever toast. `open_file` is the same verb the Context card's
+// rows use and takes a plain path.
 $("mgrOpen").addEventListener("click", () => {
   if (mgrCtx) void invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir })
-    .then(([path]) => openUrl("file://" + path))
+    .then(([path]) => invoke("open_file", { path }))
     .catch((e) => toast("open failed: " + e));
 });
 $("mgrRescan").addEventListener("click", () => { if (mgrCtx) void rescanTasks(mgrCtx.workdir).then(() => refreshMgr()).then(() => toast("Rescanned")); });
