@@ -1,32 +1,6 @@
-// The launch layer: everything that starts a session, wherever its terminal lives.
-//
-// CLAUDE.md's "four launch engines, one telemetry path" is this module. `spawn_claude`
-// (embedded xterm.js pane), `spawn_ghostty` and `spawn_external_terminal`
-// (Terminal.app / iTerm2) all write the same `--settings` file, so the cockpit's
-// telemetry is identical whichever the user picked; `available_terminals` reports
-// which are installed so the UI only offers working ones.
-//
-// The three PTY entry points share `stream_pty_session`, which starts the reader
-// thread (base64 -> `pty-output`) and the reaper (`pty-exit`). What separates them:
-//
-// - `spawn_claude` is instrumented and registers its pid in `owned_pids`, so
-//   `list_external_sessions` can exclude our own sessions BY PID — an id-based
-//   exclude breaks the moment Claude rotates its session_id on /resume.
-// - `spawn_shell` is a plain login shell: no Claude, no instrumentation.
-// - `spawn_task` is deliberately un-instrumented too, and its pid never enters
-//   `owned_pids`. `Exec::Shell` runs through a *login* shell, but that is not what
-//   gives a task the user's PATH — see `task_shell`. `Exec::Argv` goes through
-//   `argv_command`, which on Windows is the difference between a package.json script
-//   running and not running at all.
-//
-// `--resume` and `--session-id` are mutually exclusive, so all three spawners branch
-// either/or on `resume: Option<String>` while `--settings` stays keyed to our launch
-// uuid — routing is unaffected by whatever id Claude ends up running under.
-//
-// The cfg-gated helpers here have a single consumer module, which is why they are
-// here rather than in `platform.rs`: `apply_utf8_locale` (and it takes a
-// `portable_pty::CommandBuilder`, which the leaf layer must not import),
-// `interactive_shell`, `task_shell`, `find_ghostty`.
+// The launch layer: every way a session starts (embedded PTY, Ghostty, Terminal.app/iTerm2),
+// all writing the same `--settings` file. `--resume` and `--session-id` are mutually exclusive,
+// so every spawner branches either/or on `resume`; `--settings` stays keyed to our launch uuid.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -46,42 +20,23 @@ use crate::tasks;
 use crate::telemetry::write_instrument_settings;
 use crate::{AppState, Session};
 
-/// How many times Claude Code retries a request of its own accord before it gives up
-/// and ends the turn with `StopFailure`.
-///
-/// Its retry classifier already covers the whole transient set — 429 and 5xx, plus the
-/// connection errors (`ENOTFOUND`, `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`,
-/// `ENETUNREACH`, `EHOSTUNREACH`) that a laptop's Wi-Fi napping produces — so raising
-/// the ceiling costs nothing on a healthy connection and buys real time on a sick one.
-/// Every retry is spaced by Claude Code's own exponential backoff, so this is a wider
-/// window rather than a busier one.
-///
-/// This is the first of Episko's two defences against an overnight outage and by far the
-/// cheaper: a request that eventually succeeds never ends the turn, so the conversation
-/// never needs reviving at all. The frontend watchdog (`src/revive.ts`) is what picks up
-/// the outages that outlast even this.
+/// How many times Claude Code retries a request itself before ending the turn with
+/// `StopFailure`; its own backoff spaces them. The frontend watchdog (`src/revive.ts`)
+/// covers outages that outlast this.
 const CLAUDE_RETRY_CEILING: &str = "12";
 
-/// Apply the ceiling above, **without overriding a value the user set themselves**.
-/// Anyone who has put `CLAUDE_CODE_MAX_RETRIES` in their shell profile has a reason for
-/// the number they chose, and a launcher quietly replacing it would be the kind of thing
-/// that takes an afternoon to find.
+/// Never overrides a `CLAUDE_CODE_MAX_RETRIES` the user set themselves.
 fn apply_retry_ceiling(cmd: &mut CommandBuilder) {
     if std::env::var_os("CLAUDE_CODE_MAX_RETRIES").is_none() {
         cmd.env("CLAUDE_CODE_MAX_RETRIES", CLAUDE_RETRY_CEILING);
     }
 }
 
-/// Force a UTF-8 locale on a PTY child. A macOS app launched from Finder inherits no
-/// `LANG`, so the child falls back to the C/POSIX locale and mangles non-ASCII output
-/// (UTF-8 rendered as Mac Roman — `ü`→`√º`, emoji shredded). Terminal.app/iTerm set a
-/// UTF-8 locale on startup; mirror that. Preserve an already-UTF-8 `LANG` (e.g. Episko
-/// launched from a terminal), else default one; and pin `LC_CTYPE` so an inherited
-/// `LC_CTYPE=C` can't re-break the charset behind a good `LANG`.
+/// A macOS app launched from Finder inherits no `LANG`, so the child would mangle non-ASCII
+/// output; pin `LANG` and `LC_CTYPE` to UTF-8 unless they already are.
 #[cfg(windows)]
 fn apply_utf8_locale(_cmd: &mut CommandBuilder) {
-    // No-op on Windows: the C-locale charset mangling this guards against is a
-    // POSIX/Finder concern. ConPTY + claude.exe handle console encoding themselves.
+    // No-op: ConPTY and claude.exe handle console encoding themselves.
 }
 
 #[cfg(not(windows))]
@@ -97,24 +52,15 @@ fn apply_utf8_locale(cmd: &mut CommandBuilder) {
     if !is_utf8("LANG") {
         cmd.env("LANG", "en_US.UTF-8");
     }
+    // An inherited `LC_CTYPE=C` overrides a good `LANG` for the charset, so pin it too.
     if !is_utf8("LC_CTYPE") {
         cmd.env("LC_CTYPE", "en_US.UTF-8");
     }
 }
 
-/// The permission mode a session starts in — `claude --permission-mode`, chosen in
-/// Settings › Sessions and passed by every spawner. Two properties are load-bearing:
-///
-/// - **It maps to a `&'static str`; the caller's string never reaches a command
-///   line.** Here that would only be one argv element, but `spawn_external_terminal`
-///   writes its launch into a generated `.command` *shell script*, so the whitelist is
-///   what keeps the one path with a shell in it honest. An unrecognised mode launches
-///   standard rather than not at all — a new mode name in some future frontend must
-///   not be able to make a session refuse to start.
-/// - **The standard mode passes no flag.** Claude's ask-me-each-time behaviour is what
-///   an absent `--permission-mode` already means, and its own `--help` doesn't list
-///   `default` among the choices (only `manual`), so spelling it out would lean on an
-///   undocumented alias to say what silence says.
+/// `claude --permission-mode`, as a whitelist: the caller's string never reaches a command
+/// line (`spawn_external_terminal` interpolates this into a shell script). An unknown mode
+/// launches standard rather than refusing; standard passes no flag, which is what it means.
 fn permission_mode_arg(mode: Option<&str>) -> Option<&'static str> {
     match mode?.trim() {
         "plan" => Some("plan"),
@@ -130,11 +76,7 @@ fn permission_mode_arg(mode: Option<&str>) -> Option<&'static str> {
     }
 }
 
-// A `#[tauri::command]`'s parameter list *is* its wire format: the frontend calls it by
-// naming each one, and every one here is a distinct fact about the launch. Bundling
-// them into a struct to satisfy the lint would change that contract on both sides (and
-// the round-trip the `Exec` test pins for `spawn_task`) while making the call site say
-// strictly less.
+// The parameter list is the frontend's wire format; a struct would change it on both sides.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn spawn_claude(
@@ -148,10 +90,8 @@ pub(crate) fn spawn_claude(
     mode: Option<String>,
 ) -> Result<(), String> {
     let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
-    // A resume must land in the session's ORIGINAL cwd: Claude looks the id up in
-    // `~/.claude/projects/<enc(cwd)>/`, so resuming from elsewhere fails with "no
-    // conversation found". Creating the dir would silently produce that failure
-    // against an empty project, so refuse up front with something actionable.
+    // A resume must land in its ORIGINAL cwd: Claude looks the id up under
+    // `~/.claude/projects/<enc(cwd)>/`, and creating the dir would only fail later.
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("can't resume: {workdir} no longer exists"));
     }
@@ -171,10 +111,6 @@ pub(crate) fn spawn_claude(
 
     let claude = resolve_claude();
     let mut cmd = CommandBuilder::new(&claude);
-    // `--resume` and `--session-id` are mutually exclusive — resume adopts the
-    // stored id and ignores ours — so this is either/or, never both. `--settings`
-    // stays keyed to OUR launch uuid either way, so every hook still POSTs the
-    // `X-CC-Session` header the frontend routes by, whatever id Claude runs under.
     match &resume {
         Some(prev) => {
             cmd.arg("--resume");
@@ -217,9 +153,7 @@ pub(crate) fn spawn_claude(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
-    // Record the claude pid so we can recognise this session on disk even after
-    // its id changes (e.g. the user runs /resume). Captured before `child` moves
-    // into the reaper thread below.
+    // Recorded so the session is still recognisable on disk after Claude rotates its id.
     let child_pid = child.process_id();
     if let Some(p) = child_pid {
         state.owned_pids.lock().unwrap().insert(p);
@@ -246,23 +180,17 @@ pub(crate) fn spawn_claude(
     Ok(())
 }
 
-/// ConPTY's request for win32 input records, and its withdrawal. ConPTY emits the
-/// first thing in its first output chunk; nothing in a PTY on any other OS ever
-/// sends either.
+/// ConPTY's request for win32 input records, and its withdrawal; no other OS sends either.
 const WIN32_INPUT_ON: &[u8] = b"\x1b[?9001h";
 const WIN32_INPUT_OFF: &[u8] = b"\x1b[?9001l";
 
-/// Latch `ESC[?9001h` / `ESC[?9001l` out of a chunk of PTY output. `carry` holds the
-/// tail of the previous chunk so a mode string split across two reads is still seen —
-/// missing it is silent, and degrades exactly to the bug below.
-///
-/// Compiled everywhere so it is type-checked and unit-tested from a Mac (CLAUDE.md's
-/// cfg-flip trick); only the Windows reader calls it.
+/// Latch `ESC[?9001h`/`l` out of PTY output. `carry` keeps the previous chunk's tail so a
+/// mode string split across reads is still seen. Compiled everywhere so a Mac can test it.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn note_win32_input_mode(chunk: &[u8], carry: &mut Vec<u8>, flag: &AtomicBool) {
     let mut buf = std::mem::take(carry);
     buf.extend_from_slice(chunk);
-    // Last one wins: a chunk could carry both (it never does in practice).
+    // Last one wins.
     let mut set: Option<bool> = None;
     for w in buf.windows(WIN32_INPUT_ON.len()) {
         if w == WIN32_INPUT_ON {
@@ -278,35 +206,10 @@ fn note_win32_input_mode(chunk: &[u8], carry: &mut Vec<u8>, flag: &AtomicBool) {
     *carry = buf.split_off(buf.len() - keep);
 }
 
-/// Re-encode a keystroke for a ConPTY that asked for win32 input records.
-///
-/// **The bug this exists for.** ConPTY does not hand a terminal's bytes to the child:
-/// it *parses* them and synthesizes console key events. For a character it can best-fit
-/// into the console's OEM code page, conhost synthesizes an **Alt+numpad** sequence —
-/// and the character rides on the Alt **key-up** record. `_getwch`, the CRT call behind
-/// Python's `getpass` — so behind any script that asks you for a key — takes characters
-/// from key-**down** records only, so those characters are dropped, silently, out of a
-/// secret nobody can see. (Not every reader: gpg's own prompt and .NET's `Read-Host
-/// -AsSecureString` were both measured intact. The CRT path is the one that loses.)
-/// Measured on this machine, 54 of 86
-/// sampled non-ASCII characters vanish that way, `§ ° ± ¿ – — ' ' " " • ✓` and, most
-/// dangerously, `U+00A0` NO-BREAK SPACE, which is what a passphrase copied out of a
-/// document carries. The failure is indistinguishable from a wrong secret: gpg reports
-/// "Bad session key", the same error it gives for a genuinely wrong passphrase, and the
-/// hunt starts in the secret store instead of the terminal.
-///
-/// Windows Terminal never hits this because it answers `ESC[?9001h` with key records
-/// instead of text — which is exactly why the same key works there and not here.
-/// So do we, for the characters at risk.
-///
-/// **Only non-ASCII is re-encoded.** All 95 printable ASCII characters round-trip
-/// byte-exactly through the VT path (verified), so leaving them alone keeps every
-/// existing key path — `^C`, arrows, Claude Code's TUI chords, bracketed paste — on
-/// bytes identical to today's. An escape sequence is copied verbatim for the same
-/// reason: its parameters are ours to deliver, not ours to re-encode.
-///
-/// Non-BMP characters go as their two UTF-16 surrogates, one record pair each, which
-/// is what the mode's `Uc` field is: a UTF-16 code unit, not a scalar value.
+/// Re-encode a keystroke for a ConPTY that asked for win32 input records. ConPTY best-fits
+/// a non-ASCII character into an Alt+numpad sequence riding on the key-UP record, where
+/// `_getwch` (Python's `getpass`) never looks, so a secret loses characters silently. Only
+/// non-ASCII is re-encoded; ASCII and escape sequences pass byte-exact (docs/architecture.md).
 fn win32_input_encode(data: &str) -> String {
     let mut out = String::with_capacity(data.len());
     let mut it = data.chars().peekable();
@@ -318,9 +221,9 @@ fn win32_input_encode(data: &str) -> String {
             out.push(c);
         } else {
             let mut buf = [0u16; 2];
+            // `Uc` is a UTF-16 code unit, not a scalar, so a non-BMP character is two record pairs.
             for unit in c.encode_utf16(&mut buf) {
-                // Vk and Sc are 0: we know the character, not which key produced it,
-                // and that is precisely what conhost needs to stop guessing.
+                // Vk and Sc are 0: we know the character, not the key that produced it.
                 out.push_str(&format!("\x1b[0;0;{unit};1;0;1_"));
                 out.push_str(&format!("\x1b[0;0;{unit};0;0;1_"));
             }
@@ -329,10 +232,7 @@ fn win32_input_encode(data: &str) -> String {
     out
 }
 
-/// What actually goes down the pipe for one write. Borrowed unless ConPTY asked for
-/// records, so the common path writes the caller's bytes with no copy and no rewrite.
-/// Split out of `write_pty` so the round-trip test drives the real decision rather
-/// than a second copy of it.
+/// Borrowed unless ConPTY asked for records; split out so the round-trip test drives the real decision.
 fn pty_payload<'a>(win32_input: &AtomicBool, data: &'a str) -> std::borrow::Cow<'a, str> {
     if win32_input.load(Ordering::Relaxed) {
         std::borrow::Cow::Owned(win32_input_encode(data))
@@ -341,10 +241,7 @@ fn pty_payload<'a>(win32_input: &AtomicBool, data: &'a str) -> std::borrow::Cow<
     }
 }
 
-/// Copy one escape sequence through untouched, ESC already emitted. Belt and braces:
-/// every sequence a terminal sends is ASCII, so the `is_ascii` arm above would pass it
-/// through anyway — but that is a property of today's key rules, and this makes "we
-/// never rewrite the inside of a sequence" a rule of the encoder instead.
+/// Copy one escape sequence through untouched (ESC already emitted); its inside is never rewritten.
 fn copy_escape(it: &mut std::iter::Peekable<std::str::Chars>, out: &mut String) {
     match it.peek() {
         // CSI: parameters, then a final byte in @..~
@@ -373,23 +270,15 @@ fn copy_escape(it: &mut std::iter::Peekable<std::str::Chars>, out: &mut String) 
                 }
             }
         }
-        // ESC O A (SS3 arrows), ESC b (alt-chords), ESC ESC …: one byte, and whatever
-        // follows is an ordinary character again.
+        // ESC O A, ESC b, ESC ESC: one byte, then ordinary characters again.
         Some(_) => out.push(it.next().unwrap()),
         None => {}
     }
 }
 
-/// The recent raw output of one PTY, kept so a pane rebuilt after a webview reload
-/// does not start blank (#47 stage 2). Bounded — this is scrollback, not a
-/// transcript — and grown only as used, so an idle fleet pays nothing up front.
-///
-/// `seq` counts chunks, and it is what makes adoption replay exact: the reader
-/// appends and takes the seq under this lock, then emits the chunk tagged with it,
-/// and `read_scrollback` snapshots bytes-plus-seq under the same lock. So a chunk
-/// with `seq <= snapshot.seq` is *inside* the snapshot and one above it is not —
-/// without that, a chunk emitted around the snapshot either duplicates or goes
-/// missing in the rebuilt pane, and both corrupt the REPL's screen state.
+/// Recent raw output of one PTY, so a pane rebuilt after a webview reload is not blank (#47).
+/// `seq` is taken under this lock as the reader appends, and `read_scrollback` snapshots under
+/// the same lock, so a chunk with `seq <= snapshot.seq` is inside the snapshot, exactly.
 pub(crate) struct ScrollBuf {
     buf: VecDeque<u8>,
     seq: u64,
@@ -406,7 +295,6 @@ impl ScrollBuf {
             evicted: false,
         }
     }
-    /// Append one reader chunk and return the seq that names it.
     pub(crate) fn push(&mut self, chunk: &[u8]) -> u64 {
         self.buf.extend(chunk.iter().copied());
         if self.buf.len() > SCROLLBACK_MAX {
@@ -416,11 +304,8 @@ impl ScrollBuf {
         self.seq += 1;
         self.seq
     }
-    /// Everything retained, plus the seq of the last chunk it contains. Once the
-    /// front has been evicted the buffer starts mid-line — likely mid escape
-    /// sequence, which would eat characters up to the next terminator on replay —
-    /// so it is trimmed to the first newline. A stream with no newline at all
-    /// (one alternate-screen repaint) is kept whole rather than dropped.
+    /// Once the front has been evicted the buffer starts mid-line, likely mid escape
+    /// sequence, so it is trimmed to the first newline; a newline-free stream is kept whole.
     pub(crate) fn snapshot(&self) -> (Vec<u8>, u64) {
         let mut v: Vec<u8> = self.buf.iter().copied().collect();
         if self.evicted {
@@ -432,11 +317,7 @@ impl ScrollBuf {
     }
 }
 
-/// Spawn the reader (PTY output → `pty-output`) and reaper (`pty-exit` + session
-/// cleanup) threads shared by every embedded PTY pane — a `claude` session or a
-/// plain shell. `child_pid` is removed from `owned_pids` on exit (a no-op for a
-/// shell, which was never inserted there). `scroll` is the same buffer the session
-/// in `AppState` holds; the reader appends before it emits (see `ScrollBuf`).
+/// The reader (`pty-output`) and reaper (`pty-exit` + cleanup) threads shared by every embedded pane.
 fn stream_pty_session(
     app: AppHandle,
     session_id: String,
@@ -446,8 +327,6 @@ fn stream_pty_session(
     scroll: Arc<Mutex<ScrollBuf>>,
     win32_input: Arc<AtomicBool>,
 ) {
-    // Nothing on a real tty ever asks for win32 input records, so the flag stays as
-    // `write_pty` found it: false, i.e. bytes through untouched.
     #[cfg(not(windows))]
     let _ = win32_input;
     let app_out = app.clone();
@@ -460,8 +339,7 @@ fn stream_pty_session(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // Windows only: on every other OS nothing ever sends this, and the
-                    // output path is hot enough not to pay for a scan that can't hit.
+                    // Only ConPTY ever sends this; the hot path elsewhere skips the scan.
                     #[cfg(windows)]
                     note_win32_input_mode(&buf[..n], &mut carry, &win32_input);
                     let seq = scroll.lock().unwrap().push(&buf[..n]);
@@ -495,9 +373,8 @@ fn stream_pty_session(
     });
 }
 
-/// The interactive shell for a scratch terminal pane: `(program, args)`.
-/// macOS/Linux: the user's `$SHELL` as a login shell. Windows: PowerShell 7
-/// (`pwsh`) if installed, else Windows PowerShell, else `cmd.exe` — no login flag.
+/// The interactive shell for a scratch pane: `$SHELL -l` on Unix; on Windows pwsh, else
+/// Windows PowerShell, else cmd.exe.
 #[cfg(not(windows))]
 fn interactive_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -518,9 +395,7 @@ fn interactive_shell() -> (String, Vec<String>) {
     (format!(r"{sysroot}\System32\cmd.exe"), vec![])
 }
 
-/// Open a plain login shell in an embedded PTY (no Claude, no instrumentation) — a
-/// scratch terminal that lives in an Episko pane just like a session. Wired to the
-/// same `pty-output` / `write_pty` / `pty-exit` path as `spawn_claude`.
+/// A plain login shell in an embedded pane: no Claude, no instrumentation.
 #[tauri::command]
 pub(crate) fn spawn_shell(
     app: AppHandle,
@@ -561,8 +436,7 @@ pub(crate) fn spawn_shell(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
-    // Deliberately NOT added to owned_pids: a plain shell isn't a claude process
-    // and never registers in ~/.claude/sessions, so it can't leak as "external".
+    // Not added to owned_pids: not a claude process, so it cannot leak as "external".
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
@@ -583,20 +457,9 @@ pub(crate) fn spawn_shell(
     Ok(())
 }
 
-/// The login shell used to run a `Shell` task, as `(program, args)` — the args end
-/// with the flag that takes the command string, so the caller just pushes the line.
-///
-/// A *login* shell, but **do not** rely on that for the user's PATH: it does not
-/// deliver one. zsh — macOS's default — sources `~/.zshrc` only when *interactive*,
-/// and `.zshrc` is where nvm, `PNPM_HOME` and Homebrew's `shellenv` are exported, so
-/// `-l -c` sees none of them. That is exactly how a task running `pnpm tauri dev`
-/// died with `command not found: pnpm` while the same line worked in iTerm.
-///
-/// What actually closes that gap is `platform::augmented_path`, which harvests the
-/// PATH from an *interactive* login shell once per run and is applied to every task's
-/// env in `spawn_task`. It stays out of here on purpose: an interactive shell prints
-/// its rc noise, which is fine to parse out of a one-off probe and unacceptable
-/// prepended to every task's pane.
+/// The login shell that runs a `Shell` task; the args end with the flag that takes the line.
+/// A login shell does NOT give a task the user's PATH (zsh sources `.zshrc` only when
+/// interactive); `platform::augmented_path` is what closes that gap (docs/tasks.md).
 #[cfg(not(windows))]
 fn task_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -614,8 +477,7 @@ fn task_shell() -> (String, Vec<String>) {
     (prog, args)
 }
 
-/// Build the command for an `Exec::Argv` task. On Unix this is the obvious thing;
-/// Windows needs a detour, which is why it exists at all.
+/// Build the command for an `Exec::Argv` task; Windows needs a detour (below).
 #[cfg(not(windows))]
 fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
     let mut c = CommandBuilder::new(program);
@@ -625,32 +487,18 @@ fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
     c
 }
 
-/// Whether `CreateProcessW` can start this file on its own.
-///
-/// It can't start a *script*, and most of PATHEXT is scripts. portable-pty passes
-/// the resolved program as `lpApplicationName`, so a `.cmd`/`.bat` — or the
-/// extensionless `npm`/`yarn`/`pnpm` shell script Node's Windows installer ships
-/// beside them — comes back as ERROR_BAD_EXE_FORMAT, not as a run. That is why
-/// *every* `package.json` script failed to launch on Windows while the identical
-/// task ran fine on macOS: the npm provider emits `Argv`, and on Windows `npm` is
-/// never an executable.
-///
-/// Compiled on every platform, not `cfg(windows)`, for two reasons: the decision is
-/// then checkable from a Mac (the other half, resolution, needs a real Windows PATH),
-/// and CLAUDE.md's cfg-flip lint trick can reach it. Only the dead-code lint needs
-/// silencing off Windows — the code itself is portable and wants type-checking there.
+/// Whether `CreateProcessW` can start this file on its own. It cannot start a script, and
+/// npm's `.cmd` shims (and the extensionless sh script beside them) are scripts, so a bare
+/// `npm` fails with ERROR_BAD_EXE_FORMAT. Compiled everywhere so a Mac can test it.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn win_runs_directly(resolved: &str) -> bool {
     let l = resolved.to_ascii_lowercase();
     l.ends_with(".exe") || l.ends_with(".com")
 }
 
-/// Resolve a bare Windows program name the way `cmd.exe` would — PATHEXT across the
-/// augmented PATH — and hand back the first hit.
-///
-/// Deliberately *unlike* portable-pty's own `search_path`, which takes an exact
-/// extensionless match in preference to anything else: for `npm` that match is the
-/// bash script, i.e. the one file that cannot be launched.
+/// Resolve a bare Windows program name the way `cmd.exe` would (PATHEXT across the
+/// augmented PATH). Unlike portable-pty's `search_path`, which prefers an exact
+/// extensionless match: for `npm` that is the one file that cannot be launched.
 #[cfg(windows)]
 fn win_resolve(program: &str) -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(program);
@@ -674,13 +522,10 @@ fn win_resolve(program: &str) -> Option<std::path::PathBuf> {
 fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
     let direct = win_resolve(program).filter(|p| win_runs_directly(&p.to_string_lossy()));
     let mut c = match direct {
-        // Spawn the resolved absolute path, not the bare name: it stops portable-pty
-        // re-resolving it and preferring an extensionless sibling.
+        // The resolved absolute path, so portable-pty cannot re-resolve to an extensionless sibling.
         Some(exe) => CommandBuilder::new(exe),
-        // A `.cmd`/`.bat` shim, or nothing found. cmd.exe resolves PATHEXT itself and
-        // can actually run a script. Not-found lands here on purpose too, so the
-        // "'foo' is not recognized" line prints in the pane the user is watching
-        // instead of surfacing as a spawn error with no context.
+        // A script shim, or nothing found: cmd.exe resolves PATHEXT and can run a script.
+        // Not-found lands here too, so "'foo' is not recognized" prints in the pane.
         None => {
             let mut c = CommandBuilder::new(
                 std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()),
@@ -696,13 +541,8 @@ fn argv_command(program: &str, args: Vec<String>) -> CommandBuilder {
     c
 }
 
-/// Run a Runnable in an embedded PTY — the third kind of pane, after a `claude`
-/// session and a plain shell. Deliberately *not* instrumented: a task gets no
-/// `--settings` file, no telemetry, no cost, and its pid never enters `owned_pids`
-/// (it isn't a `claude` process and can't masquerade as an external session).
-///
-/// The exit code is what the frontend turns into done / error, and it arrives over
-/// the existing `pty-exit` event — no new channel.
+/// Run a Runnable in an embedded PTY. Not instrumented: no `--settings`, no telemetry, and
+/// its pid never enters `owned_pids`. The exit code arrives over `pty-exit`.
 #[tauri::command]
 pub(crate) fn spawn_task(
     app: AppHandle,
@@ -791,39 +631,20 @@ pub(crate) fn spawn_task(
 
 // ---------- other people's agents ----------
 
-/// One coding-agent CLI Episko will drop into a pane.
-///
-/// `bin` is the interactive executable's *bare* name, resolved against the augmented
-/// PATH at detection time rather than stored as an install path: these are twenty-one
-/// third-party tools with twenty-one installers (npm, brew, curl-to-`~/.local/bin`,
-/// bun, a vendor MSI) and no two agree on a prefix, so the PATH the user's own shell
-/// has is the only thing that knows where any of them landed.
-///
-/// One spelling covers both OSes. `win_resolve` walks PATHEXT, so `cursor-agent`
-/// finds `cursor-agent.cmd` without a second field to keep in step.
+/// One coding-agent CLI Episko will drop into a pane. `bin` is the bare name, resolved
+/// against the augmented PATH at detection time (twenty-one installers agree on no prefix);
+/// one spelling covers both OSes since `win_resolve` walks PATHEXT.
 struct AgentSpec {
     id: &'static str,
     label: &'static str,
     bin: &'static str,
-    /// Stable legacy mark kept in the command's wire shape for compatibility with
-    /// older frontends. Current selectors resolve vetted SVGs at `src/providers/logos`;
-    /// this must never be used to guess a logo from `label`.
+    /// Legacy wire field kept for older frontends; never used to guess a logo.
     mark: &'static str,
 }
 
-/// The agents Episko can launch, in the order the picker lists them — sorted by label
-/// here so no call site sorts, and `agents_are_sorted_by_label` stops a new entry
-/// being dropped in wherever it happened to be typed.
-///
-/// Three binaries are not their agent's name and cannot be guessed: Antigravity
-/// installs `agy`, Kiro installs `kiro-cli`, Cursor installs `cursor-agent`. Getting
-/// one wrong fails silently — the agent simply never appears in the picker on a
-/// machine that has it — so these come from each vendor's own installer rather than
-/// from the product name.
-///
-/// **Claude Code is deliberately absent.** Its dedicated launcher supplies hooks,
-/// statusLine telemetry and external-terminal support; a generic catalogue entry would
-/// offer the same binary while silently bypassing that provider adapter.
+/// The agents Episko can launch, sorted by label (the picker's order; a test holds it).
+/// `agy`, `kiro-cli` and `cursor-agent` are the vendors' own binary names. Claude Code is
+/// deliberately absent: a catalogue entry would bypass its instrumented launcher.
 const AGENTS: &[AgentSpec] = &[
     AgentSpec {
         id: "amp",
@@ -957,32 +778,13 @@ fn agent_spec(id: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|a| a.id == id)
 }
 
-/// Where an agent CLI actually is, or `None` if this machine hasn't got it.
-///
-/// A sibling of `platform::resolve_claude`, deliberately not beside it. The Windows
-/// half *is* `win_resolve`, which belongs to this module (it exists for
-/// `argv_command`), and `platform.rs`'s first half has to stay free of crate
-/// dependencies — so the helper moves to its consumer rather than dragging PATHEXT
-/// resolution down into the leaf layer.
-///
-/// Two things it does differently from `resolve_claude`, both because here the answer
-/// *is* the detection rather than a best effort at one:
-///
-/// - **It never falls back to the bare name.** `resolve_claude` returns `"claude"`
-///   when it finds nothing, because the alternative is refusing to launch the app's
-///   whole reason for existing. A fallback here would instead put all twenty-one
-///   agents in the picker on every machine, and twenty of those rows would be a way
-///   to open a pane onto "command not found".
-/// - **It never spawns a login shell.** `resolve_claude` can afford one probe; this
-///   runs over the entire table at once, and twenty-one login shells is a visible
-///   stall on a Mac. `augmented_path()` already harvested that shell's PATH once for
-///   the whole app run, so scanning it directly answers the same question for free.
+/// Where an agent CLI is, or `None`. Unlike `resolve_claude` it never falls back to the
+/// bare name (that would put every agent in every picker) and never spawns a login shell
+/// (twenty-one probes is a visible stall); `augmented_path()` already harvested that PATH.
 #[cfg(not(windows))]
 pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
     let home = crate::platform::home_dir();
-    // Where per-user installers land things the *process* PATH may not carry under
-    // Finder. `augmented_path` already lists some of these; the overlap costs one
-    // `is_file` each and lets this list be read on its own.
+    // Where per-user installers land things the Finder PATH may not carry.
     let extra = [
         format!("{home}/.local/bin"),
         format!("{home}/.bun/bin"),
@@ -1002,14 +804,11 @@ pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
 
 #[cfg(windows)]
 pub(crate) fn resolve_cli(bin: &str) -> Option<String> {
-    // `win_resolve` walks PATHEXT across the augmented PATH, which is what "is this
-    // installed?" means on Windows — and it is the same call `argv_command` makes at
-    // launch, so detection and spawn cannot disagree about which file this is.
+    // The same call `argv_command` makes at launch, so detection and spawn agree.
     if let Some(p) = win_resolve(bin) {
         return Some(p.to_string_lossy().into_owned());
     }
-    // npm's global bin dir is the one common install location `augmented_path` does
-    // not carry, and it is where every npm-distributed agent lands.
+    // npm's global bin dir is the one common location `augmented_path` lacks.
     let home = crate::platform::home_dir();
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| format!(r"{home}\AppData\Roaming"));
     for dir in [format!(r"{appdata}\npm"), format!(r"{home}\.bun\bin")] {
@@ -1028,16 +827,9 @@ pub(crate) struct AgentInfo {
     id: &'static str,
     label: &'static str,
     mark: &'static str,
-    /// What was looked for. Sent even when it was found, because it is the only useful
-    /// thing to say about an agent that *wasn't*: "Episko searched your PATH for
-    /// `cursor-agent`" is the answer to the question a missing row provokes.
-    bin: &'static str,
-    /// Where it is, or `None` if this machine hasn't got it.
-    path: Option<String>,
-    /// Features supplied by this provider adapter. The generic launcher is a
-    /// terminal-only fallback; integrated adapters opt into these without teaching
-    /// shared frontend surfaces provider names.
-    capabilities: Vec<String>,
+    bin: &'static str, // what was looked for; the only useful fact about an agent that is missing
+    path: Option<String>, // None when this machine hasn't got it
+    capabilities: Vec<String>, // from the provider manifest; the terminal-only fallback advertises none
 }
 
 #[derive(serde::Deserialize)]
@@ -1045,28 +837,15 @@ struct ProviderManifestEntry {
     capabilities: Vec<String>,
 }
 
-/// The one capability matrix shared with the TypeScript provider registry. Keeping
-/// this as checked-in JSON lets Rust advertise the exact promises the frontend gates
-/// on without maintaining a second Codex/Claude list in another language.
+/// The one capability matrix shared with the TypeScript provider registry (checked-in JSON).
 fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntry> {
     serde_json::from_str(include_str!("../../src/providers/manifest.json"))
         .expect("src/providers/manifest.json must be valid provider metadata")
 }
 
-/// The whole catalogue, each entry saying whether it is installed — **not** a filtered
-/// list, which is what this used to be and was wrong.
-///
-/// `available_terminals` filters, and copying that contract here was a mistake worth
-/// recording: an external terminal Episko doesn't offer is one you can plainly see is
-/// not on your Mac, whereas an agent that silently fails to appear is indistinguishable
-/// from Episko not supporting it. That difference is a support issue — "why is Codex
-/// not in the list?" has no discoverable answer if there is no row to read. The rule
-/// this now follows is the one `tasks.rs` already follows for a Runnable that cannot
-/// run, and `projmenu.ts` for a worktree that cannot be removed: **what can't be used
-/// says why, rather than vanishing.**
-///
-/// The frontend decides what to do with a `path: None` row (the picker greys it and
-/// makes it inert); what this owes it is the fact and the binary name.
+/// The whole catalogue, each entry saying whether it is installed. Never a filtered list:
+/// an agent that silently fails to appear is indistinguishable from Episko not supporting
+/// it. What can't be used says why rather than vanishing (the `tasks.rs` rule).
 #[tauri::command]
 pub(crate) fn list_agents() -> Vec<AgentInfo> {
     let providers = provider_manifest();
@@ -1086,16 +865,9 @@ pub(crate) fn list_agents() -> Vec<AgentInfo> {
         .collect()
 }
 
-/// Run a coding-agent provider in an embedded PTY — the fourth kind of pane.
-///
-/// Provider capabilities decide the integration. Codex starts a loopback App Server
-/// beside the real TUI, so phase, activity, context, usage, approvals, history and
-/// resume arrive through its public protocol. Providers without an adapter keep the
-/// terminal-only fallback: worktree, project tree, palette, git working set and exit.
-///
-/// The TUI pid stays out of `owned_pids`: that set exists specifically to exclude
-/// Episko-launched Claude processes from Claude's external-session registry. Provider
-/// runtimes have their own lifecycle in `agent.rs` instead.
+/// Run a coding-agent provider in an embedded PTY. Codex starts a loopback App Server
+/// beside the TUI; providers without an adapter are terminal-only. The TUI pid stays out
+/// of `owned_pids`, which exists only to filter Claude's external-session registry.
 #[allow(clippy::too_many_arguments)] // Tauri command parameters are the frontend wire format.
 #[tauri::command]
 pub(crate) fn spawn_agent(
@@ -1113,10 +885,7 @@ pub(crate) fn spawn_agent(
     if resume.is_some() && !std::path::Path::new(&workdir).is_dir() {
         return Err(format!("can't resume: {workdir} no longer exists"));
     }
-    // Resolve here rather than handing `argv_command` the bare name. The picker only
-    // lists agents the probe found, so a miss at this point means it was uninstalled
-    // between the poll and the click — and naming it beats a pane that opens onto a
-    // shell's "not recognized" with no clue which of the two halves failed.
+    // Resolve here so a miss names the agent rather than opening a pane onto "not recognized".
     let bin = resolve_cli(spec.bin).ok_or_else(|| {
         format!(
             "{} isn't installed — `{}` is not on PATH",
@@ -1135,12 +904,7 @@ pub(crate) fn spawn_agent(
         })
         .map_err(|e| e.to_string())?;
 
-    // Through `argv_command`, not `CommandBuilder::new`, and that is load-bearing on
-    // Windows: most of these ship as an npm `.cmd` shim, which `CreateProcessW` cannot
-    // start on its own (ERROR_BAD_EXE_FORMAT) — the same wall every `package.json`
-    // script hit before `argv_command` existed. Codex keeps its real TUI while an
-    // independent App Server client feeds Episko's inspector; other providers retain
-    // this path's terminal-only fallback until they gain an adapter.
+    // Through `argv_command`: on Windows most of these are npm `.cmd` shims CreateProcessW cannot start.
     let args = agent::start_provider(
         spec.id,
         app.clone(),
@@ -1227,9 +991,8 @@ fn find_ghostty() -> Option<String> {
     None
 }
 
-/// Launch the instrumented `claude` session in an external Ghostty window,
-/// tinted to the project's accent. Telemetry still flows via the hooks/statusline,
-/// so the session appears in Episko's cockpit — just without an embedded terminal.
+/// The instrumented `claude` session in an external Ghostty window tinted to the project
+/// accent; telemetry still flows via the hooks.
 #[tauri::command]
 pub(crate) fn spawn_ghostty(
     state: State<AppState>,
@@ -1258,7 +1021,6 @@ pub(crate) fn spawn_ghostty(
     cmd.arg(format!("--working-directory={workdir}"));
     cmd.arg("-e");
     cmd.arg(resolve_claude());
-    // Either/or, never both — see the note in `spawn_claude`.
     match &resume {
         Some(prev) => {
             cmd.arg("--resume");
@@ -1283,10 +1045,7 @@ pub(crate) fn spawn_ghostty(
     Ok(())
 }
 
-/// Which external terminals are installed, so the UI only offers ones that work.
-/// (The embedded terminal is always available and isn't listed here.) Windows has
-/// no external-terminal engine yet, so this is empty there and the UI falls back to
-/// the embedded pane.
+/// Which external terminals are installed (the embedded one is always available). Empty on Windows.
 #[cfg(windows)]
 #[tauri::command]
 pub(crate) fn available_terminals() -> Vec<String> {
@@ -1312,8 +1071,7 @@ pub(crate) fn available_terminals() -> Vec<String> {
     v
 }
 
-/// No external-terminal engine on Windows yet — the frontend won't offer one (see
-/// `available_terminals`), but guard the command so a stray call fails cleanly.
+/// No external-terminal engine on Windows yet; guard so a stray call fails cleanly.
 #[cfg(windows)]
 #[tauri::command]
 pub(crate) fn spawn_external_terminal(
@@ -1330,11 +1088,8 @@ pub(crate) fn spawn_external_terminal(
     )
 }
 
-/// Launch an instrumented `claude` session in a generic external terminal app
-/// (Terminal.app / iTerm2). We write an executable `.command` wrapper that sets
-/// up PATH, cd's into the workdir and execs claude, then hand it to `open -a`.
-/// Telemetry still flows via the per-session settings hooks, so the session shows
-/// up in Episko's cockpit just like an embedded/Ghostty one.
+/// An instrumented `claude` session in Terminal.app / iTerm2, via a generated `.command`
+/// wrapper handed to `open -a`.
 #[cfg(not(windows))]
 #[tauri::command]
 pub(crate) fn spawn_external_terminal(
@@ -1360,14 +1115,11 @@ pub(crate) fn spawn_external_terminal(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let script = dir.join(format!("run-{session_id}.command"));
 
-    // Either/or, never both — see the note in `spawn_claude`.
     let id_args = match &resume {
         Some(prev) => format!("--resume {}", sh_quote(prev)),
         None => format!("--session-id {}", sh_quote(&session_id)),
     };
-    // The one launch path that goes through a shell, so the whitelist in
-    // `permission_mode_arg` is what makes interpolating this safe: it can only ever be
-    // one of six literals, never anything the frontend sent.
+    // Interpolated into a shell script: safe only because `permission_mode_arg` is a whitelist.
     let mode_args = permission_mode_arg(mode.as_deref())
         .map(|m| format!(" --permission-mode {m}"))
         .unwrap_or_default();
@@ -1399,9 +1151,8 @@ pub(crate) fn spawn_external_terminal(
     Ok(())
 }
 
-/// Windows: pop a plain scratch terminal at `workdir` — Windows Terminal (`wt.exe`)
-/// if installed, else a PowerShell window via `cmd /c start`. `engine` is ignored
-/// (there's only the embedded engine on Windows).
+/// Windows: a scratch terminal at `workdir`, Windows Terminal if installed, else a
+/// PowerShell window; `engine` is ignored.
 #[cfg(windows)]
 #[tauri::command]
 pub(crate) fn open_terminal_here(workdir: String, _engine: String) -> Result<(), String> {
@@ -1417,8 +1168,7 @@ pub(crate) fn open_terminal_here(workdir: String, _engine: String) -> Result<(),
     {
         return Ok(());
     }
-    // Fallback: `cmd /c start` spawns a *new console window* (a bare Command::spawn
-    // of powershell from a GUI app gets no window). `-NoExit` keeps it open.
+    // `cmd /c start` gets a new console window; a bare spawn from a GUI app gets none.
     let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
     let powershell = format!(r"{sysroot}\System32\WindowsPowerShell\v1.0\powershell.exe");
     std::process::Command::new(format!(r"{sysroot}\System32\cmd.exe"))
@@ -1429,11 +1179,8 @@ pub(crate) fn open_terminal_here(workdir: String, _engine: String) -> Result<(),
     Ok(())
 }
 
-/// Open a plain (non-Claude) shell in an external terminal at `workdir` — a quick
-/// scratch terminal for running commands next to a session. There's no
-/// instrumentation here: it's just a shell, so it does NOT appear in Episko's
-/// cockpit. `engine` is a hint (the user's chosen launch engine); embedded has no
-/// external window, so it falls back to Terminal.app.
+/// A plain shell in an external terminal at `workdir`: not instrumented, so it never
+/// appears in the cockpit. The embedded engine falls back to Terminal.app.
 #[cfg(not(windows))]
 #[tauri::command]
 pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), String> {
@@ -1469,9 +1216,7 @@ pub(crate) fn open_terminal_here(workdir: String, engine: String) -> Result<(), 
     Ok(())
 }
 
-/// Every keystroke, paste and app-written line goes through here — the one place that
-/// decides what a PTY's child actually receives, which is why the encoding decision
-/// lives here rather than in any one spawner or in the frontend.
+/// The one place that decides what a PTY's child receives (docs/architecture.md).
 #[tauri::command]
 pub(crate) fn write_pty(
     state: State<AppState>,
@@ -1532,14 +1277,9 @@ pub(crate) struct LiveSession {
     workdir: String,
 }
 
-/// Every embedded PTY the backend currently holds — claude, shell and task panes
-/// alike. The frontend's own map answers this in normal operation; this command
-/// exists for the one state where the two disagree: a webview reload empties the
-/// frontend map while every PTY here runs on (#47). Two consumers: the busy
-/// guards (`dormantBusy`/`histBusy` read the ids off the externals poll, so an
-/// orphan reads "running right now" and a second `--resume` can't interleave the
-/// transcript its live process still owns), and startup adoption, which uses
-/// `kind` and `workdir` to rebuild a pane per claude orphan.
+/// Every embedded PTY the backend holds. Exists for the one state where the frontend map
+/// disagrees: a webview reload empties it while every PTY runs on (#47). Feeds the busy
+/// guards (`dormantBusy`/`histBusy`) and startup adoption.
 #[tauri::command]
 pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
     state
@@ -1558,17 +1298,11 @@ pub(crate) fn live_sessions(state: State<AppState>) -> Vec<LiveSession> {
 
 #[derive(serde::Serialize)]
 pub(crate) struct ScrollbackSnapshot {
-    /// base64 of the retained bytes — the same encoding `pty-output` uses.
-    data: String,
-    /// Seq of the last chunk the snapshot contains. A queued `pty-output` event
-    /// with `seq` at or below this is already in `data` and must be dropped by
-    /// the adopter; one above it is not and must be written after it.
-    seq: u64,
+    data: String, // base64, as `pty-output` uses
+    seq: u64, // a queued `pty-output` with seq at or below this is already in `data`
 }
 
-/// The retained output of one live PTY, for a pane being rebuilt after a webview
-/// reload (#47 stage 2). Read under the same lock the reader appends under, so
-/// the returned seq is exact — see `ScrollBuf` for why that matters.
+/// Retained output for a pane rebuilt after a reload; read under the reader's lock so `seq` is exact.
 #[tauri::command]
 pub(crate) fn read_scrollback(
     state: State<AppState>,
@@ -1587,49 +1321,30 @@ pub(crate) fn read_scrollback(
 
 #[derive(serde::Serialize)]
 pub(crate) struct Resources {
-    /// Bytes/second read from disk, averaged over the gap since the previous sample.
-    read_bps: f64,
-    /// Bytes/second written to disk, same window.
-    write_bps: f64,
-    /// Lifetime totals across every owned session, in MiB, including ones that have
-    /// since exited — the "how much has Episko actually churned" number a rate alone
-    /// can't tell you.
-    read_mb: f64,
+    read_bps: f64, // averaged over the gap since the previous sample
+    write_bps: f64, // same window
+    read_mb: f64, // lifetime totals across every owned session, exited ones included
     written_mb: f64,
-    /// False until some process has a previous reading to difference against, when the
-    /// rates are 0 rather than measured. Lets the UI show "—" instead of a confident,
-    /// wrong "0 B/s".
-    primed: bool,
-    /// The `claude` binaries installed right now — the evidence `usage.ts` needs to keep
-    /// a **self-update** out of the write figures. See `version_files_in`.
-    install: Vec<InstallFile>,
+    primed: bool, // false until some pid has a previous reading; the UI shows "—" rather than 0 B/s
+    install: Vec<InstallFile>, // installed `claude` binaries, so usage.ts can discount a self-update
 }
 
-/// One installed `claude` binary: a name to tell it from its neighbours between two
-/// polls, and the size to discount when it is one that just appeared.
+/// One installed `claude` binary: name and size, so one that just appeared can be discounted.
 #[derive(serde::Serialize)]
 pub(crate) struct InstallFile {
     name: String,
     mb: f64,
 }
 
-/// Where the native installer keeps its version binaries, resolved **once per run**.
-///
-/// `resolve_claude()` can end in a login-shell probe, and this is read from a poll that
-/// runs every four seconds: a meter whose whole design rule is "do not add churn to the
-/// thing you are measuring" certainly must not spawn a shell per sample. The directory
-/// does not move during a run — only its contents change, which is the entire point.
+/// Resolved once per run: `resolve_claude()` can end in a login-shell probe, and this is
+/// read by a four-second poll.
 static VERSIONS_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
 
 fn versions_dir() -> Option<&'static std::path::Path> {
     VERSIONS_DIR
         .get_or_init(|| {
-            // `~/.local/bin/claude` is a symlink into `…/share/claude/versions/<ver>`, so
-            // the real binary's parent IS the directory to watch. The well-known path is
-            // the fallback for an install we reached some other way (a shell probe, a
-            // shim); anything else — npm, Homebrew — updates through a package manager
-            // whose writes are charged to *its* process, never to a session of ours, so
-            // finding nothing here is the correct answer rather than a miss.
+            // `~/.local/bin/claude` symlinks into `…/share/claude/versions/<ver>`, so the real
+            // binary's parent is the directory; npm/Homebrew installs have none, correctly.
             let real = std::fs::canonicalize(crate::platform::resolve_claude()).ok();
             let by_link = real
                 .as_deref()
@@ -1648,16 +1363,9 @@ fn versions_dir() -> Option<&'static std::path::Path> {
         .as_deref()
 }
 
-/// The installed `claude` binaries and their sizes in MiB.
-///
-/// **Why a disk meter reads a directory:** a Claude Code self-update writes a whole new
-/// ~290 MiB binary in here, and the `claude` process doing it is one of ours, so the
-/// kernel charges those bytes to a session and the day reads as 300 MiB of agent churn.
-/// The size on disk is the exact number to take back out — see `installGrown` in
-/// `usage.ts`, which owns that decision.
-///
-/// Takes the directory rather than finding it so the scan is testable; one `read_dir`
-/// over the two or three entries an install holds, with no file contents read.
+/// The installed `claude` binaries and their sizes. A self-update writes a ~290 MiB binary
+/// here from a process that is ours, so the kernel charges it to a session; `installGrown`
+/// in `usage.ts` takes it back out. Takes the dir so the scan is testable.
 fn version_files_in(dir: &std::path::Path) -> Vec<InstallFile> {
     let mut out: Vec<InstallFile> = std::fs::read_dir(dir)
         .into_iter()
@@ -1671,23 +1379,14 @@ fn version_files_in(dir: &std::path::Path) -> Vec<InstallFile> {
             })
         })
         .collect();
-    // Sorted so two polls describe the same install in the same order; the frontend keys
-    // by name, but a stable list keeps the payload diffable by eye in the 🐞 console.
+    // Sorted so two polls describe the install in the same order.
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
-/// Where a pane's process actually is **right now**, or `None`.
-///
-/// `Session.workdir` is the directory a pane was *launched* in and never moves. That is
-/// the right answer for an agent (which does not chdir, and whose moves Episko already
-/// tracks as drift) and the wrong one for a shell, where `cd` is half of what a shell is
-/// for: after it, every relative path the pane prints is relative to somewhere Episko
-/// had no record of. So the clickable-link resolver asks here first.
-///
-/// The pid is the PTY child — the login shell itself, not whatever it is running — so
-/// this is exactly what `pwd` would say. `None` for a pane that has exited between the
-/// hover and this call, which is ordinary and not worth an error.
+/// Where a pane's process is right now. `Session.workdir` is where it was launched and never
+/// moves, which is wrong for a shell that has `cd`ed; the link resolver asks here first. The
+/// pid is the PTY child itself, so this is what `pwd` would say. `None` once it has exited.
 #[tauri::command]
 pub(crate) fn session_cwd(state: State<AppState>, session_id: String) -> Option<String> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -1703,43 +1402,10 @@ pub(crate) fn session_cwd(state: State<AppState>, session_id: String) -> Option<
     Some(norm_path(&cwd.to_string_lossy()))
 }
 
-/// App-wide **disk I/O**: every embedded-PTY `claude` process Episko owns, summed into
-/// one reading. Measures the `claude` processes themselves (not their subtrees), and
-/// ignores external/shell/task sessions, which have no owned pid.
-///
-/// **Deliberately not per-session.** What a reader wants from this panel is "how hard is
-/// Episko working the disk right now", and with several agents running, a figure for
-/// whichever pane happens to be on screen answers a question nobody asked — worse, it
-/// reads as the whole when it is a part. So it is account-wide in the same sense the
-/// rate limits are: one number, shown identically on every session.
-///
-/// I/O rather than CPU/RAM because that is the resource a Claude session actually
-/// spends: it reads your tree and writes files, and a runaway agent shows up as
-/// sustained throughput long before it shows up as CPU. Read via `sysinfo` (macOS:
-/// `proc_pid_rusage` → `ri_diskio_*`) rather than a `ps` child, because `ps` cannot
-/// report I/O at all — and one refresh covering N pids is still a single call.
-///
-/// Rates are computed here from the **lifetime totals** and our own timestamp, not from
-/// sysinfo's per-refresh deltas: those are relative to the last refresh of that
-/// `System`, and we build a fresh one per call. Differencing totals ourselves makes the
-/// window explicit and survives a missed or irregular poll.
-///
-/// Two things the summing makes subtle, and both are why this differences **per pid and
-/// then adds the rates**, rather than differencing one summed total:
-///
-/// - A session that exits between polls shrinks the sum. Differencing the sum would read
-///   that fall as a window with no I/O in it (`saturating_sub` → 0) and blank the rate
-///   for every *other* running agent. Per-pid, its contribution simply stops.
-/// - A session that *starts* between polls has no previous sample, so it contributes its
-///   whole lifetime total as one window's worth. It therefore contributes 0 to the rate
-///   until its second reading, exactly as a single session did before.
-///
-/// `primed` is true once at least one pid has a previous sample to difference against —
-/// with nothing running, or on the very first poll, the rate is unknown rather than zero
-/// and the UI says so.
-///
-/// The **totals** carry `io_retired`, the bytes of sessions that have since exited, so
-/// closing a pane doesn't make the run's churn appear to go backwards.
+/// App-wide disk I/O of every embedded pane's child process (not its subtree), one reading
+/// for the whole fleet. Rates are differenced per pid from lifetime totals and then summed, so a
+/// session exiting between polls stops contributing rather than zeroing the window; the
+/// totals carry `io_retired` so closing a pane never walks the run backwards (docs/architecture.md).
 #[tauri::command(async)]
 pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -1766,15 +1432,13 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
         .zip(spids.iter())
         .filter_map(|(pid, spid)| {
             let usage = sys.process(*spid)?.disk_usage();
+            // The lifetime totals, never sysinfo's per-refresh deltas: this `System` is fresh every call.
             Some((*pid, usage.total_read_bytes, usage.total_written_bytes))
         })
         .collect();
 
-    // Keyed by the session roster, NOT `owned_pids`: shells and tasks are sessions
-    // that never join `owned_pids` (that set exists to filter *claude* pids out of
-    // the external listing), so keying on it read every live shell/task pane as
-    // "exited" and re-banked its whole cumulative counter into `retired` on every
-    // poll — one vitest run booked gigabytes of reads that never happened.
+    // Keyed by the session roster, NOT `owned_pids`: shells and tasks never join that set
+    // and would be re-banked as exited on every poll.
     let live: HashSet<u32> = pids.iter().copied().collect();
     let now = std::time::Instant::now();
     let mut samples = state.io_samples.lock().unwrap();
@@ -1789,22 +1453,13 @@ pub(crate) fn all_sessions_resources(state: State<AppState>) -> Resources {
         read_mb: folded.read.saturating_add(retired.0) as f64 / MIB,
         written_mb: folded.written.saturating_add(retired.1) as f64 / MIB,
         primed: folded.primed,
-        // Reported raw, every poll: this half only states what is installed, and
-        // `usage.ts` decides what that means for the figures. Which keeps the decision in
-        // a module a test can reach — the counters above cannot be faked in a unit test,
-        // but "a binary that was not there last time" is pure arithmetic.
+        // Reported raw; `usage.ts` decides what an installed binary means for the figures.
         install: versions_dir().map(version_files_in).unwrap_or_default(),
     }
 }
 
-/// Move the bytes of pids that left the session roster out of `samples` and into
-/// `retired`.
-///
-/// Both halves matter: dropping the entries stops a long-lived app accumulating one per
-/// session it has ever run, and banking their bytes first is what stops the app-wide
-/// total falling when a pane closes. `live` must be the pids of the sessions being
-/// polled — a pid still in it keeps its sample untouched, which is what makes the bank
-/// a once-per-lifetime event rather than a per-poll one.
+/// Bank the bytes of pids that left the roster into `retired`, then drop their samples. A
+/// pid still in `live` keeps its sample, which makes the bank a once-per-lifetime event.
 fn retire_missing(
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
     live: &HashSet<u32>,
@@ -1828,13 +1483,8 @@ struct Folded {
     primed: bool,
 }
 
-/// The arithmetic half of `all_sessions_resources`, split out because it is the part
-/// with the decisions in it and the only part testable without a running app.
-///
-/// Differences **per pid and then sums the rates**, rather than differencing one summed
-/// total, so that a session exiting between polls simply stops contributing instead of
-/// making the sum fall — which, differenced, would read as a window with no I/O in it
-/// and blank the rate for every other running agent.
+/// The arithmetic half of `all_sessions_resources`, testable without an app: differences
+/// per pid, then sums the rates.
 fn fold_io(
     readings: &[(u32, u64, u64)],
     samples: &mut HashMap<u32, (u64, u64, std::time::Instant)>,
@@ -1850,8 +1500,7 @@ fn fold_io(
     for &(pid, r, w) in readings {
         f.read = f.read.saturating_add(r);
         f.written = f.written.saturating_add(w);
-        // saturating_sub: the counters are monotonic, but a pid reused after an exit we
-        // missed would otherwise underflow into a nonsense spike.
+        // saturating_sub: a pid reused after a missed exit would otherwise underflow.
         if let Some((pr, pw, pt)) = samples.insert(pid, (r, w, now)) {
             let secs = now.duration_since(pt).as_secs_f64();
             if secs > 0.0 {
@@ -1865,51 +1514,22 @@ fn fold_io(
 }
 
 // ---------- the log of a background shell an agent started ----------
-//
-// The root under all of this is NOT ours and cannot be computed. Claude Code writes a
-// backgrounded shell's output under `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>/`,
-// while Episko asked `env::temp_dir()/claude/` for this feature's entire life — a
-// directory that has never existed on macOS, where `$TMPDIR` is a per-user
-// `/var/folders/…` box the CLI ignores outright (measured: launching `claude` with
-// `TMPDIR` pointed at a scratch dir creates nothing under it at all). So every read
-// missed. No row ever got a URL, a peek, or an exit sentinel; nothing ever set
-// `ended`; and every background shell sat at "starting…" until its session died.
-// Nothing anywhere said so, because a miss is a perfectly legitimate state one second
-// after a shell starts and the row draws either way.
-//
-// So the root is **probed and remembered**, never asserted, and the probe carries BOTH
-// directory shapes on EVERY platform — only their order differs, because the Windows
-// row is one nobody working on this has ever observed and pinning an unobserved guess
-// as the only possible answer is precisely what cost this feature its life. A wrong
-// extra candidate costs one `is_file()` per poll; a missing one costs the feature.
+// The root is Claude's, not ours: `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>/`, never
+// `env::temp_dir()`, which the CLI ignores on macOS. So the root is probed and remembered,
+// never asserted, and the probe carries both directory shapes on every platform.
 
-/// How much of a background log to hand the frontend. A dev server left running all
-/// afternoon writes megabytes (a real one measured 300 KiB in three hours of HMR), and
-/// every consumer — the URL, the sentinel, a twelve-line peek — reads the *end*. So the
-/// tail is all that crosses the IPC boundary, and it is read without loading the front
-/// of the file at all.
+/// Every consumer reads the end of the log (URL, sentinel, peek), so only the tail crosses IPC.
 const BG_LOG_TAIL: u64 = 32 * 1024;
 
-/// How often the probe's last-resort directory scan may run, PROCESS-WIDE.
-///
-/// `read_bg_log` is called every four seconds per live record. A fleet with ten blind
-/// shells would otherwise `read_dir` a busy `/tmp` a hundred and fifty times a minute
-/// to get the same answer a hundred and fifty times, and a permanently blind fleet is
-/// exactly the fleet that must not pay for its own blindness twenty times a tick.
+/// Process-wide throttle on the last-resort directory scan: ten blind shells polled every
+/// four seconds must not `read_dir` `/tmp` 150 times a minute.
 const BG_SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How many candidate roots one record will ever be tested against. Each is a single
-/// `is_file()`, but the list is a cross-product of bases and names, and a cross-product
-/// is how a cheap poll quietly becomes an expensive one. Four bases by two names is
-/// already the whole believable space.
+/// Cap on candidate roots per record; bases × names is already the whole believable space.
 const BG_ROOT_MAX: usize = 8;
 
-/// Which layout Claude Code is using, as a VALUE rather than a `#[cfg]`.
-///
-/// Same reasoning as `win_runs_directly` above, one feature along: half this file is
-/// invisible to any one machine, and a `#[cfg(windows)]` arm cannot be asserted from a
-/// Mac. The Windows root is precisely the row nobody here has ever seen, so it has to
-/// be the row a macOS test can pin — and it can only be that if the OS arrives as data.
+/// Claude Code's layout as a VALUE rather than a `#[cfg]`, so the Windows row is
+/// assertable from a Mac.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClaudeOs {
     Mac,
@@ -1927,39 +1547,23 @@ impl ClaudeOs {
     }
 }
 
-/// Everything the root table is a function of, gathered in one impure place so that
-/// nothing below it reads the environment at all.
-///
-/// `BgLogEnv::current()` is the ONLY caller of `env::var`, `env::temp_dir`,
-/// `env::consts::OS` or the uid in this half of the file; the table, the path builder
-/// and the probe all take it as an argument and are pure. That is what lets the macOS
-/// leg of CI assert the Windows candidate order — and it is also what makes CI's
-/// poisoned `CLAUDE_CODE_TMPDIR` a real guard rather than a decoration: anyone who
-/// reaches for `env::var` inside the table sends the pure tests, which pass
-/// `override_tmp: None`, somewhere else entirely and turns them red.
+/// Everything the root table depends on, gathered in the one impure place. `current()` is
+/// the ONLY reader of env/uid in this half of the file; the table and probe are pure, which
+/// is what lets the macOS leg of CI assert the Windows candidate order.
 struct BgLogEnv {
     os: ClaudeOs,
-    /// `$CLAUDE_CODE_TMPDIR` — the one knob the CLI honours here. `$TMPDIR` is **not**
-    /// a fallback for it; the bundle reads this variable and otherwise hard-codes
-    /// `/tmp`, which is the whole reason `env::temp_dir()` was the wrong basis.
+    /// `$CLAUDE_CODE_TMPDIR`, the one knob the CLI honours; `$TMPDIR` is not a fallback for it.
     override_tmp: Option<std::path::PathBuf>,
-    /// `env::temp_dir()`. Wrong on macOS and kept anyway, because it is very likely
-    /// the right answer on Windows and a candidate list that drops a shape is how
-    /// this broke in the first place.
+    /// `env::temp_dir()`: wrong on macOS, likely right on Windows, kept as a candidate.
     sys_tmp: std::path::PathBuf,
-    /// `$XDG_RUNTIME_DIR`, last: a Linux box that keeps per-user runtime state there
-    /// is the one place `/tmp` and `env::temp_dir()` can both be wrong at once.
+    /// `$XDG_RUNTIME_DIR`, last: where a Linux box can have both others wrong at once.
     xdg_runtime: Option<std::path::PathBuf>,
-    /// The uid the `claude-<uid>` directory is named for, or `None` where we have no
-    /// uid to name it with.
-    uid: Option<u32>,
+    uid: Option<u32>, // names the `claude-<uid>` directory; None where there is no uid
 }
 
 impl BgLogEnv {
     fn current() -> Self {
-        // An empty variable is not a base. `PathBuf::from("")` joins to a relative
-        // path, so an exported-but-blank `CLAUDE_CODE_TMPDIR` would otherwise put
-        // `claude-501/<slug>/…` — resolved against the app's cwd — at rank 0.
+        // An empty variable is not a base: `PathBuf::from("")` joins to a relative path.
         let dir = |k: &str| {
             std::env::var_os(k).map(std::path::PathBuf::from).filter(|p| !p.as_os_str().is_empty())
         };
@@ -1973,9 +1577,7 @@ impl BgLogEnv {
     }
 }
 
-/// The uid Claude Code names its temp directory after. Read off the owner of `$HOME`
-/// rather than through a `libc` call, because this crate has no libc dependency and
-/// the two numbers are the same one.
+/// Read off the owner of `$HOME`: no libc dependency, and the two numbers are the same one.
 #[cfg(unix)]
 fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt as _;
@@ -1987,25 +1589,10 @@ fn current_uid() -> Option<u32> {
     None
 }
 
-/// The `claude*` directory names Claude Code may have used, most-believed first.
-///
-/// BOTH shapes are returned on every platform and only their ORDER changes: on macOS
-/// and Linux the suffixed name is what a real tree on disk is called, and on Windows
-/// the bare name is a belief and nothing more.
-///
-/// **A platform with no uid to read still gets a suffixed shape, spelled `claude-0`.**
-/// `current_uid()` reads the owner of `$HOME` through a Unix-only API, so it is `None`
-/// on every Windows build — and the bundle computes `claude-${process.getuid?.() ?? 0}`,
-/// which is `claude-0` exactly where `getuid` is undefined. That is a reading of
-/// minified source rather than a directory anybody has watched appear, which is why it
-/// is not FIRST on Windows; leaving it out altogether was the worse mistake, because it
-/// left that platform's table one entry long and that entry the name we have the least
-/// reason to believe. A wrong extra candidate costs one `is_file()`; a missing one cost
-/// this feature its entire life.
-/// `claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it` is what settles
-/// the Windows row, by running the binary on a Windows runner and looking; until it
-/// has, a wrong first row degrades to a working probe that announces `moved`, which is
-/// a whole different kind of wrong from the outage above.
+/// The `claude*` directory names Claude Code may use, most-believed first. Both shapes on
+/// every platform; only the order changes. With no uid to read (every Windows build) the
+/// suffixed shape is `claude-0`, which is what the bundle's `getuid?.() ?? 0` computes.
+/// `claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it` settles the Windows row.
 fn bg_log_dir_names(os: ClaudeOs, uid: Option<u32>) -> Vec<String> {
     let owned = format!("claude-{}", uid.unwrap_or(0));
     let bare = "claude".to_string();
@@ -2015,16 +1602,11 @@ fn bg_log_dir_names(os: ClaudeOs, uid: Option<u32>) -> Vec<String> {
     }
 }
 
-/// The directories a `claude*` tree could sit in, most-believed first.
-///
-/// Separate from `bg_log_roots` because the last-resort scan walks these BASES looking
-/// for a `claude*` entry nobody predicted — the one way this probe can survive a
-/// directory name we have never seen without shipping a release first.
+/// The directories a `claude*` tree could sit in, most-believed first. Separate from
+/// `bg_log_roots` because the last-resort scan walks these bases for a name nobody predicted.
 fn bg_log_bases(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
-    // `/tmp` is first on macOS because the CLI hard-codes it and ignores `$TMPDIR`;
-    // `env::temp_dir()` is first everywhere else because on Windows it is the only
-    // base there is. Each keeps the other as a fallback: the point of this list is
-    // that neither platform's answer is asserted as the only one.
+    // `/tmp` first on macOS (the CLI hard-codes it), `env::temp_dir()` first elsewhere;
+    // each keeps the other as a fallback.
     let hard_tmp = std::path::PathBuf::from("/tmp");
     let (first, second) = match e.os {
         ClaudeOs::Mac => (hard_tmp, e.sys_tmp.clone()),
@@ -2045,9 +1627,8 @@ fn bg_log_bases(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// The candidate roots, most-believed first. **Pure**: no I/O, no env, no `cfg`. Every
-/// index into this list is a `rootRank` the frontend can read, so its order is part of
-/// the contract and not an implementation detail.
+/// The candidate roots, most-believed first. Pure. Each index is a `rootRank` the frontend
+/// reads, so the order is part of the contract.
 fn bg_log_roots(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
     let names = bg_log_dir_names(e.os, e.uid);
     let mut out: Vec<std::path::PathBuf> = Vec::new();
@@ -2065,9 +1646,7 @@ fn bg_log_roots(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// The two components of a background log's address that genuinely mirror the
-/// transcript: the project slug from its directory, the session uuid from its file
-/// stem. `~/.claude/projects/<slug>/<uuid>.jsonl` gives `(<slug>, <uuid>)`.
+/// `~/.claude/projects/<slug>/<uuid>.jsonl` → `(<slug>, <uuid>)`.
 fn bg_log_session(transcript: &str) -> Option<(String, String)> {
     let t = std::path::Path::new(transcript);
     let uuid = t.file_stem()?.to_str()?;
@@ -2078,19 +1657,11 @@ fn bg_log_session(transcript: &str) -> Option<(String, String)> {
     Some((slug.to_string(), uuid.to_string()))
 }
 
-/// Where Claude Code writes a backgrounded shell's output, GIVEN a root.
-///
-/// `root` already includes the `claude*` directory, because that component is not
-/// computable from anything we hold — `bg_log_resolve` probes for it and remembers it.
-/// What is left is the half that genuinely mirrors the transcript: a transcript at
-/// `~/.claude/projects/<slug>/<uuid>.jsonl` puts its background logs under
-/// `<root>/<slug>/<uuid>/tasks/<task_id>.output`. The layout is undocumented and not
-/// ours, so this fails by returning `None` rather than by guessing, and the probe
-/// around it reports every path it LOOKED AT rather than asserting the one it
-/// computed — a row that can say where it looked is a row somebody can fix.
+/// A background log's path GIVEN a root (the `claude*` component is probed, not computed):
+/// `<root>/<slug>/<uuid>/tasks/<task_id>.output`. The layout is not ours, so this returns
+/// `None` rather than guessing.
 fn bg_log_path(root: &std::path::Path, transcript: &str, task_id: &str) -> Option<std::path::PathBuf> {
-    // The id reaches us from a hook payload and lands in a path, so it is checked
-    // rather than trusted: anything but Claude's own alphabet is refused outright.
+    // The id comes from a hook payload and lands in a path: only Claude's own alphabet is accepted.
     if task_id.is_empty() || !task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
         return None;
     }
@@ -2104,21 +1675,12 @@ struct BgResolved {
     /// Index into `bg_log_roots`, or `-1` when the directory scan found it.
     rank: i32,
     discovered: bool,
-    /// The memo answered — its root, or the session directory a scan taught it — so
-    /// there is nothing new to remember.
+    /// The memo answered, so there is nothing new to remember.
     from_memo: bool,
 }
 
-/// Why the probe has no log, in the shape a row needs to say so out loud.
-///
-/// `NotYet` carries the file it is waiting for; the other two carry every path that
-/// was tested. A row that can only say "missing" is the silence this whole block
-/// exists to end — and the three states have three different answers, one of which
-/// (nothing found anywhere) must never be mistaken for a shell that has simply not
-/// written its first line yet.
-///
-/// `Debug` because a test that fails here should print the paths it looked at rather
-/// than the word "Err": the list is the whole diagnosis.
+/// Why the probe has no log, in the shape a row can say out loud. `NotYet` carries the file
+/// it waits for; the others carry every path tested. `Debug` so a failing test prints the paths.
 #[derive(Debug)]
 enum BgResolveErr {
     BadId,
@@ -2127,37 +1689,18 @@ enum BgResolveErr {
     Ambiguous(Vec<std::path::PathBuf>),
 }
 
-/// The one thing the probe remembers between calls, held in `AppState`.
-///
-/// The ROOT is memoised and the FILE never is. A background log appears seconds
-/// *after* the record that names it does, so a memo on the resolved file would freeze
-/// the first miss in place forever — which is the bug being fixed, reintroduced by its
-/// own fix. And the memo is INVALIDATED rather than defended: `$CLAUDE_CODE_TMPDIR`
-/// can change under a running app and `/tmp` gets reaped, so a remembered root that
-/// stops holding is dropped on the spot and the ladder starts again from the top.
+/// The probe's memo, held in `AppState`. The ROOT is memoised and the FILE never is (a log
+/// appears seconds after the record naming it), and the memo is invalidated rather than
+/// defended: `$CLAUDE_CODE_TMPDIR` can change under a running app and `/tmp` gets reaped.
 pub(crate) struct BgRootState {
     root: Option<std::path::PathBuf>,
     rank: i32,
-    /// The `<root>/<slug>/<uuid>` directory a SCAN resolved, kept beside the root
-    /// because the root alone cannot re-find it: Claude splices a base-36 hash into a
-    /// slug that grows too long, so step (1) rebuilds the path from the slug we DERIVE
-    /// and misses a tree whose slug is not that one. Without this such a record is
-    /// re-found only by the scan, which runs once a minute — fourteen of every fifteen
-    /// polls would report `noRoot` about a log the probe has already held in its hand,
-    /// flapping the row's peek and its health state every four seconds. It answers only
-    /// for the uuid it was learned for, checked rather than assumed: one slot,
-    /// process-wide, and a wrong hit here puts this row's peek on another session's log.
+    /// The `<root>/<slug>/<uuid>` directory a SCAN resolved: Claude splices a hash into a long
+    /// slug, so the root alone cannot rebuild it. Answers only for the uuid it was learned for.
     sess: Option<std::path::PathBuf>,
-    /// The last `bglog-health` state announced FOR EACH record, so that event fires on
-    /// TRANSITION only. One slot for the whole process reads as transition-only right
-    /// up until two live records disagree — one resolving, one blind — after which
-    /// every read flips the slot the other one set and the event fires twice per poll
-    /// forever: 30 `dlog` lines a minute, which empties the debug console's 400-entry
-    /// ring in about a quarter of an hour. `bg_log_health_state` answers per RECORD, so
-    /// the guard on it has to be per record too. Keyed by transcript AND task id
-    /// because a task id is Claude's and is only unique within one session, exactly as
-    /// the frontend keys a `BgServer` inside one pane's list. It holds one small enum
-    /// per shell an agent has backgrounded, for the life of the process.
+    /// Last `bglog-health` state announced PER RECORD, so the event fires on transition only;
+    /// one slot for the process flaps once two live records disagree. Keyed by transcript and
+    /// task id, since a task id is unique only within its session.
     announced: std::collections::HashMap<(String, String), BgHealth>,
     last_scan: Option<std::time::Instant>,
 }
@@ -2187,23 +1730,20 @@ fn bg_log_resolve(
         return Err(BgResolveErr::BadId);
     };
     let roots = bg_log_roots(e);
-    // Root and candidate file together, so a rank is an index into one list rather
-    // than an assumption that two lists stayed the same length.
+    // Root and candidate file together, so a rank indexes one list.
     let cands: Vec<(std::path::PathBuf, std::path::PathBuf)> = roots
         .iter()
         .filter_map(|r| bg_log_path(r, transcript, task_id).map(|p| (r.clone(), p)))
         .collect();
     if cands.is_empty() {
-        // The transcript parsed, so this can only be a task id that is not one. There
-        // is no address to look for and no amount of disk I/O improves that.
+        // The transcript parsed, so this can only be a task id that is not one.
         return Err(BgResolveErr::BadId);
     }
     let tried = |c: &[(std::path::PathBuf, std::path::PathBuf)]| {
         c.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>()
     };
 
-    // (1) The remembered root: one `is_file()` where the table is up to eight, and
-    // the overwhelmingly common case once anything at all has resolved.
+    // (1) The remembered root: one `is_file()` against a table of up to eight.
     let mut won: Option<(BgResolved, std::path::PathBuf)> = None;
     if let Some(root) = memo.root.clone() {
         if let Some(p) = bg_log_path(&root, transcript, task_id) {
@@ -2216,12 +1756,8 @@ fn bg_log_resolve(
         }
     }
 
-    // ...and the session directory a scan resolved, for the tree whose slug is not the
-    // one we derive. The uuid on the end of it is checked rather than assumed, because
-    // this is one slot shared by the whole fleet and answering with somebody else's
-    // tree would put this row's peek on another session's log. Joining the task id
-    // here adds no new trust: an id that is not one left as `BadId` above, before
-    // `cands` was built.
+    // ...and the session directory a scan resolved. The uuid is checked, not assumed: this
+    // slot is shared by the whole fleet.
     if won.is_none() {
         if let Some(dir) = memo.sess.clone() {
             if dir.file_name().and_then(|n| n.to_str()) == Some(uuid.as_str()) {
@@ -2237,10 +1773,8 @@ fn bg_log_resolve(
         }
     }
 
-    // (2) The table, in order. The first existing FILE, never the first existing
-    // ROOT: a stale `claude/` left behind by an older layout is a directory that
-    // exists and holds nothing, and a probe that stopped at it would pick the empty
-    // one every time while the real log sat one row further down.
+    // (2) The table, in order. The first existing FILE, never the first existing ROOT: a
+    // stale `claude/` from an older layout exists and holds nothing.
     if won.is_none() {
         for (i, (root, cand)) in cands.iter().enumerate() {
             if cand.is_file() {
@@ -2261,12 +1795,9 @@ fn bg_log_resolve(
         return Ok(r);
     }
 
-    // (3) A root that holds THIS SESSION but not (yet) this log. Claude mkdirs the
-    // session's `scratchpad` eagerly at start and only creates `tasks/` once a shell
-    // has actually been backgrounded, so a session directory with no log under it is
-    // the honest "starting…" state. Reporting it as a missing root would be a lie
-    // with teeth: `noRoot` is the state the frontend refuses to retire a row on, and
-    // `notYet` is the one it does.
+    // (3) A root holding THIS SESSION but not yet this log: Claude mkdirs `scratchpad` at
+    // start and `tasks/` only on the first background shell. `notYet` is the state the
+    // frontend retires a row on; `noRoot` is not.
     for (root, cand) in &cands {
         let sess = root.join(&slug).join(&uuid);
         if sess.is_dir() || sess.join("scratchpad").exists() {
@@ -2274,18 +1805,15 @@ fn bg_log_resolve(
         }
     }
 
-    // (4) Last resort: a `claude*` directory nobody predicted, and this session's uuid
-    // under a slug we did not derive. Throttled process-wide — see `BG_SCAN_EVERY`.
+    // (4) Last resort: a `claude*` directory nobody predicted, or this uuid under a slug we
+    // did not derive. Throttled process-wide (`BG_SCAN_EVERY`).
     let due = match memo.last_scan {
         Some(t) => now.duration_since(t) >= BG_SCAN_EVERY,
         None => true,
     };
     if !due {
-        // The memo is left exactly as it was. "Come back later" is not "there is no
-        // root": this branch has established nothing about whether the remembered root
-        // still holds, and the memo is process-wide — dropping it here would make one
-        // record's throttled poll send every OTHER live record back through the full
-        // table on its next read. Only step (5), which actually looked, drops it.
+        // "Come back later" is not "there is no root": only step (5), which actually looked,
+        // may drop the process-wide memo.
         return Err(BgResolveErr::NoRoot(tried(&cands)));
     }
     memo.last_scan = Some(now);
@@ -2304,11 +1832,8 @@ fn bg_log_resolve(
                     hits.push(p);
                 }
             }
-            // The same uuid under a slug we did not derive. Claude's slug is a
-            // sanitised cwd with a base-36 hash spliced in once it grows too long,
-            // and reproducing that hash would be one more piece of somebody else's
-            // build written down as ours. A v4 uuid one level down is collision-free
-            // enough to find the tree without it: ONE `read_dir`, no recursion.
+            // The same uuid under a slug we did not derive (Claude splices a hash into long slugs;
+            // we do not reproduce it). One `read_dir`, no recursion.
             let Ok(slugs) = std::fs::read_dir(&root) else { continue };
             for s in slugs.flatten() {
                 let p = s.path().join(&uuid).join("tasks").join(format!("{task_id}.output"));
@@ -2321,23 +1846,19 @@ fn bg_log_resolve(
     match hits.len() {
         1 => {
             let path = hits.remove(0);
-            // `<root>/<slug>/<uuid>/tasks/<id>.output` — the root is four levels up,
-            // and the session directory two, which is the half the derived slug cannot
-            // rebuild when Claude spliced its hash into one.
+            // `<root>/<slug>/<uuid>/tasks/<id>.output`: the root is four levels up, the session dir two.
             memo.root = path.ancestors().nth(4).map(|p| p.to_path_buf());
             memo.sess = path.ancestors().nth(2).map(|p| p.to_path_buf());
             memo.rank = -1;
             Ok(BgResolved { path, rank: -1, discovered: true, from_memo: false })
         }
-        // (5) A total miss drops the memo rather than defending it. This is the branch
-        // that looked and found nothing, so it is the one entitled to.
+        // (5) A total miss drops the memo: this branch looked and found nothing.
         0 => {
             memo.root = None;
             memo.sess = None;
             Err(BgResolveErr::NoRoot(tried(&cands)))
         }
-        // Two roots holding one session is not something we can pick between, and a
-        // guess would put this row's peek on somebody else's log. Say so instead.
+        // Two roots holding one session: a guess would put this row's peek on another log.
         _ => {
             memo.root = None;
             memo.sess = None;
@@ -2346,10 +1867,8 @@ fn bg_log_resolve(
     }
 }
 
-/// Why a read came back with nothing. `missing` alone could never distinguish a log
-/// that has not appeared yet from a root that is not where we looked from a file that
-/// is there and unreadable — three states with three different answers, and the row
-/// had no way to say which of them it was in.
+/// Why a read came back empty: not-yet, wrong root and unreadable are three states with
+/// three different answers.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BgMiss {
@@ -2361,11 +1880,8 @@ pub(crate) enum BgMiss {
     Unreadable,
 }
 
-/// What the app says out loud about its own probe. This is `serve_telemetry`'s
-/// re-bind announcement one level down: a fleet nobody can hear must never look like a
-/// quiet one. `Moved` is the state nobody would think to build — the probe still
-/// WORKS and the app says so anyway, which buys one release of warning before the
-/// fallback stops matching too.
+/// What the app says about its own probe (`serve_telemetry`'s rule, one level down).
+/// `Moved` means the probe still works via a fallback: one release of warning.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BgHealth {
@@ -2375,48 +1891,31 @@ pub(crate) enum BgHealth {
 }
 
 #[derive(serde::Serialize)]
-// `root_rank` is the first multi-word field this struct has ever had, and a snake_case
-// key arriving at a camelCase interface is a silent `undefined`: every rule reading it
-// answers "no", and tsc, vitest and cargo all stay green. That is the original bug's
-// exact shape, so the rename is not cosmetic. `test/ipc.test.ts` holds the two sides
-// together from source.
+// camelCase is load-bearing: a snake_case key reaches the frontend as `undefined` with
+// every gate green. `test/ipc.test.ts` joins the two sides.
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BgLog {
-    /// The resolved path, so a row can name (and reveal) the file it is reading — or,
-    /// when the log has not appeared yet, the file it is waiting for. Empty exactly
-    /// when there is no single path to name, in which case `tried` is the answer.
+    /// The file being read, or waited for; empty when there is no single path to name (see `tried`).
     path: String,
-    /// The last `BG_LOG_TAIL` bytes, lossily decoded — a dev server's output is
-    /// whatever the process emitted, and a truncated multi-byte character at the cut
-    /// must not cost the whole read.
+    /// The last `BG_LOG_TAIL` bytes, lossily decoded: the cut can land mid-character.
     text: String,
-    /// The file isn't there. Normal and temporary right after a shell starts, and a
-    /// standing state when the layout has moved — `reason` is what tells those apart.
+    /// Temporary after a shell starts, standing when the layout moved; `reason` tells them apart.
     missing: bool,
-    /// The file's full length, which the caller keeps and passes back as `known_len`.
+    /// Full length; the caller passes it back as `known_len`.
     len: u64,
-    /// The length matched `known_len`, so nothing was read and `text` is empty. A
-    /// background log is append-only, which is what makes a length comparison an exact
-    /// "has anything happened" test rather than a heuristic.
+    /// Length matched `known_len`, so nothing was read; exact because the log is append-only.
     unchanged: bool,
-    /// Why there is nothing, in the frontend's vocabulary. `None` whenever the file
-    /// was read, including the empty and unchanged cases.
+    /// `None` whenever the file was read, including the empty and unchanged cases.
     reason: BgMiss,
-    /// Every candidate the probe tested when it found none. Exactly one of `path` and
-    /// `tried` is ever the answer, and the row can copy or reveal whichever it is —
-    /// which is the difference between "no output yet" and a bug report.
+    /// Every candidate tested when none was found; exactly one of `path` and `tried` is the answer.
     tried: Vec<String>,
-    /// Index into `bg_log_roots` of the root this resolved under, or `-1` when the
-    /// directory scan found it or nothing did. `0` is the believed layout; anything
-    /// else means the app is working on a fallback and should say so.
+    /// Index into `bg_log_roots`, or `-1` for a scan hit or nothing; anything but `0` is a fallback.
     root_rank: i32,
     /// Found by scanning rather than by the table — the fallback is load-bearing.
     discovered: bool,
 }
 
-/// Announced on `bglog-health`, on TRANSITION only. `tried` is filled for `Blind`
-/// alone, because that is the only state where the interesting fact is the list of
-/// places that turned out to be wrong.
+/// Announced on `bglog-health` on TRANSITION only; `tried` is filled for `Blind` alone.
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BgLogHealth {
@@ -2442,23 +1941,15 @@ fn bg_miss(path: String, len: u64, reason: BgMiss, tried: Vec<String>) -> BgLog 
     }
 }
 
-/// The half of `read_bg_log` that has a path already, and one the probe has just seen
-/// as a file. Split out so the test can drive it against a real file: the command
-/// resolves through the environment, which a test must not go anywhere near
-/// (CLAUDE.md's fixture-path rule), and a test that asserts about a `BgLog` it built
-/// itself would prove nothing about either half.
-///
-/// Every failure here is `Unreadable` rather than a missing file, because the caller
-/// only gets this far having watched `is_file()` answer yes: a permission wall or a
-/// file that vanished mid-read is a different thing from a log that has not appeared.
+/// The half of `read_bg_log` that already has a path the probe saw as a file; split out so
+/// a test can drive it against a real file. Every failure here is `Unreadable`, not missing:
+/// a permission wall is a different thing from a log that has not appeared.
 fn bg_log_at(path: &std::path::Path, known_len: u64) -> BgLog {
     let disp = path.to_string_lossy().to_string();
     let miss = |len: u64| bg_miss(disp.clone(), len, BgMiss::Unreadable, Vec::new());
     let Ok(mut f) = std::fs::File::open(path) else { return miss(0) };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    // Nothing has been appended since the caller last looked. Note this is checked
-    // BEFORE the zero-length shortcut would matter: a log that is still empty is also
-    // a log that has not moved, and both answers are "there is nothing to fold in".
+    // Nothing appended since the caller last looked; an empty log is also unchanged.
     if len == known_len {
         return BgLog {
             path: disp,
@@ -2496,12 +1987,8 @@ fn bg_log_at(path: &std::path::Path, known_len: u64) -> BgLog {
     }
 }
 
-/// What this read says about the probe, or `None` when it says nothing.
-///
-/// Only the states that are *about the layout* speak. A log that has not appeared
-/// yet, a task id that is not one and a file we could not open are all facts about one
-/// record, and letting any of them move the announced state would make the badge
-/// flicker on a shell that started two seconds ago.
+/// What this read says about the probe. Only layout states speak: not-yet, bad id and
+/// unreadable are facts about one record and must not flicker the badge.
 fn bg_log_health_state(log: &BgLog) -> Option<BgHealth> {
     match log.reason {
         BgMiss::None => {
@@ -2512,8 +1999,7 @@ fn bg_log_health_state(log: &BgLog) -> Option<BgHealth> {
     }
 }
 
-/// The whole read against an injected environment and memo, with no `AppHandle` in
-/// sight — so every test below drives the real ladder rather than a stand-in.
+/// The whole read against an injected environment and memo, so tests drive the real ladder.
 fn read_bg_log_at_env(
     e: &BgLogEnv,
     memo: &mut BgRootState,
@@ -2533,9 +2019,7 @@ fn read_bg_log_at_env(
         }
         // No address at all: there is nothing to name and nothing that was tried.
         Err(BgResolveErr::BadId) => bg_miss(String::new(), 0, BgMiss::BadId, Vec::new()),
-        // The root is right and the log has not been written yet — so the path is the
-        // answer and the candidate list rides along for the row that wants to say
-        // which of eight places it settled on.
+        // The root is right and the log not yet written: the path is the answer, the candidates ride along.
         Err(BgResolveErr::NotYet(path, tried)) => {
             bg_miss(path.to_string_lossy().to_string(), 0, BgMiss::NotYet, strs(tried))
         }
@@ -2558,10 +2042,7 @@ fn read_bg_log_announced<R: tauri::Runtime>(
 ) -> BgLog {
     let log = read_bg_log_at_env(e, memo, transcript, task_id, known_len);
     if let Some(state) = bg_log_health_state(&log) {
-        // Per task id, because the state is a per-record answer. A single slot holds
-        // right up until one record resolves while another is blind, at which point
-        // each read "transitions" the slot the other one set and the event fires on
-        // every poll of every record — the flood this guard exists to prevent.
+        // Per record: a single slot flaps once one record resolves while another is blind.
         let who = (transcript.to_string(), task_id.to_string());
         if memo.announced.get(&who) != Some(&state) {
             memo.announced.insert(who, state);
@@ -2580,19 +2061,10 @@ fn read_bg_log_announced<R: tauri::Runtime>(
     log
 }
 
-/// Read the tail of one background shell's log. `transcript` is the session's
-/// `transcript_path` **as it stood when the shell was spawned** — see the note on
-/// `BgServer` in types.ts for why it must not be re-derived from the session's current
-/// one. Errors are states, not failures: an unresolvable address, a root that is not
-/// where we looked and an unreadable file each come back with a `reason` the row can
-/// print, because every one of them is a row that should still draw.
-///
-/// **`known_len` is what keeps this poll cheap.** It runs every few seconds against
-/// every running server, and the overwhelmingly common case is a dev server nobody is
-/// hitting, whose log has not moved since the last look. The file is append-only, so
-/// its length is an exact test for that — one `metadata()` call instead of a 32 KiB
-/// read. Same trick, and the same reasoning, as the discovery stamp in `tasks.rs`:
-/// this is not a watcher, it is a cheap question asked often. Pass 0 to force a read.
+/// Read the tail of one background shell's log. `transcript` is the session's transcript
+/// path AS IT STOOD when the shell spawned (see `BgServer` in types.ts). Errors are states
+/// a row can draw. `known_len` keeps the poll cheap: the log is append-only, so an unchanged
+/// length means one `metadata()` call instead of a 32 KiB read; pass 0 to force a read.
 #[tauri::command]
 pub(crate) fn read_bg_log(
     app: AppHandle,
@@ -2611,10 +2083,6 @@ mod tests {
 
     // ---------- what a program reading a secret receives ----------
 
-    /// ASCII is left alone, byte for byte. Every existing key path — `^C`, an arrow
-    /// key, Claude Code's chords, an ordinary line — must go down the pipe exactly as
-    /// it does today, because all 95 printable ASCII characters already round-trip
-    /// exactly and a rewrite could only lose that.
     #[test]
     fn ascii_input_is_never_rewritten() {
         for s in [
@@ -2633,10 +2101,6 @@ mod tests {
         }
     }
 
-    /// A non-ASCII character becomes a key-DOWN/key-UP record pair carrying its exact
-    /// UTF-16 code unit. Without this the character is best-fit-mapped into an
-    /// Alt+numpad sequence by conhost and arrives on a key-UP record, where every
-    /// hidden-prompt reader on Windows drops it.
     #[test]
     fn a_non_ascii_character_becomes_a_key_record_pair() {
         assert_eq!(
@@ -2650,8 +2114,6 @@ mod tests {
         );
     }
 
-    /// `Uc` is a UTF-16 code unit, not a scalar value, so a non-BMP character is two
-    /// record pairs — its surrogates. Sending the scalar would deliver garbage.
     #[test]
     fn a_non_bmp_character_goes_as_its_two_surrogates() {
         assert_eq!(
@@ -2661,9 +2123,6 @@ mod tests {
         );
     }
 
-    /// Only the characters are re-encoded — the sequence around them is delivered as
-    /// it was written. A pasted value keeps its brackets so the child's own request
-    /// for bracketed paste is still honoured.
     #[test]
     fn escape_sequences_are_delivered_untouched() {
         assert_eq!(
@@ -2677,8 +2136,6 @@ mod tests {
         );
     }
 
-    /// The flag is latched from ConPTY's own announcement, and only that. A PTY that
-    /// never asks — every PTY on macOS and Linux — keeps the untouched byte path.
     #[test]
     fn the_mode_is_latched_from_conptys_announcement() {
         let flag = AtomicBool::new(false);
@@ -2705,8 +2162,6 @@ mod tests {
         );
     }
 
-    /// The announcement split across two reads is still seen. Missing it is silent and
-    /// degrades to exactly the bug, so the carry is not an optimisation.
     #[test]
     fn the_mode_is_latched_across_a_chunk_boundary() {
         let flag = AtomicBool::new(false);
@@ -2722,14 +2177,12 @@ mod tests {
 
     // ---------- the round trip, over a real PTY ----------
 
-    /// Set for the child half of `secret_input_reaches_the_child_byte_exact`, which is
-    /// this same test binary re-run with a filter. Without it the helper would sit and
-    /// wait for input during a plain `cargo test -- --ignored` pass (RELEASE.md's).
+    /// Set for the child half of `secret_input_reaches_the_child_byte_exact` (this binary re-run
+    /// with a filter); without it the helper would wait for input in a plain `--ignored` pass.
     const CHILD_ENV: &str = "EPISKO_PTY_ROUNDTRIP_CHILD";
 
-    /// The child: read a secret the way a hidden prompt does, and report the exact
-    /// bytes it got. Not a test — the `#[test]` is how the parent re-enters this
-    /// binary without shipping a second executable or depending on a python.
+    /// The child: reads a secret the way a hidden prompt does and reports the exact bytes.
+    /// The `#[test]` is how the parent re-enters this binary without a second executable.
     #[test]
     #[ignore = "helper process for secret_input_reaches_the_child_byte_exact"]
     fn pty_roundtrip_child() {
@@ -2750,9 +2203,7 @@ mod tests {
         let _ = std::io::stdout().flush();
     }
 
-    /// Windows: exactly what `_getwch` does — and therefore what Python's `getpass`,
-    /// and every other hidden-prompt reader on Windows, does. Characters come from
-    /// key-DOWN records only; that is the whole bug.
+    /// Exactly what `_getwch` (Python's `getpass`) does: characters from key-DOWN records only.
     #[cfg(windows)]
     fn read_secret() -> String {
         use windows_sys::Win32::System::Console::{
@@ -2788,8 +2239,7 @@ mod tests {
         out
     }
 
-    /// Unix: a real tty in canonical mode hands over the line; the terminator is the
-    /// tty's own (ICRNL turns the CR into NL) and is not part of the secret.
+    /// A canonical-mode tty hands over the line; the terminator is the tty's own, not the secret's.
     #[cfg(not(windows))]
     fn read_secret() -> String {
         let mut line = String::new();
@@ -2797,18 +2247,9 @@ mod tests {
         line.trim_end_matches(['\r', '\n']).to_string()
     }
 
-    /// **The regression test.** Feed a real PTY the known-tricky inputs — a value
-    /// terminated by CR, a pasted value, and one carrying non-ASCII — and require the
-    /// child to read back exactly the characters that were sent.
-    ///
-    /// Fails on Windows without `win32_input_encode`: `✓`, `§` and `U+00A0` are
-    /// best-fit-mapped by conhost into Alt+numpad sequences and arrive on key-UP
-    /// records, where a hidden-prompt reader never looks — so the secret comes out
-    /// short and gpg calls it a bad passphrase.
+    /// Over a real PTY; fails on Windows without `win32_input_encode`.
     #[test]
     fn secret_input_reaches_the_child_byte_exact() {
-        // "typed then Enter", "pasted then Enter", "non-ASCII, including the
-        // no-break space a passphrase copied out of a document carries".
         let cases: [(&str, &str, &str); 4] = [
             ("plain typed", "hunter2\r", "hunter2"),
             (
@@ -2821,15 +2262,12 @@ mod tests {
         ];
         for (name, send, want) in cases {
             let got = round_trip(send);
-            // A real tty passes the paste brackets to the child (the child asked for
-            // them); ConPTY consumes them. Either way the *value* must be exact.
+            // A real tty passes the paste brackets to the child; ConPTY consumes them.
             let got = got.replace("\x1b[200~", "").replace("\x1b[201~", "");
             assert_eq!(got, want, "{name}: the child did not receive what was sent");
         }
     }
 
-    /// Drive one value through a real PTY the way the app does: latch the mode from
-    /// the child's output, encode the write through `pty_payload`, read the report.
     fn round_trip(send: &str) -> String {
         use std::time::{Duration, Instant};
         let pair = native_pty_system()
@@ -2864,9 +2302,8 @@ mod tests {
                     break;
                 }
                 note_win32_input_mode(&buf[..n], &mut carry, &f2);
-                // ConPTY asks the terminal where the cursor is and stalls the child
-                // until something answers. xterm.js does this for us in the app; a
-                // PTY test that skips it simply hangs.
+                // ConPTY asks where the cursor is and stalls the child until something answers
+                // (xterm.js does this in the app).
                 if buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
                     let mut g = w2.lock().unwrap();
                     let _ = g.write_all(b"\x1b[1;1R");
@@ -2920,11 +2357,6 @@ mod tests {
 
     // ---------- scrollback ring buffer (#47 stage 2) ----------
 
-    /// The invariant adoption stands on: snapshot at ANY point mid-stream, keep the
-    /// chunks whose seq is above the snapshot's, and snapshot + kept chunks must
-    /// equal the stream's tail exactly — no byte doubled, none lost. This is the
-    /// protocol the frontend runs (queue while the snapshot is in flight, drop
-    /// `seq <= snapshot.seq`, write the rest), driven over every split point.
     #[test]
     fn snapshot_plus_later_chunks_reconstructs_the_stream_exactly() {
         let chunks: Vec<&[u8]> = vec![b"alpha\n", b"beta", b"\x1b[31mred\x1b[0m\n", b"tail"];
@@ -2952,8 +2384,6 @@ mod tests {
         }
     }
 
-    /// The cap keeps the newest bytes, not the oldest — scrollback answers "what
-    /// just happened", so the front is what an overflow must sacrifice.
     #[test]
     fn overflow_evicts_the_front_and_keeps_the_tail() {
         let mut sb = ScrollBuf::new();
@@ -2967,10 +2397,7 @@ mod tests {
         );
     }
 
-    /// An evicted buffer starts mid-line — likely mid escape sequence, which on
-    /// replay eats characters up to the next terminator — so the snapshot trims to
-    /// the first newline. Before any eviction it must NOT trim: the first bytes a
-    /// young session produced are real output, not a torn line.
+    /// Before any eviction it must NOT trim: a young session's first bytes are real output.
     #[test]
     fn snapshot_trims_to_a_newline_only_after_eviction() {
         let mut sb = ScrollBuf::new();
@@ -2992,8 +2419,7 @@ mod tests {
         );
     }
 
-    /// One alternate-screen repaint can be 100% newline-free; trimming would then
-    /// throw away the entire screen, so a no-newline buffer is kept whole.
+    /// An alternate-screen repaint can be newline-free; trimming would throw away the screen.
     #[test]
     fn snapshot_keeps_a_newline_free_buffer_whole_even_after_eviction() {
         let mut sb = ScrollBuf::new();
@@ -3002,12 +2428,6 @@ mod tests {
         assert_eq!(bytes.len(), SCROLLBACK_MAX);
     }
 
-    /// The whole reason `fold_io` differences per pid instead of over one summed total.
-    ///
-    /// Two agents are running; between polls one exits. Its lifetime bytes leave the
-    /// sum, so a summed-total difference would `saturating_sub` to zero and report "no
-    /// I/O at all" for the window — blanking the rate of the agent that is still
-    /// working. Per pid, the survivor's own 1 MiB/s is unaffected.
     #[test]
     fn a_session_exiting_does_not_zero_the_rate_of_the_ones_still_running() {
         let t0 = std::time::Instant::now();
@@ -3032,8 +2452,6 @@ mod tests {
         );
     }
 
-    /// Rates add across concurrent agents — the figure is "what is Episko doing to the
-    /// disk", so two agents reading 1 MiB/s each is 2 MiB/s, not an average.
     #[test]
     fn concurrent_sessions_sum_their_rates_and_totals() {
         let t0 = std::time::Instant::now();
@@ -3054,9 +2472,6 @@ mod tests {
         assert_eq!(f.written, 1024);
     }
 
-    /// Closing a pane must not walk the run's churn backwards. The pid leaves
-    /// `io_samples`, and its bytes have to land in `io_retired` on the way out or the
-    /// app-wide total visibly drops.
     #[test]
     fn retiring_a_pid_banks_its_bytes_instead_of_losing_them() {
         let now = std::time::Instant::now();
@@ -3078,13 +2493,6 @@ mod tests {
         );
     }
 
-    /// The retirement key is the session roster, not `owned_pids` — shells and tasks
-    /// never join `owned_pids`, and keying on it read every live shell/task pane as
-    /// exited: each poll banked the pane's whole cumulative counter into `retired`
-    /// again, then `fold_io` re-created the sample for the next poll to bank again.
-    /// One test run's pane inflated a day's read figure by two orders of magnitude
-    /// before this was a rule. This drives the actual per-poll sequence and asserts a
-    /// pane that stays in the roster retires nothing for as long as it lives.
     #[test]
     fn a_live_pane_is_never_retired_however_many_polls_it_survives() {
         let t0 = std::time::Instant::now();
@@ -3118,12 +2526,8 @@ mod tests {
         );
     }
 
-    /// The inspector's I/O readout is only worth showing if the platform actually
-    /// accounts for it. Per-process disk counters are easy to wire up and get back a
-    /// permanent zero — `proc_pid_rusage` on macOS, `/proc/<pid>/io` on Linux, the IO
-    /// counters on Windows all have their own preconditions — and a silently-zero
-    /// counter renders as a confident, permanently-idle gauge rather than as a bug.
-    /// This asserts the counter moves; the rate arithmetic on top is plain division.
+    /// Per-process disk counters are easy to wire up and get a permanent zero, which renders
+    /// as a confident idle gauge; this asserts the counter moves.
     #[test]
     fn process_disk_usage_actually_counts_bytes() {
         use crate::testutil::scratch_dir;
@@ -3141,8 +2545,7 @@ mod tests {
         };
         let before = sample().expect("our own process is visible to sysinfo");
 
-        // fsync, so the bytes are charged to real disk I/O rather than sitting in the
-        // page cache where the counter would never see them.
+        // fsync, so the bytes are charged to disk rather than the page cache.
         let dir = scratch_dir();
         let mut f = std::fs::File::create(dir.join("blob")).unwrap();
         f.write_all(&vec![7u8; 8 * 1024 * 1024]).unwrap();
@@ -3157,10 +2560,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The evidence behind discounting a self-update: what is installed, and how big.
-    /// Only the *sizes* matter to the frontend's arithmetic, and a size read wrong (a
-    /// directory counted as a binary, MiB confused with bytes) would discount the wrong
-    /// number of bytes from a real day, silently.
+    /// A size read wrong here silently discounts the wrong number of bytes from a real day.
     #[test]
     fn version_files_reports_each_installed_binary_by_size() {
         use crate::testutil::scratch_dir;
@@ -3177,19 +2577,13 @@ mod tests {
         assert_eq!(files[0].mb, 3.0, "MiB, not bytes");
         assert_eq!(files[1].mb, 1.0);
 
-        // A directory that isn't there answers "nothing installed" rather than failing:
-        // an npm or Homebrew install has no versions dir, and its updates are charged to
-        // the package manager, so there is nothing for this to find and nothing to fix.
+        // A missing directory answers "nothing installed": npm/Homebrew installs have none.
         assert!(version_files_in(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `spawn_task` hands `Exec::Shell` to a *login* shell so a task inherits the
-    /// PATH and version-manager shims the user's own terminal has. That argument
-    /// construction is the fragile part — `-l -c` vs `-lc` vs `/C` differs per
-    /// shell, and getting it wrong fails only at runtime, in a PTY, where nothing
-    /// else in this suite would notice. Exit codes matter as much as output: a
-    /// run's exit code *is* its phase in the UI.
+    /// The `-l -c` vs `/C` argument construction fails only at runtime in a PTY, and a run's
+    /// exit code is its phase in the UI.
     #[test]
     fn login_shell_runs_a_command_and_reports_its_exit_code() {
         let (shell, args) = task_shell();
@@ -3214,11 +2608,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&piped.stdout).trim(), "2");
     }
 
-    /// The Windows `Argv` shim decision, checkable from a Mac. Everything the npm
-    /// provider emits — `npm`, `pnpm`, `yarn` — resolves on Windows to a script, and
-    /// a script must be routed through cmd.exe rather than handed to CreateProcessW.
-    /// A `.exe` must NOT be, because the cmd.exe detour would then have to survive
-    /// cmd's quoting rules for no reason.
+    /// The Windows `Argv` shim decision, checkable from a Mac: scripts go through cmd.exe, a `.exe` must not.
     #[test]
     fn windows_only_spawns_real_executables_directly() {
         for exe in [
@@ -3239,12 +2629,8 @@ mod tests {
         }
     }
 
-    /// Every mode Settings offers, and nothing else. The whitelist is the security
-    /// boundary for `spawn_external_terminal`, which interpolates this into a generated
-    /// `.command` script — so what matters is not only that the six known spellings
-    /// survive, but that everything else collapses to "no flag" instead of reaching a
-    /// shell. The standard mode passing no flag is the other half: an absent
-    /// `--permission-mode` is what ask-me-each-time already means.
+    /// The whitelist is the security boundary for `spawn_external_terminal`, which interpolates
+    /// this into a shell script: everything unknown must collapse to "no flag".
     #[test]
     fn permission_mode_is_whitelisted_and_the_standard_mode_passes_no_flag() {
         for m in [
@@ -3266,8 +2652,7 @@ mod tests {
         assert_eq!(permission_mode_arg(Some("manual")), None);
         assert_eq!(permission_mode_arg(Some("")), None);
         assert_eq!(permission_mode_arg(Some("  ")), None);
-        // Case matters: these are Claude Code's own spellings, and a near-miss must not
-        // be quietly "corrected" into a mode the user didn't pick.
+        // Case matters: a near-miss must not be quietly corrected into a mode the user didn't pick.
         assert_eq!(permission_mode_arg(Some("acceptedits")), None);
         assert_eq!(permission_mode_arg(Some("PLAN")), None);
         // Nothing that could do something in a shell script gets through.
@@ -3285,17 +2670,9 @@ mod tests {
         }
     }
 
-    /// The mode names are an external contract, exactly like the hook schema the
-    /// `#[ignore]`d test in telemetry.rs guards: they go on Claude Code's command line
-    /// verbatim, and Claude Code validates them against its own choice list — a mode
-    /// renamed or dropped upstream turns every launch in that mode into an instant
-    /// "option argument is invalid" and a pane that dies before it starts.
-    ///
-    /// Unlike that test this one costs **no tokens and needs no auth**: `--version`
-    /// short-circuits before any API call, while commander still validates the choice
-    /// first. It is `#[ignore]`d only because it needs the real binary, which CI hasn't
-    /// got — so it belongs to the release checklist. It also asserts the negative case,
-    /// because a build that stopped validating modes at all would otherwise pass.
+    /// The mode names are an external contract validated by Claude Code itself. `--version`
+    /// short-circuits before any API call, so this costs no tokens; `#[ignore]`d only because
+    /// it needs the real binary (a RELEASE.md step).
     #[test]
     #[ignore = "runs the real `claude` binary (no tokens, no auth) — `cargo test -- --ignored`"]
     fn claude_cli_still_accepts_every_permission_mode_we_offer() {
@@ -3340,29 +2717,19 @@ mod tests {
     }
 
     // ---------- where a background shell's log lives ----------
-    //
-    // The oracle for this half is a real filesystem, and where it can be, a filesystem
-    // somebody else wrote. The test that used to stand here spelled the layout out
-    // against a hand-written `/tmproot` and was green for this feature's entire life
-    // while every read in production missed — because it and the code it checked were
-    // written five minutes apart, from the same belief, by the same person. A table
-    // test can only ever agree with our intent, and the intent was the bug.
+    // The oracle is a real filesystem, preferably one somebody else wrote: a table test can
+    // only agree with our intent, and the intent was the bug.
 
-    /// A transcript, and the two halves the address is derived from. The uuid is
-    /// synthetic on purpose: three of the probe tests reach the directory scan, which
-    /// walks the real `/tmp`, and an id that could collide with a session actually on
-    /// this machine would make those tests pass or fail on what the developer did
-    /// yesterday.
+    /// The uuid is synthetic on purpose: the probe tests that reach the directory scan walk the
+    /// real `/tmp`, and a real id would make them depend on yesterday's sessions.
     const TR: &str =
         "/home/u/.claude/projects/E--tmp-episko-probe/5f6a1c2e-0b3d-4e5f-8a9b-1c2d3e4f5a6b.jsonl";
     const SLUG: &str = "E--tmp-episko-probe";
     const UUID: &str = "5f6a1c2e-0b3d-4e5f-8a9b-1c2d3e4f5a6b";
     const TASK: &str = "ep0kt3st9";
 
-    /// A `BgLogEnv` with nothing ambient in it: the override base is a fixture, and
-    /// `sys_tmp` points somewhere that does not exist so a test can only pass because
-    /// of the tree it planted. The OS arrives as an argument, which is the whole point
-    /// of `ClaudeOs` — the Windows row is assertable from a Mac.
+    /// Nothing ambient: the override base is a fixture and `sys_tmp` points nowhere, so a test
+    /// passes only because of the tree it planted. The OS is an argument.
     fn fixture_env(os: ClaudeOs, base: &std::path::Path, uid: Option<u32>) -> BgLogEnv {
         BgLogEnv {
             os,
@@ -3373,10 +2740,8 @@ mod tests {
         }
     }
 
-    /// Build a real `<root>/<slug>/<uuid>/tasks/<id>.output` and hand back its path.
-    /// `log: None` plants the session directory with the `scratchpad` Claude mkdirs at
-    /// start and no `tasks/` at all — the shape of a session whose first background
-    /// shell has not run yet — and hands back the session directory instead.
+    /// Build a real `<root>/<slug>/<uuid>/tasks/<id>.output`. `log: None` plants only the
+    /// `scratchpad` Claude mkdirs at start (no `tasks/`) and returns the session dir.
     fn plant(
         root: &std::path::Path,
         slug: &str,
@@ -3399,9 +2764,8 @@ mod tests {
         }
     }
 
-    /// Two paths naming one file. `canonicalize` on both sides because a scratch dir
-    /// and a probed path can differ by a `/private` symlink on macOS and by an 8.3
-    /// short name on the Windows runner without differing by a single byte on disk.
+    /// `canonicalize` both: a scratch dir and a probed path can differ by `/private` or an 8.3
+    /// short name without differing on disk.
     fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
         match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
             (Ok(x), Ok(y)) => x == y,
@@ -3409,14 +2773,8 @@ mod tests {
         }
     }
 
-    /// The candidate table, all three rows, from whichever machine is running.
-    ///
-    /// The macOS row is the one that was wrong in production; the Windows row is the
-    /// one **nobody here has ever observed**, and it is asserted from a Mac only
-    /// because the OS is a value rather than a `#[cfg]`. Assertions go through
-    /// `file_name()`/`parent()` rather than a spelled-out literal: `C:\…\claude` would
-    /// fail on the macOS leg for the separator, which says nothing about the ordering
-    /// this test exists to hold.
+    /// All three rows from whichever machine runs. Assertions go through `file_name()`/`parent()`
+    /// because a spelled-out `C:\…` literal fails on the macOS leg for the separator alone.
     #[test]
     fn bg_log_roots_carry_every_platforms_shape_in_a_per_platform_order() {
         let sys = std::path::PathBuf::from("/sys-tmp");
@@ -3465,10 +2823,6 @@ mod tests {
         }
     }
 
-    /// `$CLAUDE_CODE_TMPDIR` is the one knob the CLI reads, and it moves the BASE.
-    /// Everything below it still holds: the shapes the platform believes in, and the
-    /// fallbacks under them, because an override that emptied the list would turn one
-    /// mis-set variable into the same silent outage.
     #[test]
     fn bg_log_roots_let_the_env_override_replace_only_the_base() {
         let ovr = std::path::PathBuf::from("/ovr");
@@ -3494,9 +2848,6 @@ mod tests {
         }
     }
 
-    /// Both shapes, every platform, with or without a uid to read. The Windows row
-    /// orders the bare name first and that is all it does — pinning it as the only
-    /// possibility is the mistake this whole block is a fix for, one layout along.
     #[test]
     fn bg_log_dir_names_never_drop_a_shape_we_cannot_observe() {
         for os in [ClaudeOs::Mac, ClaudeOs::Windows, ClaudeOs::Unix] {
@@ -3504,11 +2855,6 @@ mod tests {
             assert_eq!(both.len(), 2, "{os:?} named {both:?}");
             assert!(both.contains(&"claude".to_string()), "{os:?} dropped the bare shape");
             assert!(both.contains(&"claude-501".to_string()), "{os:?} dropped the suffixed shape");
-            // No uid to read — every Windows build, since `current_uid()` goes through
-            // a Unix-only API — is `claude-0`, which is what the bundle's
-            // `claude-${process.getuid?.() ?? 0}` computes there. Dropping the shape
-            // instead left Windows probing ONE name, the one we believe least, with
-            // the throttled directory scan as the only thing behind it.
             let nouid = bg_log_dir_names(os, None);
             assert_eq!(nouid.len(), 2, "{os:?} named {nouid:?} with no uid to spell");
             assert!(nouid.contains(&"claude-0".to_string()), "{os:?} dropped the suffixed shape");
@@ -3520,18 +2866,8 @@ mod tests {
         }
     }
 
-    /// The first existing FILE wins, never the first existing ROOT. A stale root left
-    /// behind by an older layout — or by another session of ours that has since been
-    /// reaped — is a directory that exists and holds nothing for THIS shell, and a
-    /// probe that stopped at it would pick the empty one on every poll for the life of
-    /// the app: every row would report `notYet`, and `notYet` is the one reason the
-    /// frontend retires a row on, so "rows that never leave" would become "rows that
-    /// always leave" with every gate green.
-    ///
-    /// So the stale root is planted FIRST, at rank 0, and the real log one row down.
-    /// Planted the other way round the test passes whether or not the rule holds,
-    /// which is what it did until a mutation — stop at the first existing root — went
-    /// green through the whole suite.
+    /// The first existing FILE wins, never the first existing ROOT. The stale root is planted
+    /// FIRST at rank 0; the other way round the test passes whether or not the rule holds.
     #[test]
     fn bg_log_probe_walks_past_a_stale_root_to_the_one_holding_this_session() {
         let base = crate::testutil::scratch_dir();
@@ -3558,9 +2894,6 @@ mod tests {
         assert!(!got.discovered, "the table answered, so the scan must not have run");
     }
 
-    /// The state nobody would think to build: the probe won, one row down. The app
-    /// still works and says so anyway, which is the release of warning between "the
-    /// fallback is carrying us" and "the fallback stopped matching too".
     #[test]
     fn bg_log_probe_reports_moved_when_it_wins_below_the_first_candidate() {
         let base = crate::testutil::scratch_dir();
@@ -3581,15 +2914,9 @@ mod tests {
         assert!(!got.discovered, "the table still answered — this is a fallback, not a scan");
     }
 
-    /// A session directory with no log under it is a shell that is *starting*, not a
-    /// root that has moved. The two are one word apart on the wire and worlds apart in
-    /// effect: `notYet` is the state the frontend retires a row on after ten minutes,
-    /// and `noRoot` is the outage it must never retire on.
     #[test]
     fn bg_log_probe_says_not_yet_when_the_session_dir_exists_but_the_log_does_not() {
         let base = crate::testutil::scratch_dir();
-        // `scratchpad` and nothing else: Claude mkdirs it at session start, while
-        // `tasks/` appears only once a shell has actually been backgrounded.
         plant(&base.join("claude-501"), SLUG, UUID, None);
 
         let mut memo = BgRootState::default();
@@ -3604,10 +2931,6 @@ mod tests {
         assert!(!got.tried.is_empty(), "the candidate list rides along even when one root won");
     }
 
-    /// Nothing anywhere. The row's whole value here is the LIST: "no log found —
-    /// looked in six places" is a bug report, and "no output yet" is the silence that
-    /// let this ship broken. So `path` is empty and `tried` is the answer; exactly one
-    /// of the two ever is.
     #[test]
     fn bg_log_probe_names_every_path_it_tried_when_nothing_anywhere_matches() {
         let base = crate::testutil::scratch_dir();
@@ -3621,17 +2944,13 @@ mod tests {
         }
     }
 
-    /// Two roots holding one session, and we refuse to choose. A guess here puts this
-    /// row's peek — and its URL, and its exit sentinel — on somebody else's log, which
-    /// is a confident lie where the honest answer costs one line of prose.
     #[test]
     fn bg_log_probe_refuses_to_choose_between_two_roots_holding_the_same_session() {
         let base = crate::testutil::scratch_dir();
         plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "one\n")));
         plant(&base.join("claude-0"), SLUG, UUID, Some((TASK, "the other\n")));
 
-        // A uid that matches neither, so the table cannot settle it and the scan is
-        // what finds both — which is exactly the situation ambiguity is for.
+        // A uid matching neither, so only the scan finds both.
         let mut memo = BgRootState::default();
         let got = read_bg_log_at_env(&fixture_env(ClaudeOs::Mac, &base, Some(4242)), &mut memo, TR, TASK, 0);
         assert_eq!(got.reason, BgMiss::Ambiguous);
@@ -3639,10 +2958,6 @@ mod tests {
         assert_eq!(got.tried.len(), 2, "tried was {:?}", got.tried);
     }
 
-    /// The slug is a sanitised cwd with a base-36 hash spliced in once it grows too
-    /// long, and we deliberately do not reproduce that hash — reproducing somebody
-    /// else's build is how the root component got written down wrong in the first
-    /// place. The uuid one level down is enough to find the tree without it.
     #[test]
     fn bg_log_probe_finds_a_log_whose_slug_is_not_the_one_we_derived() {
         let base = crate::testutil::scratch_dir();
@@ -3667,12 +2982,6 @@ mod tests {
         assert_eq!(got.rank, -1, "a scan hit has no rank in the table");
     }
 
-    /// The memo is remembered and then INVALIDATED, never defended. It exists because
-    /// the alternative — one `is_file()` times eight roots times every live record
-    /// every four seconds — is the cost this feature would otherwise pay forever; it
-    /// is dropped the moment it stops holding because `$CLAUDE_CODE_TMPDIR` can change
-    /// under a running app and `/tmp` gets reaped, and a memo that outlives its root is
-    /// the same permanent silence in a new coat.
     #[test]
     fn bg_log_probe_remembers_the_root_it_won_on_and_drops_it_when_it_stops_holding() {
         let base = crate::testutil::scratch_dir();
@@ -3688,8 +2997,7 @@ mod tests {
         let again = bg_log_resolve(&e, &mut memo, TR, TASK, std::time::Instant::now()).expect("resolves");
         assert!(again.from_memo, "the second look must not walk the table again");
 
-        // The root moves out from under it — to the shape one row down, so there is
-        // still a right answer and "stopped resolving" cannot pass for correct.
+        // The root moves to the shape one row down, so there is still a right answer.
         std::fs::rename(&won, base.join("claude")).unwrap();
         let after = bg_log_resolve(&e, &mut memo, TR, TASK, std::time::Instant::now())
             .expect("the probe must re-walk the table rather than defend a stale memo");
@@ -3698,11 +3006,6 @@ mod tests {
         assert_eq!(memo.root.as_deref(), Some(base.join("claude").as_path()));
     }
 
-    /// The scan is the expensive step and the blind fleet is the one that would run it
-    /// most: `read_bg_log` is called every four seconds per live record, so ten blind
-    /// shells is a `read_dir` of a busy `/tmp` a hundred and fifty times a minute for
-    /// a hundred and fifty identical answers. The throttle is process-wide for exactly
-    /// that reason — per record it would not throttle the case that needs it.
     #[test]
     fn bg_log_probe_scans_at_most_once_a_minute_however_many_records_are_blind() {
         let base = crate::testutil::scratch_dir();
@@ -3713,11 +3016,8 @@ mod tests {
         assert!(matches!(first, Err(BgResolveErr::NoRoot(_))), "the empty base is blind");
         assert_eq!(memo.last_scan, Some(now), "the first read must scan");
 
-        // The log lands a moment later, under a root name no candidate in the table
-        // can spell — so ONLY the scan can see it. That is what makes the throttle
-        // observable: with it, the reads below cannot find this file; without it, the
-        // very next one does. Timestamping `last_scan` proves nothing on its own,
-        // since a skipped read and a re-run one leave the same instant in it.
+        // The log lands under a root name no table candidate can spell, so ONLY the scan can see
+        // it; that is what makes the throttle observable.
         let planted = plant(&base.join("claude-9999"), SLUG, UUID, Some((TASK, "up\n")));
         for i in 0..5 {
             let r = bg_log_resolve(&e, &mut memo, TR, TASK, now);
@@ -3727,8 +3027,7 @@ mod tests {
             );
             assert_eq!(memo.last_scan, Some(now), "read {i} restamped the window");
         }
-        // ...and it does come back. A throttle that latched would be the memo bug
-        // again: a probe that stops looking is a probe that can never recover.
+        // ...and it comes back: a throttle that latched could never recover.
         let later = now + BG_SCAN_EVERY;
         let got = bg_log_resolve(&e, &mut memo, TR, TASK, later)
             .expect("the scan must resume once its window is up");
@@ -3737,11 +3036,8 @@ mod tests {
         assert_eq!(memo.last_scan, Some(later), "the scan never resumed after its window");
     }
 
-    /// A log only the SCAN can find has to be cheap to find again, or the throttle
-    /// turns one hit into a flap: step (1) rebuilds the path from the slug we derive,
-    /// which is precisely the slug this tree does not use, so every poll inside the
-    /// scan's minute would report `noRoot` about a file the probe has already read.
-    /// The row's peek would flip to "no log found" for fourteen polls out of fifteen.
+    /// A log only the SCAN can find must be cheap to re-find, or every poll inside the scan's
+    /// minute reports `noRoot` about a file already read.
     #[test]
     fn bg_log_probe_re_finds_a_scanned_log_without_waiting_for_the_next_scan() {
         let base = crate::testutil::scratch_dir();
@@ -3766,10 +3062,8 @@ mod tests {
         assert_eq!(memo.last_scan, Some(now), "it scanned again inside the window");
     }
 
-    /// Declining to scan is not evidence that the remembered root stopped holding —
-    /// and the memo is process-wide, so treating it as evidence takes the whole fleet
-    /// down with one blind record: every OTHER live server re-walks the eight-candidate
-    /// table on its next poll because somebody else's read hit the throttle.
+    /// Declining to scan is not evidence the remembered root stopped holding; the memo is
+    /// process-wide, so one blind record must not send the fleet back through the table.
     #[test]
     fn a_throttled_scan_leaves_the_root_the_rest_of_the_fleet_is_using_alone() {
         const GONE: &str =
@@ -3804,11 +3098,6 @@ mod tests {
         assert!(again.from_memo, "the healthy record paid for somebody else's throttled miss");
     }
 
-    /// The wire shape, in the frontend's spelling. `root_rank` is the first multi-word
-    /// field this struct has ever had, and a snake_case key arriving at a camelCase
-    /// interface is a silent `undefined`: every rule reading it answers "no", and tsc,
-    /// vitest and cargo all stay green. That is the original bug's exact shape, which
-    /// is why the rename is checked here and joined to the TS side in ipc.test.ts.
     #[test]
     fn bg_log_serializes_the_keys_the_frontend_declares() {
         let base = crate::testutil::scratch_dir();
@@ -3824,15 +3113,12 @@ mod tests {
             ["discovered", "len", "missing", "path", "reason", "rootRank", "text", "tried", "unchanged"]
         );
         assert!(keys.iter().all(|k| !k.contains('_')), "a snake_case key reaches the frontend as undefined");
-        // The enum is wire vocabulary, not a Rust identifier: `NoRoot` on the wire
-        // would match nothing in `BgMissReason` and every rule would answer "no".
+        // Wire vocabulary, not a Rust identifier: `NoRoot` would match nothing in `BgMissReason`.
         assert_eq!(v["reason"], serde_json::json!("noRoot"));
     }
 
-    /// A fleet nobody can hear must never look like a quiet one — and it must not
-    /// shout either. `bglog-health` fires on TRANSITION only, because one event per
-    /// poll per blind record would push the debug console's 400-entry ring clean out
-    /// inside a minute, emptying the panel that exists to show it.
+    /// `bglog-health` fires on TRANSITION only: one event per poll per blind record would
+    /// empty the debug console's 400-entry ring in a minute.
     #[test]
     fn a_blind_probe_announces_itself_once_rather_than_every_poll() {
         use tauri::Listener;
@@ -3857,8 +3143,7 @@ mod tests {
             "a blind announcement must carry where it looked: {ev}"
         );
 
-        // ...and coming back is a transition too. Without this the app would go quiet
-        // about its own recovery and the badge would never clear.
+        // ...and coming back is a transition too, or the badge would never clear.
         plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "up\n")));
         let got = read_bg_log_announced(app.handle(), &e, &mut memo, TR, TASK, 0);
         assert!(!got.missing, "the planted log must read");
@@ -3869,13 +3154,6 @@ mod tests {
         assert_eq!(back["rank"], 0);
     }
 
-    /// Two records, two different answers, and neither may re-announce the other. The
-    /// state is a per-RECORD fact, so a single announced slot holds only until one
-    /// record resolves while another is blind — after which each read "transitions" the
-    /// slot the other one set, and a fleet that is behaving exactly as designed emits
-    /// two events every four seconds forever. That is 30 `dlog` lines a minute into a
-    /// 400-entry ring: the debug console empties itself in about a quarter of an hour,
-    /// and it is the panel this event exists to reach.
     #[test]
     fn two_records_in_different_states_do_not_re_announce_each_other_every_poll() {
         use tauri::Listener;
@@ -3890,8 +3168,7 @@ mod tests {
         plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "up\n")));
         let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
         let mut memo = BgRootState::default();
-        // The same task id under two sessions, which is the case the key is a PAIR for:
-        // an id is Claude's and unique only within the session that minted it.
+        // The same task id under two sessions: an id is unique only within the session that minted it.
         for i in 0..4 {
             let ok = read_bg_log_announced(app.handle(), &e, &mut memo, TR, TASK, 0);
             assert!(!ok.missing, "poll {i}: the planted log must read");
@@ -3911,10 +3188,6 @@ mod tests {
         assert_eq!(states, vec!["\"ok\"".to_string(), "\"blind\"".to_string()]);
     }
 
-    /// `moved` is the announcement for a probe that is WORKING. Nobody would think to
-    /// build it, which is why it is the one worth a test: it is the only warning
-    /// anyone gets between the believed layout going stale and the fallback going
-    /// stale too, and by then every row is blind again.
     #[test]
     fn bg_log_health_says_moved_while_it_is_still_working() {
         use tauri::Listener;
@@ -3944,9 +3217,6 @@ mod tests {
         assert_eq!(ev["discovered"], false);
     }
 
-    /// The id lands in a path, so it is validated rather than trusted. It arrives in a
-    /// hook payload — the one part of this whole feature that is neither ours nor
-    /// checked by anything upstream of us.
     #[test]
     fn bg_log_path_refuses_a_task_id_that_is_not_one() {
         let root = std::path::Path::new("/tmproot/claude-501");
@@ -3960,9 +3230,6 @@ mod tests {
         assert!(bg_log_path(root, tr, "bs0hhu7b4").is_some(), "a real id must still resolve");
     }
 
-    /// A transcript path that isn't one resolves to nothing rather than to a plausible
-    /// wrong file. The frontend draws the row either way; what it must not do is offer
-    /// to reveal a path we invented.
     #[test]
     fn bg_log_path_refuses_a_transcript_without_both_halves() {
         let root = std::path::Path::new("/tmproot/claude-501");
@@ -3971,10 +3238,6 @@ mod tests {
         }
     }
 
-    /// The tail is the point: only the end of the file crosses the IPC boundary, and a
-    /// log longer than the window must come back cut at the front, not at the back. A
-    /// real dev server left running an afternoon measured 300 KiB, so this is the
-    /// normal case rather than the extreme one.
     #[test]
     fn read_bg_log_returns_the_end_of_a_long_log() {
         let dir = crate::testutil::scratch_dir();
@@ -3992,11 +3255,6 @@ mod tests {
         assert!(got.text.contains("http://localhost:5555/"), "the URL must survive the cut");
     }
 
-    /// The poll's cheap path, and the two halves of it that must both hold. Without the
-    /// gate, every running server costs a 32 KiB read every few seconds forever, and a
-    /// dev server nobody is hitting is exactly the case whose log never moves. Without
-    /// the gate *breaking* on an append, a server's death would never be noticed — the
-    /// sentinel arrives the same way everything else does.
     #[test]
     fn read_bg_log_skips_the_read_only_until_something_is_appended() {
         let dir = crate::testutil::scratch_dir();
@@ -4020,9 +3278,6 @@ mod tests {
         assert!(after.text.contains("[exited with code 1]"), "the sentinel must reach the caller");
     }
 
-    /// An empty log - a shell that has started but printed nothing yet - is *unchanged*
-    /// rather than missing. The distinction matters: missing means the row has no file
-    /// to name, and a shell that simply has not spoken yet does.
     #[test]
     fn read_bg_log_treats_an_empty_log_as_unchanged_not_missing() {
         let dir = crate::testutil::scratch_dir();
@@ -4034,18 +3289,10 @@ mod tests {
         assert_eq!(got.reason, BgMiss::None, "an empty log is not a missing one");
     }
 
-    /// **The oracle here is a tree Anthropic wrote**, which is the one thing a table
-    /// test could never be: it cannot agree with our intent, because our intent had no
-    /// hand in it. It searches this machine for a log Claude Code actually produced —
-    /// through bases written out independently, NEVER through `bg_log_roots`, since
-    /// deriving the search from the table it checks is precisely how the test this
-    /// replaced stayed green while every read in production missed — and asks the real
-    /// resolver to find it.
-    ///
-    /// In the DEFAULT suite on purpose. A developer runs this twenty times a day and
-    /// `--ignored` runs about monthly, so this is the difference between finding out
-    /// the layout moved on the day it moves and finding out a release later. A machine
-    /// with no witness skips out loud rather than passing quietly.
+    /// The oracle is a tree Anthropic wrote: it searches this machine for a log Claude Code
+    /// produced, through bases written out independently (NEVER via `bg_log_roots`), and asks
+    /// the real resolver. In the default suite so a moved layout is found the day it moves;
+    /// a machine with no witness skips out loud.
     #[test]
     fn read_bg_log_finds_a_log_claude_code_actually_wrote() {
         struct Witness {
@@ -4080,8 +3327,7 @@ mod tests {
                     let Ok(sessions) = std::fs::read_dir(sd.path()) else { continue };
                     for ud in sessions.flatten() {
                         let Some(uuid) = ud.file_name().to_str().map(str::to_string) else { continue };
-                        // A log with its transcript beside it. The pair is what the app
-                        // resolves; half of one would prove nothing about the join.
+                        // A log with its transcript beside it; half a pair proves nothing about the join.
                         if !projects.join(&slug).join(format!("{uuid}.jsonl")).is_file() {
                             continue;
                         }
@@ -4113,9 +3359,8 @@ mod tests {
         }
         found.sort_by_key(|w| std::cmp::Reverse(w.when));
 
-        // The rank-0 claim is about the AMBIENT layout, so it is made once, about the
-        // newest log, and only when nothing has moved the base out from under us. An
-        // old log under a root that has since been re-pointed is not a layout failure.
+        // The rank-0 claim is about the AMBIENT layout: made once, about the newest log, and
+        // only when nothing has re-pointed the base.
         let pinned = std::env::var_os("CLAUDE_CODE_TMPDIR").is_some();
         let mut matched = 0usize;
         for (i, w) in found.iter().enumerate() {
@@ -4134,9 +3379,7 @@ mod tests {
                      every background-shell row on this platform is blind.",
                     w.log, got.tried
                 ),
-                // Refusing to choose between two roots holding one session is the
-                // designed answer, not a layout failure — what matters is that the
-                // real file was among the ones it saw.
+                // Refusing to choose is the designed answer; the real file must be among those seen.
                 BgMiss::Ambiguous => {
                     assert!(
                         got.tried.iter().any(|t| same_file(std::path::Path::new(t), &w.log)),
@@ -4176,31 +3419,10 @@ mod tests {
         eprintln!("bg log round-trip: matched {matched} log(s) Claude Code wrote");
     }
 
-    /// The other oracle that is not ours, and the only way the WINDOWS row of
-    /// `bg_log_dir_names` ever stops being a belief: run the real binary and look at
-    /// what it created.
-    ///
-    /// It costs **no tokens and needs no auth** — the request is pointed at a dead
-    /// loopback port with a bogus key, and the temp root is made within a second of
-    /// the session starting (measured). Its exit status is deliberately not asserted;
-    /// the filesystem is the answer, so it is **spawned, polled for and killed** rather
-    /// than waited on. Blocking on the process instead would leave the only bound on
-    /// this test an env var nobody documents: `CLAUDE_CODE_MAX_RETRIES=0` is what stops
-    /// `claude -p` retrying the dead endpoint with backoff, and a release that renames
-    /// it — precisely the class of upstream change this test exists to catch — would
-    /// hang a developer's `--ignored` pass with no timeout at all.
-    ///
-    /// **A skip is a lie on a machine that just installed the CLI**, so
-    /// `EPISKO_REQUIRE_CLAUDE` turns the not-installed case into a failure. The weekly
-    /// workflow sets it: a green leg that observed nothing is indistinguishable from a
-    /// green leg that confirmed the layout, and the Windows row is the whole reason
-    /// that job exists.
-    ///
-    /// The `claude_layout_` name prefix is load-bearing. A `claude_cli_still_` one
-    /// would be swept up by the same filter that selects
-    /// `claude_cli_still_honours_our_instrumentation`, which needs real auth and spends
-    /// tokens — and the obvious fix for the resulting red would be an API key billing
-    /// tokens on a schedule, on two runners.
+    /// The only way the WINDOWS row of `bg_log_dir_names` stops being a belief: run the real
+    /// binary and look. Spawned, polled and killed, never waited on, so a renamed
+    /// `CLAUDE_CODE_MAX_RETRIES` cannot hang the pass. `EPISKO_REQUIRE_CLAUDE` makes not-installed
+    /// a failure; the name prefix keeps it out of the token-spending `claude_cli_still_` filter.
     #[test]
     #[ignore = "runs the real `claude` binary (no tokens, no auth) — `cargo test -- --ignored`"]
     fn claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it() {
@@ -4222,12 +3444,8 @@ mod tests {
             .spawn();
         let mut child = match spawned {
             Ok(c) => c,
-            // A box without Claude Code installed is one this can say nothing about —
-            // unless the runner has just installed it, in which case the silence is the
-            // failure. `claude` at {claude:?} is printed either way: on Windows an npm
-            // global install leaves an extensionless sh shim that `CreateProcessW`
-            // cannot start, and "could not be launched" is a different bug report from
-            // "the layout moved".
+            // Not installed is a skip unless the runner says it installed it. On Windows an npm
+            // global install leaves an sh shim CreateProcessW cannot start: a different bug report.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
                 eprintln!("skipping: `claude` is not installed (looked at {claude:?})");
                 return;
@@ -4238,8 +3456,7 @@ mod tests {
             ),
         };
 
-        // Poll for the tree rather than waiting for the process: the root appears at
-        // session start and the CLI goes on failing its way to an exit long afterwards.
+        // Poll for the tree: the root appears at session start, the exit long after.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let appeared = || {
             std::fs::read_dir(&root).map(|d| d.flatten().any(|e| {
@@ -4276,18 +3493,11 @@ mod tests {
         );
     }
     // ---------- the agent table ----------
-    //
-    // Nothing else can check this half. A wrong `bin` compiles, passes clippy and
-    // ships; the only symptom is that the agent never appears in the picker on a
-    // machine that has it installed, which looks exactly like not having installed it.
-    // So the table gets the checks a table can have: no duplicates, no empties, and
-    // the ordering the picker relies on.
+    // A wrong `bin` compiles and ships; the only symptom is an agent missing from the picker.
 
     #[test]
     fn agents_are_sorted_by_label() {
-        // The picker renders `available_agents()` in table order and does not sort, so
-        // an entry appended at the bottom (the obvious way to add one) would show up
-        // after Qwen with no test to say otherwise.
+        // The picker renders in table order and does not sort.
         let labels: Vec<String> = AGENTS.iter().map(|a| a.label.to_lowercase()).collect();
         let mut sorted = labels.clone();
         sorted.sort();
@@ -4308,9 +3518,7 @@ mod tests {
                 "{} has an empty field",
                 a.id
             );
-            // The id is the wire value `spawn_agent` takes and the key the frontend
-            // stores on a pane, so it has to be a stable slug rather than a display
-            // name that might get prettied up later.
+            // The id is the wire value and the pane's stored key: a stable slug, not a display name.
             assert!(
                 a.id.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
@@ -4323,8 +3531,7 @@ mod tests {
                 "duplicate agent label {:?}",
                 a.label
             );
-            // Keep the compatibility field well-formed and collision-free even though
-            // current frontends paint a provider-owned SVG instead.
+            // Compatibility field: well-formed and collision-free even though frontends paint an SVG.
             assert_eq!(
                 a.mark.chars().count(),
                 2,
@@ -4342,9 +3549,7 @@ mod tests {
 
     #[test]
     fn claude_is_not_in_the_agent_table() {
-        // Deliberate, and easy to "fix" by someone who reads the list as an omission:
-        // launching claude through this path would strip the instrumentation the whole
-        // cockpit is built on. See the AGENTS doc comment.
+        // Launching claude here would strip the instrumentation the cockpit is built on.
         assert!(
             agent_spec("claude").is_none() && !AGENTS.iter().any(|a| a.bin == "claude"),
             "claude belongs to spawn_claude, which instruments it — see the AGENTS comment"
@@ -4389,8 +3594,7 @@ mod tests {
         for a in AGENTS {
             assert_eq!(agent_spec(a.id).map(|s| s.bin), Some(a.bin));
         }
-        // The lookup `spawn_agent` refuses on. A frontend that sent a label, a binary
-        // name or a stale id must not fall through to launching *something*.
+        // A label, a binary name or a stale id must not fall through to launching something.
         for bogus in ["", "Codex", "cursor-agent", "claude", "opencode2"] {
             assert!(
                 agent_spec(bogus).is_none(),
@@ -4401,10 +3605,7 @@ mod tests {
 
     #[test]
     fn list_agents_reports_the_whole_table_and_marks_what_it_found() {
-        // Machine-dependent by nature — CI has none of these installed and a dev box
-        // has some — so the assertions are about shape rather than contents. The one
-        // that matters: the list is the *whole* table, because a picker built from a
-        // filtered one cannot explain an agent that is missing.
+        // Machine-dependent (CI has none installed), so assert shape: the list is the WHOLE table.
         let list = list_agents();
         assert_eq!(list.len(), AGENTS.len(), "list_agents must not filter");
         for info in list {
@@ -4413,8 +3614,7 @@ mod tests {
                 (spec.label, spec.bin, spec.mark),
                 (info.label, info.bin, info.mark)
             );
-            // A `Some` path is a promise the agent will start, so it has to be a real
-            // file — that is what the picker lets you click.
+            // A `Some` path is a promise the agent will start, so it must be a real file.
             if let Some(p) = &info.path {
                 assert!(
                     std::path::Path::new(p).is_file(),
@@ -4427,8 +3627,6 @@ mod tests {
 
     #[test]
     fn resolve_cli_says_no_to_something_nobody_ships() {
-        // The other half of the contract above: a miss is `None`, never a bare-name
-        // fallback. If this ever returns Some, every agent is in every picker.
         assert!(resolve_cli("episko-definitely-not-a-real-binary").is_none());
     }
 }

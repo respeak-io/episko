@@ -1,18 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { store } from "./localstorage"; // must precede the subject import
 
-// `state.ts` is the module every other module imports, and it reads its preferences at
-// MODULE SCOPE. So a `JSON.parse` that throws in here is not a lost preference — it is a
-// blank window, before any UI exists to tell you why or to clear the key that did it.
-//
-// A stored value is not trustworthy just because we wrote it: a crash mid-write leaves
-// truncated JSON, and these are exactly the keys people hand-edit. Same staging as
-// `usage.test.ts`'s "ignores a corrupt baseline key rather than failing to boot" — seed
-// the key, evaluate the module again, and assert it came up.
-//
-// The shapes below are chosen because each one gets PAST a plain `JSON.parse` and only
-// fails later, at the first property access, far away from here. `"null"` and `"[]"`
-// parse perfectly.
+// state.ts reads every preference at module scope, so a JSON.parse that throws there is a
+// blank window before any UI exists. Each case seeds a key and evaluates the module again.
 const boot = async () => { vi.resetModules(); return import("../src/state"); };
 
 describe("state.ts boots whatever localStorage holds", () => {
@@ -27,8 +17,7 @@ describe("state.ts boots whatever localStorage holds", () => {
   });
 
   it("refuses a parseable value of the wrong shape, rather than passing it on", async () => {
-    // Each of these parses, so only a shape check catches it. `null` is the sharp one:
-    // `agentByProject[key]` on it throws at the project menu, not here.
+    // Each of these parses; "null" only fails at the first property access, far from here.
     for (const raw of ["null", "[]", '"a string"', "42"]) {
       store.clear();
       store.set("cc-agent-by-project", raw);
@@ -50,25 +39,20 @@ describe("state.ts boots whatever localStorage holds", () => {
     store.set("cc-favorites", JSON.stringify([{ path: "/w/a", name: "stale" }, { name: "no path" }, null]));
     const s = await boot();
     expect(s.projOrder).toEqual(["/w/a", "/w/b"]);
-    // The name is re-derived from the path on load, which is the existing self-heal.
+    // The name is re-derived from the path on load.
     expect(s.FAVORITES).toEqual([{ path: "/w/a", name: "a" }]);
   });
 
   it("refuses a GitHub account pin of the wrong shape", async () => {
-    // Same narrowing as the agent override, and it matters for the same reason: this
-    // value is passed to `gh` as the identity to read a project as, so a number or a
-    // null reaching the backend is a rejected invoke and a board that never loads.
+    // The pin is passed to gh as an identity; a non-string reaching the backend is a rejected invoke.
     store.set("cc-gh-account", JSON.stringify({ "/w/a": "octo-work", "/w/b": 7 }));
     const s = await boot();
     expect(s.ghAccountByProject).toEqual({ "/w/a": "octo-work" });
     expect(s.ghAccountFor("/w/a")).toBe("octo-work");
-    // A project with no pin follows gh's active account, which is `null` here rather
-    // than `undefined`: it is passed straight to the backend as an argument.
-    expect(s.ghAccountFor("/w/b")).toBeNull();
+    expect(s.ghAccountFor("/w/b")).toBeNull(); // null, not undefined: it goes straight to the backend
   });
 
   it("still reads a well-formed value", async () => {
-    // The other half of the contract: narrowing must not throw the good data away.
     store.set("cc-agent-by-project", JSON.stringify({ "/w/epi": "codex" }));
     store.set("cc-proj-order", JSON.stringify(["/w/epi"]));
     const s = await boot();

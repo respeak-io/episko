@@ -1,25 +1,6 @@
-// The two task surfaces: the project tasks panel (pin / hide / create / edit /
-// delete / override, reached from ⌘K) and the ▶ Run picker (pinned first, then a
-// frecency-ranked recent group, then grouped by source).
-//
-// They sit together because they are two views of one thing — the Runnables a
-// project ships — and share the rule that matters: **what can't run says so**. A
-// blocked row renders greyed rather than being dropped, because a missing row reads
-// as "Episko didn't find my task" while a greyed one reads as "this needs
-// something". The other rule is that .episko/tasks.toml is the only file Episko
-// writes: editing a discovered VS Code task or justfile recipe writes an
-// [override."<id>"] keyed by its discovered id, never a mutation of the other tool's
-// file.
-//
-// Discovery, the preference state and the dependency chain all live in ./tasks;
-// this is only the UI over them. What it cannot own — panes, the stage, the ⌘K
-// palette — arrives as one host object, the same shape settings.ts uses and for the
-// same reason: six separate setters would be noise.
-//
-// The ${input:…} prompt is at the bottom of this file rather than behind a hook: it
-// is the last step of the same launch, and both surfaces here reach it — but only
-// when something has to be asked. `runRunnable` is the single door every surface
-// launches through: Run prefills and goes, ⋯ Run with parameters… always asks.
+// The two task surfaces: the project tasks panel (from ⌘K) and the ▶ Run picker. What
+// can't run says so: a blocked row is greyed, never dropped. .episko/tasks.toml is the
+// only file written; editing a discovered task writes an [override."<id>"] there.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, toast } from "./dom";
@@ -55,17 +36,13 @@ let host: TaskUiHost = {
 };
 export function setTaskUiHost(h: TaskUiHost) { host = h; }
 
-// Manage what the picker shows. Two kinds of change live here and they persist to
-// different places on purpose: hiding a task is *yours* (localStorage), while a
-// task's command is the *project's* (.episko/tasks.toml, committable). Only
+// The task manager. Hiding a task is yours (localStorage); a task's command is the
+// project's (.episko/tasks.toml, committable).
 
 let mgrCtx: { project: string; colorKey: string; workdir: string } | null = null;
 let mgrList: Runnable[] = [];
-// The discovered ids the project overrides — a discovered task edited into a
-// committable `[override.*]` rather than a mutation of the file it came from.
-let mgrOverrides: string[] = [];
-// `kind` decides where a save lands: "own" writes a `[[task]]`, "override" writes an
-// `[override."<id>"]` keyed by the discovered task's id.
+let mgrOverrides: string[] = [];  // discovered ids the project overrides
+// kind decides where a save lands: "own" writes a [[task]], "override" an [override."<id>"].
 export let mgrEdit: { id: string | null; kind: "own" | "override"; label: string; run: string; group: string; background: boolean; cwd: string } | null = null;
 
 export async function openTaskManager() {
@@ -79,7 +56,7 @@ export async function openTaskManager() {
 }
 async function refreshMgr() {
   if (!mgrCtx) return;
-  // Show hidden tasks too — this is the panel where you un-hide them.
+  // Hidden tasks too: this is the panel where you un-hide them.
   mgrList = await discoverTasks(mgrCtx.workdir, mgrCtx.colorKey, true);
   mgrOverrides = await invoke<string[]>("list_task_overrides", { workdir: mgrCtx.workdir }).catch(() => []);
   renderMgr();
@@ -105,15 +82,12 @@ export function renderMgr() {
 
   const pins = pinnedIds(colorKey), hid = hiddenIds(colorKey);
   const rule = stopRules[colorKey];
-  // A committable command edit lands in .episko/tasks.toml either way: our own
-  // task in place, a discovered one as an [override.*] that never touches its file.
   const rowsHtml = mgrList.map((r) => {
         const own = r.source === "episko";
         const overridden = mgrOverrides.includes(r.id);
         const dangling = r.id.startsWith("override:");   // an override whose target vanished
         const editable = !r.blocked;
-        // At most one task per project runs after a turn, so the glyph is a radio
-        // in disguise: clicking another moves the rule, clicking this one clears it.
+        // One stop rule per project, so the glyph is a radio: clicking another moves it.
         const onStop = rule?.id === r.id;
         const noStop = stopRuleBlocked(r);
         const tags = `${r.background ? " · bg" : ""}${overridden ? " · overridden" : ""}${r.blocked ? " · " + esc(r.blocked) : ""}${onStop ? " · runs after each turn" : ""}`;
@@ -135,8 +109,7 @@ export function renderMgr() {
           </span>
         </div>`;
       }).join("");
-  // A per-project runner override — only meaningful when the project actually has
-  // npm scripts. Absent everywhere else, so it doesn't imply a knob that does nothing.
+  // Only when the project has npm scripts, so it never implies a knob that does nothing.
   const runnerStrip = mgrList.some((r) => r.source === "npm")
     ? `<div class="mgr-row mgr-runner">
          <span class="txt"><b>Package runner</b><small>the lockfile picks this; override a repo that ships the wrong one</small></span>
@@ -172,8 +145,6 @@ export function renderMgr() {
 
 function startMgrEdit(id: string | null) {
   const r = id ? mgrList.find((x) => x.id === id) : null;
-  // Editing a discovered task doesn't rewrite its file — it captures the effective
-  // command as an override. Our own tasks edit in place.
   const kind: "own" | "override" = r && r.source !== "episko" ? "override" : "own";
   mgrEdit = r
     ? { id: r.id, kind, label: r.label, run: r.exec.mode === "shell" ? r.exec.line : execCmd(r), group: r.group ?? "", background: r.background, cwd: "" }
@@ -192,8 +163,6 @@ async function revertMgrOverride(id: string) {
 
 function renderMgrForm() {
   const e = mgrEdit!;
-  // Editing a task another tool owns is an override, not a rewrite — say so, because
-  // it's the surprising-but-deliberate half of "Episko never touches a file it didn't create".
   const note = e.kind === "override"
     ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.episko/tasks.toml</code>. The original stays as its tool declared it; ↺ Revert removes the override.</div>`
     : "";
@@ -231,8 +200,7 @@ async function saveMgrTask() {
   const e = mgrEdit;
   if (!e.label.trim() || !e.run.trim()) { toast("A task needs a label and a command"); return; }
 
-  // Creating .episko/tasks.toml puts a new committable file in someone's repo —
-  // that's a side effect worth asking about once, not something to do silently.
+  // A new committable file in someone's repo is asked about once, never created silently.
   const [path, exists] = await invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir });
   if (!exists) {
     const ok = await ask(
@@ -273,9 +241,6 @@ async function deleteMgrTask(id: string) {
 }
 
 // ---------- the ▶ Run picker ----------
-// A popover over the stage, grouped by source so it's obvious where each task came
-// from. Blocked runnables stay visible but greyed: hiding them reads as "Episko
-// didn't find my task", which is the more expensive confusion.
 let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string; workdir: string } | null = null;
 let runList: Runnable[] = [];
 let runSel = 0;
@@ -286,8 +251,7 @@ export function runTargetCtx() {
   if (!wd) return null;
   const s = activeId ? sessions.get(activeId) : null;
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
-  // The dashboard names its own project; basename(root) would usually agree, but the
-  // sidebar's label is the one the run's pane should carry.
+  // The dashboard names its own project; the sidebar's label is what the pane should carry.
   const dm = dashMirror();
   return {
     workdir: wd,
@@ -305,9 +269,7 @@ export async function openRunPicker() {
   runList = await discoverTasks(c.workdir, c.colorKey);
   runSel = 0;
   runSource = null;
-  // The middle of the path is what goes, not the end: with worktrees the last
-  // segment is the only thing that says which checkout this will run in. The full
-  // string stays reachable as the tooltip.
+  // Elide the middle: with worktrees the last segment says which checkout this runs in.
   const where = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · `;
   const sub = $("runSub");
   sub.textContent = where + elidePath(tilde(c.workdir));
@@ -326,11 +288,8 @@ export function closeRunPicker() {
   runCtx = null;
 }
 
-// Pinned first (they're the ones you run fifty times a day), then by source.
-// Short chip labels for the jump bar. Group headers use the Runnable's own
-// sourceFile instead, which is authoritative — it's the file discovery actually
-// found, so ".vscode/tasks.json" and ".vscode/launch.json" name themselves, and a
-// repo with `Justfile` doesn't get told it has a `justfile`.
+// Short chip labels for the jump bar; group headers use the Runnable's own sourceFile,
+// which is what discovery found (a repo with `Justfile` is not told it has a `justfile`).
 const sourceShort = (r: Runnable) => PROVIDER_LABEL[r.source as Provider] || r.source;
 
 function runMatches(term: string): Runnable[] {
@@ -339,9 +298,7 @@ function runMatches(term: string): Runnable[] {
   return runList.filter(match);
 }
 
-/// The jump bar: every source present under the current search, with its count.
-/// Built from the search results rather than the whole list, so a chip never
-/// promises rows the current term has filtered away.
+// Built from the search results, so a chip never promises rows the term filtered away.
 function runSources(term: string): { src: string; short: string; count: number }[] {
   const out: { src: string; short: string; count: number }[] = [];
   for (const r of runMatches(term)) {
@@ -352,25 +309,19 @@ function runSources(term: string): { src: string; short: string; count: number }
   return out;
 }
 
-// How many tasks the "recent" group floats to the top. Small on purpose — it's a
-// shortcut to the two or three you keep re-running, not a second copy of the list.
-const RUN_RECENT_MAX = 5;
+const RUN_RECENT_MAX = 5;  // a shortcut to the few you keep re-running, not a second list
 
 function runGroups(term: string): { name: string; sub?: string; items: Runnable[] }[] {
   const list = runMatches(term).filter((r) => !runSource || r.source === runSource);
   const pins = runCtx ? pinnedIds(runCtx.colorKey) : [];
   const groups: { name: string; sub?: string; items: Runnable[] }[] = [];
-  // A row shown in a float-to-top group (pinned, recent) is pulled out of its source
-  // group below, so nothing appears twice.
+  // Rows lifted into pinned/recent leave their source group, so nothing appears twice.
   const lifted = new Set<string>();
-  // Pinned float to the top, but only in the unfiltered view — inside a single
-  // source, splitting two of its own rows into a separate block just hides them.
+  // Pinned float only in the unfiltered view; inside one source it would just hide them.
   const pinned = runSource ? [] : list.filter((r) => pins.includes(r.id));
   if (pinned.length) { groups.push({ name: "pinned", items: pinned }); pinned.forEach((r) => lifted.add(r.id)); }
-  // Recent: the tasks you actually reach for, ranked by the same frecency the palette
-  // uses (every launch bumps `task:<id>`). Only in the unfiltered "all" view — typing
-  // or picking a source is already a narrower intent, and a Recent block there would
-  // just be another thing to scan. Pinned are already up top, so they don't repeat.
+  // Recent: ranked by the palette's frecency (every launch bumps `task:<id>`), and only in
+  // the unfiltered view, where typing or a source chip is not already a narrower intent.
   if (!runSource && !term.trim()) {
     const recent = list
       .filter((r) => !lifted.has(r.id) && !r.blocked && frecScore("task:" + r.id) > 0)
@@ -412,8 +363,7 @@ function setRunSource(src: string | null) {
   ($("runInput") as HTMLInputElement).focus();
 }
 
-/// Tab / ⇧Tab step through the jump bar — the keyboard equivalent of clicking a
-/// chip, so the whole picker stays reachable without the mouse.
+// Tab / ⇧Tab step through the jump bar, so the picker stays reachable without the mouse.
 function cycleRunSource(dir: 1 | -1) {
   const srcs = runSources(($("runInput") as HTMLInputElement).value);
   if (srcs.length < 2) return;
@@ -440,9 +390,8 @@ function renderRunPicker(term: string) {
       const on = i === runSel ? " on" : "";
       const idx = i++;
       const pinned = runCtx && pinnedIds(runCtx.colorKey).includes(r.id);
-      // A task with ${input:…} gets a second verb rather than a forced dialog: the
-      // row runs it with what it already knows, ⋯ asks. The tooltip shows the
-      // command *as prefilled*, so what the row will run is never a surprise.
+      // A task with ${input:…} gets a second verb rather than a forced dialog: the row runs
+      // with what it already knows, ⋯ asks. The tooltip shows the command as prefilled.
       const asks = !!r.inputs.length && !r.blocked;
       const ready = asks && runCtx ? prefillInputs(r, runCtx.project) : null;
       return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
@@ -459,22 +408,18 @@ function renderRunPicker(term: string) {
     el.addEventListener("click", () => { runSel = +el.dataset.i!; pickRun("run"); });
   });
   body.querySelectorAll<HTMLElement>(".run-params").forEach((el) => {
-    // The button sits inside the row, whose click runs immediately — so it has to
-    // stop there, or asking for parameters would also start a run without them.
+    // The row's own click runs immediately, so this must stop there.
     el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.p!; pickRun("params"); });
   });
   body.querySelectorAll<HTMLElement>("[data-forget]").forEach((el) => {
-    // Same trap as ⋯, with a worse ending: without stopPropagation, forgetting a
-    // task would also launch it.
+    // Without stopPropagation, forgetting a task would also launch it.
     el.addEventListener("click", (e) => { e.stopPropagation(); forgetRecent(el.dataset.forget!); });
   });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
 }
 
-/// Take one row out of *recent*. The task is not going anywhere — it drops back to
-/// its own source group below, which is why this says so rather than staying quiet:
-/// a row that visibly moves instead of disappearing otherwise reads as a misfire.
-/// The score it loses is the ⌘K palette's too, since both read one frecency table.
+// Take a row out of recent. It drops back to its source group, so say so: a row that
+// moves rather than disappears otherwise reads as a misfire. The score is ⌘K's too.
 function forgetRecent(id: string) {
   const r = runList.find((x) => x.id === id);
   forgetFrec("task:" + id);
@@ -483,10 +428,8 @@ function forgetRecent(id: string) {
   ($("runInput") as HTMLInputElement).focus();
 }
 
-/// The runnable the selection is on, but only while it sits in *recent* — ⇧⌫ edits
-/// that group and must never touch a row that only looks similar. Also the guard
-/// that keeps the chord out of the search box's way: recent exists only on an empty
-/// term, so wherever backspace has text to delete, this answers null.
+// The selection only while it sits in recent: ⇧⌫ edits that group alone. Recent exists
+// only on an empty term, so wherever backspace has text to delete this answers null.
 function selectedRecent(): Runnable | null {
   let i = 0;
   for (const g of runGroups(($("runInput") as HTMLInputElement).value)) {
@@ -500,8 +443,7 @@ function pickRun(how: "run" | "pin" | "params") {
   const r = flat[runSel];
   if (!r || !runCtx) return;
   if (how === "pin") { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
-  // The trust gate is the one blocked row you can act on: choosing it asks for
-  // permission rather than shrugging.
+  // The trust gate is the one blocked row you can act on.
   if (r.id === "just:__untrusted") { void askTrust(runCtx.colorKey, runCtx.project); return; }
   if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return; }
   const ctx = runCtx;
@@ -510,12 +452,9 @@ function pickRun(how: "run" | "pin" | "params") {
   runRunnable(r, ctx.project, { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir }, how === "params");
 }
 
-/// Start a runnable, asking only for what it cannot answer itself. `withParams` is
-/// the explicit *Run with parameters…* verb and always asks — that is the whole
-/// difference between the two buttons. Every attended surface either calls this
-/// (the picker, ⌘K, ⌘⇧B) or shares `resolveRunInputs` (re-run, which closes the
-/// old pane first), so the verbs cannot drift apart. Returns whether it launched,
-/// so a chord with no picker on screen can toast only when something started.
+// The single door every attended surface launches through (picker, ⌘K, ⌘⇧B); re-run
+// shares `resolveRunInputs`. `withParams` is the explicit Run with parameters… verb and
+// always asks. Returns whether it launched, so a chord can toast only when something did.
 export function runRunnable(r: Runnable, project: string, opts: TaskLaunchOpts, withParams = false): boolean {
   const ready = resolveRunInputs(r, project, withParams);
   if (!ready) { openInputPrompt(r, project, opts); return false; }
@@ -523,18 +462,9 @@ export function runRunnable(r: Runnable, project: string, opts: TaskLaunchOpts, 
   return true;
 }
 
-/// VS Code's ⌘⇧B / ⌘⇧T — run the project's *default* build (or test) task.
-///
-/// This is the "start the whole stack with one chord" affordance, and it works because
-/// the default build task is usually a **compound**: no command of its own, just a
-/// `dependsOn` list of the servers to bring up. So the chord finds one task and
-/// `launchWithDeps` fans out from there — no separate orchestration.
-///
-/// Resolution follows VS Code: the task marked `"group": {"kind":"build","isDefault":true}`
-/// wins outright. Failing that, an unambiguous single member of the build group is
-/// obviously what was meant. Anything else is genuinely ambiguous, so it opens the
-/// picker rather than guessing — silently running the first build-ish task in the file
-/// is how you end up deploying when you meant to compile.
+// VS Code's ⌘⇧B / ⌘⇧T: the default build (or test) task, usually a compound whose
+// `dependsOn` fans out through `launchWithDeps`. An `isDefault` task wins, else a lone
+// member of the group; anything else opens the picker rather than guessing.
 export async function runDefaultTask(kind: "build" | "test") {
   const c = runTargetCtx();
   if (!c) { toast("No active project"); return; }
@@ -552,14 +482,11 @@ export async function runDefaultTask(kind: "build" | "test") {
   dlog("info", `${kind} task · ${pick.id} · ${c.project}`);
   bumpFrec("task:" + pick.id);
   const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
-  // The chord prefills like every other run surface — the dialog opens only for an
-  // input that has no answer anywhere, since the alternative is a dialog-less hang
-  // or a command with a literal ${input:x} in it.
+  // Prefills like every other run surface; the dialog opens only for an input with no answer.
   if (runRunnable(pick, c.project, o)) toast(`▶ ${pick.label}`);
 }
 
-// Trusting a folder means Episko may execute code from it to enumerate tasks, so
-// it is asked for plainly and once, never inferred from mere use.
+// Trust lets Episko run code from the folder to enumerate tasks: asked plainly, and once.
 export async function askTrust(path: string, project: string) {
   const ok = await ask(
     `Episko will run \`just --dump\` inside ${project} to list its recipes.\n\n`
@@ -571,21 +498,13 @@ export async function askTrust(path: string, project: string) {
   await openRunPicker();
 }
 
-// Hand a command over to a terminal at `workdir` instead of running it ourselves.
-// The embedded engine can genuinely prefill: it opens a shell pane and types the
-// command *without* a newline, so the user reads it and presses Enter. External
-// terminal apps take a directory but no pending input, so there we open the
-
 // ---------- the panels' own event wiring ----------
 $("mgrClose").addEventListener("click", closeTaskManager);
 $("mgrNew").addEventListener("click", () => startMgrEdit(null));
 $("mgrSave").addEventListener("click", () => { void saveMgrTask(); });
 $("mgrBack").addEventListener("click", () => { mgrEdit = null; renderMgr(); });
-// `open_file`, not the opener plugin: `openUrl` is scope-checked against
-// `opener:default`, which allows `mailto:`, `tel:`, `http://` and `https://` and
-// nothing else — so the `file://` URL this used to build was refused every time and
-// the button could only ever toast. `open_file` is the same verb the Context card's
-// rows use and takes a plain path.
+// `open_file`, not the opener plugin: `openUrl` is scope-checked against `opener:default`,
+// which refuses `file://`. `open_file` takes a plain path, as the Context card's rows do.
 $("mgrOpen").addEventListener("click", () => {
   if (mgrCtx) void invoke<[string, boolean]>("episko_tasks_file", { workdir: mgrCtx.workdir })
     .then(([path]) => invoke("open_file", { path }))
@@ -599,13 +518,11 @@ $("runInput").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
   else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
   else if (e.key === "Enter") { e.preventDefault(); pickRun(meta ? "pin" : e.altKey ? "params" : "run"); }
-  // The chord that OPENED the picker is a *real* rescan once you are inside it: drop
-  // the cache, then re-discover. Read from the binding rather than spelled out, so it
-  // follows a rebind in Settings › Keys instead of stranding on the old ⌘⇧R.
+  // The chord that opened the picker is a real rescan inside it. Read from the binding,
+  // so it follows a rebind in Settings › Keys.
   else if (comboMatches(activeBind(keyPrefs, "runTask"), e)) { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
-  // ⇧⌫ / ⇧⌦ is the ✕ without the mouse (the browser's own history-suggestion chord).
-  // Not a binding: it exists only inside this picker, on a group that only exists
-  // with an empty search box, so it can never take a chord anybody uses elsewhere.
+  // ⇧⌫ / ⇧⌦ is the ✕ without the mouse. Not a binding: it exists only in this picker,
+  // on a group that only exists with an empty search box.
   else if ((e.key === "Backspace" || e.key === "Delete") && e.shiftKey) {
     const r = selectedRecent();
     if (r) { e.preventDefault(); forgetRecent(r.id); }
@@ -614,22 +531,18 @@ $("runInput").addEventListener("keydown", (e) => {
   else if (e.key === "Escape") { e.preventDefault(); closeRunPicker(); }
 });
 
-// Esc in the task panel backs out of the edit form first; the global keydown that
-// decides that lives in main.ts, so it reads the binding above and writes it here.
+// main.ts's global keydown backs Esc out of the edit form first, and writes it here.
 export function setMgrEdit(v: typeof mgrEdit) { mgrEdit = v; }
 
 // ---------- the inputs prompt ----------
-// A task declaring ${input:…} collects its values before anything runs. Discovery
-// deliberately leaves the placeholders intact, because only this side knows the
-// answers — so this is where they get filled in.
+// Discovery leaves ${input:…} placeholders intact; only this side knows the answers.
 let inputCtx: { r: Runnable; project: string; opts: TaskLaunchOpts } | null = null;
 
 export function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOpts) {
   inputCtx = { r, project, opts };
   $("inSub").textContent = `${r.label} · ${r.inputs.length} input${r.inputs.length === 1 ? "" : "s"}`;
   $("inBody").innerHTML = r.inputs.map((i, n) => {
-    // What you typed last for this exact input wins over the file's default — but a
-    // password is never remembered, so it always starts empty.
+    // Last typed wins over the file's default; a password is never remembered.
     const remembered = i.password ? undefined : rememberedInput(project, r.id, i.id);
     const val = remembered ?? i.default ?? "";
     const field = i.kind === "pickString"
@@ -656,7 +569,6 @@ function submitInputPrompt() {
   $("inBody").querySelectorAll<HTMLInputElement | HTMLSelectElement>(".in-ctl").forEach((el) => {
     const input = r.inputs[+el.dataset.n!];
     vals[input.id] = el.value;
-    // Remember for next time — but never a password.
     if (!input.password) rememberInput(project, r.id, input.id, el.value);
   });
   closeInputPrompt();

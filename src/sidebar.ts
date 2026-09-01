@@ -1,12 +1,6 @@
-// The project sidebar and its mini-rail: the two surfaces `renderAll()` repaints
-// first on every telemetry event, plus the two pointer interactions that live on
-// them — dragging project groups into a manual order, and dropping files onto the
-// stage to paste their paths.
-//
-// What the sidebar *shows* and in what order is ./grouping's job, the rows themselves
-// are ./sidebarview's, and the project glyph is ./icons's; this module owns the two
-// elements they are painted into and the drag state that a mid-drag repaint must not
-// stomp — which is the reason renderSidebar cannot be a pure ./sidebarview function.
+// The project sidebar and its mini-rail, plus the two pointer gestures on them: dragging
+// groups into a manual order and dropping files onto the stage. ./grouping decides what
+// shows and ./sidebarview draws the rows; this module owns the elements and the drag state.
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -31,91 +25,42 @@ import {
 } from "./state";
 import { activeBind, comboText, type KeyAction } from "./keys";
 
-// Two things a finished reorder needs that this module does not own: the sort mode
-// is an app-level preference (validate → persist → announce) and the repaint is the
-// whole app's. Per-callee setters, per PLAN's seam rule 2; main.ts wires both at
-// startup and until then a drag reorders the DOM and saves the order silently.
+// Hooks, not imports: the sort mode and the repaint belong to the app (seam rule 2); main.ts wires them.
 let setSort: (m: SortMode, announce?: boolean) => void = () => {};
 export function setSidebarSetSort(fn: typeof setSort) { setSort = fn; }
 let renderAll: () => void = () => {};
 export function setSidebarRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
-// While a project group is being dragged, renderSidebar() must not rebuild the
-// #projects DOM — doing so would destroy the node the browser is dragging,
-// killing the drop. Telemetry ticks call renderAll() constantly, so this guard
-// is what makes reordering actually work during live sessions.
-let draggingProjects = false;
-// Set just after a pointer-driven reorder (see initProjectDnD): swallows the click a
-// pointerup may synthesise, so a drag that ends on a project doesn't also select it.
-export let reorderGuardUntil = 0;
-// The click handler that consumes the guard is the global one in main.ts, so the
-// reset needs a setter — state.ts's convention: assign and nothing else.
+let draggingProjects = false; // a repaint mid-drag would destroy the node the browser is dragging
+export let reorderGuardUntil = 0; // swallows the click a pointerup may synthesise after a reorder
 export function setReorderGuard(v: number) { reorderGuardUntil = v; }
 
-// The sidebar's row builders now live in ./sidebarview; renderSidebar below owns
-// the element they are painted into, and the drag state that must not be stomped.
-
-// The markup last written to #projects, and the reason renderSidebar is guarded.
-//
-// This is the hot path in the whole app: renderAll() repaints it on EVERY telemetry
-// event, and a fleet of agents produces those continuously. Building the string is
-// cheap (0.13ms with six sessions) but *assigning* it is not — #projects is ~6.7KB
-// of rows, and replacing it invalidates the sidebar's entire layout. Measured with
-// layout forced, renderSidebar costs **7.0ms**, which is ~95% of renderAll's total.
-// (Without forcing layout it measures 0.13ms and looks free — the browser defers
-// the work to the next frame, which is exactly how this stayed invisible.)
-//
-// Most of those repaints change nothing. The rows show a phase glyph, a title and
-// `Math.round(ctxPct)`, so a statusLine moving cost or context by a hair is usually
-// invisible here. Over a realistic event stream, **84.5%** of repaints produced
-// byte-identical markup with hooks mixed in, and **95%** for a session thinking
-// quietly. So: build always, assign only on a change.
-//
-// Not render diffing (which PLAN puts out of scope) — no DOM is compared or
-// patched. It is the same guard ./tray already uses before rebuilding the native
-// menu, applied to the surface that turned out to cost the most.
+// The innerHTML guard on the app's hottest surface: assigning #projects costs ~7ms of
+// layout, and most repaints produce identical markup (docs/architecture.md).
 let lastHtml: string | null = null;
-// The pointer-driven reorder physically moves nodes inside #projects, so the cache
-// must not be trusted across one. Cleared in the drag's cleanup below; the cost is
-// one guaranteed repaint per drag, which is the correct trade.
+// A drag moves real nodes in #projects, so the cache cannot be trusted across one.
 function invalidateSidebarCache() { lastHtml = null; }
 
 export function renderSidebar() {
-  // Don't stomp the DOM the browser is mid-drag on — see draggingProjects.
   if (draggingProjects) return;
   const list = projectList();
-  // Which header(s) the open dashboard belongs to. ./grouping's rule rather than a
-  // `p.path === root` test here, because one repo can be several rows and they all
-  // open the same dashboard.
+  // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const html = groupedProjects(list).map((slot) =>
     slot.kind === "project" ? projectHtml(slot.project, dash) : foldHtml(slot.group, slot.projects, dash)).join("");
   if (html !== lastHtml) {
     lastHtml = html;
     $("projects").innerHTML = html;
-    // The DOM the expansion lives on was just replaced, so re-apply it. This is the
-    // whole reason ./peek tracks a project *path* rather than an element.
-    applyPeek();
+    applyPeek(); // the expansion lives on the DOM just replaced
   }
-  // Outside that guard, unlike applyPeek: a highlight is a *clock*, so it has to be
-  // re-applied to rows the repaint above replaced AND kept in step on the passes where
-  // nothing about the markup changed at all. It costs one early return when nothing is
-  // lit, which is almost every pass.
+  // Outside the guard: a highlight is a clock and must advance on passes that changed no markup.
   applyFlash();
 }
 
-// One user-defined group: its header, and its projects nested inside a body that
-// animates open and shut.
-//
-// **The members are rendered whether or not the group is collapsed**, and that is what
-// buys the height animation — `grid-template-rows: 0fr → 1fr` needs the content to be
-// there to have a height to animate to. Unlike peek, the collapsed flag IS part of the
-// markup string: hover changes many times a second and would shred `lastHtml`, but a
-// collapse is a deliberate click, so it costs exactly one repaint and keeps the state
-// in the one place a re-render can't lose it.
+// Members render even when collapsed: the height animation needs content to animate to.
+// The collapsed flag is in the markup (one repaint per click), unlike hover.
 function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string {
-  // Wrapped rather than `projects.map(projectHtml)`: map would pass the index as the
-  // second argument, and every row after the first would think it was the dashboard's.
+  // Not `projects.map(projectHtml)`: map's index argument would be taken for `dash`.
   const body = projects.length ? projects.map((p) => projectHtml(p, dash)).join("") : foldEmpty();
   return `<div class="pfold${g.collapsed ? " collapsed" : ""}" data-fold="${esc(g.id)}">`
     + foldHead(g, groupSummary(projects), projects.length)
@@ -126,32 +71,16 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const rows = groupBody(p) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
-  // Any member folder (a session's workdir or an external's cwd) with uncommitted
-  // changes lights the project's dot — so a dirty worktree marks its parent too.
+  // A dirty worktree lights its parent project's dot too.
   const dirty = p.sessions.some((s) => folderDirty(s.workdir)) || p.externals.some((e) => folderDirty(e.cwd));
   const dot = dirty ? `<span class="pdirty" title="Uncommitted changes in this project"></span>` : "";
   const wtSuffix = p.wtBranch ? `<span class="pwt">· ${esc(p.wtBranch)}</span>` : "";
-  // **Every project header opens the dashboard, whatever put it in the list.** It used
-  // to depend on which of the three shapes below a project happened to land in, so a
-  // folder Episko only knew about from an external session, from a past one, or from a
-  // worktree whose session had ended was simply not clickable — with no disabled state
-  // to say so, because the attribute was absent rather than refused. "Has an Episko
-  // session or is a favourite" is not a fact about a project worth having a view gated
-  // on; the empty-but-real dashboard those folders get is the answer.
-  //
-  // Keyed to `repoRoot ?? path`: a checkout is not a project. `dashDays` filters
-  // history by `histProject().colorKey`, which regrafts every row onto the repo root —
-  // so a dashboard keyed by a worktree dir matches no sessions at all and renders a
-  // timeline of commits with nobody having worked on them. The checkouts are a card
-  // *inside* the project's dashboard, which is where a worktree belongs.
+  // Every project header opens the dashboard, whatever put it in the list. Keyed to
+  // `repoRoot ?? path`: `dashDays` filters by the repo root, so a worktree-keyed dashboard
+  // would match no sessions at all.
   const dashRoot = p.repoRoot ?? p.path;
   const opens = `data-dash="${esc(dashRoot)}" data-proj="${esc(p.name)}"`;
-  // A dashboard owns the stage exactly the way a session does, so the row that opened it
-  // says so — the same `.active` a session row wears. Without it the project header was
-  // the one selectable thing in the sidebar with no selected state, so the dashboard on
-  // screen appeared to belong to no project, and (with the rail collapsed) there was
-  // nothing to say which one you were looking at.
-  const on = dash.has(p.path) ? " active" : "";
+  const on = dash.has(p.path) ? " active" : ""; // a dashboard owns the stage the way a session does
   let head: string;
   if (p.sessions.length) {
     head = `<div class="phead${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
@@ -168,14 +97,8 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
 }
 
-/// Expand the group a project is filed in, if it is collapsed. Called when a session
-/// takes the stage (./panes' `setActive`), because ⌘1–9, `nextAfterClose` and the tray
-/// can all land on a session inside a folded group — and a rail showing nothing
-/// selected while a pane is plainly on screen reads as the selection having been lost.
-///
-/// Persists here rather than in ./actions for the reason the reorder below does: this
-/// module is already the one that writes a sidebar preference straight after a gesture,
-/// and ./panes cannot import ./actions (which imports ./panes).
+// Expand the group a project is filed in: ⌘1–9, `nextAfterClose` and the tray can land on
+// a session inside a folded group. Persists here because ./panes cannot import ./actions.
 export function revealProjGroup(path: string) {
   const gid = groupOf(projGroups, path);
   if (!gid) return;
@@ -186,41 +109,21 @@ export function revealProjGroup(path: string) {
 }
 
 // ---------- peek: resting on a project reveals its idle checkouts ----------
-// ./peek owns the rules and is pure; this is the driver. Three things it has to get
-// right, and each of them is why the state does not live in the DOM:
-//
-//   1. **Hover must not be a render input.** renderSidebar skips its (7ms) DOM write
-//      when the markup is unchanged; making the expansion part of the string would
-//      bust that on every mouse move. So peekBody always renders the rows and this
-//      only toggles a class.
-//   2. **A repaint must not collapse an open group.** renderAll() fires on every
-//      telemetry event, so #projects is rebuilt under the pointer constantly —
-//      applyPeek() above re-applies the class to the new nodes.
-//   3. **An idle sidebar must cost nothing.** One timeout scheduled to the next
-//      deadline, not an interval.
+// ./peek owns the rules; this is the driver. Hover is not a render input (it would bust
+// `lastHtml` on every mouse move, so peekBody always renders the rows and this toggles a
+// class), applyPeek re-applies it after each repaint, and an idle sidebar costs nothing.
 let peek: PeekState = PEEK_IDLE;
-let peekTimer: number | null = null;
-/// Which group the pointer is in. mouseover fires for every descendant, so this is
-/// what turns that stream into "entered a different group".
-let peekHover: string | null = null;
+let peekTimer: number | null = null; // one timeout to the next deadline, never an interval
+let peekHover: string | null = null; // mouseover fires per descendant; this makes it "entered a group"
 
 function applyPeek() {
   for (const el of $("projects").querySelectorAll<HTMLElement>(".pgroup")) {
     el.classList.toggle("peek", el.dataset.path === peek.open);
-    // The arming hairline. Without it the group expands out of nowhere a second after
-    // you stopped moving, which reads as a glitch rather than as a deliberate delay —
-    // you cannot tell the app is counting unless it shows you.
+    // The arming hairline: without it the group opens out of nowhere a second later.
     const arming = !!peek.arming && el.dataset.path === peek.arming.path;
     if (arming) {
-      // Re-run the fill, but from where the *timer* is rather than from zero. The class
-      // alone won't restart it on a group that was armed, cancelled and re-entered — and
-      // a plain restart is wrong the rest of the time, because this also runs after every
-      // repaint that changed the markup. renderAll() fires on each telemetry event, and a
-      // project with a live session repaints several times a second, so a bar that
-      // restarted here would crawl back to empty under the pointer while the timeout it
-      // depicts ran on to its original deadline: the one thing worse than no countdown is
-      // one that lies about how much is left. A negative delay offsets into the animation
-      // by however much has already elapsed.
+      // Restart the fill from where the timer is, not from zero: this also runs after every
+      // repaint, and a bar restarting under the pointer would lie about how much is left.
       const elapsed = Math.max(0, peekPrefs.openMs - (peek.arming!.at - Date.now()));
       el.classList.remove("arming");
       void el.offsetWidth;
@@ -239,13 +142,7 @@ function peekSchedule() {
     peekAdvance(peekTick(peek, Date.now()));
   }, Math.max(0, at - Date.now()));
 }
-/// Commit a new state: repaint only when what's on screen actually changed, then
-/// re-arm the timer.
-///
-/// **Both fields are on screen**, which is easy to forget: `open` is the expansion and
-/// `arming` is the hairline counting down to it. Comparing only `open` meant entering a
-/// group changed `arming` alone, no repaint happened, and the bar never appeared — the
-/// panel then opened a second later out of nowhere.
+// Both `open` and `arming` are on screen; comparing only `open` lost the hairline.
 function peekAdvance(next: PeekState) {
   const before = peek.open + "|" + (peek.arming?.path ?? "");
   peek = next;
@@ -255,20 +152,14 @@ function peekAdvance(next: PeekState) {
 
 export function initSidebarPeek() {
   const container = $("projects");
-  // mouseover/mouseout rather than mouseenter/mouseleave: these bubble, so one pair
-  // of delegated listeners survives every re-render. Per-group listeners would have
-  // to be re-attached on each repaint, which is the bug this shape avoids.
+  // mouseover/mouseout bubble, so one delegated pair survives every re-render.
   container.addEventListener("mouseover", (e) => {
     const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
     const path = g?.dataset.path;
     if (!path || path === peekHover) return;
     peekHover = path;
-    // A group whose checkouts are already listed takes no part in this. It has nothing
-    // to reveal, so arming it would draw the countdown hairline for a second and then
-    // do nothing visible — an animation promising something that already happened — and
-    // opening it would hand it the "already inside an expanded rail" shortcut (peekEnter),
-    // which would then expand the NEXT group you pass over instantly. The rail is only
-    // expanded there because a setting says so, not because you asked for it.
+    // A group already showing its checkouts has nothing to reveal, and opening it would hand
+    // peekEnter the "already expanded" shortcut that opens the next group instantly.
     if (g!.querySelector(".pgpeek.open")) return;
     peekAdvance(peekEnter(peek, path, Date.now(), peekPrefs));
   });
@@ -276,15 +167,13 @@ export function initSidebarPeek() {
     const g = (e.target as HTMLElement).closest<HTMLElement>(".pgroup");
     const path = g?.dataset.path;
     if (!path) return;
-    // mouseout also fires when crossing between children of the same group; only a
-    // pointer that has genuinely left the group's subtree counts as leaving it.
+    // mouseout also fires between children of the same group.
     const to = e.relatedTarget as Node | null;
     if (to && g!.contains(to)) return;
     if (peekHover === path) peekHover = null;
     peekAdvance(peekLeave(peek, path, Date.now(), peekPrefs));
   });
-  // Leaving the rail through a gap between groups fires no group mouseout, so the
-  // container gets its own (non-bubbling, but bound directly) leave.
+  // Leaving through a gap between groups fires no group mouseout.
   container.addEventListener("mouseleave", () => {
     peekHover = null;
     peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
@@ -292,27 +181,11 @@ export function initSidebarPeek() {
 }
 
 // ---------- the finish highlight ----------
-// ./attn owns the rules and is pure; this is the driver, and it is deliberately the
-// same shape as the peek one above — for three of the same reasons and one new one:
-//
-//   1. **The lit state is not in the markup.** It would bust `lastHtml` twice per
-//      finished session, and worse, it cannot be *in* a string honestly: what the row
-//      needs is how far through the fade it is, so the markup would differ on every
-//      repaint for as long as a row was lit and the guard would be off for all of it.
-//   2. **A repaint must not restart the fade.** #projects is rebuilt under a busy
-//      fleet several times a second; a class re-applied to the fresh node would replay
-//      the animation from zero every time, so a 4s highlight would glow for as long as
-//      anything else in the rail was moving. The negative `animation-delay` is what
-//      resumes it instead — the same trick, and the same trap, as the arming hairline.
-//   3. **An idle rail must cost nothing.** One timeout to the next expiry, and an
-//      early return on the common path where nothing is lit.
-//   4. Reduced motion gets a flat tint rather than a fade, which means the class must
-//      actually come *off* at the end. That is what the timeout is for; with the fade
-//      running, CSS has already landed on the transparent frame by then.
+// ./attn owns the rules; this is the driver, shaped like peek's. The lit state is not in
+// the markup (it would change on every repaint while lit), a repaint must not restart the
+// fade (a negative animation-delay resumes it), and the class must come off at the end.
 let flashTimer: number | null = null;
-/// The ids lit on the last pass — what makes "nothing is lit and nothing was" a single
-/// string compare rather than a walk of every row in the rail.
-let lastLit = "";
+let lastLit = ""; // ids lit last pass: "nothing lit and nothing was" is one string compare
 
 function applyFlash() {
   const now = Date.now();
@@ -329,9 +202,7 @@ function applyFlash() {
       const age = lit.get(el.dataset.sel!);
       el.classList.remove("lit");
       if (age === undefined || !s) continue;
-      // Re-run the fade from where the *clock* is rather than from zero — see 2 above.
-      // The forced reflow is what makes the removal above take effect before the class
-      // goes back on; it is paid per lit row, which is one or two.
+      // Resume the fade from the clock; the forced reflow makes the removal take effect first.
       void el.offsetWidth;
       el.style.setProperty("--lit-ms", `${attnPrefs.highlightMs}ms`);
       el.style.setProperty("--lit-delay", `${-age}ms`);
@@ -345,29 +216,15 @@ function applyFlash() {
   flashTimer = window.setTimeout(() => { flashTimer = null; applyFlash(); }, Math.max(0, at - Date.now()));
 }
 
-/// Collapse whatever is expanded — called when peek is switched off in Settings, and
-/// after a launch, so the rail doesn't stay open over a pane you just started.
+// Called when peek is switched off and after a launch, so the rail does not stay open over a new pane.
 export function closePeek() {
   peekHover = null;
   peekAdvance(PEEK_IDLE);
 }
-// Reordering of project groups, on pointer events (not HTML5 drag). The window now
-// sets dragDropEnabled:true so external file drops paste a path instead of navigating
-// the webview (see initFileDrop) — but that native handler blocks HTML5 drag/drop, so
-// the reorder can no longer ride dragstart/dragover/drop. Pointer events are also fully
-// cross-platform (the old HTML5 path only worked with dragDropEnabled:false).
-//
-// Delegated on the persistent #projects container so it survives re-renders; a
-// separator line (.dropmark) shows where the group will land; the dragged group is only
-// physically moved on release, then the DOM order is read back and saved. A drag only
-// begins once the pointer crosses DRAG_SLOP, so a plain click still selects the project.
-//
-// GROUPS MADE THIS NESTED, AND THE READ-BACK IS WHY IT STILL WORKS. A `.pgroup` may now
-// live inside a `.pfold`, so the marker can no longer be inserted into `#projects` (that
-// throws outright once the reference node is a fold's child) — it goes into whatever
-// parent the drop target has, which is also what makes dragging a project INTO a group
-// the same gesture as reordering it. Membership is then read back off the DOM exactly
-// as the order always has been, so the two can never come out of a drag disagreeing.
+// Group reordering on pointer events: `dragDropEnabled:true` (for initFileDrop) blocks
+// HTML5 drag/drop. Delegated on #projects; a drag starts past DRAG_SLOP so a click still
+// selects. The marker goes into the drop target's parent (a `.pgroup` may sit in a
+// `.pfold`), and membership is read back off the DOM with the order, so they cannot disagree.
 export function initProjectDnD() {
   const container = $("projects");
   const DRAG_SLOP = 5; // px before a press becomes a drag rather than a click
@@ -377,8 +234,7 @@ export function initProjectDnD() {
   let candidate: HTMLElement | null = null;   // pressed group, promoted to dragEl past the slop
   let startX = 0, startY = 0;
 
-  // A collapsed fold has no visible body to drop into, so the header lights up instead
-  // — the marker is in there, it just has nowhere to be seen.
+  // A collapsed fold has no visible body to drop into, so its header lights up instead.
   const clearFoldTarget = () => container.querySelector(".pfold.droptarget")?.classList.remove("droptarget");
 
   const cleanup = () => {
@@ -388,19 +244,15 @@ export function initProjectDnD() {
     dragEl?.classList.remove("dragging");
     dragEl = candidate = null;
     draggingProjects = false;
-    // A drag moved real nodes in #projects, so what is on screen no longer
-    // necessarily matches the cached markup — force the next render to paint.
     invalidateSidebarCache();
   };
 
   container.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !e.isPrimary) return;
     const t = e.target as HTMLElement;
-    // Leave the interactive bits (launch +, per-worktree +, remove ✕, colour dot) to
-    // their own clicks.
+    // Leave the interactive bits to their own clicks.
     if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
-    // A fold header drags the whole group; anything else drags the project it is in.
-    // `closest` returns the nearer of the two, which is exactly that rule.
+    // A fold header drags the whole group; anything else drags its project (`closest` picks the nearer).
     const g = t.closest<HTMLElement>(".pgroup, .pfold");
     if (!g) return;
     candidate = g;
@@ -411,7 +263,6 @@ export function initProjectDnD() {
     if (!candidate) return;
     if (!dragEl) {
       if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_SLOP) return;
-      // Cross the slop → promote to a real drag.
       dragEl = candidate;
       draggingProjects = true;
       container.classList.add("reordering");
@@ -419,21 +270,15 @@ export function initProjectDnD() {
       try { container.setPointerCapture(e.pointerId); } catch { /* */ }
     }
     e.preventDefault();
-    // Place the marker relative to whichever group the pointer is over.
     const over = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
     let grp = over?.closest<HTMLElement>(".pgroup, .pfold") ?? null;
     const draggingFold = dragEl.classList.contains("pfold");
-    // Groups don't nest. Dragging one aims at whatever fold the pointer is inside,
-    // never at a project within it.
+    // Groups don't nest: a dragged fold aims at the fold under the pointer, never a project in it.
     if (grp && draggingFold) grp = grp.closest<HTMLElement>(".pfold") ?? grp;
-    // `dragEl.contains(grp)` — a fold being dragged over its own members.
-    if (!grp || grp === dragEl || dragEl.contains(grp)) return;
+    if (!grp || grp === dragEl || dragEl.contains(grp)) return; // a fold over its own members
     clearFoldTarget();
-    // The pointer resolved to a fold rather than to a project in it, which means it is
-    // over the header or an empty body: both mean "this group". Dropping a project
-    // there files it, which is the whole gesture — and the only way in for a group with
-    // nothing in it yet. (Out again is the fold's own body → a top-level project, or
-    // the context menu's "Remove from group".)
+    // Resolving to a fold means its header or an empty body: dropping a project there files
+    // it, and is the only way into a group with nothing in it yet.
     if (!draggingFold && grp.classList.contains("pfold")) {
       const body = grp.querySelector<HTMLElement>(".pfbody-in");
       if (body) { body.appendChild(marker); if (grp.classList.contains("collapsed")) grp.classList.add("droptarget"); return; }
@@ -449,13 +294,8 @@ export function initProjectDnD() {
     if (marker.parentNode) marker.parentNode.insertBefore(dragEl, marker);
     cleanup();
     saveSidebarArrangement(container);
-    // A manual drag captures the current visual order and reasserts manual mode
-    // (in a sorted mode the drag would otherwise be immediately overridden).
-    if (sortMode !== "manual") setSort("manual", false);
-    // A pointerup *may* synthesise a click (if the browser still pairs it with the
-    // pointerdown after the DOM moved); guard the click handler for a brief window so
-    // the reorder doesn't also select. A plain timestamp self-heals if no click fires —
-    // a lingering one-shot listener would otherwise eat the user's next real click.
+    if (sortMode !== "manual") setSort("manual", false); // a sorted mode would override the drag at once
+    // A pointerup may synthesise a click; a timestamp guard self-heals if none fires.
     reorderGuardUntil = performance.now() + 250;
     renderAll();
   };
@@ -463,14 +303,8 @@ export function initProjectDnD() {
   container.addEventListener("pointercancel", (e) => { try { container.releasePointerCapture(e.pointerId); } catch { /* */ } cleanup(); });
 }
 
-/// What the drag actually left on screen: the flat project order, and which fold each
-/// project ended up inside. One pass, because they are one arrangement — persisting the
-/// order from the DOM and the membership from anywhere else is how the two would drift.
-///
-/// **Memberships for projects that are not on screen are carried over untouched.** In
-/// toplevel mode a repo can be rendered only as its worktrees (`splitByWorktree` drops
-/// an empty root group), so rebuilding `of` from scratch here would quietly unfile every
-/// such repo on the next drag.
+// Order and membership are read back from the DOM in one pass, so they cannot drift.
+// Projects not on screen (toplevel mode renders a repo as its worktrees) keep their filing.
 function saveSidebarArrangement(container: HTMLElement) {
   const order: string[] = [];
   const of = { ...projGroups.of };
@@ -487,11 +321,9 @@ function saveSidebarArrangement(container: HTMLElement) {
   saveProjGroups();
 }
 
-// External file drops. With dragDropEnabled:true the webview no longer navigates to a
-// dropped file's file:// URL (the old trap: a dropped PDF replaced the whole app with no
-// way back). Tauri's native drag-drop event carries the real absolute paths, which HTML5
-// drops never expose under WKWebView — so we paste them, shell-escaped, into the active
-// embedded session's PTY, matching what dragging a file into a normal terminal does.
+// External file drops. `dragDropEnabled:true` stops a dropped file navigating the webview to
+// its file:// URL, and Tauri's native event carries real absolute paths (HTML5 drops never
+// do under WKWebView); they are pasted shell-escaped into the active embedded session.
 export function initFileDrop() {
   const zone = $("terminals");
   getCurrentWebview().onDragDropEvent((e) => {
@@ -510,34 +342,23 @@ export function initFileDrop() {
   }).catch((err) => dlog("error", `onDragDropEvent wiring failed: ${err}`));
 }
 
-// Escape a path for a shell/REPL the way a terminal does on file drop: backslash before
-// anything outside the always-safe set, so spaces and metacharacters survive as one arg.
+// Backslash before anything outside the safe set, as a terminal does on file drop.
 function shellEscapePath(p: string): string {
   return p.replace(/[^A-Za-z0-9_@%+=:,./-]/g, "\\$&");
 }
-// The 44px rail. Flat — `projectList()`, not `groupedProjects()`: it is already the
-// most compressed view of the fleet there is, and a heading you cannot read plus a
-// fold you cannot see the contents of would cost rows to say nothing. Grouping is an
-// answer to a long sidebar, and this is the short one.
-// Guarded like `renderSidebar` above, and for the sharper of its two reasons: the rail
-// is nothing BUT buttons, and it rides `renderAll` — so on a busy fleet every one of
-// them was destroyed and rebuilt several times a second. That loses `:hover` under a
-// stationary pointer, and loses a click outright when the node is replaced between
-// mousedown and mouseup. What the rail shows (a glyph, an accent, an attention dot)
-// changes far more rarely than the events that repaint it.
-/// A button's chord as a title suffix — empty when the action is unbound or the
-/// master switch is off, so the tooltip reads "New session" rather than trailing an
-/// empty pair of brackets around a shortcut that no longer exists.
+// A button's chord as a title suffix; empty when unbound or the master switch is off.
 function hint(id: KeyAction): string {
   const t = comboText(activeBind(keyPrefs, id), IS_MAC);
   return t ? ` (${t})` : "";
 }
+// The 44px rail: flat (`projectList()`, not grouped), since it is already the most
+// compressed view. Guarded like renderSidebar: it is nothing but buttons, and a rebuild
+// between mousedown and mouseup drops the click.
 let lastMiniHtml: string | null = null;
 export function renderMini() {
   const activeProj = activeId ? sessions.get(activeId)?.project : null;
   const list = projectList();
-  // The collapsed rail is the only project surface on screen while it is up, so a
-  // dashboard has to mark its button here too — see projectHtml's `on`.
+  // The collapsed rail is the only project surface on screen, so a dashboard marks its button here too.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const html =
     `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">»</button>` +

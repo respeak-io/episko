@@ -1,15 +1,8 @@
-// The project dashboard's markup. Data in, string out — no `$()`, no `innerHTML`, no
-// renderer call, the same contract as ./sidebarview, ./inspectorview and ./usageview.
+// The project dashboard's markup: data in, string out, like every other *view module.
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
-//
-// Untested by design, like every other *view module: snapshotting template literals
-// mostly re-asserts itself.
 
 import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
-// A platform *constant*, not DOM access — the `*view` rule bars `$()`, `innerHTML` and
-// renderer calls, and ./dom is the shared leaf everything may import (it touches no DOM
-// at module scope, which is what keeps it safe in vitest's node environment).
-import { FILE_MANAGER } from "./dom";
+import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
 import { syncState, type Pulse, type ProjectFacts, type ProjectTier, type SyncOp } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
@@ -22,36 +15,22 @@ import {
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/// The provenance mark on anything a model wrote — on your line, on the project's, and
-/// on both of their waiting states. Declared once because a reader learns "a model wrote
-/// this" from the *shape* long before the word, so the shape must not vary.
-///
-/// **Deliberately just the word.** A ✨ was tried here and pulled the eye straight to the
-/// least important thing on the row: the mark exists so a reader can tell an observation
-/// from a generated sentence, which needs it to be *findable*, not *loud*.
-///
-/// The caller passes the whole label, because the two placements need different ones: an
-/// inline mark takes a `·` to separate it from the sentence it follows, and the cornered
-/// one is already separated by being in the corner — a `·` there points at nothing.
+// The provenance mark on anything a model wrote. Just the word, no glyph: it has to be
+// findable, not loud. The caller passes the whole label, since the inline mark needs a `·`
+// before it and the cornered one does not.
 const aiMark = (text: string, cls = "") =>
   `<span class="ai${cls ? " " + cls : ""}">${text}</span>`;
-/// The shared box's copy, in its own bottom-right corner rather than trailing the
-/// sentence — inline it read as the last words of the sentence it labels.
-const AI_MARK = aiMark("ai", "ai-cnr");
+const AI_MARK = aiMark("ai", "ai-cnr"); // cornered, not inline: inline it read as part of the sentence
 
 // ---------- the pulse strip ----------
-// Five numbers before any detail, so the window answers itself at a glance. Which five
-// depends on the tier: a folder with no git has no commits to count, and showing a
-// permanent zero there would read as "nothing happened" rather than "not applicable".
+// Which tiles exist depends on the tier: a permanent zero would read as "nothing happened".
 
 function tile(k: string, v: string, d = ""): string {
   return `<div class="db-tile"><span class="k">${esc(k)}</span><span class="v">${v}</span>`
     + (d ? `<span class="d">${d}</span>` : "") + `</div>`;
 }
 
-/// The range picker is not data — it is a preference, and it answers instantly whether
-/// or not anything else has. So it is shared with the skeleton below, where every tile
-/// beside it is a bar.
+// A preference, not data, so the skeleton below shows it too.
 const rangeTile = (range: number) => `<div class="db-tile win"><span class="db-seg">
       ${[7, 14, 30].map((r) => `<button${r === range ? ` class="on"` : ""} data-dashrange="${r}">${r}d</button>`).join("")}
     </span></div>`;
@@ -64,9 +43,8 @@ export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: num
       + `<span class="db-spark" aria-hidden="true">${sparkline(dense)}</span></div>`);
   }
   tiles.push(tile("Sessions", String(p.sessions), `${range} days`));
-  // Spend is per-project and only exists from the day the detail rollup started. A
-  // dash rather than $0.00 — "we didn't keep this" and "it was free" are different
-  // facts and the strip must not conflate them.
+  // A dash rather than $0.00: per-project spend only exists from the day the detail
+  // rollup started, and "not kept" is not the same fact as "free".
   tiles.push(tile("Agent spend", p.spend > 0 ? esc(uUsd2(p.spend)) : `<span class="dim">—</span>`));
   if (tier !== "none") {
     const who = p.authors.length
@@ -78,33 +56,13 @@ export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: num
 }
 
 // ---------- skeletons ----------
-//
-// WHY THESE EXIST. Opening a project costs a `git` process for the facts, a scan of
-// every transcript on the machine, a `git log`, a worktree probe and a digest read —
-// and then, on a GitHub repo, two `gh` calls *after* all of that, plus a model call per
-// day for the sentences. Every one of those used to land in silence: the strip showed a
-// confident row of zeros, the aside was simply short a card or two, and nothing on
-// screen told "there is nothing here" apart from "this has not been read yet". Those
-// are opposite answers, and they looked identical.
-//
-// Each skeleton is drawn in the geometry of what replaces it, so the answer arriving is
-// a substitution rather than a jump. The bars carry no text and `./dashboard` marks the
-// pane `aria-busy` instead — grey rectangles are decoration, and a reader who isn't
-// looking at them wants the sentence at the foot of the timeline.
-//
-// The shimmer (`.db-sk`) and the spinner (`.u-spin`) are the usage screen's own. A
-// second loading vocabulary would only be a second thing to keep in step.
+// Each is drawn in the geometry of what replaces it, so the answer arriving is a
+// substitution rather than a jump. The bars carry no text; ./dashboard marks the pane
+// aria-busy. The shimmer (.db-sk) and spinner (.u-spin) are the usage screen's own.
 
 const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
 
-/**
- * The strip, before it knows anything.
- *
- * The tile *labels* are bars too, not the real words. Which tiles exist depends on the
- * tier — a folder with no git has neither Commits nor Contributors — and `project_facts`
- * is one of the calls still out, so naming them here would be a guess the answer then
- * contradicts by removing two tiles.
- */
+/** The strip before it knows anything. Labels are bars too: which tiles exist depends on the tier. */
 export function pulseSkeleton(range: number): string {
   const tiles = [["52px", "44px"], ["48px", "62px"], ["62px", "38px"], ["58px", "54px"]]
     .map(([k, v]) => `<div class="db-tile"><span class="k">${sk(k, 7)}</span>`
@@ -112,17 +70,8 @@ export function pulseSkeleton(range: number): string {
   return `<div class="db-pulse">${tiles}${rangeTile(range)}</div>`;
 }
 
-/**
- * The timeline, before it has any days.
- *
- * Three rows in the real `.db-day` geometry — gutter, spine dot, summary line, facts —
- * so the first real day lands where the first bar was. Three, and not enough to fill the
- * column, because the window is a preference this doesn't read: a skeleton that runs to
- * the fold promises a length it has no way to know.
- *
- * The sentence underneath is the part a skeleton can't say. It is the usage screen's
- * spinner-and-line pattern, for the same reason it has one.
- */
+// Three rows in the real .db-day geometry, and only three: the window is a preference
+// this doesn't read, so a skeleton that runs to the fold promises a length it can't know.
 export function spineSkeleton(): string {
   const row = (w: string) => `<div class="db-day">
       <div class="db-gut">${sk("30px", 8)}</div>
@@ -134,15 +83,8 @@ export function spineSkeleton(): string {
     + `<p class="db-skhint"><span class="u-spin"></span>Reading this project's history…</p>`;
 }
 
-/**
- * One aside card, before its rows exist.
- *
- * Used for two different waits. The local reads get one because the aside would
- * otherwise be a lone Notes box; the GitHub half gets one because it fires *after* the
- * rest and was the most silent wait of the lot — the Open work card was simply not
- * there, which on a repo whose issues are the point reads as `gh` being broken rather
- * than as `gh` being slow.
- */
+// For the local reads and for the GitHub half, which fires after the rest and needs one
+// most: an absent Open work card reads as gh being broken rather than slow.
 export function cardSkeleton(rows = 3): string {
   const body = ["78%", "62%", "88%", "70%"].slice(0, rows).map((w) =>
     `<div class="cr">${sk("13px", 13)}<span class="ti">${sk(w, 9)}</span>`
@@ -153,23 +95,12 @@ export function cardSkeleton(rows = 3): string {
 
 // ---------- the timeline ----------
 
-/**
- * A generated sentence is marked, always. The reader has to be able to tell what the
- * app observed from what a model wrote about it, and the mark is the only difference
- * between a log and a claim.
- *
- * `summary` is **your** day and is the headline; `team` is the **project's**, and sits
- * above it in a box of its own. The box is contained rather than plain because it is the
- * one thing on the timeline that came out of the repo rather than out of this machine —
- * a colleague's copy of Episko produced the same sentence, and it is the same sentence
- * they are reading. `team` arrives already gated (see `sharedDay`): the caller decides
- * whether it is worth showing, this only decides how.
- */
+// A generated sentence is always marked: the mark is the only difference between a log
+// and a claim. `summary` is your day; `team` is the project's, in a box of its own, and
+// arrives already gated by `sharedDay`: the caller decides whether to show it, this only how.
 export interface DayPending {
-  /// Your own line, `dayFacts` → `summarize_day`.
-  mine?: boolean;
-  /// The project's line — the shared box, which on this day will exist.
-  team?: boolean;
+  mine?: boolean; // your own line, dayFacts → summarize_day
+  team?: boolean; // the project's line, the shared box
 }
 
 export function dayHtml(
@@ -179,23 +110,9 @@ export function dayHtml(
   const dt = new Date(d.when);
   const rows = dayRows(d);
   const hidden = rows.length;
-  // A pending line is not an absent one, and the two want opposite treatments. Your own
-  // sentence has a deterministic headline standing in for it that is already correct and
-  // already readable, so waiting is a mark *beside* it — replacing a sentence somebody
-  // can read with a grey bar to promise a nicer one is a bad trade. The shared box has no
-  // such stand-in: it is a block that would otherwise appear out of nothing, and its
-  // heading is known (this day has more than one human committer, and who they were) long
-  // before its sentence is, so only the sentence is a bar.
-  // The `ai` mark sits in the box's own bottom-right rather than trailing the last word:
-  // inline it read as part of the sentence, which is the one thing a provenance mark must
-  // never do, and it landed wherever the text happened to wrap.
-  //
-  // **The paragraph is not clamped, and must not be.** A three-line clamp with a
-  // click-to-expand lived here briefly and was pure loss: `prompt_for` caps this sentence
-  // at 22 words, so it cannot reach three lines at this width — the fold could never fire
-  // for the reason it existed, while the measurement behind its "· more" was wrong often
-  // enough to advertise a fold on every box on screen. A length the generator guarantees
-  // does not need a length control.
+  // Your pending line is a mark beside the headline, which already reads fine; the shared
+  // box has no stand-in, so only its sentence is a bar. The paragraph is not clamped and
+  // must not be: `prompt_for` caps it at 22 words, so a fold could never fire honestly.
   const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}">
         <span class="tl"><span class="sh">shared</span>The project${
           authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
@@ -230,10 +147,8 @@ function authorsOf(d: TrailDay): string {
   return `<span class="dot">·</span><span class="who">${esc(who.slice(0, 3).join(", "))}</span>`;
 }
 
-/// One time-ordered list, sessions and commits mixed. Not sessions-then-commits: a
-/// session at 09:00 and the commit it produced at 09:05 are a cause and its effect,
-/// and listing all the causes then all the effects breaks the only ordering that
-/// explains the day. (Same rule as ./trail's `dayItems`, restated per project.)
+// Sessions and commits in one time order, not sessions then commits: a session and the
+// commit it produced are cause and effect (the rule ./trail's `dayItems` follows).
 function dayRows(d: TrailDay): string[] {
   const items: { when: number; html: string }[] = [
     ...d.sessions.map((s) => ({ when: s.when, html: sessionRow(s) })),
@@ -257,9 +172,8 @@ function commitRow(c: TrailCommit): string {
 }
 
 // ---------- the aside ----------
-// Four compact cards at most, each one line per row and each with a ⤢ that opens the
-// same detail overlay. A card appears when it has something to say and is absent
-// otherwise: an empty panel reads as breakage, not as an honest blank.
+// A card appears when it has something to say and is absent otherwise: an empty panel
+// reads as breakage, not as an honest blank.
 
 function card(id: string, title: string, count: string, body: string, enlarge = true): string {
   return `<div class="ac"><div class="ac-h"><span class="t">${esc(title)}</span>`
@@ -268,8 +182,7 @@ function card(id: string, title: string, count: string, body: string, enlarge = 
     + `</div><div class="ac-b">${body}</div></div>`;
 }
 
-/// A checkout row. Branch and one piece of state — anything more (ahead/behind,
-/// merged) costs a `git` process per checkout, which is what the ⑃ dialog is for.
+// Branch and one piece of state only: anything more costs a git process per checkout.
 function checkoutRow(w: WtHead, live: number, dirty: boolean, main: boolean): string {
   const tag = live ? `<span class="tag acc">${live} live</span>`
     : dirty ? `<span class="tag warn">dirty</span>`
@@ -291,36 +204,18 @@ export function checkoutsCard(
 }
 
 // ---------- the Repository card ----------
-// The main checkout's git state and the five verbs that act on it, in the overview
-// column rather than in the inspector's list. They were rows there, and a verb in a
-// twelve-row menu is a verb you have to go looking for: the pane is called an overview,
-// so where the repo stands belongs on it. It is also why this card carries state at all
-// — a row of buttons with no branch and no counts above them answers nothing.
+// The main checkout's git state and the verbs that act on it. It carries state because
+// a row of buttons with no branch and no counts above them answers nothing.
 
-/**
- * What the main checkout's git verbs are about to do, from its last-known upstream
- * state. `g` is null until the probe answers — and stays null for a folder git could not
- * read — which `syncState` renders as the plainest wording rather than as an absence:
- * the buttons work either way, because they fetch before deciding anything.
- */
+/** The main checkout's last-known upstream state, behind the Repository card's verbs. */
 export interface DashSync {
-  /// The branch on the main checkout's HEAD: what is being fast-forwarded, pushed, or
-  /// switched away from. Also the only place this pane says which branch that is — the
-  /// header has no branch chip and the Checkouts card doesn't draw for a lone checkout.
-  branch: string;
-  /// Where that branch sat against its upstream **at the last fetch**, which on a
-  /// dashboard is as old as the last time anything ran git in that folder.
-  g: DiffStat | null;
-  /// The op in flight, or `""`. The one state that greys these buttons — see `syncState`
-  /// for why none of the others do — and it greys **both** of them, because the lock is
-  /// one per app: the second verb would run against counts the first one's fetch is
-  /// still in the middle of changing.
-  busy: SyncOp | "";
+  branch: string;     // HEAD's branch; the only place this pane names it
+  g: DiffStat | null; // as of the last fetch; null until the probe answers or if git can't read the folder
+  busy: SyncOp | "";  // the op in flight; greys both verbs, since the lock is one per app
 }
 
-/// The tooltip on ⇣ Pull: what *this* button would do with the state the card states
-/// above it. Every wording says what it is reading and how fresh that is, because the
-/// number is the part a reader would otherwise assume is live.
+// ⇣ Pull's tooltip. Every wording says how fresh its numbers are, since nothing on this
+// pane makes them live.
 function pullSub(p: DashSync): string {
   if (p.busy === "pull") return "fetching, then fast-forwarding…";
   const g = p.g;
@@ -329,19 +224,15 @@ function pullSub(p: DashSync): string {
     case "no-upstream": return `${b} tracks no upstream`;
     case "diverged": return `diverged · ${g!.ahead} ahead, ${g!.behind} behind`;
     case "behind": return `${g!.behind} behind ${g!.upstream} at the last fetch`;
-    // Unpushed commits are the *quiet* answer for this verb, and saying only "level"
-    // would drop the one number the button beside it exists for.
+    // "level" alone would drop the one number the button beside it exists for.
     case "ahead": return `nothing to pull at the last fetch · ${g!.ahead} unpushed`;
     case "level": return `level with ${g!.upstream} at the last fetch`;
     default: return `fetch, then fast-forward ${b}`;
   }
 }
 
-/// The tooltip on ⇡ Push, reading the same `syncState` from the other side. The two
-/// cases worth the wording are the ones where "behind" means different things: with no
-/// commits of our own there is simply nothing to send (the backend says so and runs no
-/// git), while commits on both sides is a *diverged* branch, which it refuses with
-/// `git pull --rebase && git push` for a prefilled terminal.
+// ⇡ Push's tooltip. Behind with nothing of our own is nothing to send (the backend runs
+// no git); behind with our own commits is diverged, refused with a prefilled terminal.
 function pushSub(p: DashSync): string {
   if (p.busy === "push") return "fetching, then pushing…";
   const g = p.g;
@@ -356,10 +247,8 @@ function pushSub(p: DashSync): string {
   }
 }
 
-/// The tooltip on ⇄ Switch branch. It says the branch rather than the upstream, because
-/// the verb is about which branch the folder is *on* — and it says the dirty tree when
-/// there is one, since that is the single thing that turns this click into a terminal
-/// rather than a switch (git would carry uncommitted changes across, so Episko declines).
+// ⇄ Switch's tooltip. A dirty tree is named because it turns the click into a terminal
+// rather than a switch: git would carry uncommitted changes across, so Episko declines.
 function switchSub(p: DashSync): string {
   const dirty = p.g && p.g.dirty > 0 ? p.g.dirty : 0;
   if (dirty) {
@@ -370,33 +259,23 @@ function switchSub(p: DashSync): string {
     : "move the main checkout to another branch";
 }
 
-/// The upstream with the branch's own name trimmed off when the tracking ref merely
-/// repeats it (`main` tracking `origin/main` reads "origin"). The card's header already
-/// says the branch, and a long branch name printed twice one line apart is one fact
-/// filling the card. A tracking ref with a *different* name is a real difference, and
-/// stays spelled out in full.
+// Trims the branch's own name off the tracking ref (`main` on `origin/main` reads "origin");
+// the header already says the branch. A differently named upstream stays in full.
 function upName(g: DiffStat, branch: string): string {
   const u = g.upstream ?? "";
   const tail = `/${branch}`;
   return branch && u.endsWith(tail) ? u.slice(0, -tail.length) : u;
 }
 
-/**
- * The one sentence the card states before any button is read, and it states the position
- * ONCE: each button's own tooltip says what *it* would do with it. Two sentences saying
- * the same numbers differently is how the pull row and the push row would drift apart.
- *
- * The staleness is part of the sentence rather than a footnote, because the numbers are
- * the part a reader assumes is live and nothing on this pane makes them so.
- */
+// States the position once; each button's tooltip says what it would do with it. The
+// staleness is part of the sentence, not a footnote.
 function syncLine(p: DashSync): string {
   if (p.busy) return p.busy === "pull" ? "fetching, then fast-forwarding…" : "fetching, then pushing…";
   const g = p.g;
   const up = g ? esc(upName(g, p.branch)) : "";
   const old = ` <span class="dim">as of the last fetch</span>`;
-  // Uncommitted work is not about the remote at all. It is on this line because it is
-  // the one thing that changes what a click here does: ⇄ Switch is refused on a dirty
-  // tree, and ⇣ Pull's fast-forward is refused by git itself when it would clobber.
+  // Uncommitted work is on this line because it changes what a click does: ⇄ Switch is
+  // refused on a dirty tree, and git refuses ⇣ Pull's fast-forward when it would clobber.
   const un = g && g.dirty > 0 ? ` <span class="un">· ${g.dirty} uncommitted</span>` : "";
   const ah = `<span class="ah">↑${g?.ahead}</span>`, bh = `<span class="bh">↓${g?.behind}</span>`;
   switch (syncState(g)) {
@@ -405,20 +284,13 @@ function syncLine(p: DashSync): string {
     case "behind": return `${bh} behind ${up}${old}${un}`;
     case "ahead": return `${ah} unpushed to ${up}${old}${un}`;
     case "level": return `in sync with ${up}${old}${un}`;
-    // git could not read the folder, or the probe has not answered. Not an error worth a
-    // warning: every verb below fetches before it decides, so it is a thing not known
-    // yet rather than a thing that went wrong.
+    // Not read yet, or not a repo: every verb fetches first, so this is unknown, not wrong.
     default: return `<span class="dim">not read yet · every verb here fetches first</span>`;
   }
 }
 
-/**
- * `known` is `factsKnown`: whether `project_facts` has answered for the project on
- * screen. The three states are genuinely different and the card must not merge them —
- * unknown gets a skeleton, a folder that is no repo gets nothing at all (`missingCard`
- * says that once, in full), and a repo gets the card whether or not its counts have
- * landed yet.
- */
+// `known` is `factsKnown`. Three states, never merged: unknown gets a skeleton, a folder
+// that is no repo gets nothing (`missingCard` says why), a repo gets the card.
 export function repoCard(sync: DashSync | null, known = true): string {
   if (!known) return cardSkeleton(2);
   if (!sync) return "";
@@ -434,8 +306,7 @@ export function repoCard(sync: DashSync | null, known = true): string {
       ${gb("graph", "⑂ Commit graph…", "history, branches, merges")}
       ${gb("cleanup", "⌥ Branches…", "clean up merged and orphaned ones")}
     </div>`;
-  // The branch is the header's count slot: it is the headline fact about a checkout, and
-  // on a repo with no worktrees this card is the only place the dashboard says it.
+  // The branch takes the count slot: with no worktrees this card is the only place it is named.
   return card("repo", "Repository", sync.branch ? `⌂ ${sync.branch}` : "", body, false);
 }
 
@@ -463,18 +334,9 @@ export function notesCard(notes: Note[]): string {
     <div class="ac-b">${body}</div></div>`;
 }
 
-/**
- * The one-time offer to start a shared work log, at the foot of the timeline.
- *
- * It lives *here*, under the sentences it is talking about, because that is the only
- * place the offer explains itself. It was reachable from nowhere before this, which for
- * a feature whose whole point is *sharing* meant nobody used it.
- *
- * Absent once the project has a digest: from then on every closed day is contributed
- * automatically, because whoever committed the file already made the decision. `n` is
- * how many days the first write would carry, so the offer never proposes to commit
- * nothing — and it counts the **project's** lines, which are the only ones that go in.
- */
+// The one-time offer to start a shared work log, under the sentences it talks about.
+// Absent once the project has a digest: from then on every closed day is contributed
+// automatically. `n` counts the project's lines, the only ones that go in.
 export function workLogOffer(n: number): string {
   if (!n) return "";
   return `<div class="miss db-share"><span class="t">Not written down anywhere</span>
@@ -485,8 +347,7 @@ export function workLogOffer(n: number): string {
     <button class="act" data-dashworklog>↑ Start the work log</button></div>`;
 }
 
-/// What this folder can't do, said once and plainly. Rendered *instead of* the cards
-/// it replaces, never alongside empty ones.
+// What this folder can't do, said once, in place of the cards it replaces.
 export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
   if (tier === "github") return "";
   if (tier === "git") {
@@ -505,11 +366,9 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
 
 // ---------- the inspector: the project's context menu, standing open ----------
 
-/// `known` is whether `project_facts` has answered *for this project yet*. It is not the
-/// same question as "is anything loading": a range change reloads the timeline without
-/// putting the tier back in doubt, and blanking the repo verbs for it would be a flicker
-/// that says nothing. False only between clicking a new project and its facts landing —
-/// during which `tier` reads `none`, which is an assertion, not an absence.
+// `known`: whether `project_facts` has answered for this project; until it has, `tier`
+// reads `none` and must not be read alone. Not "is anything loading": a range change
+// reloads the timeline without putting the tier in doubt.
 export function dashInspector(
   root: string, tier: ProjectTier, f: ProjectFacts | null,
   live: { id: string; label: string; glyph: string; cls: string; ctx: string }[],
@@ -547,19 +406,15 @@ export function dashInspector(
     <p class="ihint">${esc(tilde(root))}</p>`;
 }
 
-/// The 44px rail ⌘I collapses to on this view. It exists because the inspector holds
-/// the ONLY copy of History / Terminal / Run here — the dashboard header gave them up
-/// — so collapsing to nothing would hide real verbs. The live-session glyphs stay at
-/// the top, so the one thing the lighter header gave up (noticing something needs you)
-/// survives the collapse.
+// The 44px rail ⌘I collapses to. The inspector holds the only copy of History /
+// Terminal / Run here, so collapsing to nothing would hide real verbs.
 export function dashStrip(
   accent: string, initial: string, tier: ProjectTier,
   live: { id: string; glyph: string; cls: string; label: string }[], known = true,
 ): string {
   const b = (a: string, ic: string, t: string, cls = "", off = false) =>
     `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}"${off ? " disabled" : ""}>${ic}</button>`;
-  // Same `known` gate as the inspector: the rail is the *same* verbs, and two surfaces
-  // offering a different set of them for a second is worse than either alone.
+  // Same `known` gate as the inspector: the two surfaces must offer the same verbs.
   const repo = known && tier !== "none";
   return `<span class="sglyphs">
       <span class="pglyph" style="background:${esc(accent)}">${esc(initial)}</span>
@@ -575,9 +430,8 @@ export function dashStrip(
 }
 
 // ---------- the enlarge overlay ----------
-// One component, N contents — title, subtitle, ✕ Close, and a footer stating the one
-// non-obvious rule. It covers the dashboard rather than replacing it, and Esc steps
-// out one layer, the same as the commit graph's message overlay.
+// One component, N contents. It covers the dashboard rather than replacing it; Esc steps
+// out one layer, as in the commit graph's message overlay.
 
 export function overlayHtml(title: string, sub: string, body: string, foot: string): string {
   return `<div class="ovl-h"><span class="t">${esc(title)}</span><span class="s">${esc(sub)}</span>
@@ -586,9 +440,6 @@ export function overlayHtml(title: string, sub: string, body: string, foot: stri
     ${foot ? `<div class="ovl-f">${foot}</div>` : ""}`;
 }
 
-/// Checkouts, enlarged: the ⑃ dialog's facts without the dialog. One fixed column
-/// geometry for every row — `auto` would let each row size to its own tag and the
-/// columns would stagger, which is the trap the commit graph's row grid documents.
 export function checkoutsOverlay(
   heads: WtHead[], liveFor: (p: string) => number, dirtyFor: (p: string) => boolean,
 ): string {
@@ -608,15 +459,9 @@ export function checkoutsOverlay(
     `Creating a worktree, pruning a stale one and every warning about a locked or detached checkout stay in the <b>⑃ dialog</b>, which already does all of that. This is a status board.`);
 }
 
-/// Branches, enlarged: the full-screen cleanup that used to be squeezed into the ⑃
-/// dialog's detail column beside a second list. A table, one row per branch, checkboxes
-/// down the side — the shape the decision actually has, which the dialog could not give
-/// it. The rules are ./branches (pure, tested); this only draws them.
-///
-/// Two blocks in one view rather than two views, because they are one question asked in
-/// two places — and they are NOT interchangeable: the local half deletes refs on this
-/// machine, the remote half changes what everyone else sees, so each keeps its own count,
-/// its own selection and its own button.
+// Branches, enlarged; the rules are ./branches, this only draws them. The two halves are
+// not interchangeable (local deletes refs here, remote changes what everyone sees), so
+// each keeps its own count, selection and button.
 export function branchesOverlay(o: {
   local: CleanCand[]; remote: CleanCand[];
   picked: ReadonlySet<string>; rpicked: ReadonlySet<string>;
@@ -697,12 +542,9 @@ export function branchesOverlay(o: {
     + block(`On ${o.remoteName}`, `${o.remote.length} branch${o.remote.length === 1 ? "" : "es"}`, o.remote, o.rpicked,
       "remote", (n) => (n ? `Delete ${n} on ${o.remoteName}` : `Delete on ${o.remoteName}`),
       "No remote-only branches to clean up.", remoteWarn,
-      // The trunk sits with the numbers it decides, in the header of the half whose whole
-      // Standing column is measured against it — not in a footer under two tables.
+      // The trunk control sits in the header of the half measured against it.
       `<button class="bk-cmp" data-dashbrtrunk title="Every branch here is measured against this&#10;Click to compare against another">vs ${esc(o.trunk || "nothing")}</button>`);
 
-  // No footer: what it used to say (the trunk) is a control now, and it lives with the
-  // column it governs.
   return overlayHtml("Branches", `${o.local.length} local · ${o.remote.length} remote`, body, "");
 }
 
@@ -742,8 +584,7 @@ export function notesOverlay(
             title="Write this into .episko/notes.toml so the team can read it"><i></i>shared</span>` : ""}
         </span></div>`).join("")}</div>`
     : `<div class="ac-empty">Nothing queued yet.</div>`;
-  // A colleague's note is theirs: dispatchable, but not editable or deletable from
-  // here — this is a read of their file, not a shared mutable list.
+  // A colleague's note is dispatchable but not editable here: this is a read of their file.
   const theirs = shared.length
     ? `<div class="bk"><div class="bk-h"><span class="t">From the repo</span><span class="n">${shared.length}</span></div>
         <div class="ncol">${shared.map((n) => `<div class="ncard">
@@ -760,15 +601,12 @@ export function notesOverlay(
 }
 
 // ---------- the GitHub half ----------
-// Issues and pull requests in one list: they were competing for the same four rows,
-// the enlarged view already showed them together, and a kind chip separates them more
-// cheaply than a heading does.
+// Issues and pull requests in one list; a kind chip separates them more cheaply than a heading.
 
 const KIND = (t: GhThread) => (t.kind === "pr" ? "pr" : "iss");
 
-/// A claimed row turns its ▶ into a green ◍ **in the same slot**. Putting the name in
-/// the row is what made this column ragged: the compact card says *that* it is taken,
-/// the enlarged view says who and for how long.
+// A claimed row turns its ▶ into a ◍ in the same slot; a name in the row made the column
+// ragged. The enlarged view says who and for how long.
 function workRow(t: GhThread, h: Holder | null): string {
   const act = h
     ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
@@ -780,7 +618,6 @@ function workRow(t: GhThread, h: Holder | null): string {
     <span class="rt"><span class="age">${esc(shortAge(t.updated_at))}</span>${act}</span></div>`;
 }
 
-/// Compact ages, tabular so the column lines up: 2h, 3d, 5w.
 function shortAge(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "—";
@@ -799,38 +636,23 @@ export function workCard(rows: GhThread[], total: number, prs: number, holder: (
     <div class="ac-b">${rows.map((t) => workRow(t, holder(t))).join("")}</div></div>`;
 }
 
-/// gh missing, logged out, pointed at a non-GitHub folder — or signed in as the wrong
-/// one of your accounts. One quiet row, never an error dialog: the same stance a blocked
-/// runnable takes.
-///
-/// **The account picker is offered here because here is where you find out.** On a
-/// machine logged in to two GitHub accounts, the commonest reason this card exists at
-/// all is that the repo belongs to the other one, and a card that only states the
-/// failure makes the reader go looking for a setting they have no reason to believe
-/// exists. It is absent for anybody with one account, where it could not change the
-/// answer.
+// gh missing, logged out, or signed in as the wrong account: one quiet row, never an
+// error dialog. The account picker is offered here because here is where you find out;
+// it is absent for anybody with one account, where it could not change the answer.
 export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho): string {
   return `<div class="miss"><span class="t">GitHub</span><p>${esc(reason)}.</p>
     <p>Everything else on this dashboard still works.</p>${ghPicker(accounts, who)}</div>`;
 }
 
-/// The account row: one button per account gh holds, the current one marked.
-///
-/// The mark is on the *effective* account whichever way it was reached, but the label
-/// underneath says which of the two it is — "gh's default" and "set for this project"
-/// look the same until the day the default changes under you, and then they are the
-/// whole story. A pin gh no longer knows says so rather than disappearing, because that
-/// is precisely the state in which the reads below it are failing.
+// One button per account gh holds, the effective one marked; the label underneath says
+// whether that is gh's default or a pin, which only matters the day the default changes.
 export function ghPicker(accounts: GhAccount[], who: GhWho): string {
   if (!ghPickable(accounts)) return "";
   const btn = (login: string, on: boolean) =>
     `<button class="act${on ? " on" : ""}" data-dashact="ghacct:${esc(login)}">${esc(login)}</button>`;
   const rows = accounts.map((a) => btn(a.login, a.login === who.login)).join("");
-  // A pin gh has forgotten still holds — the backend refuses the call rather than
-  // answering as somebody else — so it is shown, marked, and **inert**: it is the state
-  // to escape from, and a button that re-pins what is already pinned is a control whose
-  // only effect is to look like it did something. The way out is another account or the
-  // clear button beside it.
+  // A pin gh has forgotten still holds (the backend refuses rather than answering as
+  // somebody else), so it is shown, marked and inert; the way out is another account or clear.
   const gone = who.source === "pinned" && !who.known && who.login
     ? `<button class="act on" disabled>${esc(who.login)}</button>` : "";
   const sub = who.source === "pinned"
@@ -843,9 +665,8 @@ export function ghPicker(accounts: GhAccount[], who: GhWho): string {
 }
 
 // ---------- the enlarged views ----------
-// One fixed column geometry per view, declared once in CSS and inherited by every row:
-// an `auto` trailing track lets each row size to its own button label and the columns
-// stagger, which is the trap the commit graph's row grid documents.
+// One fixed column geometry per view, declared once in CSS: an `auto` trailing track
+// would let each row size to its own button label and the columns stagger.
 
 const BUCKET_LABEL: Record<string, string> = { today: "Today", week: "This week", older: "Older" };
 
@@ -865,8 +686,7 @@ function workBigRow(t: GhThread, h: Holder | null): string {
   </div>`;
 }
 
-/// A stable hue per label name. GitHub's own colour is not in the payload we ask for,
-/// and asking for it would cost a wider query for decoration.
+// A stable hue per label name; GitHub's own colour would cost a wider query for decoration.
 function labelHue(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
@@ -915,8 +735,7 @@ export function triageOverlay(
           <button class="act go-keep" data-dashkeep="${t.number}">✕ Keep</button></span></div>`).join("")
         : `<div class="ac-empty">Nothing has gone quiet. Triage has nothing to ask about.</div>`)
     + `</div>`
-    // The keep list is committed, so it has to be reviewable: a decision nobody can
-    // see is worse than no decision.
+    // The keep list is committed, so it has to be reviewable here.
     + (kept.length ? `<div class="bk"><div class="bk-h"><span class="t">Kept · never suggested again</span>
         <span class="n">${kept.length}</span></div>`
       + kept.map((k) => `<div class="kept"><span class="num">${k.number}</span>
@@ -930,8 +749,8 @@ export function triageOverlay(
 }
 
 // ---------- the confirm sheets ----------
-// Closing an issue and claiming one are both public writes, one click from a dashboard
-// you open constantly. Neither happens without showing exactly what will be written.
+// Closing and claiming are public writes one click from a dashboard you open constantly;
+// neither happens without showing exactly what will be written.
 
 export function closeSheet(t: GhThread, comment: string, slug: string): string {
   return `<h4>Close #${t.number} on GitHub?</h4>

@@ -1,21 +1,6 @@
-// Everything Episko asks git: worktrees, branches, the working-set diff, the
-// toolbar's fetch/pull/push, and the commit info the new-session dialog shows.
-//
-// Two invariants run through the whole module and are what its tests are about:
-//
-// - **Never parse localized git output.** Every call goes through `git_cmd`, which
-//   forces `LC_ALL=C`, and control flow branches on exit codes or an explicit
-//   probe — a German git says "existiert bereits", not "already exists".
-// - **Never destroy a checkout something is using.** `remove_worktree` and
-//   `switch_branch` consult `AppState.sessions` by `same_path`, so a worktree with
-//   a live embedded session in it is refused rather than deleted. The two ask
-//   different questions of that map, because they cost different things: removal
-//   deletes the folder, so *any* pane there stops it; a switch only moves HEAD under
-//   panes that survive it, so only work in flight does (`blocks_switch`).
-//
-// `git_cmd`/`git_run` are git-only and live here; they call down into
-// `platform::{sys_command, augmented_path}`, which is why platform.rs had to move
-// out first. `same_path` came here too — one consumer module, so it belongs to it.
+//! Everything Episko asks git: worktrees, branches, the working-set diff, fetch/pull/push.
+//! Never parse localized git output (every call pins LC_ALL=C; branch on exit codes or a
+//! probe), and never destroy a checkout a live session is using (docs/worktrees.md).
 
 
 use std::collections::HashMap;
@@ -29,15 +14,10 @@ use crate::platform::{
 };
 use crate::AppState;
 
-/// Create a git worktree with a new (or existing) branch off `repo_dir`.
-/// Returns the absolute worktree path. Worktrees live in a sibling
-/// `.cc-worktrees/<repo>/<branch>` folder so the repo stays clean.
+/// Create a worktree on a new or existing branch off `repo_dir`, under the sibling
+/// `.cc-worktrees/<repo>/<branch>` folder. Returns the absolute worktree path.
 #[tauri::command(async)]
 pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<String>) -> Result<String, String> {
-    // Every git call forces LC_ALL=C: we must never depend on localized output.
-    // A German git says "existiert bereits", not "already exists" — parsing error
-    // text for control flow (as this used to) silently broke worktree creation on
-    // non-English gits. We now branch on exit codes / an explicit existence probe.
     let git = |args: &[&str]| {
         sys_command("git")
             .env("LC_ALL", "C")
@@ -67,16 +47,12 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
     }
     let wt_str = wt_path.to_string_lossy().to_string();
 
-    // Decide new-branch (-b) vs attach-existing by probing the ref directly,
-    // instead of creating and inspecting a localized error string.
     let branch_exists = git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{safe}")])
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    // `base` only means anything when we're CREATING the branch — attaching an existing
-    // one takes its own tip. Without it `worktree add -b` cuts from the repo's HEAD,
-    // which quietly makes whatever the root folder is parked on the parent of every new
-    // branch; passing a start-point is how the caller escapes that.
+    // `base` only applies when creating: without a start-point `worktree add -b` cuts
+    // from the root's HEAD, so whatever the root is parked on parents every new branch.
     let base = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     if let Some(b) = base.as_deref() {
         if !branch_exists {
@@ -89,13 +65,8 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
         }
     }
 
-    // A start-point that IS a remote-tracking ref means "check out what's on the remote",
-    // so the branch we cut must follow it: without an upstream, `git push`/`git pull` in
-    // the new worktree need arguments, and the picker's ahead/behind for it reads empty
-    // forever. Git already does this when `branch.autoSetupMerge` is at its default —
-    // which is exactly why it must be said outright, since a user who turned that off
-    // would otherwise get a silently untracked branch. Detected rather than passed as a
-    // flag so the rule holds for any caller, and so `base` keeps its one meaning.
+    // A remote-tracking start-point must be tracked outright: git's autoSetupMerge DWIM
+    // is a default a user can turn off, and an untracked branch has no ahead/behind.
     let track = !branch_exists
         && base.as_deref().is_some_and(|b| {
             git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{b}")])
@@ -119,8 +90,7 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
         return Ok(wt_str);
     }
 
-    // Recoverable case: the worktree dir already exists from a previous run and is
-    // already on the branch we want — hand it back so re-opening it just works.
+    // The dir may already exist from an earlier run on this branch; hand it back.
     if wt_path.is_dir() {
         if let Ok(o) = git(&["-C", &wt_str, "rev-parse", "--abbrev-ref", "HEAD"]) {
             if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == safe {
@@ -131,18 +101,13 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
     Err(String::from_utf8_lossy(&add.stderr).trim().to_string())
 }
 
-/// One checkout as seen by `worktree_heads` — the cheap, spawn-free half of
-/// `list_worktrees`. Deliberately carries only what can be answered from files.
+/// One checkout as seen by `worktree_heads`: only what can be answered from files.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub(crate) struct WorktreeHead {
-    /// The checkout directory, in the same physical spelling `repo_root_of` uses.
-    path: String,
-    /// Branch name, or "(detached)" when HEAD holds a raw sha.
-    branch: String,
+    path: String,   // physical spelling, as `repo_root_of` uses
+    branch: String, // "(detached)" when HEAD holds a raw sha
     is_main: bool,
-    /// The checkout dir is still on disk. A hand-deleted folder stays registered under
-    /// `.git/worktrees` until pruned, so this mirrors `Worktree::exists`.
-    exists: bool,
+    exists: bool,   // a hand-deleted folder stays registered until pruned, like `Worktree::exists`
 }
 
 /// Read a `HEAD` file into a branch label without spawning git.
@@ -159,36 +124,12 @@ fn head_branch(head_file: &std::path::Path) -> Option<String> {
     })
 }
 
-/// Every checkout of `dir`'s repo and the branch each has on HEAD — read straight off
-/// the filesystem, with **no `git` process at all**.
-///
-/// This is the cheap counterpart to `list_worktrees`, and it exists because the sidebar
-/// wants to notice a new worktree *continuously*, not when a dialog is opened.
-/// `list_worktrees` costs a `status --porcelain` per checkout plus a `merge-base` per
-/// branch — right for a picker, far too heavy to poll across every open project. The
-/// facts here come from three files per worktree:
-///
-/// ```text
-/// <root>/.git/HEAD                      → the main worktree's branch
-/// <root>/.git/worktrees/<n>/gitdir      → …/<checkout>/.git, whose parent is the checkout
-/// <root>/.git/worktrees/<n>/HEAD        → that checkout's branch
-/// ```
-///
-/// Two things this must not get wrong. `<n>` is git's bookkeeping name and does **not**
-/// have to match the checkout's folder name (`worktrees/board` can own `…/feat-board`),
-/// so the path comes from `gitdir` and never from the directory name. And every path is
-/// run through `physical_cwd`, for the reason spelled out on `repo_root_of`: git writes
-/// an already-resolved path into `gitdir`, so an unresolved one derived here would be a
-/// *second spelling of the same checkout*, and the sidebar groups by exact string
-/// equality — one worktree would render as two.
-///
-/// The result doubles as a change stamp: the caller compares it to its previous copy and
-/// only reaches for the expensive `list_worktrees` when it actually moved.
+/// Every checkout of `dir`'s repo and its HEAD branch, read off `.git/` with no git
+/// process, so the sidebar can poll it; `list_worktrees` is the expensive picker half.
+/// The path comes from each `gitdir` file (the bookkeeping name need not match the
+/// folder) and goes through `physical_cwd`, or one checkout renders as two roots.
 #[tauri::command(async)]
 pub(crate) fn worktree_heads(dir: String) -> Vec<WorktreeHead> {
-    // repo_root_of already resolves both `.git` shapes (dir and `gitdir:` file) from a
-    // physical starting point, so asking it is what keeps this in step with every other
-    // root in the app — including when called from inside a linked worktree.
     let Some(root) = repo_root_of(&dir) else {
         return vec![];
     };
@@ -229,27 +170,14 @@ pub(crate) struct Worktree {
     path: String,
     branch: String,
     is_main: bool,
-    /// Working tree has uncommitted or untracked changes (`git status --porcelain`).
-    /// A dirty worktree can't be removed without `--force`, so the UI won't offer a
-    /// one-click removal for it. Always false for the main worktree (never removable).
-    dirty: bool,
-    /// This worktree's branch is fully merged into the MAIN worktree's branch (its
-    /// commits are an ancestor). Removing such a worktree — and safe-deleting its
-    /// branch — loses nothing, so the UI can surface it as the obvious cleanup.
-    merged: bool,
-    /// `git worktree lock` was used on this checkout. Git refuses to remove a locked
-    /// worktree even with `--force`, so without this flag the UI would hand the user
-    /// a `--force` command that also fails. Always false for the main worktree.
-    locked: bool,
-    /// The checkout directory is still on disk. A hand-deleted folder stays in
-    /// `.git/worktrees` until pruned, so it keeps appearing in this list — the UI must
-    /// not launch a PTY into it, and removal has to fall back to `prune`.
-    exists: bool,
+    dirty: bool,  // uncommitted or untracked changes; not one-click removable. Always false for main
+    merged: bool, // fully merged into the main worktree's branch, so removal loses nothing
+    locked: bool, // `git worktree lock`; git refuses removal even with --force. Always false for main
+    exists: bool, // a hand-deleted folder stays in .git/worktrees until pruned; never launch into it
 }
 
-/// List the git worktrees for a repo (parsed from `git worktree list --porcelain`).
-/// The first entry is the main working tree. Each linked worktree is enriched with
-/// `dirty` / `merged` cues so the picker can tell which are safe to clean up.
+/// Worktrees from `git worktree list --porcelain`, main first, linked ones enriched
+/// with `dirty`/`merged` so the picker can tell which are safe to clean up.
 #[tauri::command(async)]
 pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     let out = sys_command("git")
@@ -290,9 +218,7 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     }
     flush(&mut res, cur_path.take(), cur_branch, cur_locked);
 
-    // Second pass: cleanliness cues for the linked worktrees. `merged` is measured
-    // against the main worktree's branch. Every git call here is best-effort — any
-    // hiccup just leaves the flag false, which only ever makes the UI more cautious.
+    // Cleanliness cues, best-effort: a hiccup leaves the flag false, which only makes the UI more cautious.
     let main_branch = res.iter().find(|w| w.is_main)
         .map(|w| w.branch.clone())
         .filter(|b| !b.is_empty() && b != "(detached)");
@@ -309,8 +235,7 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
             .unwrap_or(false);
         if let Some(mb) = &main_branch {
             if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
-                // `merge-base --is-ancestor A B` exits 0 when A is an ancestor of B,
-                // i.e. this worktree's branch is fully contained in the main branch.
+                // `--is-ancestor A B` exits 0 when A is an ancestor of B.
                 w.merged = sys_command("git")
                     .env("LC_ALL", "C")
                     .arg("-C").arg(&repo_dir)
@@ -326,32 +251,18 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
     res
 }
 
-/// True when two paths point at the same location, tolerant of symlinks and
-/// trailing slashes. Falls back to a string compare when either can't be
-/// canonicalized (e.g. one has already been deleted).
+/// Same location, tolerant of symlinks and trailing slashes; falls back to comparing
+/// normalized spellings when either side is gone (a removed worktree is exactly that).
 fn same_path(a: &str, b: &str) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
-        // One side is gone — which is not an edge case here but the main event: a
-        // removed worktree is exactly a path that no longer resolves. With nothing to
-        // canonicalize against, compare the canonical *spelling* rather than the raw
-        // strings. Every path the frontend sends and every path git prints has been
-        // through `norm_path` already, so this changes no answer today; it stops the
-        // one caller that forgets from failing on a forward slash alone, and off
-        // Windows it is the identity this always was.
         _ => norm_path(a) == norm_path(b),
     }
 }
 
-/// Remove a linked git worktree, optionally safe-deleting its branch. Mirrors
-/// `git_action`'s rule that no button may leave state the UI can't explain: the
-/// destructive `--force` (worktree) and `-D` (branch) variants are NEVER run from
-/// here — on refusal we hand back the exact shell command to run in a terminal.
-///
-/// Two guards up front: refuse while a live embedded session runs in the worktree
-/// (close it first), and refuse the repo's main worktree. Beyond that, plain
-/// `git worktree remove` is the safety net — it declines a dirty/untracked tree on
-/// its own, so committed work is never at risk from a click.
+/// Remove a linked worktree, optionally safe-deleting its branch. Never runs `--force`
+/// or `-D`: on refusal the exact command is handed back for a terminal. Refuses the
+/// main worktree and any worktree with a live embedded session in it.
 #[tauri::command(async)]
 pub(crate) fn remove_worktree(
     state: State<AppState>,
@@ -360,8 +271,6 @@ pub(crate) fn remove_worktree(
     branch: String,
     delete_branch: bool,
 ) -> Result<GitActionResult, String> {
-    // The one guard that needs live app state: never yank a worktree out from under
-    // a running embedded session. The rest is pure git and lives in the helper.
     let label = if branch.is_empty() { "worktree" } else { &branch };
     if state.sessions.lock().unwrap().values().any(|s| same_path(&s.workdir, &path)) {
         return Err(format!("a session is still running in {label} — close it first"));
@@ -369,9 +278,7 @@ pub(crate) fn remove_worktree(
     remove_worktree_impl(&repo_dir, &path, &branch, delete_branch)
 }
 
-/// The git side of `remove_worktree`, free of app state so it's testable against a
-/// real temp repo. Refuses the main worktree; removes without `--force`; optionally
-/// safe-deletes the branch — handing back the force command on any refusal.
+/// The git side of `remove_worktree`, free of app state so it is testable on a temp repo.
 fn remove_worktree_impl(
     repo_dir: &str,
     path: &str,
@@ -384,9 +291,7 @@ fn remove_worktree_impl(
     if listed.iter().any(|w| w.is_main && same_path(&w.path, path)) {
         return Err("that's the repo's main worktree — it can't be removed".into());
     }
-    // A locked worktree is refused by git even WITH --force, so suggesting the force
-    // command (as the generic failure path below does) would just fail again. Name
-    // the actual next step instead.
+    // Locked: git refuses even with --force, so name the real next step (unlock).
     if listed.iter().any(|w| w.locked && same_path(&w.path, path)) {
         return Ok(GitActionResult {
             ok: false,
@@ -399,19 +304,10 @@ fn remove_worktree_impl(
 
     let out = git_run(git_cmd(repo_dir, &["worktree", "remove", path]), 30)?;
     if !out.status.success() {
-        // **A non-zero exit does NOT mean nothing happened**, and assuming it did is
-        // the bug this branch exists to answer. `git worktree remove` deletes the
-        // checkout directory first and unregisters it second, and git's own source
-        // continues past a failed delete because "there's no going back from here" —
-        // so a folder it could not remove (Windows: any process holding it) leaves the
-        // worktree *already unregistered* and exit 255. Reporting that as a refusal
-        // and handing over `--force` produced the one command guaranteed to fail:
-        // `fatal: '<path>' is not a working tree`.
-        //
-        // So ask the only question that separates the two states. Note this is asked
-        // even when the folder is gone: a hand-deleted checkout also lands here on
-        // older gits (newer ones exit 0 and never reach this), and "not registered
-        // any more" covers both without a second special case.
+        // A non-zero exit does NOT mean nothing happened: git deletes the folder first and
+        // unregisters second, and carries on past a failed delete (Windows: a held folder),
+        // leaving the worktree unregistered. Offering --force then fails with "not a working
+        // tree", so ask git whether it is still registered (docs/worktrees.md).
         if !still_registered(repo_dir, path) {
             return finish_removal(repo_dir, path, branch, delete_branch, &label);
         }
@@ -432,10 +328,8 @@ fn remove_worktree_impl(
     finish_removal(repo_dir, path, branch, delete_branch, &label)
 }
 
-/// Everything that follows a worktree leaving git's records, shared by the clean exit
-/// and the partial one — because from here they are the same situation: the worktree
-/// is gone, and what is left is a folder that may or may not still be on disk and a
-/// branch that may or may not be worth deleting.
+/// After a worktree has left git's records, by a clean exit or a partial one: delete the
+/// folder if it is still there, then optionally safe-delete the branch.
 fn finish_removal(
     repo_dir: &str,
     path: &str,
@@ -445,11 +339,8 @@ fn finish_removal(
 ) -> Result<GitActionResult, String> {
     let stranded = ensure_folder_gone(path);
 
-    // Best-effort: drop the now-empty `.cc-worktrees/<repo>/` parent so the sibling
-    // tree doesn't accumulate empty dirs. `remove_dir` only succeeds when empty, which
-    // is also the whole guard — a checkout the user put somewhere of their own has a
-    // parent full of their things, and this cannot touch it. Skipped while the folder
-    // is stranded, when the parent is by definition not empty.
+    // Best-effort drop of the now-empty `.cc-worktrees/<repo>/` parent; `remove_dir` only
+    // succeeds when empty, which is the whole guard against a user's own parent folder.
     if stranded.is_none() {
         if let Some(parent) = std::path::Path::new(path).parent() {
             let _ = std::fs::remove_dir(parent);
@@ -457,8 +348,7 @@ fn finish_removal(
     }
 
     let mut res = if delete_branch && !branch.is_empty() && branch != "(detached)" {
-        // Safe-delete only: `git branch -d` refuses an unmerged branch. If it does,
-        // the worktree is already gone — report success and offer the force command.
+        // Safe-delete only; an unmerged branch is refused and -D handed back.
         let del = git_run(git_cmd(repo_dir, &["branch", "-d", branch]), 15)?;
         if del.status.success() {
             GitActionResult { ok: true, summary: format!("Removed worktree and branch {branch}"), ..Default::default() }
@@ -476,10 +366,8 @@ fn finish_removal(
     };
 
     if let Some(s) = stranded {
-        // `ok` stays true, and that is the honest answer rather than a convenient one:
-        // the worktree IS removed, the roster HAS changed, and the caller must refresh
-        // exactly as it would on a clean run. What is left is a directory — a separate
-        // problem, carried in a separate field, with its own repair.
+        // `ok` stays true: the worktree IS removed and the roster changed. The leftover
+        // directory is a separate problem, carried in its own field with its own repair.
         res.summary = format!("Removed {label} — its folder is still on disk");
         res.suggest = None;
         res.stranded = Some(s);
@@ -487,13 +375,8 @@ fn finish_removal(
     Ok(res)
 }
 
-/// Is `path` still one of `repo_dir`'s worktrees? The question `remove_worktree_impl`
-/// has to ask after a failure, and deliberately a fresh listing rather than a re-use
-/// of the one taken at the top — the whole point is that git may have changed it.
-///
-/// Unknown counts as *still registered*: if the listing itself failed we have learned
-/// nothing, and the old behaviour (report git's refusal, offer the force command) is
-/// the right thing to fall back to.
+/// Is `path` still one of `repo_dir`'s worktrees? A fresh listing, since git may have
+/// changed it. Unknown (a failed listing) counts as still registered.
 fn still_registered(repo_dir: &str, path: &str) -> bool {
     let Ok(out) = git_run(git_cmd(repo_dir, &["worktree", "list", "--porcelain"]), 15) else {
         return true;
@@ -510,21 +393,15 @@ fn still_registered(repo_dir: &str, path: &str) -> bool {
 /// What is left of a removed worktree when its directory would not delete.
 #[derive(serde::Serialize, Debug, Default)]
 pub(crate) struct Stranded {
-    /// The checkout directory still on disk.
-    path: String,
-    /// The first path inside it that refused — what the holder probe was run against.
-    stuck: String,
-    /// The OS's own reason, for the debug log and for the case with no holders at all.
-    reason: String,
+    path: String,   // the checkout directory still on disk
+    stuck: String,  // the first path inside it that refused; what the holder probe ran against
+    reason: String, // the OS's own reason, for the debug log
     holders: Vec<PathHolder>,
 }
 
-/// Delete the checkout directory, and if it won't go, say who is keeping it.
-///
-/// Retried before anything is reported, because the commonest holder by far is a
-/// process that was asked to die moments ago and whose handles outlive the signal by
-/// milliseconds — an answer worth having before the UI says a word. Deliberately short
-/// and bounded: past a second this is no longer a race, it is somebody's editor.
+/// Delete the checkout directory, and if it won't go, say who is keeping it. Retried
+/// briefly first: the commonest holder is a process killed moments ago whose handles
+/// outlive the signal by milliseconds. Bounded, since past a second it is somebody's editor.
 fn ensure_folder_gone(path: &str) -> Option<Stranded> {
     let p = std::path::Path::new(path);
     let mut last = None;
@@ -549,22 +426,16 @@ fn ensure_folder_gone(path: &str) -> Option<Stranded> {
     })
 }
 
-/// The outcome of a purge attempt: whether the folder went, and if not, the refreshed
-/// picture of what is still holding it.
+/// The outcome of a purge attempt, with a refreshed picture of what still holds the folder.
 #[derive(serde::Serialize, Debug, Default)]
 pub(crate) struct PurgeResult {
     gone: bool,
     stranded: Option<Stranded>,
 }
 
-/// Second half of a stranded removal: terminate the processes named in `kill`, then
-/// try the folder again. Only ever reached from a `Stranded` the app just produced.
-///
-/// Two guards, and neither is ceremony. **The holders are re-probed before anything is
-/// killed**, and only a pid still holding this folder is touched — the list came from
-/// an earlier answer, pids are reused, and killing a stale one means killing whatever
-/// inherited its number. And the path must be at least two levels deep, so a bug that
-/// arrives here with a drive root or a bare `C:\foo` deletes nothing.
+/// Second half of a stranded removal: kill the processes named in `kill`, then retry.
+/// The holders are re-probed first and only a pid still holding this folder is touched
+/// (pids are reused); the path must be at least two levels deep, so a bug deletes nothing.
 #[tauri::command(async)]
 pub(crate) fn purge_worktree_folder(path: String, kill: Vec<u32>) -> Result<PurgeResult, String> {
     let p = std::path::Path::new(&path);
@@ -591,32 +462,22 @@ pub(crate) fn purge_worktree_folder(path: String, kill: Vec<u32>) -> Result<Purg
         return Ok(PurgeResult { gone: false, stranded: Some(s) });
     }
     log::info!("purge {path} · killed {killed} holder(s)");
-    // A tree kill is still only a signal; `ensure_folder_gone` retries, which is what
-    // actually covers the gap between the kill returning and the handles closing.
+    // A tree kill is only a signal; the retry inside covers the handles closing.
     let after = ensure_folder_gone(&path);
     Ok(PurgeResult { gone: after.is_none(), stranded: after })
 }
 
-/// The tip commit of a checkout or a ref — what the new-session dialog's detail
-/// pane shows for whichever destination is highlighted.
+/// The tip commit the new-session dialog's detail pane shows for the highlighted row.
 #[derive(serde::Serialize)]
 pub(crate) struct CommitInfo {
-    /// Abbreviated sha (`%h`).
-    short: String,
-    /// Subject line (`%s`).
-    subject: String,
-    /// Author name (`%an`).
-    author: String,
-    /// Committer date, relative (`%cr`) — "2 hours ago".
-    rel: String,
+    short: String,   // %h
+    subject: String, // %s
+    author: String,  // %an
+    rel: String,     // %cr, relative ("2 hours ago")
 }
 
-/// Tip commit of `rev` (a branch name, or HEAD when empty) as seen from `dir`.
-///
-/// Fetched for the *highlighted* row only, never for the whole list — a repo can
-/// have `BRANCH_LIST_CAP` branches plus every worktree, and one `git log` per row
-/// would cost far more than the pane is worth. NUL-separated so a subject
-/// containing any printable character still parses.
+/// Tip commit of `rev` (HEAD when empty) as seen from `dir`. Fetched for the highlighted
+/// row only, never the whole list; NUL-separated so any printable subject parses.
 #[tauri::command(async)]
 pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
     let rev = if rev.trim().is_empty() { "HEAD".to_string() } else { rev };
@@ -643,33 +504,18 @@ pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
     })
 }
 
-/// Whether a live pane of this `Session::kind` alone forbids switching its folder's
-/// branch. The kind is all the backend has — the phase that decides it for a claude
-/// pane never leaves the frontend — so this answers only where the kind is enough:
-///
-/// - `task` — yes, unconditionally. It is running (an exited one is no longer in the
-///   map), and a build that starts on one branch and finishes on another is worthless.
-/// - `shell` — no. It is the user's own prompt; refusing `git switch` on behalf of the
-///   pane that exists to accept it is the app arguing with itself.
-/// - `claude` — no *here*. Mid-turn is a real blocker and the frontend refuses it
-///   (`midFlight` in src/types.ts); idle is not, and this layer cannot tell them apart.
+/// Whether a live pane of this `Session::kind` alone forbids switching its folder's branch.
+/// Only a `task` does: a shell is the user's own prompt, and a claude pane's phase lives
+/// in the frontend (`midFlight` in src/types.ts decides the mid-turn half).
 fn blocks_switch(kind: &str) -> bool {
     kind == "task"
 }
 
-/// The `git switch` invocation for a target, paired with the terminal handoff for it.
-///
-/// One function because they are one decision and they must not disagree: a dirty tree
-/// hands `suggest` over verbatim, and for a remote-only target `git switch <branch>`
-/// resolves to something else entirely — or to nothing. `track` is `Some(remote_ref)`
-/// only when the branch has no local ref *and* that remote ref is real, which is what
-/// makes `base` safe for the caller to pass unconditionally.
+/// The `git switch` invocation for a target and the terminal handoff for it, as one
+/// decision so the two cannot disagree. `track` is `Some(remote_ref)` for a remote-only target.
 fn switch_args<'a>(branch: &'a str, track: Option<&'a str>) -> (Vec<&'a str>, String) {
     match track {
-        // `--track` outright rather than leaning on git's DWIM: the guess only happens
-        // while `checkout.guess` and `branch.autoSetupMerge` are at their defaults, and a
-        // user who turned either off would get a branch with no upstream — after which
-        // push/pull need arguments and the picker's ahead/behind reads empty forever.
+        // --track outright: git's DWIM only applies while checkout.guess/autoSetupMerge are default.
         Some(b) => (
             vec!["switch", "--track", "-c", branch, b],
             format!("git switch --track -c \"{branch}\" \"{b}\""),
@@ -678,36 +524,10 @@ fn switch_args<'a>(branch: &'a str, track: Option<&'a str>) -> (Vec<&'a str>, St
     }
 }
 
-/// Move the repo's main working tree to another branch.
-///
-/// Episko's whole model is "don't switch, branch out" — worktrees exist so two pieces
-/// of work never fight over one checkout. But the root folder's branch is also the
-/// default parent of every new worktree, so a root parked somewhere stale is a real
-/// problem, and a terminal was the only way out. This is that lever, with the guards
-/// that make it safe to expose:
-///
-/// - Refused while a **task** pane runs in the root — see `blocks_switch` above.
-/// - Refused when the target is checked out in another worktree (git refuses too, but
-///   this says which one).
-/// - Refused on a dirty tree. `git switch` would silently CARRY uncommitted changes to
-///   the new branch — not destructive, but a state change the UI never explained, which
-///   is the same rule `git_action` and `remove_worktree` follow. Handed to a terminal.
-///
-/// `base` is the remote-tracking ref a **remote-only** target should be cut from
-/// ("origin/foo"), and it is the same parameter `create_worktree` takes, with the same
-/// meaning and the same `--track` detection. A colleague's branch is a destination you'd
-/// want the root to move to as readily as a worktree, and the alternative was a terminal
-/// and two commands. Ignored when the branch already exists locally.
-///
-/// The first guard used to be "any session at all", and that made the lever unreachable
-/// in the one situation it exists for: a root folder you keep an agent parked in. What
-/// actually must not move is a tree with *work in flight* on it, which is a question
-/// about a pane's state — and a claude pane's phase lives only in the frontend, so
-/// `midFlight` owns that half and `blocks_switch` owns the half the backend can see.
-/// Two things keep the split honest rather than merely trusting: a task's whole life is
-/// visible here (the reaper drops a session from the map the moment its PTY exits, so a
-/// `task` in the map IS a running one), and the dirty-tree refusal below independently
-/// catches any agent that has written a byte, whatever the frontend believed.
+/// Move the repo's main working tree to another branch. Refused while a task pane runs
+/// in the root (`blocks_switch`), when the target is checked out elsewhere, and on a dirty
+/// tree (a switch would silently carry the changes; handed to a terminal instead). `base`
+/// is the remote-tracking ref a remote-only target is cut from, as in `create_worktree`.
 #[tauri::command(async)]
 pub(crate) fn switch_branch(
     state: State<AppState>,
@@ -737,17 +557,8 @@ pub(crate) fn switch_branch(
         return Err(format!("{branch} is already checked out in another worktree"));
     }
 
-    // Cutting a local branch from a remote-tracking ref, the same detection
-    // `create_worktree` makes and for the same reason: without `--track`, `git push` and
-    // `git pull` in the switched-to folder need arguments and the picker's ahead/behind
-    // reads empty forever. Git's own DWIM would usually do this, but only while
-    // `checkout.guess` and `branch.autoSetupMerge` are at their defaults — a user who
-    // turned either off would get a silently untracked branch, so it is said outright.
-    //
-    // Conditioned on the branch NOT existing locally, which is what makes `base` safe to
-    // pass unconditionally: the switch target may have grown a local ref since the list
-    // was read (a colleague's branch you fetched in a terminal), and the answer to that
-    // is to switch to the branch, not to fail on `-c`.
+    // Tracked only when the branch has no local ref yet, which is what makes `base` safe to
+    // pass unconditionally: a ref that appeared since the list was read is switched to, not -c'd.
     let ref_exists = |r: String| {
         git_run(git_cmd(&repo_dir, &["rev-parse", "--verify", "--quiet", &r]), 10)
             .map(|o| o.status.success())
@@ -796,24 +607,15 @@ pub(crate) fn switch_branch(
     })
 }
 
-/// Delete a local branch, the counterpart to the picker's worktree removal.
-///
-/// Same rule as `remove_worktree`: the destructive variant is NEVER run from a click.
-/// `git branch -d` refuses anything not fully merged, and on refusal we hand back the
-/// exact `-D` command for a terminal instead of running it.
-///
-/// Worth knowing about the common case this exists for — a branch whose upstream is
-/// `gone` (the PR merged, the remote branch was deleted). If that PR was **squash**-
-/// merged, the branch's commits never became ancestors of HEAD, so `-d` refuses even
-/// though the work is safely in main. That refusal is correct and the `-D` handoff is
-/// the honest answer; the UI warns about it before the click rather than after.
+/// Delete a local branch. As with `remove_worktree`, `-D` is never run from a click: `git
+/// branch -d` refuses anything not fully merged (including a squash-merged PR, whose commits
+/// never became ancestors) and the exact `-D` command is handed back instead.
 #[tauri::command(async)]
 pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActionResult, String> {
     if branch.trim().is_empty() {
         return Err("no branch given".into());
     }
-    // git refuses to delete a branch that some worktree holds; say so in our own words
-    // instead of surfacing its message, and name the fix.
+    // Say it in our own words and name the fix, rather than surfacing git's refusal.
     if list_worktrees(repo_dir.clone()).iter().any(|w| w.branch == branch) {
         return Err(format!("{branch} is checked out — remove its worktree first"));
     }
@@ -840,56 +642,32 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
     })
 }
 
-/// How many branches the picker will ever deal with at once: `git_branch_list` caps its
-/// list here (a repo with hundreds of refs can't blow the dialog up) and the sweep caps
-/// what it will act on to match, so the button can never be asked to do more than the
-/// list it lives in can show.
+/// Most branches the picker lists and, to match, the most a sweep will act on.
 const BRANCH_LIST_CAP: usize = 80;
 
-/// One branch the picker asks the sweep to delete.
-///
-/// Two claims travel with the name, and the difference between them is the whole safety
-/// model of this command:
-///
-/// - **`gone`** is a claim about the world that this command can and does re-check. The
-///   dialog's list is a reading from up to a minute old (it refreshes on window focus and
-///   after a fetch, no more often), so a branch pushed again from a terminal since then is
-///   no longer the branch anyone asked to delete. Claim it and git disagrees → skipped.
-/// - **`force`** is a claim about *evidence*, and nothing local can check it. It exists
-///   for the one case the safe delete gets wrong in both directions: a **squash**-merged
-///   pull request. Its commits never became ancestors of the main branch, so `git branch
-///   -d` refuses a branch whose work is demonstrably shipped — and the only thing that
-///   knows it shipped is the merged PR the deep-clean pane read from `gh`. So `-D` is
-///   available, but only ever per-branch, only when the caller showed that evidence on
-///   the row, and never as a blanket setting.
+/// One branch the picker asks the sweep to delete. `gone` is a claim git re-checks here
+/// (the list may be a minute old); `force` is evidence only the caller has (a squash-merged
+/// PR read from `gh`) and is honoured per branch, never as a blanket setting.
 #[derive(serde::Deserialize, Debug)]
 pub(crate) struct SweepPick {
     branch: String,
-    /// The caller saw this branch's upstream as deleted; re-derived here before acting.
     #[serde(default)]
-    gone: bool,
-    /// Escalate to `git branch -D` if the safe delete refuses. See above.
+    gone: bool,  // the caller saw the upstream as deleted; re-derived here before acting
     #[serde(default)]
-    force: bool,
+    force: bool, // escalate to `git branch -D` if the safe delete refuses
 }
 
-/// One branch the sweep deleted. The sha is git's own "(was 1a2b3c4)" — kept because a
-/// forced delete is the one action here with no undo button, and `git branch <name> <sha>`
-/// is one: naming the sha in the result turns "recoverable in principle, via a reflog
-/// nobody reads" into a line the user can act on.
+/// One branch the sweep deleted. `sha` is git's own "(was 1a2b3c4)", so a forced delete
+/// can be undone with `git branch <name> <sha>`.
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct DeletedBranch {
     branch: String,
     sha: String,
-    /// It took `-D` — the safe delete had refused it.
-    forced: bool,
+    forced: bool, // took -D after the safe delete refused
 }
 
-/// One branch the sweep did not delete, and why — git's own first line when it
-/// refused, our words when we never asked it. `forceable` splits those two: a `-D`
-/// is an answer to "not fully merged" and no answer at all to "some worktree holds
-/// it" (git refuses that with or without the force), so only the first kind goes
-/// into the handoff command.
+/// One branch the sweep kept and why. `forceable` says a `-D` would answer the refusal
+/// ("not fully merged"); a worktree holding it is refused with or without a force.
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct KeptBranch {
     branch: String,
@@ -897,34 +675,18 @@ pub(crate) struct KeptBranch {
     forceable: bool,
 }
 
-/// What one sweep did. `deleted` and `kept` together account for every name the
-/// caller passed — a sweep that quietly did less than it was asked is the failure
-/// mode this shape exists to prevent.
+/// What one sweep did; `deleted` and `kept` together account for every name passed.
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct SweepResult {
     deleted: Vec<DeletedBranch>,
     kept: Vec<KeptBranch>,
-    /// A single `git branch -D` over everything git's safe delete refused and that no
-    /// evidence justified forcing, for the same terminal handoff `delete_branch` offers.
-    /// `None` when nothing refused.
-    suggest: Option<String>,
-    /// One line for the toast.
-    summary: String,
+    suggest: Option<String>, // one `git branch -D` over the forceable refusals, for a terminal
+    summary: String,         // one line for the toast
 }
 
-/// Delete a batch of local branches — the picker's broom, and the engine under its
-/// deep-clean pane.
-///
-/// The bulk counterpart to `delete_branch`, and it keeps that command's shape: `git
-/// branch -d` decides, and what it refuses comes back as a `-D` command for a terminal
-/// rather than being run. What is safe one branch at a time is not automatically safe
-/// times ten, so the one exception — a per-branch `force` backed by a merged pull request
-/// — is spelled out on `SweepPick` and never inferred here.
-///
-/// Two things this never touches, whatever it is asked: a branch some worktree holds (git
-/// refuses that with or without a force, and the checkout is a separate decision with its
-/// own flow), and a branch whose `gone` claim git no longer agrees with. Both come back in
-/// `kept` with their reason rather than vanishing from the count.
+/// Delete a batch of local branches, the picker's broom. `git branch -d` decides and what
+/// it refuses comes back as a `-D` command; the one exception is a per-branch `force`
+/// (see `SweepPick`). A held branch or a `gone` claim git disagrees with lands in `kept`.
 #[tauri::command(async)]
 pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<SweepResult, String> {
     let mut want: Vec<SweepPick> = Vec::new();
@@ -939,10 +701,8 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
     }
     want.truncate(BRANCH_LIST_CAP);   // the picker's own list can't be longer; a caller's might
 
-    // The same read `git_branch_list` derives its `gone` flag from, and the only
-    // authority on it. Gated on refs/remotes for the same reason: `branch.autoSetupMerge`
-    // can make one LOCAL branch another's upstream, and deleting because a local upstream
-    // went away is a different rule than the one the button offers.
+    // The same read `git_branch_list` derives `gone` from. Gated on refs/remotes: a LOCAL
+    // upstream (autoSetupMerge) going away is a different rule than the button offers.
     let out = git_run(git_cmd(&repo_dir, &[
         "for-each-ref",
         "--format=%(refname:short)\t%(upstream)\t%(upstream:track,nobracket)",
@@ -963,8 +723,7 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
         })
         .collect();
 
-    // Same guard as `delete_branch`, read the cheap way: one porcelain listing rather
-    // than `list_worktrees` (a status probe per checkout) once per branch.
+    // Same guard as `delete_branch`, via one porcelain listing rather than a status per checkout.
     let taken: std::collections::HashSet<String> =
         match git_run(git_cmd(&repo_dir, &["worktree", "list", "--porcelain"]), 15) {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
@@ -972,14 +731,12 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
                 .filter_map(|l| l.strip_prefix("branch "))
                 .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string())
                 .collect(),
-            // Unreadable means "assume nothing is held" — git still refuses a held
-            // branch itself, and that refusal lands in `kept` like any other.
+            // Unreadable means assume nothing is held; git's own refusal still lands in `kept`.
             _ => Default::default(),
         };
 
-    // "Deleted branch foo (was 1a2b3c4)." — git's own line, in English because `git_cmd`
-    // pins LC_ALL=C. Parsed rather than asked for with an extra `rev-parse` per branch;
-    // an unparseable line just means no recovery hint, never a wrong one.
+    // "Deleted branch foo (was 1a2b3c4)." is git's own (LC_ALL=C) line; an unparseable
+    // line just means no recovery hint.
     let was_sha = |s: &str| -> String {
         s.split_once("(was ")
             .and_then(|(_, rest)| rest.split_once(')'))
@@ -999,8 +756,7 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
             kept.push(KeptBranch { branch: b, reason: "checked out in a worktree".into(), forceable: false });
             continue;
         }
-        // A spawn failure or a timeout stops this branch, never the sweep: the branches
-        // already deleted have to be reported whatever happens to the ones after them.
+        // A spawn failure or timeout stops this branch, never the sweep.
         let run = |flag: &str| git_run(git_cmd(&repo_dir, &["branch", flag, &b]), 15);
         let out = match run("-d") {
             Ok(o) => o,
@@ -1018,9 +774,7 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
                     deleted.push(DeletedBranch { branch: b, sha, forced: true });
                     continue;
                 }
-                // Fall through to reporting the SAFE delete's refusal: `-D` failing after
-                // `-d` failed means something structural (a bad ref, a locked ref), and
-                // git's first message is the one that names it.
+                // Report the SAFE delete's refusal: -D failing after -d means something structural.
                 _ => {}
             }
         }
@@ -1047,96 +801,46 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
     })
 }
 
-/// One local branch, with enough context for the worktree picker to tell whether
-/// it's worth starting on. `current` is the branch the repo's HEAD is on (the repo
-/// row, not the pick list). `checked_out` means some worktree already holds it — git
-/// refuses a second checkout, so it can't take a new worktree and appears in the
-/// existing-worktrees list instead. `rel`/`unix` describe the last commit (staleness).
-///
-/// `ahead`/`behind` are versus this branch's OWN upstream, not versus HEAD. Measuring
-/// every branch against whatever happens to be checked out answers a question nobody
-/// asked ("how far behind my current work is this old branch" — always "very"), while
-/// the useful one is "is my work pushed, and has the remote moved on".
+/// One branch for the worktree picker. `current` is the repo's HEAD branch, `checked_out`
+/// means a worktree holds it (git refuses a second checkout). `ahead`/`behind` are versus
+/// this branch's OWN upstream, never versus HEAD: "is my work pushed, has the remote moved".
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct BranchInfo {
     name: String,
     current: bool,
     checked_out: bool,
-    /// The remote-tracking ref this branch follows ("origin/foo"), empty when the
-    /// branch is purely local.
-    upstream: String,
-    /// Commits this branch has that its upstream doesn't — unpushed work. 0 when
-    /// there is no upstream.
-    ahead: u32,
-    /// Commits the upstream has that this branch doesn't — unpulled work. 0 when
-    /// there is no upstream.
-    behind: u32,
-    /// An upstream is configured but no longer exists on the remote (branch deleted
-    /// after a merge, typically). `upstream` still names it.
-    gone: bool,
-    /// Every commit on this branch is already an ancestor of the repo's checked-out
-    /// branch — the same measure `Worktree.merged` uses, and for the same reason: it is
-    /// what makes a branch safe to delete. Note what it is NOT: a **squash**-merged
-    /// branch is false here, because its commits never became ancestors of anything.
-    /// That gap is exactly what the deep-clean pane's pull-request lookup fills.
+    upstream: String, // the remote-tracking ref it follows ("origin/foo"); empty when purely local
+    ahead: u32,       // unpushed commits; 0 without an upstream
+    behind: u32,      // unpulled commits; 0 without an upstream
+    gone: bool,       // an upstream is configured but gone from the remote; `upstream` still names it
+    /// Every commit is an ancestor of the trunk, the measure `Worktree.merged` uses. A
+    /// squash-merged branch is false here; the deep-clean pane's PR lookup fills that gap.
     merged: bool,
-    /// This row is a remote-tracking ref with no local branch of the same name —
-    /// someone else pushed it and nothing here points at it yet. The fields are then
-    /// read one level over: `name` is the local branch a checkout would CREATE and
-    /// `upstream` the ref it would track, which is exactly the pair the row will hold
-    /// a second after it is picked. `current`/`checked_out`/`gone` are always false —
-    /// there is no local ref to be any of them — while `ahead`/`behind` swap their
-    /// meaning to "versus the remote's default branch" (`base`), which is the only
-    /// comparison a branch nobody has checked out can meaningfully have.
+    /// A remote-tracking ref with no local branch of that name: `name` is the branch a checkout
+    /// would create and `upstream` the ref it would track; `current`/`checked_out`/`gone` are
+    /// false, and `ahead`/`behind` are versus the remote's default branch (`base`).
     remote: bool,
-    /// What `ahead`/`behind` were measured against, for a REMOTE row: its remote's
-    /// default branch ("origin/main"), which is the comparison GitHub's branches view
-    /// shows. Empty on a local row (whose comparison is its own `upstream`, already
-    /// named there) and on a row from a remote we have no default for — in which case
-    /// the counts are zero and mean "not measured", not "in sync".
+    /// What a REMOTE row's `ahead`/`behind` were measured against ("origin/main"). Empty on a
+    /// local row, and on a row whose remote has no known default (its counts are then unmeasured).
     base: String,
-    /// Who wrote the tip commit. Not "who created the branch" — git does not record that
-    /// — but it is what GitHub's branches view shows and the question it answers ("is
-    /// this mine?") is the same one.
-    author: String,
-    /// The tip this row was read at. Carried so a remote delete can be refused when the
-    /// ref has moved since (`RemotePick`), and so a deletion can be undone by sha.
-    sha: String,
+    author: String, // the tip commit's author, which is what GitHub's branches view shows
+    sha: String,    // the tip when read; a remote delete is refused if it moved (`RemotePick`)
     rel: String,
     unix: i64,
 }
 
-/// One remote branch the picker asks to delete, with the sha it was showing.
-///
-/// The sha is not decoration: `git push --delete` is a public, shared-state write, and
-/// the list it was chosen from is as old as the last fetch. If someone pushed to that
-/// branch in between, the row you clicked no longer describes what is on the remote —
-/// so the delete is refused rather than performed on a stale reading.
+/// One remote branch the picker asks to delete, with the sha it was showing: a `push
+/// --delete` is a shared-state write, so a ref that moved since is refused, not deleted.
 #[derive(serde::Deserialize, Debug)]
 pub(crate) struct RemotePick {
     branch: String,
     sha: String,
 }
 
-/// Delete branches on a remote — the cleanup behind the picker's Remote branches header.
-///
-/// **The one write in this app that changes state for other people**, so it is bounded
-/// harder than its local counterpart rather than more conveniently:
-///
-/// - The remote's **default branch is refused unconditionally**, whatever it is asked.
-/// - A branch whose remote-tracking ref has **moved since the caller read it** is refused
-///   (see `RemotePick`) — as is one that no longer exists, which usually means somebody
-///   else already cleaned it up.
-/// - There is **no force and no fallback**: `git push` either deletes the ref or it does
-///   not, and a protected branch's refusal is the server's answer, not ours to work
-///   around. What was refused comes back with git's own words.
-/// - Every deleted branch is reported **with the sha it pointed at**, because a remote
-///   branch is restorable — `git push <remote> <sha>:refs/heads/<branch>` — for exactly
-///   as long as somebody still has the objects.
-///
-/// Whether a branch is *worth* deleting (merged into the default branch, or its pull
-/// request merged) is the caller's judgement, for the same reason as the local sweep's
-/// force: a squash-merged branch is contained in nothing, and only GitHub knows it landed.
+/// Delete branches on a remote, the one write here that changes state for other people.
+/// The remote's default branch is refused unconditionally, a ref that moved since the
+/// caller read it (or vanished) is refused, there is no force and no fallback, and every
+/// delete comes back with its sha (`git push <remote> <sha>:refs/heads/<branch>` restores it).
 #[tauri::command(async)]
 pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Vec<RemotePick>) -> Result<SweepResult, String> {
     let remote = remote.trim().to_string();
@@ -1155,8 +859,7 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
     }
     want.truncate(BRANCH_LIST_CAP);
 
-    // "origin/main" → "main". The default branch is refused here rather than filtered in
-    // the UI, because this is the one mistake with no cheap undo for anyone else.
+    // "origin/main" → "main"; refused here rather than filtered in the UI.
     let default = remote_default(&repo_dir, &remote)
         .and_then(|d| d.strip_prefix(&format!("{remote}/")).map(str::to_string));
 
@@ -1185,11 +888,9 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
         return Ok(finish_remote_sweep(deleted, kept, &remote));
     }
 
-    // One push for the whole batch: each delete is a network round trip, and a cleanup of
-    // eight branches should not be eight of them. On failure the batch says nothing about
-    // WHICH ref the remote rejected, so a small batch is retried one at a time to find
-    // out; a large one reports git's message against every branch rather than spending
-    // eighty round trips to phrase it per row.
+    // One push for the whole batch (each delete is a round trip). A failed batch names no
+    // culprit, so a small one is retried per branch; a large one reports git's message
+    // against every branch rather than spending eighty round trips to phrase it per row.
     const ATTRIBUTE_MAX: usize = 12;
     let mut args: Vec<&str> = vec!["push", &remote, "--delete"];
     for (b, _) in &go {
@@ -1223,8 +924,7 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
     Ok(finish_remote_sweep(deleted, kept, &remote))
 }
 
-/// git's first meaningful line, from whichever stream carried it — `push` writes its
-/// progress and its refusals to stderr, and its "everything up-to-date" to stdout.
+/// git's first meaningful line from either stream: `push` refuses on stderr, "up-to-date" on stdout.
 fn first_line(o: &std::process::Output) -> String {
     let combined = [
         String::from_utf8_lossy(&o.stdout).trim().to_string(),
@@ -1240,37 +940,21 @@ fn finish_remote_sweep(deleted: Vec<DeletedBranch>, kept: Vec<KeptBranch>, remot
         (n, 0) => format!("Deleted {n} branch{} on {remote}", plural(n)),
         (n, k) => format!("Deleted {n} branch{} on {remote}, kept {k}", plural(n)),
     };
-    // No `-D` handoff here, deliberately: the local sweep's refusals have a safe manual
-    // answer, and a remote refusal (protected branch, no permission, the ref moved) does
-    // not — the fix is a conversation, not a flag.
+    // No -D handoff: a remote refusal (protected branch, no permission) has no flag that fixes it.
     SweepResult { deleted, kept, suggest: None, summary }
 }
 
-/// Branches for the worktree picker, most-recently-committed first, each with
-/// staleness + upstream context (see `BranchInfo`). Nothing is filtered here — the
-/// frontend hides `current` and `checked_out` from the pickable list; returning them
-/// with flags keeps the command honest and testable. Capped at BRANCH_LIST_CAP so a
-/// repo with hundreds of refs can't blow the list up.
-///
-/// Local branches come out of ONE `for-each-ref`: `%(upstream:track)` makes git do the
-/// ahead/behind arithmetic itself, so this no longer spawns a `rev-list` per branch.
-/// A second pass adds **remote-only** branches (`remote: true`) — a colleague's branch
-/// that exists on a remote and nowhere locally is a destination you'd want, and before
-/// this it wasn't merely hidden: typing its name fell through to the create path and
-/// made a *new, unrelated* branch off HEAD under the same name. Remote rows are capped
-/// separately so a fork with hundreds of them can't crowd out the local list.
+/// Branches for the worktree picker, most-recently-committed first (see `BranchInfo`).
+/// Nothing is filtered here; the frontend hides `current`/`checked_out`. Locals come out
+/// of one `for-each-ref` (`%(upstream:track)` does the ahead/behind); a second pass adds
+/// remote-only rows, capped separately, so a colleague's branch is a destination too.
 #[tauri::command(async)]
 pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<BranchInfo> {
-    // LC_ALL=C for the same reason as create_worktree: never depend on localized
-    // output — and here it also pins `%(upstream:track)` to English "ahead"/"behind".
+    // LC_ALL=C also pins `%(upstream:track)` to English "ahead"/"behind".
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
 
-    // The trunk everything is measured against: the caller's choice when it named one and
-    // git can still resolve it, else the primary remote's default branch. Resolved once,
-    // here, because both halves of this listing depend on it — a remote row's ahead/behind
-    // AND whether a local branch counts as merged. Those used to disagree: `merged` was
-    // measured against whatever HEAD happened to be on, so a repo parked on a feature
-    // branch called half its history "merged" and the cleanup pane offered it.
+    // The trunk everything is measured against: the caller's `base` if git resolves it, else
+    // the primary remote's default. One choice for remote ahead/behind AND local `merged`.
     let asked = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     let trunk = asked
         .filter(|b| {
@@ -1303,11 +987,8 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // Which branches are fully contained in the trunk. One `--merged` listing rather than
-    // a `merge-base --is-ancestor` per branch (which is what `list_worktrees` pays, over a
-    // handful of checkouts rather than every ref in the repo). Falls back to the checked-out
-    // branch when there is no trunk at all (no remote, nothing named) — and to nothing when
-    // HEAD is detached too, which is right: no base means no claim that anything is merged.
+    // One `--merged` listing rather than an --is-ancestor per branch. Falls back to the
+    // checked-out branch with no trunk, and to nothing when HEAD is detached too.
     let merged_base = trunk.clone().or_else(|| current.clone());
     let merged: std::collections::HashSet<String> = match &merged_base {
         Some(c) => match git(&["-C", &repo_dir, "branch", "--format=%(refname:short)", "--merged", c]) {
@@ -1322,8 +1003,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         None => Default::default(),
     };
 
-    // Tab-separated so neither the branch name nor the relative date can collide with
-    // the delimiter (a relative date is "3 days ago" — spaces, never tabs).
+    // Tab-separated: neither a branch name nor a relative date ("3 days ago") holds a tab.
     let out = match git(&[
         "-C", &repo_dir,
         "for-each-ref",
@@ -1336,10 +1016,8 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     };
     let text = String::from_utf8_lossy(&out.stdout);
 
-    // Every local branch name, uncapped. The remote pass below asks "is there already a
-    // local branch called this?", and `res` stops being able to answer that the moment
-    // BRANCH_LIST_CAP truncates it — which would resurrect a checked-out branch as a
-    // remote-only row in exactly the repos big enough to hit the cap.
+    // Uncapped: the remote pass asks "is there a local branch called this?", and a capped
+    // `res` would resurrect a checked-out branch as a remote-only row in big repos.
     let local_names: std::collections::HashSet<&str> = text
         .lines()
         .filter_map(|l| l.split('\t').next())
@@ -1355,14 +1033,11 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         };
         let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
         let rel = parts.next().unwrap_or("").to_string();
-        // An upstream is only interesting if it is a REMOTE. `git branch`/`checkout -b`
-        // off a local branch can set that local branch as the upstream (depending on
-        // branch.autoSetupMerge), and "2 commits not pushed to dev" is nonsense — dev is
-        // right here. Gate on the full refname; only refs/remotes/* counts.
+        // Only a refs/remotes/* upstream counts: autoSetupMerge can make a LOCAL branch the
+        // upstream, and "2 commits not pushed to dev" is nonsense.
         let is_remote = parts.next().unwrap_or("").trim().starts_with("refs/remotes/");
         let upstream = if is_remote { parts.next().unwrap_or("").trim().to_string() } else { parts.next(); String::new() };
-        // `%(upstream:track,nobracket)` is "" when in sync (or absent), "gone" when the
-        // upstream was deleted, else "ahead 2", "behind 3" or "ahead 2, behind 3".
+        // "" in sync or absent, "gone" when deleted, else "ahead 2", "behind 3" or "ahead 2, behind 3".
         let track = if is_remote { parts.next().unwrap_or("").trim() } else { parts.next(); "" };
         let gone = track == "gone";
         let field = |key: &str| -> u32 {
@@ -1379,26 +1054,20 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
             current: current.as_deref() == Some(name.as_str()),
-            // Two branches are contained in the trunk and must still never be called
-            // "merged, safe to delete": the checked-out one (which git refuses to delete
-            // at all), and the trunk itself — a local `main` is by definition contained
-            // in `origin/main`, and offering to delete it because of that would be the
-            // worst suggestion in the app. Matched with and without the remote prefix.
+            // Contained in the trunk but never "safe to delete": the checked-out branch, and
+            // the trunk itself (a local `main` is contained in `origin/main`).
             merged: merged.contains(&name)
                 && current.as_deref() != Some(name.as_str())
                 && !merged_base.as_deref().is_some_and(|b| b == name || b.ends_with(&format!("/{name}"))),
             remote: false,
-            // What `merged` was decided against. A local row's ahead/behind is still
-            // against its OWN upstream (which `upstream` names) — see the field's doc.
+            // What `merged` was decided against; a local row's ahead/behind is still vs its own upstream.
             base: merged_base.clone().unwrap_or_default(),
             name, upstream, ahead, behind, gone, rel, unix, author, sha,
         });
     }
 
     // ---- remote-only branches ------------------------------------------------------
-    // The remote names are read rather than assumed, because the short ref is the only
-    // thing `for-each-ref` gives us and "origin/feature/x" has to be split back into
-    // remote + branch. Nothing here can guess where that boundary is.
+    // Remote names are read, not assumed: "origin/feature/x" has to be split back into remote + branch.
     let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
@@ -1411,24 +1080,16 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     if remotes.is_empty() {
         return res;
     }
-    // A remote-only row is measured against the same trunk everything else is — by
-    // default its remote's default branch, which is the comparison GitHub's own branches
-    // view shows. There is no other sensible base: a branch nothing here has checked out
-    // is not "behind" your HEAD in any way you'd act on, and `%(upstream:track)` says
-    // nothing at all about a remote ref.
-    //
-    // ONE base, and rows from another remote are left uncompared rather than compared
-    // against the wrong trunk — which is also exactly right for cleanup, since you cannot
-    // delete on a remote you only fetch.
+    // A remote-only row is measured against the trunk (its remote's default branch, what
+    // GitHub shows). ONE base: rows from another remote are left uncompared.
     let primary = primary_remote(&remotes);
     let base = trunk;
     let rfmt = |with_base: Option<&str>| match with_base {
         Some(b) => format!("--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(authorname)\t%(objectname)\t%(ahead-behind:{b})"),
         None => "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(authorname)\t%(objectname)".to_string(),
     };
-    // `%(ahead-behind:)` is git 2.41+. An older git fails the WHOLE listing on an unknown
-    // field name, so the retry is not belt-and-braces: without it every remote row would
-    // vanish on a machine with, say, Debian stable's git.
+    // `%(ahead-behind:)` is git 2.41+, and an older git fails the WHOLE listing on it, so
+    // the retry without it is what keeps remote rows on a Debian-stable git.
     let mut rout = match git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", &rfmt(base.as_deref()), "refs/remotes"]) {
         Ok(o) if o.status.success() => Some(o),
         _ => None,
@@ -1456,14 +1117,9 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
-        // Longest matching prefix wins: git permits a remote named `a` alongside one
-        // named `a/b`, and only the longer one splits `a/b/topic` where it really joins.
-        // The empty remainder is what drops `refs/remotes/<remote>/HEAD` — the symbolic
-        // pointer at the remote's default branch, which would otherwise duplicate
-        // whatever it points at. Worth spelling out because it does NOT shorten to
-        // `origin/HEAD` as you'd expect: git renders it as a bare `origin`, so no test
-        // on the name would have caught it. (The `HEAD` check below is a belt for any
-        // git that does spell it out.)
+        // Longest matching prefix: a remote `a` may sit beside `a/b`. An empty remainder drops
+        // `refs/remotes/<remote>/HEAD`, which git shortens to a bare `origin` rather than
+        // `origin/HEAD`; the `local == "HEAD"` test covers a git that spells it out.
         let local = match remotes
             .iter()
             .filter_map(|r| short.strip_prefix(r.as_str()).and_then(|s| s.strip_prefix('/')))
@@ -1473,8 +1129,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             Some(l) => l,
             None => continue,
         };
-        // A name that already exists locally isn't remote-*only*, and two remotes
-        // carrying the same branch is one destination, not two.
+        // A name that exists locally is not remote-only; two remotes with one branch is one destination.
         if local == "HEAD" || local_names.contains(local) || !seen.insert(local.to_string()) {
             continue;
         }
@@ -1482,9 +1137,8 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         let rel = parts.next().unwrap_or("").to_string();
         let author = parts.next().unwrap_or("").trim().to_string();
         let sha = parts.next().unwrap_or("").trim().to_string();
-        // "<ahead> <behind>" — ahead first, both relative to `base`. Only the primary
-        // remote's own refs are comparable to it; another remote's rows keep the zeros,
-        // and `base: ""` is what tells the UI not to draw a comparison it can't make.
+        // "<ahead> <behind>" relative to `base`. Only the primary remote's refs are comparable;
+        // other remotes keep zeros and `base: ""` tells the UI not to draw a comparison.
         let ab = parts.next().unwrap_or("").trim();
         let mine = have_ab && short.strip_prefix(primary).is_some_and(|s| s.starts_with('/'));
         let (ahead, behind) = if mine {
@@ -1499,10 +1153,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             ahead,
             behind,
             gone: false,
-            // For a remote row this is the same claim as for a local one — every commit
-            // is already in the branch it is measured against — and it is the whole basis
-            // on which a remote branch may be offered for deletion. `ahead == 0` is that,
-            // exactly; a base we could not compute leaves it false and offers nothing.
+            // The basis on which a remote branch may be offered for deletion; no base offers nothing.
             merged: mine && ahead == 0 && base.is_some(),
             remote: true,
             base: if mine { base.clone().unwrap_or_default() } else { String::new() },
@@ -1515,19 +1166,14 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     res
 }
 
-/// The remote a cleanup would push to: `origin` when it exists, else the first one
-/// configured. Named rather than assumed because everything downstream — the base for
-/// ahead/behind, and which rows may be deleted at all — hangs off this one choice.
+/// The remote a cleanup pushes to: `origin` when present, else the first configured.
 fn primary_remote(remotes: &[String]) -> &str {
     remotes.iter().find(|r| *r == "origin").unwrap_or(&remotes[0])
 }
 
-/// A remote's default branch as a short ref ("origin/main"), or None when nothing says.
-///
-/// `refs/remotes/<remote>/HEAD` is the honest answer but it only exists if the repo was
-/// cloned (or `git remote set-head` was run), so the fallbacks matter more than they look
-/// — a repo whose remote was added by hand has no HEAD ref at all. Never guesses past
-/// main/master: a wrong default would make every branch look unmerged, or worse, merged.
+/// A remote's default branch as a short ref ("origin/main"). `refs/remotes/<remote>/HEAD`
+/// only exists after a clone or `remote set-head`, so main/master are probed as fallbacks;
+/// never guesses further, since a wrong default makes every branch look (un)merged.
 fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
     if let Ok(o) = git(&["-C", repo_dir, "symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
@@ -1565,21 +1211,13 @@ pub(crate) fn git_branch(workdir: String) -> Option<String> {
 
 #[derive(serde::Serialize, Debug)]
 pub(crate) struct HeadInfo {
-    /// Branch name when on a branch; None when HEAD is detached.
-    branch: Option<String>,
-    /// Short commit sha of HEAD (used to label a detached checkout).
-    short: String,
+    branch: Option<String>, // None when HEAD is detached
+    short: String,          // short sha of HEAD, labels a detached checkout
 }
 
-/// The two git directories a working directory answers to, resolved without
-/// spawning git. `.0` is the **per-worktree** dir (where `HEAD` lives), `.1` the
-/// **common** dir (where `refs/` and `packed-refs` live). They are the same path
-/// for a main checkout and differ for a linked worktree, which is the whole reason
-/// this returns a pair: a worktree has its own `HEAD` but shares every branch ref.
-///
-/// Mirrors `repo_root_of`'s walk — including its refusal to search past a `.git`
-/// file whose target is gone (a pruned worktree is "not a repository" to git, and
-/// following the dangling pointer would answer for a repo that has forgotten it).
+/// The per-worktree git dir (where `HEAD` lives) and the common dir (`refs/`, `packed-refs`),
+/// without spawning git; they differ only for a linked worktree. Mirrors `repo_root_of`'s
+/// walk, including stopping at a `.git` file whose target is gone.
 fn git_dirs(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let phys = physical_cwd(cwd);
     let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
@@ -1609,15 +1247,12 @@ fn git_dirs(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     None
 }
 
-/// Resolve a ref name (`refs/heads/main`) to its full sha, reading the loose file
-/// first and falling back to `packed-refs`. `None` means the ref does not exist —
-/// which for HEAD's target is exactly the unborn-branch case (`git init`, no commit
-/// yet), and callers depend on telling that apart from a detached HEAD.
+/// A ref name (`refs/heads/main`) to its full sha, loose file first then `packed-refs`.
+/// `None` means no such ref, which for HEAD's target is the unborn-branch case.
 fn resolve_ref(common: &std::path::Path, name: &str) -> Option<String> {
     let sha = |s: &str| {
         let t = s.trim();
-        // A loose ref may itself be symbolic; refs that deep are vanishingly rare
-        // and git resolves them recursively, so decline rather than guess.
+        // A symbolic loose ref is vanishingly rare; decline rather than guess.
         (t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| t.to_string())
     };
     if let Ok(t) = std::fs::read_to_string(common.join(name)) {
@@ -1636,23 +1271,10 @@ fn resolve_ref(common: &std::path::Path, name: &str) -> Option<String> {
     })
 }
 
-/// Live HEAD of a working directory, so the UI can show the branch that is
-/// *actually* checked out rather than the one a worktree was created with (a
-/// worktree shows whatever branch is checked out, and that can change).
-///
-/// **Read off the filesystem, with no `git` process at all** — the same trade
-/// `worktree_heads` and `repo_root_of` already make, and for a sharper reason: this
-/// is on the 4s branch poll, once per open session. It used to cost *two* spawns
-/// each (`rev-parse --short HEAD`, then `symbolic-ref`), so a three-session fleet
-/// spent 1.5 git processes per second re-reading a file — and on Windows, where
-/// process creation dominates, that was a measurable share of the app's whole load.
-///
-/// Returns `None` for anything that isn't a repo **with at least one commit**, and
-/// the "with a commit" half is load-bearing rather than incidental: `projmenu.ts`
-/// uses exactly that to drop the *Commit graph…* row for a freshly `git init`ed
-/// folder. An unborn HEAD still names a branch in `.git/HEAD`, so it is only the
-/// missing ref that distinguishes it — which is why `resolve_ref` failing is
-/// treated as "no repo" and not as "detached".
+/// Live HEAD of a working directory, read off the filesystem with no git process: this
+/// is on the 4s branch poll, once per open session. `None` for anything that is not a
+/// repo with at least one commit; `projmenu.ts` relies on that to drop *Commit graph…*
+/// for a fresh `git init`, which is why a missing ref is "no repo" rather than "detached".
 #[tauri::command(async)]
 pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
     let (gitdir, common) = git_dirs(&workdir)?;
@@ -1661,8 +1283,7 @@ pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
     let (branch, full) = match t.strip_prefix("ref:") {
         Some(r) => {
             let name = r.trim();
-            // Unborn: HEAD names a branch that has no commit, so there is no ref to
-            // resolve. git calls that "not a repository with a HEAD", and so do we.
+            // Unborn: HEAD names a branch with no commit; git calls that "not a repository with a HEAD".
             let sha = resolve_ref(&common, name)?;
             (Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string()), sha)
         }
@@ -1670,44 +1291,14 @@ pub(crate) fn git_head(workdir: String) -> Option<HeadInfo> {
         None if t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()) => (None, t.to_string()),
         None => return None,
     };
-    // Fixed at 7 rather than reproducing git's auto-abbreviation (`core.abbrev`
-    // widens with repo size). This is only ever shown as the "(detached @…)" label,
-    // where a stable prefix is what the display wants; nothing compares it to git's.
+    // Fixed at 7 rather than git's core.abbrev; only shown as the "(detached @…)" label.
     Some(HeadInfo { branch, short: full.chars().take(7).collect() })
 }
 
-/// The same answer as `git_repo_info`'s first half — the repo's MAIN worktree root —
-/// read straight off the filesystem instead of spawning `git`.
-///
-/// This exists because History asks the question in bulk. One `git rev-parse` costs
-/// ~140ms on Windows (process creation dominates, not the work), so resolving the ~28
-/// distinct folders behind a few hundred transcripts cost **3.3 s** — two thirds of the
-/// whole scan, and a cost that a smaller page size cannot reduce because the number of
-/// distinct folders barely moves. The same walk in `std::fs` is microseconds.
-///
-/// It reads the layout `git` itself defines, so there is no guesswork:
-/// - `.git` is a **directory** → this dir is the main worktree.
-/// - `.git` is a **file** holding `gitdir: …/.git/worktrees/<name>` → a linked
-///   worktree, and the main one is the parent of the `.git` that path points into.
-///   This is the case that matters: a worktree usually lives *beside* its repo.
-/// - `.git` is a file pointing anywhere else (a submodule's `…/.git/modules/<name>`) →
-///   the submodule checkout is its own root. `git_repo_info` answers `…/.git/modules`
-///   here, which is not a checkout at all, so this is the more useful answer as well
-///   as the cheaper one.
-/// - No `.git` at this level → walk up; `None` at the filesystem root.
-///
-/// `git_repo_info` stays for the callers that also need the branch.
-///
-/// The walk starts from the **physical** `cwd`, and that is load-bearing rather than
-/// tidy. `git` resolves symlinks before it answers (`getcwd()` does it for free), so a
-/// folder reached through one — `/tmp/x` for `/private/tmp/x`, or a Windows 8.3 short
-/// name — makes an unresolved walk return a *different string* for the same repo. The
-/// two spellings then fail the exact string equality the sidebar groups by, and a
-/// repo's main checkout stops merging with its own worktrees. Canonicalising the
-/// starting point fixes every branch below at once, including the one that was already
-/// physical by accident: a linked worktree's answer is read out of the `gitdir:` file,
-/// which `git` wrote canonically, so before this the same function disagreed with
-/// itself depending on which kind of checkout it landed in.
+/// The repo's MAIN worktree root, read off the filesystem instead of spawning git (History
+/// asks in bulk, and a `rev-parse` is ~140ms on Windows). A `.git` dir is the root; a `.git`
+/// file into `…/.git/worktrees/<n>` names a linked worktree; a submodule is its own root.
+/// Starts from the PHYSICAL cwd, as git does, or one repo gets two spellings in the sidebar.
 pub(crate) fn repo_root_of(cwd: &str) -> Option<String> {
     let phys = physical_cwd(cwd);
     let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(&phys));
@@ -1716,17 +1307,12 @@ pub(crate) fn repo_root_of(cwd: &str) -> Option<String> {
         match std::fs::metadata(&dot) {
             Ok(m) if m.is_dir() => return Some(norm_path(&d.to_string_lossy())),
             Ok(_) => {
-                // A `.git` FILE: one line, `gitdir: <path>`, absolute in a worktree and
-                // possibly relative in a submodule — resolve it against this dir either way.
+                // A `.git` FILE: `gitdir: <path>`, absolute in a worktree, maybe relative in a submodule.
                 let link = std::fs::read_to_string(&dot).ok()?;
                 let target = link.trim().strip_prefix("gitdir:")?.trim();
                 let abs = d.join(target);
-                // A worktree whose admin dir has been pruned leaves the `.git` file
-                // behind pointing at nothing. `git` treats that as "not a repository"
-                // and stops — it does NOT keep searching upward past a `.git` file — so
-                // returning None here is what keeps this in step with it. Following the
-                // dangling pointer would file a dead checkout under a repo that no
-                // longer knows about it.
+                // A pruned worktree's `.git` file points at nothing. git calls that "not a
+                // repository" and does NOT search upward past it, so neither do we.
                 if !abs.exists() {
                     return None;
                 }
@@ -1743,12 +1329,9 @@ pub(crate) fn repo_root_of(cwd: &str) -> Option<String> {
     None
 }
 
-/// Resolve `cwd` to its repo's MAIN worktree root and current branch. This is what
-/// lets external sessions running in different worktrees of one repo group under that
-/// repo (and merge into its project) instead of each cwd becoming its own top-level
-/// entry in the sidebar. One git call: line 1 = the common `.git` dir (its parent is
-/// the main worktree, identical for the main checkout AND every linked worktree),
-/// line 2 = the branch ("HEAD" when detached). (None, None) when `cwd` isn't a repo.
+/// `cwd`'s repo MAIN worktree root and current branch, in one git call, so external
+/// sessions in different worktrees of one repo group under it. Line 1 is the common `.git`
+/// dir (its parent is the main worktree), line 2 the branch ("HEAD" when detached).
 pub(crate) fn git_repo_info(cwd: &str) -> (Option<String>, Option<String>) {
     let out = match git_cmd(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir", "--abbrev-ref", "HEAD"]).output() {
         Ok(o) if o.status.success() => o,
@@ -1765,26 +1348,15 @@ pub(crate) fn git_repo_info(cwd: &str) -> (Option<String>, Option<String>) {
     (root, branch)
 }
 
-/// A `git` command hardened for running under a GUI app.
-///
-/// Three things are non-negotiable here, and each one has bitten this codebase's
-/// neighbours already:
-/// - `LC_ALL=C` — never parse localized output (the german-git-locale gotcha).
-/// - an augmented PATH — a Finder-launched app gets a stripped one, and `git` may
-///   well live in `/opt/homebrew/bin`.
-/// - every credential prompt disabled — a network op that decides to ask for an
-///   SSH passphrase or an HTTPS password has no tty to ask on, so without this it
-///   blocks forever and takes the invoke thread with it. `BatchMode=yes` makes ssh
-///   fail instead of prompting; an askpass that exits non-zero sends git back to
-///   the terminal prompt, which `GIT_TERMINAL_PROMPT=0` then refuses. Credential
-///   *helpers* (osxkeychain) are untouched, so stored HTTPS creds still work, as
-///   do keys already loaded in ssh-agent. Anything else fails fast and readably —
-///   which is exactly when we hand the user a terminal.
+/// A `git` command hardened for a GUI app: `LC_ALL=C` (never parse localized output), an
+/// augmented PATH (Finder strips it), and every credential prompt disabled, since there is
+/// no tty to ask on and a prompt would block the invoke thread forever. Credential helpers
+/// and ssh-agent keys still work; anything else fails fast, and the user gets a terminal.
 fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
     let mut c = sys_command("git");
     c.env("LC_ALL", "C")
         .env("PATH", augmented_path())
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0") // a failed askpass falls back to the terminal prompt
         .env("SSH_ASKPASS_REQUIRE", "never")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     #[cfg(not(windows))]
@@ -1793,20 +1365,16 @@ fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
     }
     #[cfg(windows)]
     {
-        // No `/usr/bin/false` to point an askpass at; instead forbid Git Credential
-        // Manager's interactive GUI prompt, so a missing credential fails fast rather
-        // than popping a dialog that hangs the invoke thread. `git_run`'s hard
-        // timeout is the ultimate backstop. Stored creds (GCM cache) still work.
+        // No /usr/bin/false to point an askpass at; forbid Git Credential Manager's GUI
+        // prompt instead so a missing credential fails fast. Stored GCM creds still work.
         c.arg("-c").arg("credential.interactive=false");
     }
     c.arg("-C").arg(workdir).args(args);
     c
 }
 
-/// Run a git command with a hard timeout. `Child::wait` has no timeout in std, so
-/// the wait happens on a scratch thread and we kill by pid if it overruns. Without
-/// this, a fetch against an unreachable remote hangs a Tauri worker thread for the
-/// rest of the app's life.
+/// Run git with a hard timeout: `Child::wait` has none, so a scratch thread waits and the
+/// pid is killed on overrun. Without it a fetch to an unreachable remote hangs a worker forever.
 fn git_run(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
     let child = cmd
         .stdin(std::process::Stdio::null())
@@ -1832,12 +1400,8 @@ fn git_run(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Ou
     }
 }
 
-/// Where this branch sits relative to its upstream: `(upstream_name, ahead, behind)`.
-/// All zeros with no name when the branch has no upstream, or HEAD is detached.
-///
-/// Note these counts are only as fresh as the last fetch — git compares against the
-/// local remote-tracking ref, not the network. That's why the UI pairs them with a
-/// fetch button rather than pretending they're live.
+/// `(upstream_name, ahead, behind)` versus the branch's upstream; zeros and no name without
+/// one or on a detached HEAD. Only as fresh as the last fetch, hence the UI's fetch button.
 fn upstream_state(workdir: &str) -> (Option<String>, u32, u32) {
     let name = git_cmd(workdir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
         .output()
@@ -1846,8 +1410,7 @@ fn upstream_state(workdir: &str) -> (Option<String>, u32, u32) {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
     let Some(name) = name else { return (None, 0, 0) };
-    // --left-right --count over the symmetric difference prints "behind\tahead":
-    // left side is upstream-only commits, right side is ours.
+    // --left-right --count over the symmetric difference prints "behind\tahead".
     let (mut ahead, mut behind) = (0u32, 0u32);
     if let Ok(o) = git_cmd(workdir, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]).output() {
         if o.status.success() {
@@ -1862,55 +1425,31 @@ fn upstream_state(workdir: &str) -> (Option<String>, u32, u32) {
 
 #[derive(serde::Serialize)]
 pub(crate) struct DiffStat {
-    /// Insertions in the uncommitted working tree (tracked files, vs HEAD).
-    added: u32,
-    /// Deletions in the uncommitted working tree.
+    added: u32,     // insertions in the uncommitted working tree (tracked files, vs HEAD)
     removed: u32,
-    /// Tracked files with uncommitted changes.
-    files: u32,
-    /// Untracked entries (new, never committed). git collapses an untracked *directory*
-    /// into one entry, so this counts things-git-will-not-commit-yet, not files.
-    untracked: u32,
-    /// How many of `untracked` are directories rather than files — the card says "1 new
-    /// folder" rather than "1 new file" for them, because one entry can be forty files.
-    new_dirs: u32,
-    /// Total dirty entries (`git status --porcelain` line count).
-    dirty: u32,
-    /// Upstream ref this branch tracks ("origin/main"), None if it tracks nothing.
-    upstream: Option<String>,
-    /// Commits we have that the upstream doesn't (as of the last fetch).
-    ahead: u32,
-    /// Commits the upstream has that we don't (as of the last fetch).
+    files: u32,     // tracked files with uncommitted changes
+    untracked: u32, // untracked entries; git collapses an untracked directory into one
+    new_dirs: u32,  // how many of `untracked` are directories ("1 new folder", not "1 new file")
+    dirty: u32,     // `git status --porcelain` line count
+    upstream: Option<String>, // "origin/main"; None when the branch tracks nothing
+    ahead: u32,     // as of the last fetch
     behind: u32,
 }
 
-/// One dirty entry in a working tree, as `git_working_set` reports it — what the
-/// new-session dialog lists under "Working tree" so a checkout's uncommitted work is
-/// named rather than merely counted.
+/// One dirty entry, as the new-session dialog lists it under "Working tree".
 #[derive(serde::Serialize)]
 pub(crate) struct StatusFile {
-    /// Repo-relative path, git's forward-slash form. For a rename this is the NEW
-    /// path — the one that exists — and `from` carries where it came from.
-    path: String,
-    /// What happened to it, as the single letter the pane shows: `M` modified,
-    /// `A` added (staged, never committed), `D` deleted, `R` renamed, `C` copied,
-    /// `U` unmerged, `?` untracked.
-    code: char,
-    /// Where a rename/copy came from, else None.
-    from: Option<String>,
-    /// Lines added/removed versus HEAD. An untracked file has no `diff HEAD` row at
-    /// all, so it carries the lines `new_file_lines` counted for the stat instead —
-    /// the same figure, or the pane would be the third surface with its own answer.
-    /// Both 0 for a binary file, and for an untracked one that was skipped as too
-    /// large, unreadable or binary.
+    path: String,         // repo-relative, forward slashes; for a rename the NEW path
+    code: char,           // M modified, A added, D deleted, R renamed, C copied, U unmerged, ? untracked
+    from: Option<String>, // where a rename/copy came from
+    /// Lines vs HEAD. An untracked file has no `diff HEAD` row, so it carries the lines
+    /// `new_file_lines` counted for the stat; both 0 for a binary or skipped file.
     added: u32,
     removed: u32,
 }
 
-/// A `DiffStat` with the entries behind it. Flattened, so the frontend's `WorkingSet`
-/// is a `DiffStat` plus one field and every reader of the counts is unchanged.
-/// `entries` is capped and `dirty` is not, so the pane can say how many files it is
-/// not showing.
+/// A `DiffStat` plus the entries behind it, flattened so the frontend's `WorkingSet` is a
+/// `DiffStat` plus one field. `entries` is capped and `dirty` is not.
 #[derive(serde::Serialize)]
 pub(crate) struct WorkingSet {
     #[serde(flatten)]
@@ -1918,10 +1457,8 @@ pub(crate) struct WorkingSet {
     entries: Vec<StatusFile>,
 }
 
-/// `--numstat` names a rename `old => new` (and, when the two share a prefix,
-/// `dir/{old => new}/leaf`), while porcelain=v2 reports the new path alone. The line
-/// counts have to be filed under the latter, or every renamed file in the pane shows
-/// no counts at all.
+/// `--numstat` spells a rename `old => new` (or `dir/{old => new}/leaf`); porcelain=v2 uses
+/// the new path alone, and the line counts have to be filed under that.
 fn numstat_path(raw: &str) -> String {
     let Some(i) = raw.find(" => ") else { return raw.to_string() };
     let (l, r) = (&raw[..i], &raw[i + 4..]);
@@ -1931,11 +1468,9 @@ fn numstat_path(raw: &str) -> String {
     }
 }
 
-/// The path (plus, for a rename, its origin) out of one porcelain=v2 entry. How many
-/// space-separated fields come before the path depends on the kind — 8 for `1` (an
-/// ordinary change), 9 for `2` (the extra one is the rename score), 10 for `u`
-/// (unmerged carries three stages) — and the path is everything after them, because
-/// it may contain spaces itself. A `2` entry then puts the original path after a TAB.
+/// The path (plus a rename's origin) out of one porcelain=v2 entry. Fields before the path:
+/// 8 for `1`, 9 for `2` (rename score), 10 for `u` (three stages); the path is everything
+/// after, since it may contain spaces, and a `2` entry puts the original after a TAB.
 fn v2_path(line: &str) -> Option<(String, Option<String>)> {
     let kind = *line.as_bytes().first()?;
     if kind == b'?' {
@@ -1957,10 +1492,8 @@ fn v2_path(line: &str) -> Option<(String, Option<String>)> {
     })
 }
 
-/// The letter the pane shows for one entry's `XY` status pair. The index column wins
-/// when it says anything — a file renamed and then edited reads `R`, which is the
-/// fact you would otherwise miss — and an unmerged entry is always `U`, however its
-/// three stages happen to be spelled.
+/// The letter for one entry's `XY` pair: the index column wins when it says anything (a
+/// renamed-then-edited file reads `R`), and an unmerged entry is always `U`.
 fn v2_code(kind: u8, xy: &str) -> char {
     if kind == b'u' {
         return 'U';
@@ -1970,16 +1503,12 @@ fn v2_code(kind: u8, xy: &str) -> char {
     if x != '.' { x } else { y }
 }
 
-/// How many untracked files one poll is willing to open, and how large each may be.
-/// A repo can hold thousands of untracked files (a build dir git happens not to ignore);
-/// the card only needs a number, and a meter must not add to what it measures.
+/// Bounds on the untracked scan: a meter must not add to what it measures.
 const NEW_SCAN_MAX: usize = 64;
 const NEW_FILE_MAX: u64 = 512 * 1024;
 
-/// Lines in an untracked file, counted the way `git diff --no-index` would report them:
-/// every newline, plus a final line with no terminator. None means "not counted" — the
-/// file is gone, is not a regular file, is too big, or looks binary — and the caller
-/// adds nothing rather than guessing.
+/// Lines in an untracked file as `git diff --no-index` would count them. None means not
+/// counted (gone, not a regular file, too big, looks binary); the caller adds nothing.
 fn new_file_lines(path: &std::path::Path) -> Option<u32> {
     let md = std::fs::metadata(path).ok()?;
     if !md.is_file() || md.len() > NEW_FILE_MAX {
@@ -1989,8 +1518,7 @@ fn new_file_lines(path: &std::path::Path) -> Option<u32> {
     if bytes.is_empty() {
         return Some(0);
     }
-    // git's own binary test is a NUL in the first 8000 bytes; a binary file has no
-    // "lines" to add, and the peek renders it as `Binary files … differ` for the same reason.
+    // git's own binary test: a NUL in the first 8000 bytes.
     if bytes[..bytes.len().min(8000)].contains(&0) {
         return None;
     }
@@ -1998,38 +1526,22 @@ fn new_file_lines(path: &std::path::Path) -> Option<u32> {
     Some(newlines + u32::from(bytes.last() != Some(&b'\n')))
 }
 
-/// A summary of a session's *uncommitted* work — the "working set" the inspector's
-/// Checks strip shows ("+142 −38 · 7 files · 2 new"). We diff against HEAD rather
-/// than a base branch on purpose: during a live session the interesting delta is
-/// what's in flight since the last commit, and that's always well-defined (whereas
-/// guessing the base branch is not). Returns None when `workdir` isn't a repo or
-/// has no commits yet. LC_ALL=C + numeric numstat keep it locale-independent (the
-/// german-git-locale gotcha) and `--no-optional-locks` avoids fighting a running
-/// `git` in the same worktree.
-///
-/// `cap` is how many of the dirty entries to name: 0 for the counts alone (the polled
-/// path, `git_diffstat`, which never looks at a path), otherwise the most the caller
-/// will show. One scan serves both, so the dialog's file list and the sidebar's dirty
-/// dot can never disagree about what is uncommitted.
+/// A session's uncommitted work, diffed against HEAD (always well-defined mid-session,
+/// unlike a guessed base branch). None when `workdir` is not a repo or has no commits.
+/// `cap` is how many dirty entries to name: 0 for the polled counts (`git_diffstat`), else
+/// the most the caller shows. One scan serves both, so the two surfaces cannot disagree.
 fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)> {
     let git = |args: &[&str]| {
         sys_command("git")
             .env("LC_ALL", "C")
             .arg("-C").arg(workdir)
-            // Without this git octal-escapes any path outside ASCII and wraps it in
-            // quotes, and both the untracked scan below and the named entries would
-            // then carry a file whose name is the escape sequence. It costs the counts
-            // nothing.
+            // Without this git octal-escapes any non-ASCII path and quotes it.
             .args(["-c", "core.quotePath=false"])
             .args(args)
             .output()
     };
-    // ONE spawn for everything except the line counts. `--porcelain=v2 --branch` is
-    // git's machine format: it reports the dirty entries *and* the upstream name and
-    // ahead/behind in a single walk, which is what `upstream_state`'s two extra
-    // processes used to cost. This is polled per folder on a timer (see
-    // `refreshDirtyStates`), so the spawn count here is the difference between
-    // "background" and "a git every few hundred milliseconds".
+    // ONE spawn for everything but the line counts: `--porcelain=v2 --branch` reports the
+    // dirty entries and the upstream/ahead/behind in one walk. This is polled per folder.
     let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch"]).ok()?;
     if !st.status.success() {
         return None; // not a repo
@@ -2042,15 +1554,12 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
     let mut entries: Vec<StatusFile> = Vec::new();
     for line in text.lines() {
         match line.as_bytes().first() {
-            // Tracked entries: `1` changed, `2` renamed/copied, `u` unmerged. `?` is
-            // untracked, which counts twice — once as dirty, once as new.
+            // `1` changed, `2` renamed/copied, `u` unmerged; `?` counts as dirty and as new.
             Some(&k @ (b'1' | b'2' | b'u' | b'?')) => {
                 dirty += 1;
                 if k == b'?' {
                     untracked += 1;
-                    // `? sub/` (trailing slash) is a whole untracked directory collapsed
-                    // into one entry. It is not a file, so it is neither read nor
-                    // line-counted — though it is still named, as one row.
+                    // `? sub/` is a whole untracked directory collapsed into one entry: named, never read.
                     match line.strip_prefix("? ") {
                         Some(p) if p.ends_with('/') => new_dirs += 1,
                         Some(p) => new_files.push(p.to_string()),
@@ -2085,14 +1594,11 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
             _ => {}
         }
     }
-    // An unborn HEAD has nothing to diff against; None, as before, so the UI shows no
-    // working-set card rather than a card claiming zero changes in a repo full of them.
+    // An unborn HEAD has nothing to diff against; None rather than a card claiming zero changes.
     if unborn {
         return None;
     }
-    // The expensive half — a second walk, purely for +/- line counts — is skipped
-    // entirely when the tree is clean. That is the steady state for most open folders,
-    // so in practice this halves the polling cost rather than shaving it.
+    // The second walk (+/- counts) is skipped on a clean tree, the steady state for most folders.
     let (mut added, mut removed, mut files) = (0u32, 0u32, 0u32);
     if dirty > 0 {
         let ns = git(&["--no-optional-locks", "diff", "--numstat", "HEAD"]).ok()?;
@@ -2119,17 +1625,9 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
             }
         }
     }
-    // A never-committed file has no `diff HEAD` row, so `added`/`removed` used to read
-    // `+0 −0` next to a count saying the tree had gained something — and the peek, which
-    // renders untracked files as new-file diffs, showed `+37` for the very same file.
-    // Two surfaces, one tree, two answers. Counting the lines here settles it — and the
-    // same figure lands on the named entry, so the dialog's per-file `+N` cannot become
-    // the third answer.
-    //
-    // Bounded on purpose: this runs on the per-folder dirty poll, so it reads at most
-    // NEW_SCAN_MAX files, at most NEW_FILE_MAX bytes each, and skips anything that
-    // smells binary. Whatever it skips simply is not counted — the figure stays a
-    // lower bound rather than becoming a guess.
+    // A never-committed file has no `diff HEAD` row, yet the peek renders it as a new-file
+    // diff with a real count, so count its lines here and on the named entry. Bounded (this
+    // is the dirty poll): at most NEW_SCAN_MAX files of NEW_FILE_MAX bytes, binaries skipped.
     for rel in new_files.iter().take(NEW_SCAN_MAX) {
         let n = new_file_lines(&std::path::Path::new(workdir).join(rel)).unwrap_or(0);
         added += n;
@@ -2148,11 +1646,8 @@ pub(crate) fn git_diffstat(workdir: String) -> Option<DiffStat> {
     working_set(&workdir, 0).map(|(stat, _)| stat)
 }
 
-/// The same working set with its files named — what the new-session dialog lists
-/// before you walk into a checkout. It *is* `git_diffstat` asked to keep the paths,
-/// so the dialog calls this instead of both rather than as well. Capped, because a
-/// folder can hold an untracked `node_modules`; `dirty` still carries the true total,
-/// so the pane can say how many it left out.
+/// `git_diffstat` with the files named, for the new-session dialog. Capped (a folder can
+/// hold an untracked `node_modules`); `dirty` still carries the true total.
 #[tauri::command(async)]
 pub(crate) fn git_working_set(workdir: String) -> Option<WorkingSet> {
     const LIST_CAP: usize = 200;
@@ -2161,39 +1656,21 @@ pub(crate) fn git_working_set(workdir: String) -> Option<WorkingSet> {
 
 #[derive(serde::Serialize)]
 pub(crate) struct ChangedPath {
-    /// Repo-relative, forward slashes — the same shape the explorer's index uses, so the
-    /// two join on the string without either side normalising.
-    path: String,
-    /// One letter, from the same `v2_code` the new-session dialog's file list uses, so
-    /// the two lists cannot call one file two things. See that function for which half
-    /// of git's XY wins and why.
-    status: String,
+    path: String,   // repo-relative, forward slashes, the same shape as the explorer's index
+    status: String, // one letter from `v2_code`, so this and the dialog's list agree
 }
 
-/// Which paths are dirty and how — the marks on an explorer row.
-///
-/// A sibling of `git_diffstat` rather than a field on it: the stat is polled every 15s
-/// for every open folder and must stay a handful of integers, while this is asked for
-/// once, by one overlay, when it opens. One `status --porcelain=v2` process either way
-/// and no diffing — but this one asks for `-uall` and the polled one must not, which is
-/// the second reason they are separate commands rather than one with a flag.
-///
-/// Returns an empty list rather than an error when the folder is not a repo: the
-/// explorer works fine there (its index just comes from a walk instead), and a row with
-/// no mark is the correct rendering of "git has nothing to say about this file".
+/// Which paths are dirty and how: the marks on an explorer row. Separate from the polled
+/// `git_diffstat` because this one asks for `-uall`, once, when the overlay opens. Not a
+/// repo is an empty list, not an error; the explorer works there from a walk.
 #[tauri::command(async)]
 pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
     let out = sys_command("git")
         .env("LC_ALL", "C")
         .arg("-C").arg(&workdir)
         .args(["-c", "core.quotePath=false"])
-        // `-uall`, not git's default `-unormal`. The default collapses a new folder into
-        // the single entry `? sub/`, so every file inside it reaches the explorer with no
-        // mark at all and the `Changed` chip filters out the newest files in the project
-        // — while the index beside it (`ls-files --others`) lists each one. That walk is
-        // already being done for this same overlay, so naming the files here costs
-        // nothing new. `working_set` keeps `-unormal` on purpose: it is polled every 15s
-        // and it *counts* the collapsed entry as one `new_dirs`.
+        // `-uall`: the default collapses a new folder into `? sub/`, so every file inside it
+        // would reach the explorer unmarked. `working_set` keeps `-unormal` (it is polled).
         .args(["--no-optional-locks", "status", "--porcelain=v2", "-uall"])
         .output();
     let Ok(out) = out else { return Vec::new() };
@@ -2203,11 +1680,7 @@ pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut rows = Vec::new();
     for line in text.lines() {
-        // `v2_path`/`v2_code` rather than a second parse of the same format. This used to
-        // re-implement the per-kind field count inline (9/10/11/2 against their 8/9/10,
-        // both correct, both arrived at separately), which meant a fix to either had to
-        // be found twice — and the two disagreed about the status letter, so one file
-        // could be `M` here and `A` in the new-session dialog.
+        // Shared with the new-session dialog's list, so one file cannot be `M` here and `A` there.
         let Some(kind) = line.as_bytes().first().copied() else { continue };
         if !matches!(kind, b'1' | b'2' | b'u' | b'?') {
             continue;
@@ -2225,30 +1698,18 @@ pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
 
 #[derive(serde::Serialize)]
 pub(crate) struct GitDiff {
-    /// Combined unified-diff patch for the working set: tracked changes vs HEAD,
-    /// followed by each untracked file rendered as a new-file diff. The frontend
-    /// parses this into files/hunks for the peek viewer.
-    patch: String,
-    /// True when we stopped early because the patch hit the size/file cap — the
-    /// viewer shows a "truncated" note so a partial diff can't read as complete.
-    truncated: bool,
+    patch: String,   // tracked changes vs HEAD, then each untracked file as a new-file diff
+    truncated: bool, // stopped at the size/file cap; the viewer shows a note
 }
 
-/// The full *uncommitted* diff behind the working-set card, for the peek viewer.
-/// Tracked changes come from `diff HEAD`; untracked files are appended as new-file
-/// diffs via `diff --no-index` against `/dev/null` — which, unlike `add -N`, never
-/// touches the index (important while a live session may be staging/committing).
-/// `core.quotepath=false` keeps non-ASCII paths literal; a size + file-count cap
-/// stops a huge working tree from shipping a multi-MB payload into the webview.
+/// The full uncommitted diff behind the working-set card. Tracked changes from `diff HEAD`;
+/// untracked files appended via `diff --no-index` against `/dev/null`, which unlike `add -N`
+/// never touches the index while a live session may be staging.
 #[tauri::command]
 pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     const CAP: usize = 800_000; // ~0.8 MB of patch text — ample for a peek
-    // Each untracked file below costs a whole `git` process (and on Windows a console
-    // with it, at ~140ms worst case per spawn), because `--no-index` compares one pair
-    // at a time — so this cap bounds a process storm, not output size. 300 shipped one:
-    // ~600 back-to-back process creations on a click that should feel instant, and a
-    // plausible source of git.exe 0xc0000142 dialogs. Nobody reads 300 untracked files
-    // in a peek; the viewer's truncation note explains the rest.
+    // Each untracked file costs a whole git process (`--no-index` is one pair at a time), so
+    // this bounds a process storm, not output size; 300 once meant ~600 spawns on one click.
     const MAX_UNTRACKED: usize = 25;
 
     let tracked = git_cmd(&workdir, &["-c", "core.quotepath=false", "--no-optional-locks", "diff", "HEAD"])
@@ -2264,8 +1725,7 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
         truncated = true;
     }
 
-    // Untracked files, each as its own new-file diff. `--no-index` exits 1 whenever
-    // the files differ (always, vs /dev/null), so we read stdout regardless of status.
+    // `--no-index` exits 1 whenever the files differ, so stdout is read regardless of status.
     if !truncated {
         if let Ok(o) = git_cmd(&workdir, &["--no-optional-locks", "ls-files", "--others", "--exclude-standard", "-z"]).output() {
             let listing = String::from_utf8_lossy(&o.stdout);
@@ -2291,77 +1751,37 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     Some(GitDiff { patch, truncated })
 }
 
-/// One commit, as the project graph panel draws it.
-///
-/// Deliberately flat, small and *underived*: a page of these crosses the IPC
-/// boundary as JSON, so nothing is computed here that the frontend can compute
-/// itself — the lane layout, the ref chips and the absolute date are all derived
-/// in `graph.ts`, where they can be unit-tested without a repo.
+/// One commit as the graph panel draws it. Flat and underived: lanes, ref chips and dates
+/// are computed in `graph.ts`, where they can be tested without a repo.
 #[derive(serde::Serialize)]
 pub(crate) struct GraphCommit {
-    /// Full sha. Not abbreviable: the parent links are matched on it, and an
-    /// abbreviation is only unique within the repo's current object count.
-    sha: String,
-    /// Abbreviated sha for display, at git's own chosen length (`%h`).
-    short: String,
-    /// Parent shas, first parent first — empty for a root, 2+ for a merge. This is
-    /// the only thing the graph's shape comes from.
-    parents: Vec<String>,
+    sha: String,          // full: parents are matched on it, and an abbreviation is only unique today
+    short: String,        // %h
+    parents: Vec<String>, // first parent first; empty for a root, 2+ for a merge
     subject: String,
     author: String,
-    /// Author date, epoch seconds — the panel's absolute timestamp.
-    unix: i64,
-    /// Committer date, relative ("3 days ago"), in git's own wording.
-    rel: String,
-    /// Raw decoration (`%D` in `--decorate=full` form): "HEAD -> refs/heads/main,
-    /// refs/remotes/origin/main, tag: refs/tags/v1.0", empty when the commit carries
-    /// no ref. Parsed into typed chips by the frontend (`parseRefs`), which needs the
-    /// full paths — the short forms can't be told apart.
+    unix: i64,            // author date, epoch seconds
+    rel: String,          // committer date, relative, in git's own wording
+    /// Raw `%D` in `--decorate=full` form, empty without a ref. The frontend's `parseRefs`
+    /// needs the full paths; the short forms cannot be told apart.
     refs: String,
 }
 
-/// One page of history.
-///
-/// `more` is what lets the panel offer "load more" without ever having counted the
-/// repo's commits: we ask git for one commit *past* the page and report whether it
-/// was there. A count would mean walking the whole history, which is precisely what
-/// this command exists not to do.
+/// One page of history. `more` comes from asking git for one commit past the page, so
+/// "load more" never needs the repo's commit count.
 #[derive(serde::Serialize)]
 pub(crate) struct GraphPage {
     commits: Vec<GraphCommit>,
     more: bool,
 }
 
-/// A page of commit history for a project's graph panel.
-///
-/// **The panel must never read a whole history**, so this command can't either: it
-/// is `git log --skip=<skip> -n <limit+1>` and nothing else. A big monorepo has
-/// hundreds of thousands of commits; the panel opens on the first ~60 and asks for
-/// the next page only when the user scrolls to the end of what it has. Everything
-/// else in the design follows from that:
-///
-/// - **`--date-order`, not `--topo-order`.** Both keep a child ahead of its parents,
-///   which is all the lane layout needs. But paging by recency means page 1 has to be
-///   the genuinely most recent commits *across* refs, and topo-order will pull a stale
-///   branch's whole chain forward to keep it contiguous — making the first page look
-///   like history from a month ago.
-/// - **`\x1e` records, NUL fields.** A subject may contain any printable character,
-///   tabs included, so neither delimiter may be something that can appear inside a
-///   field. (`git log -z` is not an option: it would collide with the NULs.)
-/// - **`scope`** is `"head"` for the checked-out branch alone, anything else for every
-///   ref (`--all`, which is refs/heads + refs/remotes + tags, never the stash). A graph
-///   with one lane isn't a graph, so the panel defaults to all refs and offers "this
-///   branch" as the narrowing.
-///
-/// Errs with git's own first line when the folder isn't a git repo. A repo with **no
-/// commits yet** is an empty page rather than an error, because that is the truthful
-/// answer and the panel can say it — note git itself disagrees with itself here:
-/// `log --all` on an unborn HEAD exits 0 with no output (no refs matched), while a
-/// bare `log` calls it fatal.
+/// A page of commit history: `git log --skip -n limit+1` and nothing else, since the panel
+/// must never read a whole history; `--date-order` so page 1 is newest across refs
+/// (docs/commit-graph.md). `\x1e` records, NUL fields: a subject may hold a tab, and `-z` would
+/// collide with the NULs. `scope` "head" is the checkout alone, else `--all`. Unborn: an empty page.
 #[tauri::command(async)]
 pub(crate) fn git_graph(workdir: String, skip: u32, limit: u32, scope: String) -> Result<GraphPage, String> {
-    /// Ceiling on one page, whatever the caller asks for — a runaway `limit` would
-    /// undo the entire point of the command.
+    /// Ceiling on one page, whatever the caller asks for.
     const MAX_PAGE: u32 = 400;
 
     if !std::path::Path::new(&workdir).is_dir() {
@@ -2372,8 +1792,7 @@ pub(crate) fn git_graph(workdir: String, skip: u32, limit: u32, scope: String) -
     let sk = format!("--skip={skip}");
     let mut args = vec![
         "--no-optional-locks", "log", "--date-order", "--no-color",
-        // FULL ref paths in %D. Short ones can't be told apart — a local `feat/x` and a
-        // remote `origin/x` are the same shape — so the chips would be guesses.
+        // FULL ref paths in %D; short ones cannot be told apart.
         "--decorate=full",
         sk.as_str(), n.as_str(),
         "--format=%x1e%H%x00%h%x00%P%x00%an%x00%at%x00%cr%x00%D%x00%s",
@@ -2381,28 +1800,24 @@ pub(crate) fn git_graph(workdir: String, skip: u32, limit: u32, scope: String) -
     if scope != "head" {
         args.push("--all");
     }
-    // 20s is generous for a bounded log; the timeout exists because git_run's does,
-    // and a repo mid-`gc` can block on the object store.
+    // A repo mid-gc can block on the object store.
     let out = git_run(git_cmd(&workdir, &args), 20)?;
     if !out.status.success() {
-        // "not a git repository", a bad `scope`, an unreadable object store — git's own
-        // first line names which, so pass it through rather than inventing wording.
+        // git's own first line names which failure; pass it through.
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git log failed").to_string());
     }
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut commits = Vec::new();
-    // The split's first slice is the empty string ahead of the first record; each
-    // record carries the newline git writes after it.
+    // The first slice is the empty string ahead of the first record.
     for rec in text.split('\u{1e}').skip(1) {
         let mut f = rec.trim_matches('\n').split('\0');
         let sha = f.next().unwrap_or("").trim().to_string();
         if sha.is_empty() {
             continue;
         }
-        // These field expressions are read in the order they are *written*, which must
-        // stay the order of the format string above — not the struct's declaration order.
+        // Read in the order the format string writes them, not the struct's order.
         commits.push(GraphCommit {
             sha,
             short: f.next().unwrap_or("").to_string(),
@@ -2419,21 +1834,12 @@ pub(crate) fn git_graph(workdir: String, skip: u32, limit: u32, scope: String) -
     Ok(GraphPage { commits, more })
 }
 
-/// One commit's whole message (`%B` — subject and body), for the graph panel's commit
-/// overlay.
-///
-/// **Deliberately not part of `git_graph`'s page.** Bodies were once a field on every
-/// commit in the page, which meant a length cap so 60 of them wouldn't cross IPC as
-/// half a megabyte of JSON — and that cap then truncated the one message somebody was
-/// actually reading. Only ever one commit is open, so this fetches only that one, and
-/// the cap can be high enough never to matter in practice.
-///
-/// `sha` must be a hex object name: it goes to git as a revision argument, and anything
-/// else (a `--flag`, a `refname@{…}` expression) is refused rather than passed through.
+/// One commit's whole message (`%B`), for the graph's commit overlay. Not part of the page:
+/// a per-commit body needed a cap that truncated the one message being read. `sha` must be
+/// hex, since it goes to git as a revision argument (a `--flag` is refused).
 #[tauri::command(async)]
 pub(crate) fn git_commit_message(workdir: String, sha: String) -> Result<String, String> {
-    /// ~200KB of one commit message. Reached only by a machine-generated commit; a marker
-    /// is appended so a truncated message can never read as complete.
+    /// ~200KB; only a machine-generated message gets there, and a marker is appended.
     const CAP: usize = 200_000;
 
     if sha.len() < 4 || sha.len() > 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -2456,36 +1862,19 @@ pub(crate) fn git_commit_message(workdir: String, sha: String) -> Result<String,
 #[derive(serde::Serialize, Debug, Default)]
 pub(crate) struct GitActionResult {
     ok: bool,
-    /// One line for the toast.
-    summary: String,
-    /// Combined stdout+stderr, for the debug log.
-    output: String,
-    /// Set when the action can't be finished safely from a button. The UI offers to
-    /// open a terminal prefilled with this, rather than leaving the user guessing.
-    suggest: Option<String>,
-    /// `remove_worktree` only, and only in the one state git can leave behind: the
-    /// worktree is unregistered — so this is `ok: true` and the roster really did
-    /// change — but its directory is still on disk because something has it open.
-    /// Neither `ok` alone can express that, which is why it is a field and not a
-    /// wording; `purge_worktree_folder` is what acts on it.
+    summary: String,         // one line for the toast
+    output: String,          // combined stdout+stderr, for the debug log
+    suggest: Option<String>, // the command to finish with in a terminal, when a button cannot safely
+    /// `remove_worktree` only: the worktree is unregistered (`ok: true`, the roster changed)
+    /// but its directory is still on disk. `purge_worktree_folder` acts on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     stranded: Option<Stranded>,
 }
 
-/// Fetch / pull / push for a session's working directory — the "git fluff" a
-/// cockpit needs so you don't drop to a shell for the routine half of git.
-///
-/// The design rule is that **no button may leave the working tree in a state the
-/// UI can't explain**, because there is no conflict-resolution surface here. So:
-/// pull is `--ff-only` (it can never conflict, never half-merge, and git itself
-/// refuses when local edits would be clobbered), push never invents an upstream,
-/// and the cases we can predict — a diverged branch, a missing upstream, a stale
-/// branch that would be rejected — are refused *before* running git, with the
-/// command the user should run instead. Committing deliberately isn't here: it
-/// belongs to the session, not to a toolbar.
-///
-/// Every op is safe against a live Claude in the same worktree: fetch and push
-/// don't touch the working tree at all, and ff-only pull won't overwrite edits.
+/// Fetch / pull / push for a session's working directory. No button may leave the tree in a
+/// state the UI cannot explain (there is no conflict surface): pull is `--ff-only`, push never
+/// invents an upstream, and the predictable refusals (diverged, no upstream) come with the
+/// command to run instead. All three are safe against a live agent in the same worktree.
 #[tauri::command(async)]
 pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult, String> {
     if !std::path::Path::new(&workdir).is_dir() {
@@ -2522,8 +1911,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                     &format!("git branch --set-upstream-to=origin/{branch} {branch}"),
                 );
             }
-            // Diverged: ff-only would fail anyway. Refusing up front lets us say why
-            // and hand over the rebase, instead of surfacing a raw git error.
+            // Diverged: refusing up front lets us say why and hand over the rebase.
             if ahead > 0 && behind > 0 {
                 return refuse(
                     &format!("diverged — {ahead} ahead, {behind} behind"),
@@ -2543,18 +1931,15 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
             let Some(branch) = branch.as_deref() else {
                 return refuse("detached HEAD — nothing to push", "git switch -");
             };
-            // Never invent a remote branch from a button: the first push of a branch
-            // is a publishing decision, so we hand it over instead.
+            // A branch's first push is a publishing decision; never made from a button.
             if upstream.is_none() {
                 return refuse(
                     &format!("{branch} tracks no upstream"),
                     &format!("git push -u origin {branch}"),
                 );
             }
-            // "Nothing to send" comes FIRST, and being behind does not change it: a
-            // push with no commits of our own is a no-op whatever the remote has done,
-            // and answering "push would be rejected" describes a rejection that could
-            // never happen while handing the user a terminal they did not need.
+            // "Nothing to send" comes FIRST: with no commits of our own a push is a no-op,
+            // whatever the remote has done.
             if ahead == 0 {
                 return Ok(GitActionResult {
                     ok: true,
@@ -2562,10 +1947,8 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
                     ..Default::default()
                 });
             }
-            // Which leaves commits on both sides, and that is what diverged *means*, so
-            // the handoff has to be the one that resolves it. `git pull --ff-only` was
-            // offered here and cannot fast-forward a branch that has moved on locally:
-            // it fails exactly as surely as the push would, one command later.
+            // Diverged: `git pull --ff-only` was once offered here and cannot fast-forward
+            // a branch that moved on locally, so the handoff must be the rebase.
             if behind > 0 {
                 return refuse(
                     &format!("diverged — {ahead} ahead, {behind} behind, so the push would be rejected"),
@@ -2595,9 +1978,7 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
         return Ok(GitActionResult { ok: true, summary, output: combined, ..Default::default() });
     }
 
-    // git said no for a reason we didn't predict (local edits in the way, a hook
-    // rejecting the push, a protected branch, a host key we've never seen). Show
-    // its own first line — the truthful thing — and offer the same op in a shell.
+    // An unpredicted refusal: show git's own first line and offer the same op in a shell.
     let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").to_string();
     Ok(GitActionResult {
         ok: false,
@@ -2608,29 +1989,19 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
     })
 }
 
-/// One commit on the Trail. `when` is the author date in UNIX **seconds**, matching
-/// `HistorySession.mtime` — the frontend converts both once, at the boundary.
+/// One commit on the Trail. `when` is the author date in UNIX seconds, like `HistorySession.mtime`.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub(crate) struct DayCommit {
     pub sha: String,
     pub author: String,
     pub when: u64,
     pub subject: String,
-    /// The repo this came from, as the caller named it — so the frontend can attribute
-    /// a commit to a project without re-resolving paths.
-    pub root: String,
+    pub root: String, // the repo as the caller named it, so the frontend needs no path resolving
 }
 
-/// Resolve a folder to something that identifies its **repository**, not its checkout.
-///
-/// This is the whole reason the Trail doesn't double-count: Episko is worktree-heavy,
-/// and every worktree of one repo shares one object store, so asking each of them for
-/// "commits since Monday" returns the same commits N times. Worktrees share a
-/// *common dir*, so that is the identity.
-///
-/// `--path-format=absolute` matters: plain `--git-common-dir` answers `.git` for a main
-/// worktree, which is relative to the cwd and would compare unequal to the absolute
-/// path a linked worktree reports for the very same repo.
+/// Something that identifies a folder's REPOSITORY, not its checkout: every worktree shares
+/// one common dir, and that is what stops the Trail counting one repo's commits N times.
+/// `--path-format=absolute` matters, or a main worktree answers a relative `.git`.
 fn repo_identity(dir: &str) -> Option<String> {
     let out = sys_command("git")
         .env("LC_ALL", "C")
@@ -2645,35 +2016,15 @@ fn repo_identity(dir: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(norm_path(&s)) }
 }
 
-/// Commits across `roots` in the last `days` days, for the Trail's "behind you" half.
-///
-/// **One git call per repository, never one per day or per commit.** A day view over a
-/// month is 30 buckets; asking git per bucket would be 30 processes for what one pass
-/// answers, and the frontend groups by date anyway.
-///
-/// Includes every local branch (`--branches`), not just HEAD: with several worktrees
-/// open, the work that landed today is spread across them, and a Trail that only saw
-/// the checked-out branch would miss most of it. Merges are kept — "merged #43" is
-/// exactly the kind of thing a day is remembered by.
-///
-/// Every author is returned, not just the current user. Seeing that a colleague pushed
-/// while you were elsewhere is the point of the collaborator work, and the frontend
-/// decides how to show whose commit it was.
-///
-/// Failures are per-repo and silent: a root that isn't a repo, has no commits yet, or
-/// has since been deleted contributes nothing rather than failing the whole call.
+/// Commits across `roots` in the last `days` days, for the Trail. One git call per
+/// repository, never per day; every local branch (`--branches`), merges kept, every author.
+/// A root that is not a repo, has no commits or was deleted contributes nothing.
 #[tauri::command(async)]
 pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
     let mut seen: Vec<String> = Vec::new();
     let mut out: Vec<DayCommit> = Vec::new();
-    // git's approxidate cannot express a date before the UNIX epoch, and it fails
-    // *silently*: `--since=36500.days.ago` matches NOTHING rather than everything, so an
-    // over-wide window would blank the Trail instead of widening it — the worst kind of
-    // bug, because "no work happened" is a plausible-looking answer.
-    //
-    // A window wider than git can express simply means "all history", which is what
-    // omitting `--since` already means — so say that, rather than guessing a magic
-    // cutoff that drifts further from the epoch every year.
+    // git's approxidate cannot express a date before the epoch and `--since=36500.days.ago`
+    // silently matches NOTHING, so a wider window means "all history": omit `--since`.
     const WIDER_THAN_GIT_CAN_SAY: u64 = 18_000; // ~49 years; the epoch is the real limit
     let since = format!("--since={days}.days.ago");
 
@@ -2689,9 +2040,7 @@ pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
         if days < WIDER_THAN_GIT_CAN_SAY {
             args.push(&since);
         }
-        // NUL between fields so a subject containing any printable character still
-        // parses; %s is the subject *line*, so it can't contain a newline and records
-        // stay newline-separated.
+        // NUL between fields; %s is the subject line, so records stay newline-separated.
         args.push("--format=%H%x00%an%x00%at%x00%s");
 
         let res = sys_command("git")
@@ -2723,41 +2072,22 @@ pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
     out
 }
 
-/// What the project dashboard needs to know about a folder before it renders anything.
-///
-/// **One call, because it decides which cards exist at all.** Three tiers, and they are
-/// not the same gate: a GitHub remote unlocks issues and pull requests, *git* unlocks
-/// the commit half of the timeline and everything shared (`.episko/` is only meaningful
-/// if it can be committed), and neither gates sessions, spend or tasks. A card with
-/// nothing to say is absent rather than empty — an empty "Issues" panel in a folder that
-/// has no issues reads as breakage.
+/// What the dashboard needs before it renders anything, in one call, since it decides
+/// which cards exist: a GitHub remote unlocks issues and PRs, git unlocks the commit
+/// half and everything shared; neither gates sessions, spend or tasks (docs/dashboard.md).
 #[derive(serde::Serialize, Debug, PartialEq, Default)]
 pub(crate) struct ProjectFacts {
     pub is_repo: bool,
-    /// The repo's main checkout, so a dashboard opened on a worktree still speaks for
-    /// the project. None when the folder isn't a repo at all.
-    pub root: Option<String>,
-    /// `origin`'s URL verbatim, for display. None for a repo with no remote — a normal
-    /// local-only project, not an error.
-    pub origin: Option<String>,
-    /// The host as the remote spells it, lowercased (`github.com`, `gitlab.com`,
-    /// `git.example.internal`) — an `~/.ssh/config` alias included, since that is the
-    /// name the user chose and the only place this is shown is the "not on GitHub" card.
-    pub host: Option<String>,
-    /// `owner/repo`, only when the host is GitHub — it is what `gh` needs, and naming it
-    /// for any other host would imply a capability Episko doesn't have there. An ssh
-    /// alias that resolves to `github.com` counts; see [`parse_remote_with`].
+    pub root: Option<String>,   // the repo's main checkout; None when the folder is not a repo
+    pub origin: Option<String>, // `origin`'s URL verbatim; None for a repo with no remote
+    pub host: Option<String>,   // as the remote spells it, lowercased; an ssh alias included
+    /// `owner/repo`, only when the host is GitHub (it is what `gh` needs); an ssh alias
+    /// that resolves to `github.com` counts, see [`parse_remote_with`].
     pub slug: Option<String>,
 }
 
-/// Host and `owner/repo` out of a git remote URL, before anything decides what that host
-/// *is*.
-///
-/// Pure and separated out because the spellings git accepts all appear in the wild and
-/// only some are URIs: `git@host:owner/repo.git` has no scheme and a colon where a slash
-/// belongs, while `ssh://git@host/owner/repo` and `https://host/owner/repo.git` are
-/// ordinary URLs. Getting this wrong does not error — it silently files a GitHub project
-/// under "no GitHub" and drops two cards, which is the failure this test-covers against.
+/// Host and `owner/repo` out of a git remote URL. Pure: `git@host:owner/repo.git` has no
+/// scheme and a colon where a slash belongs, while ssh:// and https:// are ordinary URLs.
 fn split_remote(url: &str) -> (Option<String>, Option<String>) {
     let u = url.trim();
     if u.is_empty() {
@@ -2791,33 +2121,20 @@ fn split_remote(url: &str) -> (Option<String>, Option<String>) {
     (Some(host), owner_repo)
 }
 
-/// [`split_remote`], plus the one question a parser cannot answer on its own: **is the
-/// name in this URL a hostname at all?**
-///
-/// Only GitHub gets a slug — it is what `gh` is handed, and producing one for a GitLab
-/// remote would promise a capability that does not exist. But `github.com-work` *is*
-/// GitHub: an `~/.ssh/config` `Host` alias is how one machine keeps two GitHub identities
-/// apart, and it is the alias, not the hostname, that lands in the remote URL. Matching
-/// the string alone therefore drops the issues-and-pull-requests half of the dashboard
-/// for exactly the people who have two accounts. `gh` resolves those aliases itself
-/// (which is why `gh repo view` answers in such a checkout), so Episko was the only link
-/// in the chain that could not read the remote.
-///
-/// `resolve` is the seam for that — see [`ssh_hostname`] — and it is consulted only after
-/// the plain match has failed, so the ordinary case still costs nothing.
+/// [`split_remote`], plus whether the name is a hostname at all. Only GitHub gets a slug,
+/// but an `~/.ssh/config` `Host` alias (`github.com-work`, two accounts on one machine) is
+/// GitHub too; `resolve` (see [`ssh_hostname`]) is consulted only after the plain match fails.
 fn parse_remote_with(url: &str, resolve: impl Fn(&str) -> Option<String>) -> (Option<String>, Option<String>) {
     let (host, owner_repo) = split_remote(url);
     let Some(h) = host else { return (None, None) };
     if h == "github.com" {
         return (Some(h), owner_repo);
     }
-    // Only an ssh-ish remote can carry an alias: an https host is a real hostname, and
-    // asking ssh about one would spend a process on every GitLab dashboard.
+    // Only an ssh-ish remote can carry an alias; an https host is a real hostname.
     let aliased = owner_repo.is_some()
         && !url.trim_start().to_ascii_lowercase().starts_with("http")
         && resolve(&h).as_deref() == Some("github.com");
-    // The host stays as written. It is only shown when there is no slug, and a user who
-    // typed an alias should be told back the name they typed.
+    // The host stays as written: it is only shown when there is no slug.
     (Some(h), owner_repo.filter(|_| aliased))
 }
 
@@ -2826,23 +2143,14 @@ pub(crate) fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
     parse_remote_with(url, ssh_hostname)
 }
 
-// Resolved aliases, for the life of the process. `~/.ssh/config` is config, and nobody
-// edits it mid-session — the same reasoning as github.rs's `VIEWER`.
+// Cached for the life of the process; nobody edits ~/.ssh/config mid-session.
 static SSH_HOSTS: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
-/// The real hostname behind an `~/.ssh/config` `Host` alias, or `None` if there is none.
-///
-/// `ssh -G <name>` prints the config that *would* apply to a connection without making
-/// one, so this costs a process and no network; a name that is not an alias comes back as
-/// itself, which is what makes the answer always safe to compare. Asking ssh rather than
-/// reading the file ourselves is the whole point: `Include`, wildcards and `Match` are
-/// its grammar, and a half-parser would be wrong precisely on the configs elaborate
-/// enough to have an alias in them.
-///
-/// No ssh on PATH → `None`, which is exactly the behaviour before this existed.
+/// The real hostname behind an `~/.ssh/config` `Host` alias, or None. `ssh -G` prints the
+/// applicable config without connecting, and it, not a half-parser, owns `Include`,
+/// wildcards and `Match`. No ssh on PATH is None.
 fn ssh_hostname(alias: &str) -> Option<String> {
-    // The name reaches ssh as an argument, so it must not be able to read as a flag —
-    // the same guard `git_commit_message` puts on a sha before handing it to git.
+    // The name goes to ssh as an argument, so it must not read as a flag.
     if alias.starts_with('-')
         || alias.is_empty()
         || !alias.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
@@ -2867,11 +2175,8 @@ fn ssh_hostname(alias: &str) -> Option<String> {
     found
 }
 
-/// The `hostname` line out of `ssh -G` output, if it names something other than the alias
-/// itself. Split from the process call because this is the half that can break silently:
-/// the answer sits in ~60 lines of `key value` pairs, `ssh -G` always prints one whatever
-/// it was asked about, and a `hostname` echoing the alias back means "not an alias" —
-/// which is indistinguishable, at the call site, from a correct resolution.
+/// The `hostname` line out of `ssh -G` output, if it names something other than the alias:
+/// ssh echoes a non-alias back as itself, which must not read as a resolution.
 fn ssh_hostname_in(out: &str, alias: &str) -> Option<String> {
     out.lines()
         .find_map(|l| l.strip_prefix("hostname ").map(|h| h.trim().to_ascii_lowercase()))
@@ -2884,9 +2189,7 @@ pub(crate) fn project_facts(dir: String) -> ProjectFacts {
     let Some(root) = repo_root_of(&dir) else {
         return ProjectFacts::default();
     };
-    // `git remote get-url origin` rather than reading .git/config directly: worktrees,
-    // submodules and `includeIf` all make the file the wrong place to look, and this is
-    // one process on a folder the user just clicked.
+    // `remote get-url` rather than reading .git/config: worktrees, submodules and includeIf.
     let origin = sys_command("git")
         .env("LC_ALL", "C")
         .arg("-C").arg(&root)
@@ -2905,39 +2208,28 @@ mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
 
-    /// A machine with no ssh config at all. Every assertion below that uses it is also
-    /// asserting the alias lookup was **not** needed to reach the answer.
+    /// No ssh config at all; assertions using it also assert the alias lookup was not needed.
     fn no_aliases(_: &str) -> Option<String> { None }
 
-    /// `switch_branch` itself needs a real `AppState`, whose `Session` holds a live PTY —
-    /// nothing a unit test can build. Its rule is extracted precisely so the half the
-    /// backend owns can still be pinned, because the other half (`midFlight`, in
-    /// src/types.ts) is written to agree with it and the two drift silently: a
-    /// disagreement shows up as the frontend offering a switch the backend then refuses,
-    /// which reads as a bug in git.
+    /// `switch_branch` needs a live `AppState`, so its rule is pinned here; the other half
+    /// (`midFlight` in src/types.ts) is written to agree, and the two drift silently.
     #[test]
     fn only_a_running_task_blocks_a_branch_switch_from_the_backend_side() {
         assert!(blocks_switch("task"));
-        // A shell is the user's own prompt, and an agent's phase is not visible here —
-        // an idle claude pane must not be mistaken for a working one.
+        // A shell is the user's own prompt; an agent's phase is not visible here.
         assert!(!blocks_switch("shell"));
         assert!(!blocks_switch("claude"));
-        // An unknown kind is not a blocker: `Session::kind` is set by our own spawners,
-        // so a new one is a pane we added, not an unexplained hazard to refuse on.
+        // An unknown kind is a pane we added, not a hazard to refuse on.
         assert!(!blocks_switch(""));
     }
 
-    /// The pair that must never disagree. The failure is silent and one-sided: the switch
-    /// runs the right command, and only the *dirty tree* path — the one nobody exercises
-    /// on purpose — hands a terminal a command that does something else.
+    /// The pair must never disagree; only the dirty-tree path hands the suggest to a terminal.
     #[test]
     fn a_remote_only_switch_tracks_and_hands_over_the_same_command() {
         let (args, suggest) = switch_args("feat/x", Some("origin/feat/x"));
         assert_eq!(args, ["switch", "--track", "-c", "feat/x", "origin/feat/x"]);
         assert_eq!(suggest, "git switch --track -c \"feat/x\" \"origin/feat/x\"");
-        // A branch that is already here is moved to, never cut again — `-c` on an
-        // existing branch is a hard git error, and this is reached whenever the local ref
-        // appeared between the list being read and the click.
+        // An existing branch is switched to, never cut again (-c on it is a hard error).
         let (args, suggest) = switch_args("dev", None);
         assert_eq!(args, ["switch", "dev"]);
         assert_eq!(suggest, "git switch \"dev\"");
@@ -2964,8 +2256,7 @@ mod tests {
     #[test]
     fn a_slug_is_only_ever_produced_for_github() {
         let p = |u| parse_remote_with(u, no_aliases);
-        // The slug is what `gh` is handed. Producing one for another host would promise
-        // issues and pull requests Episko cannot reach there.
+        // The slug is what `gh` is handed; another host would promise issues Episko cannot reach.
         assert_eq!(p("git@gitlab.com:team/thing.git"),
                    (Some("gitlab.com".into()), None));
         assert_eq!(p("git@git.respeak.internal:team/thing.git"),
@@ -2976,9 +2267,7 @@ mod tests {
 
     #[test]
     fn an_ssh_host_alias_is_still_github() {
-        // Two GitHub accounts on one machine means an `~/.ssh/config` `Host` alias per
-        // identity, and the alias is what the remote URL carries. Matching the string
-        // alone drops issues and pull requests for precisely those users.
+        // Two GitHub accounts on one machine means an ssh Host alias per identity in the remote URL.
         let cfg = |h: &str| match h {
             "github.com-work" | "gh-personal" => Some("github.com".to_string()),
             "work-lab" => Some("gitlab.com".to_string()),
@@ -3008,8 +2297,7 @@ mod tests {
 
     #[test]
     fn the_hostname_is_read_out_of_real_ssh_g_output() {
-        // Verbatim shape of `ssh -G`: ~60 `key value` lines, keys lowercased by ssh
-        // itself, in no order we may depend on. Captured from OpenSSH 9.x.
+        // Verbatim shape of `ssh -G` (OpenSSH 9.x): ~60 `key value` lines, in no fixed order.
         const OUT: &str = "\
 user git
 hostname github.com
@@ -3021,8 +2309,7 @@ hostkeyalias
 canonicalizehostname false
 ";
         assert_eq!(ssh_hostname_in(OUT, "github.com-work"), Some("github.com".into()));
-        // A name that is not an alias: ssh still prints a `hostname`, echoing it back.
-        // Accepting that would mint a slug for every host on earth.
+        // A non-alias: ssh still prints a `hostname`, echoing it back.
         assert_eq!(ssh_hostname_in("user git\nhostname gitlab.com\n", "gitlab.com"), None);
         assert_eq!(ssh_hostname_in("hostname GitLab.com\n", "gitlab.com"), None);
         // `hostkeyalias` must not be mistaken for it, nor an empty value accepted.
@@ -3042,8 +2329,7 @@ canonicalizehostname false
 
     #[test]
     fn project_facts_separates_not_a_repo_from_a_repo_with_no_remote() {
-        // The two are different tiers: one loses the whole git half of the dashboard,
-        // the other only loses issues and pull requests.
+        // Different tiers: one loses the git half, the other only issues and PRs.
         let plain = scratch_dir();
         assert_eq!(project_facts(plain.to_string_lossy().to_string()), ProjectFacts::default());
 
@@ -3055,11 +2341,8 @@ canonicalizehostname false
         assert_eq!(f.origin, None, "a repo with no remote is normal, not an error");
         assert_eq!(f.slug, None);
 
-        // Deliberately NOT this repo's own remote. `git remote get-url` applies the
-        // developer's `url.<base>.insteadOf` rewrites, so a fixture naming a real
-        // owner can come back rewritten and the assertion then fails on the machine of
-        // whoever configured it rather than on anything this test is about — which is
-        // exactly what `respeak-io/episko` did here.
+        // NOT this repo's own remote: `remote get-url` applies the developer's
+        // `url.<base>.insteadOf` rewrites, so a real owner can come back rewritten.
         git(&repo, &["remote", "add", "origin", "git@github.com:example-org/thing.git"]);
         let f = project_facts(repo.to_string_lossy().to_string());
         assert_eq!(f.slug, Some("example-org/thing".into()));
@@ -3070,12 +2353,8 @@ canonicalizehostname false
     use std::process::Command;
 
 
-    /// Where `create_worktree` puts this repo's checkouts: `<parent>/.cc-worktrees/<repo>`.
-    ///
-    /// Tests MUST clean up via this and never via `<parent>/.cc-worktrees` — `scratch_dir`
-    /// hands every repo the same parent (the OS temp dir), so wiping the whole
-    /// `.cc-worktrees` tree deletes the checkouts of every test running in parallel,
-    /// which made these two flake against each other.
+    /// Where `create_worktree` puts this repo's checkouts. Clean up via this, never via
+    /// `<parent>/.cc-worktrees`: every test shares that parent, and wiping it flakes them.
     fn wt_root(repo: &Path) -> PathBuf {
         repo.parent().unwrap()
             .join(".cc-worktrees")
@@ -3083,9 +2362,7 @@ canonicalizehostname false
     }
 
 
-    /// The Trail asks for commits across every project folder it knows, and Episko is
-    /// worktree-heavy — so the same repository arrives under several paths. Counting it
-    /// once per checkout would triple a busy day's history.
+    /// The same repository arrives under several worktree paths; count it once.
     #[test]
     fn git_log_days_counts_a_repo_once_however_many_worktrees_name_it() {
         let repo = scratch_dir();
@@ -3115,16 +2392,14 @@ canonicalizehostname false
         let both = git_log_days(vec![root.clone(), side.clone()], 3650);
         assert_eq!(both.len(), 2, "worktrees of one repo must not double-count: {both:?}");
 
-        // And the sibling worktree alone answers identically — the dedupe key is the
-        // repository, not whichever path happened to be listed first.
+        // The dedupe key is the repository, not whichever path was listed first.
         assert_eq!(git_log_days(vec![side], 3650).len(), 2);
 
         let _ = std::fs::remove_dir_all(wt_root(&repo));
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// A folder that isn't a repo (or has been deleted) must contribute nothing rather
-    /// than failing the whole call — the Trail spans every project the user has open.
+    /// A non-repo root contributes nothing rather than failing the whole call.
     #[test]
     fn git_log_days_shrugs_off_a_root_that_is_not_a_repo() {
         let plain = scratch_dir();
@@ -3144,8 +2419,7 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// `--since` is what bounds the scan; a commit outside the window must not appear,
-    /// or the "last 30 days" window silently becomes "everything".
+    /// A commit outside `--since` must not appear, or "last 30 days" becomes "everything".
     #[test]
     fn git_log_days_honours_the_window() {
         let repo = scratch_dir();
@@ -3166,19 +2440,15 @@ canonicalizehostname false
                 "a 2001 commit must fall outside a 30-day window");
         assert_eq!(git_log_days(vec![root.clone()], 20_000).len(), 1, "a wide window must include it");
 
-        // The clamp, asserted as behaviour rather than trusted: git's approxidate
-        // matches NOTHING past ~100 years, so without clamping an over-wide window
-        // would silently blank the Trail. It must widen, never empty.
+        // git's approxidate matches NOTHING before the epoch; an over-wide window must widen, never empty.
         assert_eq!(git_log_days(vec![root.clone()], 36_500).len(), 1, "an over-wide window must not go blank");
         assert_eq!(git_log_days(vec![root], u64::MAX).len(), 1, "and neither must an absurd one");
 
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// `repo_root_of` replaces a `git rev-parse` that cost ~140ms per call, so it has
-    /// to give the same answer git does — including where git *refuses* one. Each case
-    /// is asserted against `git_repo_info` in the same breath, which is what makes this
-    /// a substitution test rather than a restatement of the implementation.
+    /// `repo_root_of` replaces a `git rev-parse`, so every case is asserted against
+    /// `git_repo_info` in the same breath, including where git refuses an answer.
     #[test]
     fn repo_root_of_matches_git_without_spawning_it() {
         let repo = scratch_dir();
@@ -3197,17 +2467,14 @@ canonicalizehostname false
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(agree(&sub), Some(root.clone()));
 
-        // A linked worktree BESIDE the repo — `.git` is a file pointing into
-        // `<repo>/.git/worktrees/<name>`. This is the case History exists for.
+        // A linked worktree BESIDE the repo: `.git` is a file into `<repo>/.git/worktrees/<name>`.
         let wt = wt_root(&repo).join("side");
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
         git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
         assert!(wt.join(".git").is_file(), "fixture must be a linked worktree, not a clone");
         assert_eq!(agree(&wt), Some(root.clone()), "a worktree resolves to its repo");
 
-        // Pruned admin dir: the `.git` file survives pointing at nothing. git calls that
-        // "not a repository" and stops rather than searching upward, and so must we —
-        // otherwise a dead checkout files itself under a repo that has forgotten it.
+        // Pruned admin dir: git calls the dangling `.git` file "not a repository" and stops.
         std::fs::remove_dir_all(repo.join(".git/worktrees/side")).unwrap();
         assert_eq!(agree(&wt), None, "a stale worktree resolves to nothing");
 
@@ -3219,15 +2486,9 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// `git_head` reads `.git` directly instead of spawning git twice per session per
-    /// poll, so — exactly as with `repo_root_of` — the test that matters is a
-    /// *substitution* one: every case is asserted against what git itself answers, not
-    /// against a restatement of the implementation.
-    ///
-    /// The cases are the ones that actually differ in the file layout. An unborn HEAD
-    /// is the subtle one: `.git/HEAD` names a branch whether or not any commit exists,
-    /// so only the missing ref tells the two apart — and `projmenu.ts` relies on the
-    /// `None` to drop its *Commit graph…* row for a fresh `git init`.
+    /// `git_head` reads `.git` directly, so every case is asserted against what git answers.
+    /// An unborn HEAD is the subtle one: `.git/HEAD` names a branch either way, so only the
+    /// missing ref tells it apart, and `projmenu.ts` relies on the `None`.
     #[test]
     fn git_head_matches_git_without_spawning_it() {
         let repo = scratch_dir();
@@ -3276,14 +2537,12 @@ canonicalizehostname false
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(agree(&sub, "subdir").unwrap().branch.as_deref(), Some("main"));
 
-        // Packed refs: `pack-refs` deletes the loose file, so the ref now resolves
-        // only via `packed-refs` — the fallback that would otherwise go untested.
+        // `pack-refs` deletes the loose file, so this exercises the packed-refs fallback.
         git(&repo, &["pack-refs", "--all"]);
         assert!(!repo.join(".git/refs/heads/main").exists(), "fixture must have packed the ref away");
         assert_eq!(agree(&repo, "packed").unwrap().branch.as_deref(), Some("main"));
 
-        // A linked worktree has its OWN HEAD but shares the repo's refs — the case
-        // the (gitdir, common) split exists for.
+        // A linked worktree has its OWN HEAD but shares the repo's refs.
         let wt = wt_root(&repo).join("side");
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
         git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
@@ -3305,15 +2564,9 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// One repo reached by two spellings must resolve to ONE root, because the sidebar
-    /// groups projects by exact string equality — two spellings mean a repo that no
-    /// longer merges with its own worktrees.
-    ///
-    /// This is the case the fixtures cannot catch on their own: `scratch_dir` hands back
-    /// a physical path by design, so every other assertion here compares like with like
-    /// and would pass whether or not `repo_root_of` resolves anything. A symlink put
-    /// there on purpose is the only way to hold it to the same answer `git` gives, which
-    /// is what the whole function promises.
+    /// One repo reached by two spellings must resolve to ONE root (the sidebar groups by
+    /// exact string equality). `scratch_dir` hands back physical paths, so a deliberate
+    /// symlink is the only fixture that can hold `repo_root_of` to git's answer.
     #[cfg(unix)]
     #[test]
     fn repo_root_of_resolves_a_symlinked_path_like_git_does() {
@@ -3321,9 +2574,7 @@ canonicalizehostname false
         let repo = root.join("real");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
-        // Committed before anything is asserted: `git_repo_info` asks for the branch in
-        // the same `rev-parse` as the root, and an unborn HEAD fails the whole call, so
-        // a fresh `init` would compare against None rather than against git's answer.
+        // Committed first: `git_repo_info` fails the whole call on an unborn HEAD.
         git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
         let link = root.join("link");
         std::os::unix::fs::symlink(&repo, &link).unwrap();
@@ -3335,15 +2586,12 @@ canonicalizehostname false
             git_repo_info(&link.to_string_lossy()).0,
             "still the answer git gives, through a symlink too"
         );
-        // A subdirectory below the link resolves the same way — the walk starts from the
-        // resolved path, so every level above it is resolved as well.
+        // A subdirectory below the link resolves the same way.
         let sub = link.join("src/deep");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(repo_root_of(&sub.to_string_lossy()), Some(physical.clone()));
 
-        // The half that was already physical by accident: a linked worktree's root comes
-        // out of the `gitdir:` file, which git wrote canonically. Its answer and the main
-        // checkout's had to become the same string, or a worktree groups on its own.
+        // A linked worktree's root comes out of the `gitdir:` file, which git wrote canonically.
         let wt = root.join("side");
         git(&repo, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
         assert_eq!(repo_root_of(&wt.to_string_lossy()), Some(physical));
@@ -3365,15 +2613,12 @@ canonicalizehostname false
 
         let d = git_diff(dir.to_str().unwrap().to_string()).expect("git_diff returned None for a real repo");
         assert!(!d.truncated);
-        // Tracked modification, diffed against HEAD.
         assert!(d.patch.contains("diff --git a/tracked.txt b/tracked.txt"), "missing tracked diff:\n{}", d.patch);
         assert!(d.patch.contains("+CHANGED") && d.patch.contains("-line2"));
-        // Untracked file rendered as a new-file diff.
         assert!(d.patch.contains("diff --git a/new.txt b/new.txt"), "missing untracked diff:\n{}", d.patch);
         assert!(d.patch.contains("new file mode") && d.patch.contains("+brand new"));
 
-        // Crucially, surfacing the untracked file must NOT have staged it — `--no-index`
-        // leaves the index untouched, which is why we use it over `git add -N`.
+        // Surfacing the untracked file must NOT have staged it; that is why --no-index over add -N.
         let st = Command::new("git").current_dir(&dir).args(["status", "--porcelain"]).output().unwrap();
         let st = String::from_utf8_lossy(&st.stdout);
         assert!(st.contains("?? new.txt"), "new.txt should still be untracked, got:\n{st}");
@@ -3388,20 +2633,14 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Commit in `dir`, identity and signing passed via `-c` for the same reason
-    /// `git()` takes none from the environment: the developer's global gitconfig must
-    /// neither be needed nor touched.
+    /// Identity and signing via `-c`: the developer's global gitconfig is neither needed nor touched.
     fn commit(dir: &Path, msg: &str) {
         git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
     }
 
-    /// `worktree_heads` is the sidebar's polling path, so it has to agree with
-    /// `list_worktrees` while spawning no git at all. Four things are load-bearing: it
-    /// must answer identically from a *linked* checkout (whose `.git` is a file, a
-    /// different branch of `repo_root_of`), it must take the path from `gitdir` rather
-    /// than the bookkeeping folder name, it must track a branch switch — that is the
-    /// whole reason it exists — and it must label a detached HEAD rather than drop the
-    /// row, or a rebasing worktree would vanish from the sidebar mid-operation.
+    /// The sidebar's polling path must agree with `list_worktrees` while spawning no git: the
+    /// same answer from a linked checkout, the path from `gitdir` rather than the bookkeeping
+    /// name, a branch switch tracked, and a detached HEAD labelled rather than dropped.
     #[test]
     fn worktree_heads_reads_every_checkout_without_spawning_git() {
         let dir = scratch_dir();
@@ -3418,16 +2657,12 @@ canonicalizehostname false
             "main's path is the checkout root, in the same spelling every other root uses");
         let linked = heads.iter().find(|w| !w.is_main).expect("a linked entry");
         assert_eq!(linked.branch, "feat/thing", "a slashed branch keeps its slash");
-        // The linked entry is the CHECKOUT, not the repo root `repo_root_of` would map
-        // it back to — and its folder is `feat-thing` while git's bookkeeping name is
-        // whatever it chose, so this also pins that the path came out of `gitdir`.
+        // The CHECKOUT, not the repo root; the folder is `feat-thing`, so the path came from `gitdir`.
         assert_eq!(linked.path, norm_path(&physical_cwd(&made)));
         assert!(linked.path.ends_with("feat-thing"), "the checkout dir, not the repo root: {}", linked.path);
         assert!(linked.exists);
 
-        // Asked from *inside* the linked worktree the answer must be identical. That
-        // dir's `.git` is a file, so this is a different resolution path reaching the
-        // same repo — the asymmetry that produced two spellings of one root before.
+        // From inside the linked worktree (a `.git` file) the answer must be identical.
         assert_eq!(worktree_heads(made.clone()), heads, "same repo, same answer from any checkout");
 
         // The point of the whole thing: a branch switch is visible with no git spawn.
@@ -3437,13 +2672,8 @@ canonicalizehostname false
         git(Path::new(&made), &["checkout", "-q", "--detach"]);
         assert_eq!(worktree_heads(repo.clone()).iter().find(|w| !w.is_main).unwrap().branch, "(detached)");
 
-        // A checkout whose folder has gone stays LISTED, flagged `exists: false`. Both
-        // halves matter and they pull in opposite directions: git keeps its record in
-        // `.git/worktrees` until pruned, so dropping the row would hide the one thing
-        // that still needs cleaning up — while treating it as a place to work would
-        // spawn a PTY into nothing. The frontend reads this flag to decide between
-        // "remove this worktree" and "prune git's record of it", which is the difference
-        // between a destructive warning and a housekeeping one.
+        // A hand-deleted checkout stays LISTED with `exists: false`: git keeps its record until
+        // pruned, and the frontend picks "remove" or "prune" off this flag.
         std::fs::remove_dir_all(&made).expect("hand-delete the checkout");
         let heads = worktree_heads(repo.clone());
         let linked = heads.iter().find(|w| !w.is_main).expect("still listed once pruned-pending");
@@ -3459,16 +2689,9 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The inspector's working-set strip ("+3 −1 · 2 files · 1 new") and the ahead/
-    /// behind pair beside it.
-    ///
-    /// An untracked file's lines **are** insertions here, which reverses what this test
-    /// used to assert. The old rule left the card printing `+0 −0` beside a count saying
-    /// the tree had gained a file, while the peek — which renders untracked files as
-    /// new-file diffs — showed the real number for the very same file. One tree with two
-    /// answers is worse than either answer, so `new_file_lines` now folds them in and
-    /// the two surfaces agree. What must still not happen: measuring the gap against
-    /// anything other than the tracking ref, and reading a file the scan should refuse.
+    /// The inspector's working-set strip and the ahead/behind pair beside it. An untracked
+    /// file's lines ARE insertions here, so the strip and the peek agree; the gap is measured
+    /// against the tracking ref only, and the scan must refuse what it should.
     #[test]
     fn git_diffstat_counts_the_working_set_and_the_upstream_gap() {
         let dir = scratch_dir();
@@ -3476,8 +2699,7 @@ canonicalizehostname false
         let path = dir.to_str().unwrap().to_string();
         git(&dir, &["init", "-q", "-b", "main"]);
 
-        // An unborn HEAD has nothing to diff against — None, not a row of zeros that
-        // would read as "clean".
+        // An unborn HEAD is None, not a row of zeros that reads as "clean".
         assert!(git_diffstat(path.clone()).is_none(), "no commits yet");
 
         std::fs::write(dir.join("a.txt"), "1\n2\n3\n").unwrap();
@@ -3509,16 +2731,13 @@ canonicalizehostname false
         // Detached HEAD tracks nothing — it must not inherit the branch it left.
         git(&dir, &["checkout", "-q", "--detach"]);
         assert_eq!(upstream_state(&path), (None, 0, 0));
-        // …and the same through `git_diffstat`, which reads the gap out of porcelain=v2
-        // rather than asking separately: detached prints no `# branch.upstream` and no
-        // `# branch.ab`, so this is the parser's absent-field path, not its zero path.
+        // Detached prints no `# branch.upstream`/`# branch.ab`: the parser's absent-field path.
         let d = git_diffstat(path.clone()).expect("a detached checkout still has a working set");
         assert_eq!(d.upstream, None);
         assert_eq!((d.ahead, d.behind), (0, 0));
         assert_eq!((d.added, d.removed, d.untracked), (3, 1, 1), "detaching changed no files");
 
-        // A clean tree takes the path that skips `--numstat` entirely, so it needs its
-        // own assertion — every count zero, and still Some rather than None.
+        // A clean tree skips `--numstat` entirely, so it needs its own assertion.
         git(&dir, &["checkout", "-q", "main"]);
         git(&dir, &["checkout", "-q", "--", "a.txt"]);
         std::fs::remove_file(dir.join("new.txt")).unwrap();
@@ -3530,12 +2749,9 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&remote);
     }
 
-    /// The new-session dialog names the uncommitted files rather than counting them,
-    /// which is a different job from the diffstat's totals in three ways the counts
-    /// never exercised: a path is only useful if the line counts land on the *right*
-    /// one (numstat spells a rename `old => new`, porcelain=v2 spells it as the new
-    /// path alone), an untracked file has no diff at all, and the list is capped while
-    /// the total is not — a pane that silently showed 10 of 400 would read as ten.
+    /// Naming files is a different job from the totals: the counts must land on the right path
+    /// (numstat spells a rename `old => new`), an untracked file has no diff, and the cap bounds
+    /// the list but not the total.
     #[test]
     fn git_working_set_names_the_files_behind_the_counts() {
         let dir = scratch_dir();
@@ -3573,8 +2789,7 @@ canonicalizehostname false
         assert_eq!(m.code, 'M');
         assert_eq!((m.added, m.removed), (2, 1), "its own lines, not the tree's total");
 
-        // A path with a space survives: porcelain=v2 puts the path last, so it is
-        // everything after the fields rather than the next token.
+        // porcelain=v2 puts the path last, so a space in it survives.
         let r = by("sub/new name.txt");
         assert_eq!(r.code, 'R', "renamed-then-edited reads R, not M");
         assert_eq!(r.from.as_deref(), Some("old name.txt"));
@@ -3592,9 +2807,7 @@ canonicalizehostname false
             "no `diff HEAD` row, so it carries the lines the stat counted for it"
         );
 
-        // The cap bounds the list, never the totals — an untracked node_modules must
-        // not put thousands of paths through the IPC, and the pane subtracts the two
-        // to say how many it isn't showing.
+        // The cap bounds the list, never the totals; the pane subtracts the two.
         let (stat, few) = working_set(&path, 1).unwrap();
         assert_eq!(stat.dirty, 4, "the total ignores the cap");
         assert_eq!(few.len(), 1);
@@ -3606,11 +2819,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The explorer's row marks. The whole risk here is the parse: porcelain=v2 puts the
-    /// path last after a *different* number of fields per entry type, so a wrong count
-    /// silently yields a path that is half a hash — and a mark that never matches a row.
-    /// The cases that catch it are the ones with a space in the name and a rename, which
-    /// is where a naive `split_whitespace().last()` falls apart.
+    /// porcelain=v2 puts the path last after a per-kind number of fields, so a wrong count
+    /// silently yields half a hash; a space in the name and a rename are what catch it.
     #[test]
     fn git_changed_names_every_dirty_path_and_says_how() {
         let dir = scratch_dir();
@@ -3634,17 +2844,13 @@ canonicalizehostname false
             rows = rows.iter().map(|r| (&r.path, &r.status)).collect::<Vec<_>>());
         assert_eq!(by("gone.txt").as_deref(), Some("D"));
         assert_eq!(by("fresh file.txt").as_deref(), Some("?"));
-        // A rename is reported under its NEW name, which is the one a file list is about,
-        // and the old name must not leak in as a row of its own.
+        // A rename is reported under its NEW name only.
         assert_eq!(by("new name.txt").as_deref(), Some("R"));
         assert!(by("old name.txt").is_none(), "the old name is not a file any more: {:?}",
             rows.iter().map(|r| &r.path).collect::<Vec<_>>());
         assert_eq!(rows.len(), 4);
 
-        // A new *folder* is where `-unormal` used to give up: it reports `? sub/` as one
-        // entry, so both files below would reach the explorer unmarked while its index
-        // (`ls-files --others`) lists them individually — and the `Changed` chip would
-        // then filter out the newest files in the project.
+        // A new folder is where `-unormal` collapsed to `? sub/`; every file inside must be named.
         std::fs::create_dir(dir.join("new dir")).unwrap();
         std::fs::write(dir.join("new dir").join("a.txt"), "a\n").unwrap();
         std::fs::write(dir.join("new dir").join("b.txt"), "b\n").unwrap();
@@ -3655,10 +2861,7 @@ canonicalizehostname false
         assert_eq!(by("new dir/b.txt").as_deref(), Some("?"));
         assert!(by("new dir/").is_none(), "the collapsed folder entry is not a row");
 
-        // The index half of XY wins, and this is the case that says so: staged as added,
-        // then edited in the tree. `A` is the fact worth keeping — every dirty file is
-        // modified, only a new one is added — and the new-session dialog's list reads it
-        // the same way, which is the point of sharing `v2_code`.
+        // The index half of XY wins: staged as added, then edited, reads `A`.
         std::fs::write(dir.join("staged then edited.txt"), "1\n").unwrap();
         git(&dir, &["add", "staged then edited.txt"]);
         std::fs::write(dir.join("staged then edited.txt"), "1\n2\n").unwrap();
@@ -3674,10 +2877,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&plain);
     }
 
-    /// The bounds on the untracked scan, which are the whole reason it is safe to run on
-    /// a 15s poll: a directory is one entry and is never opened, a binary file adds
-    /// nothing, and an oversized file adds nothing. Each skip must leave the figure a
-    /// lower bound rather than a guess — and must not stop the files after it counting.
+    /// The bounds that make the untracked scan safe on a 15s poll: a directory is never opened,
+    /// a binary or oversized file adds nothing, and no skip stops the files after it.
     #[test]
     fn git_diffstat_bounds_what_it_reads_for_untracked_lines() {
         let dir = scratch_dir();
@@ -3687,8 +2888,7 @@ canonicalizehostname false
         git(&dir, &["add", "-A"]);
         commit(&dir, "init");
 
-        // A whole untracked directory: one entry, counted as a folder, never walked —
-        // so neither of the two files inside it reaches the line count.
+        // A whole untracked directory is one entry, never walked.
         std::fs::create_dir_all(dir.join("scratch")).unwrap();
         std::fs::write(dir.join("scratch/a.txt"), "1\n2\n3\n").unwrap();
         std::fs::write(dir.join("scratch/b.txt"), "4\n").unwrap();
@@ -3696,8 +2896,7 @@ canonicalizehostname false
         assert_eq!((d.untracked, d.new_dirs), (1, 1), "a new folder is one entry, and is a folder");
         assert_eq!(d.added, 0, "a folder's contents are not line-counted");
 
-        // A file with no trailing newline still has a last line, exactly as `git diff`
-        // reports it; a binary file has none.
+        // No trailing newline still has a last line, as `git diff` reports; a binary has none.
         std::fs::write(dir.join("tail.txt"), "one\ntwo").unwrap();
         std::fs::write(dir.join("blob.bin"), [0x00, 0x01, 0x02, b'a', b'\n']).unwrap();
         std::fs::write(dir.join("empty.txt"), "").unwrap();
@@ -3705,8 +2904,7 @@ canonicalizehostname false
         assert_eq!(d.added, 2, "2 lines from tail.txt, nothing from the binary or the empty file");
         assert_eq!((d.untracked, d.new_dirs), (4, 1), "all four entries still counted");
 
-        // The size cap: over it, the file contributes nothing at all rather than a
-        // partial count, and the files beside it are unaffected.
+        // Over the size cap a file contributes nothing, and the others are unaffected.
         std::fs::write(dir.join("huge.txt"), "x\n".repeat((NEW_FILE_MAX as usize / 2) + 10)).unwrap();
         let d = git_diffstat(path.clone()).unwrap();
         assert_eq!(d.added, 2, "an oversized file adds nothing, and does not break the others");
@@ -3714,9 +2912,7 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// numstat's rename spelling is the one place the two git formats disagree about
-    /// what a file is called, and a miss there is silent: the file still lists, just
-    /// with no line counts.
+    /// A miss on numstat's rename spelling is silent: the file lists with no counts.
     #[test]
     fn numstat_path_reads_both_rename_spellings() {
         assert_eq!(numstat_path("src/plain.ts"), "src/plain.ts");
@@ -3725,9 +2921,7 @@ canonicalizehostname false
         assert_eq!(numstat_path("src/{old => new}/leaf.ts"), "src/new/leaf.ts");
     }
 
-    /// The git buttons predict, *before* running git, everything git would reject
-    /// anyway — and hand over the command that does work instead of surfacing a raw
-    /// error. That prediction is the whole value of the feature.
+    /// The buttons predict what git would reject and hand over the command that works instead.
     #[test]
     fn git_action_refuses_what_git_would_reject() {
         let dir = scratch_dir();
@@ -3735,8 +2929,7 @@ canonicalizehostname false
         git(&dir, &["init", "-q", "-b", "main"]);
         commit(&dir, "base");
 
-        // No upstream: pull says how to set one; push hands over the publishing
-        // decision rather than inventing a remote branch from a button.
+        // No upstream: pull says how to set one; push hands over the publishing decision.
         let r = git_action(path.clone(), "pull".into()).unwrap();
         assert!(!r.ok && r.summary.contains("tracks no upstream"), "{}", r.summary);
         assert_eq!(r.suggest.as_deref(), Some("git branch --set-upstream-to=origin/main main"));
@@ -3752,17 +2945,15 @@ canonicalizehostname false
             assert_eq!(r.suggest.as_deref(), Some("git switch -"));
         }
 
-        // A refusal is a result the UI can show. An Err is reserved for a call that
-        // makes no sense at all — those two must not be confused.
+        // A refusal is a result the UI can show; an Err is a call that makes no sense.
         assert!(git_action(path.clone(), "commit".into()).is_err(), "committing isn't a toolbar op");
         assert!(git_action(format!("{path}/gone"), "fetch".into()).is_err(), "missing workdir");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The same three ops against a real bare remote: fetch is always safe and
-    /// re-reads the gap it just closed, pull only fast-forwards, push only runs when
-    /// it can't be rejected — and a diverged branch is refused with a rebase handoff.
+    /// Against a real bare remote: fetch re-reads the gap, pull only fast-forwards, push only
+    /// runs when it cannot be rejected, and a diverged branch gets a rebase handoff.
     #[test]
     fn git_action_fetches_pulls_and_pushes_against_a_real_remote() {
         let dir = scratch_dir();
@@ -3788,23 +2979,19 @@ canonicalizehostname false
         assert!(r.ok && r.summary == "pushed 1 commit", "{}", r.summary);
         assert_eq!(upstream_state(&path), (Some("origin/main".to_string()), 0, 0));
 
-        // Someone else pushes. Fetch re-reads afterwards — reporting the gap it just
-        // learned about is the entire point of the button — and pull fast-forwards it.
+        // Someone else pushes; fetch must report the gap it just learned about.
         git(&other, &["clone", "-q", remote.to_str().unwrap(), "."]);
         commit(&other, "theirs");
         git(&other, &["push", "-q", "origin", "main"]);
         let r = git_action(path.clone(), "fetch".into()).unwrap();
         assert!(r.ok && r.summary == "fetched — 1 behind", "{}", r.summary);
-        // Behind with nothing of our own: the push has nothing to send, and says that
-        // rather than predicting a rejection that cannot happen and opening a terminal
-        // for it. Being behind only decides anything once there IS something to push.
+        // Behind with nothing of our own: nothing to push, not a predicted rejection.
         let r = git_action(path.clone(), "push".into()).unwrap();
         assert!(r.ok && r.summary == "nothing to push", "{}", r.summary);
         let r = git_action(path.clone(), "pull".into()).unwrap();
         assert!(r.ok && r.summary == "pulled 1 commit", "{}", r.summary);
 
-        // Diverged: ff-only would fail and the push would be rejected, so neither is
-        // attempted — the user gets the command that actually resolves it.
+        // Diverged: neither ff-only nor push is attempted; the user gets the resolving command.
         commit(&dir, "local");
         commit(&other, "theirs 2");
         git(&other, &["push", "-q", "origin", "main"]);
@@ -3814,9 +3001,7 @@ canonicalizehostname false
         assert_eq!(r.suggest.as_deref(), Some("git pull --rebase"));
         let r = git_action(path.clone(), "push".into()).unwrap();
         assert!(!r.ok && r.summary.starts_with("diverged"), "{}", r.summary);
-        // NOT `git pull --ff-only && git push`, which is what this used to offer: it
-        // cannot fast-forward a branch with commits of its own, so the handoff failed
-        // one command after the button did.
+        // NOT `git pull --ff-only && git push`, which fails one command after the button did.
         assert_eq!(r.suggest.as_deref(), Some("git pull --rebase && git push"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3824,18 +3009,15 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&remote);
     }
 
-    /// The graph panel's contract with git, and the reason the command exists: it
-    /// pages. `more` must be an observation (one commit past the page was there), the
-    /// page must actually stop at `limit`, and `skip` must land on the next commit —
-    /// because the alternative is reading a monorepo's whole history to draw 60 rows.
+    /// The command exists to page: `more` is an observation, the page stops at `limit`, and
+    /// `skip` lands on the next commit.
     #[test]
     fn git_graph_pages_history_instead_of_reading_all_of_it() {
         let dir = scratch_dir();
         let path = dir.to_str().unwrap().to_string();
         git(&dir, &["init", "-q", "-b", "main"]);
 
-        // Not a repo is an Err (the panel says so). A repo with no commits is an empty
-        // page — the truthful answer, and the one thing git is inconsistent about:
+        // Not a repo is an Err; no commits is an empty page. git is inconsistent here:
         // `log --all` exits 0 on an unborn HEAD, a bare `log` calls it fatal.
         assert!(git_graph(format!("{path}/gone"), 0, 10, "all".into()).is_err(), "missing dir");
         let empty = git_graph(path.clone(), 0, 10, "all".into()).expect("unborn HEAD is an empty page");
@@ -3857,8 +3039,7 @@ canonicalizehostname false
         assert_eq!(p2.commits[0].subject, "c3");
         assert!(p2.more);
 
-        // The last page reports there is nothing behind it, so the panel can stop
-        // offering to load more.
+        // The last page reports nothing behind it.
         let last = git_graph(path.clone(), 4, 2, "all".into()).unwrap();
         assert_eq!(last.commits.len(), 1);
         assert!(!last.more, "c1 is the root — nothing behind it");
@@ -3871,10 +3052,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The two fields the drawing is made of — `parents` (the graph's whole shape)
-    /// and `refs` (the chips) — plus the delimiter choice: a subject containing a tab
-    /// must survive, which is why records are \x1e-separated and fields NUL-separated
-    /// rather than the tab-separated format the branch list can afford.
+    /// `parents` (the graph's shape) and `refs` (the chips), plus the delimiters: a subject
+    /// with a tab must survive, hence \x1e records and NUL fields.
     #[test]
     fn git_graph_carries_merge_parents_refs_and_awkward_subjects() {
         let dir = scratch_dir();
@@ -3900,19 +3079,15 @@ canonicalizehostname false
         assert!(merge.unix > 0 && !merge.rel.is_empty());
         assert_eq!(merge.short, merge.sha[..merge.short.len()], "%h abbreviates %H");
 
-        // Every parent of a loaded commit is either loaded too or past the frontier —
-        // the layout matches on full shas, so an abbreviation here would break lanes.
         let tabbed = p.commits.iter().find(|c| c.subject.contains('\t')).expect("tab subject survived");
         assert_eq!(tabbed.subject, "side\twork with\ttabs");
 
-        // The page carries no bodies at all — see git_commit_message, and the test below.
+        // The layout matches on full shas, so a parent must never be abbreviated.
         let p2 = git_graph(path.clone(), 0, 5, "all".into()).unwrap();
         assert!(!p2.commits.is_empty());
         assert!(merge.parents.iter().all(|sha| sha.len() == merge.sha.len()));
 
-        // `scope: "head"` is the narrowing: side's commit is not on main's first-parent
-        // history... it IS reachable through the merge, so use a repo state where the
-        // difference shows — an unmerged branch.
+        // `scope: "head"` shows the difference only on an unmerged branch.
         git(&dir, &["checkout", "-q", "-b", "unmerged"]);
         commit(&dir, "only on unmerged");
         git(&dir, &["checkout", "-q", "main"]);
@@ -3924,10 +3099,7 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The overlay's message, fetched one commit at a time. The multi-line body is the
-    /// whole point: it is why this is a separate command rather than a field on every
-    /// commit in a page, where it had to be length-capped and duly truncated the one
-    /// message a reader had opened.
+    /// Fetched one commit at a time so the multi-line body is never length-capped away.
     #[test]
     fn git_commit_message_returns_the_whole_thing_for_one_commit() {
         let dir = scratch_dir();
@@ -3947,8 +3119,7 @@ canonicalizehostname false
         // An abbreviation is a valid object name too.
         assert_eq!(git_commit_message(path.clone(), sha[..8].to_string()).unwrap(), msg);
 
-        // Not an object name: refused here rather than handed to git as a revision
-        // argument, where a leading dash would be read as an option.
+        // Refused here rather than handed to git, where a leading dash reads as an option.
         for bad in ["--help", "HEAD", "main@{0}", "", "zzzz"] {
             assert!(git_commit_message(path.clone(), bad.to_string()).is_err(), "{bad} should be refused");
         }
@@ -3958,11 +3129,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The picker leans on these flags to decide what's pickable: it hides `current`
-    /// (the "start here" button) and `checked_out` (git refuses a second checkout, so
-    /// those sit in the existing-worktrees list instead). ahead/behind must be
-    /// The picker's branch context: which branches are claimed, and how each stands
-    /// against ITS OWN upstream — not against whatever HEAD happens to be.
+    /// The picker's branch context: which branches are claimed, and how each stands against
+    /// ITS OWN upstream, not against whatever HEAD happens to be.
     #[test]
     fn git_branch_list_flags_state_and_tracks_each_upstream() {
         let dir = scratch_dir();
@@ -3998,14 +3166,12 @@ canonicalizehostname false
         let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
         let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
 
-        // dev is `current`; it's also `checked_out` because the main working tree holds
-        // it — the frontend hides it via `current`, so that overlap is harmless.
+        // dev is both `current` and `checked_out`; the frontend hides it via `current`.
         assert!(by("dev").current, "dev should be current: {bs:?}");
         assert!(by("claimed").checked_out && !by("claimed").current, "claimed should be checked_out: {bs:?}");
         assert!(!by("pushed").current && !by("pushed").checked_out, "pushed should be free: {bs:?}");
 
-        // Ahead is measured against origin/pushed, NOT against dev — dev has moved on
-        // its own and that must not leak into this branch's numbers.
+        // Ahead is against origin/pushed, NOT dev, which has moved on its own.
         let p = by("pushed");
         assert_eq!(p.upstream, "origin/pushed", "pushed should track its own remote: {bs:?}");
         assert_eq!((p.ahead, p.behind), (2, 0), "pushed should be 2 unpushed / 0 unpulled: {bs:?}");
@@ -4024,10 +3190,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&remote);
     }
 
-    /// A branch that exists on a remote and nowhere locally is a destination too. Both
-    /// halves matter and the second is the one with teeth: picking such a row must cut a
-    /// branch from the remote's tip and TRACK it, not mint a same-named stranger off
-    /// HEAD — which is precisely what the create path did before these rows existed.
+    /// A remote-only branch is a destination too, and picking it must cut from the remote's
+    /// tip and TRACK it, not mint a same-named stranger off HEAD.
     #[test]
     fn git_branch_list_offers_remote_only_branches_and_their_worktrees_track() {
         let dir = scratch_dir();
@@ -4040,8 +3204,7 @@ canonicalizehostname false
         git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
         git(&dir, &["push", "-q", "-u", "origin", "dev"]);
 
-        // A colleague pushes from their own clone; ours only ever fetches, so these two
-        // branches exist under refs/remotes and nowhere else.
+        // A colleague pushes from their own clone; these two exist only under refs/remotes.
         git(&theirs, &["clone", "-q", remote.to_str().unwrap(), "."]);
         git(&theirs, &["checkout", "-q", "-b", "their-feature"]);
         commit(&theirs, "their work");
@@ -4059,21 +3222,16 @@ canonicalizehostname false
         assert!(f.remote, "their-feature exists only on the remote: {bs:?}");
         assert_eq!(f.upstream, "origin/their-feature", "name is the local branch to create, upstream the ref it tracks: {bs:?}");
         assert!(!f.current && !f.checked_out, "a remote-only branch has no local checkout: {bs:?}");
-        // ahead/behind on a remote row are against the REMOTE's default branch, not
-        // against a local upstream it doesn't have: one commit dev hasn't got, nothing
-        // it is missing. `gone` stays false — there is no local ref to be orphaned.
+        // A remote row's ahead/behind are against the REMOTE's default; `gone` stays false.
         assert!(!f.gone, "a remote row has no upstream to lose: {bs:?}");
         assert_eq!((f.ahead, f.behind), (1, 0), "one commit ahead of origin/dev: {bs:?}");
         assert_eq!(f.base, "origin/dev", "and it says what it was measured against: {bs:?}");
 
-        // The short ref has to be split back into remote + branch, and a branch name
-        // containing a slash must not be split at the first one it happens to hold.
+        // A slashed branch name must not be split at the first slash.
         assert_eq!(by("nested/topic").upstream, "origin/nested/topic", "{bs:?}");
 
-        // dev has a local branch, so it is not remote-*only*; origin/HEAD is a symbolic
-        // pointer at the default branch rather than a branch. Neither may appear. Both
-        // spellings are asserted because git shortens that ref to a bare `origin`, so a
-        // filter that only looked for "HEAD" would let it through as a phantom row.
+        // dev has a local branch; origin/HEAD is a pointer, not a branch. git shortens that
+        // ref to a bare `origin`, so both spellings are asserted.
         assert!(!by("dev").remote, "dev has a local branch: {bs:?}");
         assert!(!bs.iter().any(|b| b.name == "HEAD" || b.name == "origin"),
             "the remote's HEAD pointer is not a branch: {bs:?}");
@@ -4100,9 +3258,7 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&theirs);
         let _ = std::fs::remove_dir_all(&remote);
     }
-    /// Without a start-point, `worktree add -b` cuts from HEAD — which makes whatever
-    /// the root folder is parked on the silent parent of every new branch. Pin the
-    /// escape hatch down.
+    /// Without a start-point `worktree add -b` cuts from HEAD; pin the `base` escape hatch.
     #[test]
     fn create_worktree_branches_from_the_given_base() {
         let dir = scratch_dir();
@@ -4180,10 +3336,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The broom. Two halves matter and the second is the one with teeth: it deletes the
-    /// merged-and-gone branches in one pass, and it refuses to take the caller's word for
-    /// which those are — a name that is no longer `gone`, or that a worktree holds, must
-    /// survive a sweep that was explicitly asked to delete it.
+    /// The broom deletes the merged-and-gone branches in one pass and refuses to take the
+    /// caller's word for which those are.
     #[test]
     fn sweep_branches_deletes_only_what_git_still_calls_gone() {
         let dir = scratch_dir();
@@ -4252,10 +3406,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&remote);
     }
 
-    /// The deep-clean pane's two extra powers, which the broom deliberately lacks: a
-    /// branch picked without a `gone` claim (merged, remote still live) still deletes,
-    /// and a `force` picked per-branch escalates to `-D` — but a worktree's claim beats
-    /// a force, because git refuses that with or without one.
+    /// The deep-clean pane's extra powers: a pick without a `gone` claim still deletes, and a
+    /// per-branch `force` escalates to `-D`, but a worktree's claim beats a force.
     #[test]
     fn sweep_branches_forces_only_where_the_caller_asked_and_never_over_a_worktree() {
         let dir = scratch_dir();
@@ -4299,10 +3451,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The remote rows carry what GitHub's branches view shows — how far each branch is
-    /// from the default branch, and whose commit is on the end of it. Both are read
-    /// against the REMOTE's default, never against local HEAD: a branch nothing here has
-    /// checked out is not behind your working branch in any sense you'd act on.
+    /// Remote rows carry what GitHub's branches view shows, measured against the REMOTE's
+    /// default, never local HEAD.
     #[test]
     fn git_branch_list_measures_remote_branches_against_the_remotes_default() {
         let dir = scratch_dir();
@@ -4355,10 +3505,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&theirs);
     }
 
-    /// Deleting on a remote is the one write here that changes things for other people,
-    /// so the guards are the test: the default branch is untouchable, a ref that moved
-    /// since the list was read is refused, and every delete comes back with the sha that
-    /// restores it.
+    /// The guards on the one write that changes things for other people: the default branch
+    /// is untouchable, a moved ref is refused, and every delete returns its restoring sha.
     #[test]
     fn delete_remote_branches_guards_the_default_and_refuses_a_stale_reading() {
         let dir = scratch_dir();
@@ -4417,10 +3565,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&theirs);
     }
 
-    /// `merged` is what the deep-clean pane offers a branch on, so it has to mean exactly
-    /// "already contained in the checked-out branch" — never the current branch itself
-    /// (which `git branch --merged` does list), and never a squash-merge (which is why
-    /// the pane needs GitHub at all).
+    /// `merged` must mean exactly "already contained in the trunk": never the current branch
+    /// itself (which `git branch --merged` lists), and never a squash-merge.
     #[test]
     fn git_branch_list_marks_branches_contained_in_head() {
         let dir = scratch_dir();
@@ -4439,19 +3585,16 @@ canonicalizehostname false
         assert!(!by("dev").merged, "the current branch is not a cleanup candidate: {bs:?}");
         assert_eq!(by("contained").base, "dev", "with no remote, the trunk is the checkout: {bs:?}");
 
-        // A named base moves the whole question. This is the case it exists for: a repo
-        // parked on a feature branch, where "merged into HEAD" answers nothing useful.
+        // A named base moves the whole question: a repo parked on a feature branch.
         let named = git_branch_list(dir.to_str().unwrap().to_string(), Some("ahead-of-dev".into()));
         let by2 = |n: &str| named.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {named:?}"));
         assert!(by2("contained").merged, "still contained, now measured against the named base: {named:?}");
         assert_eq!(by2("contained").base, "ahead-of-dev", "the row says what it was measured against: {named:?}");
-        // The trunk is contained in itself and the checkout can't be deleted at all —
-        // neither may come back as a cleanup candidate.
+        // Neither the trunk nor the checkout may come back as a cleanup candidate.
         assert!(!by2("ahead-of-dev").merged, "the base is never a candidate for deletion: {named:?}");
         assert!(!by2("dev").merged, "nor is the checked-out branch: {named:?}");
 
-        // A base git can't resolve is ignored rather than obeyed into nonsense — every
-        // branch would otherwise come back unmerged, which reads as "nothing to clean".
+        // An unresolvable base is ignored rather than obeyed into "nothing to clean".
         let bogus = git_branch_list(dir.to_str().unwrap().to_string(), Some("no-such-ref".into()));
         assert_eq!(bogus.iter().find(|b| b.name == "contained").map(|b| b.base.as_str()), Some("dev"),
             "falls back to the real trunk: {bogus:?}");
@@ -4459,8 +3602,7 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The label says "New branch" but the field has always taken existing ones —
-    /// that's the whole point of the picker, so pin the attach path down.
+    /// The "New branch" field has always taken existing ones; pin the attach path.
     #[test]
     fn create_worktree_attaches_an_existing_branch() {
         let dir = scratch_dir();
@@ -4472,8 +3614,7 @@ canonicalizehostname false
         let head = Command::new("git").current_dir(&path).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "test");
 
-        // The repo it was created from must be undisturbed — this is a second
-        // checkout, not a branch switch.
+        // The source repo must be undisturbed: a second checkout, not a switch.
         let orig = Command::new("git").current_dir(&dir).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&orig.stdout).trim(), "dev");
 
@@ -4482,10 +3623,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The cleanup path: `list_worktrees` must flag which linked worktrees are safe
-    /// to remove (merged, clean), and `remove_worktree_impl` must never force —
-    /// safe-deleting a merged branch, keeping an unmerged one, and refusing a dirty
-    /// tree with a `--force` handoff instead of clobbering it.
+    /// `list_worktrees` must flag what is safe to remove, and `remove_worktree_impl` must never
+    /// force: safe-delete a merged branch, keep an unmerged one, refuse a dirty tree.
     #[test]
     fn worktree_cleanup_flags_and_safe_removal() {
         let dir = scratch_dir();
@@ -4494,8 +3633,7 @@ canonicalizehostname false
         commit(&dir, "base");
         let repo = dir.to_str().unwrap().to_string();
 
-        // Three linked worktrees: one at dev's tip (merged, clean), one advanced past
-        // dev (unmerged), and one with an untracked file (dirty).
+        // One at dev's tip (merged, clean), one past it (unmerged), one with an untracked file.
         let merged = create_worktree(repo.clone(), "merged-wt".into(), None).expect("merged worktree");
         let ahead = create_worktree(repo.clone(), "ahead-wt".into(), None).expect("ahead worktree");
         commit(Path::new(&ahead), "extra");
@@ -4534,10 +3672,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The two states the new-session dialog needs but `git worktree remove` handles
-    /// badly on its own: a LOCKED worktree (git refuses it even with `--force`, so
-    /// suggesting force would just fail again) and a worktree whose folder was deleted
-    /// by hand (nothing to remove — `prune` is what git actually wants).
+    /// Two states git handles badly on its own: a LOCKED worktree (refused even with --force)
+    /// and a hand-deleted folder (`prune` is what git wants).
     #[test]
     fn worktree_locked_and_missing_are_reported_and_handled() {
         let dir = scratch_dir();
@@ -4566,9 +3702,8 @@ canonicalizehostname false
             "locked handoff should unlock, not force: {r:?}");
         assert!(Path::new(&locked).exists(), "locked worktree must survive the refusal");
 
-        // Hand-deleted folder: it leaves the listing, whichever way git gets there.
-        // Modern git removes a vanished checkout with exit 0; older gits fail and are
-        // caught by the `still_registered` branch. Assert the outcome, not the route.
+        // A hand-deleted folder leaves the listing whichever way git gets there (modern git
+        // exits 0, older gits hit `still_registered`). Assert the outcome, not the route.
         let r = remove_worktree_impl(&repo, &gone, "gone-wt", false).expect("call returns");
         assert!(r.ok, "a vanished worktree should remove cleanly: {r:?}");
         assert!(r.stranded.is_none(), "nothing is on disk to strand: {r:?}");
@@ -4580,28 +3715,10 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The bug this whole path exists for.** `git worktree remove` deletes the
-    /// checkout directory first and unregisters it second, and continues past a failed
-    /// delete because — in git's own words — "there's no going back from here". So on
-    /// Windows, where a directory any process holds open cannot be deleted, a non-zero
-    /// exit leaves the worktree *already gone from git* with its folder still on disk.
-    ///
-    /// Read as a plain failure, that produced the one handoff guaranteed to fail:
-    /// `git worktree remove --force <path>` → `fatal: '<path>' is not a working tree`.
-    /// So the three assertions here are the three halves of the answer — it is not a
-    /// refusal, it offers no force command, and it says what is left over.
-    ///
-    /// Windows-only because it is a Windows-only behaviour: POSIX unlinks a directory
-    /// out from under its holders and this state cannot arise.
-    ///
-    /// The share mode is the fixture's whole trick, and it has to be exactly this.
-    /// Rust's `File::open` passes all three share flags, so a plain open is deletable
-    /// and reproduces nothing; denying *everything* (`share_mode(0)`) overshoots the
-    /// other way — git can no longer read the file for its own cleanliness check, so
-    /// it refuses with "contains modified or untracked files" and never reaches the
-    /// delete this test is about. `READ | WRITE` (no `DELETE`) is the real-world shape:
-    /// an editor holding a file open, which git reads happily and Windows will not
-    /// unlink.
+    /// `git worktree remove` deletes the folder first, unregisters second, and carries on past
+    /// a failed delete, so on Windows a held folder leaves the worktree gone from git with its
+    /// directory still on disk. The three assertions are the three halves of the answer: not a
+    /// refusal, no force command, and the leftover named. POSIX unlinks under holders; Windows-only.
     #[cfg(windows)]
     #[test]
     fn a_worktree_whose_folder_is_held_is_removed_not_refused() {
@@ -4618,6 +3735,8 @@ canonicalizehostname false
         let repo = dir.to_str().unwrap().to_string();
         let wt = create_worktree(repo.clone(), "held-wt".into(), None).expect("held worktree");
 
+        // Not `share_mode(0)`: that also blocks git's own read, so it refuses the tree as dirty
+        // and never reaches the delete. READ|WRITE without DELETE is an editor's handle.
         let held = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ_WRITE) // no FILE_SHARE_DELETE — the whole point
@@ -4633,8 +3752,7 @@ canonicalizehostname false
         assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "held-wt"),
             "git has already unregistered it — that is what makes --force fail");
 
-        // Release the handle and the repair goes through with nothing to kill: the
-        // holder list is what a purge acts on, not what it needs to succeed.
+        // Released, the repair goes through with nothing to kill.
         drop(held);
         let p = purge_worktree_folder(wt.clone(), vec![]).expect("purge returns");
         assert!(p.gone && p.stranded.is_none(), "an unheld folder purges cleanly: {p:?}");
@@ -4644,23 +3762,19 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The guard on the destructive command. `purge_worktree_folder` deletes a tree and
-    /// kills processes, so the one thing it must never accept is a path shallow enough
-    /// to be somebody's whole drive — a bug upstream of it must not become an erased
-    /// disk. The depth rule is crude on purpose: it cannot be argued with.
+    /// `purge_worktree_folder` deletes a tree and kills processes, so it must never accept a
+    /// path shallow enough to be somebody's whole drive. The depth rule is crude on purpose.
     #[test]
     fn purge_refuses_a_top_level_path() {
         let root = if cfg!(windows) { "C:\\" } else { "/" };
         assert!(purge_worktree_folder(root.to_string(), vec![]).is_err(), "a drive root must be refused");
-        // A path that does not exist is not an error — it is the outcome being asked
-        // for, and a retry after a successful purge lands here.
+        // A missing path is the outcome being asked for, not an error.
         let missing = scratch_dir().join("never-created");
         let r = purge_worktree_folder(missing.to_string_lossy().to_string(), vec![]).expect("call returns");
         assert!(r.gone, "nothing to delete counts as gone: {r:?}");
     }
 
-    /// The detail pane's HEAD line. Parsing is NUL-separated so a subject containing
-    /// spaces (or anything else printable) survives the round trip.
+    /// NUL-separated parsing, so a subject with spaces survives.
     #[test]
     fn git_commit_info_reads_the_tip_of_a_dir_or_a_ref() {
         let dir = scratch_dir();

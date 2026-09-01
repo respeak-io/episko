@@ -6,15 +6,9 @@ import {
   stepApplies, stepBlocked, stepSatisfied, tourDefaults, type TourWorld,
 } from "../src/tour";
 
-// The third test in this repo that reads source instead of calling it, and for the same
-// reason as dispatch.test.ts and ipc.test.ts: a tour step's `anchor` is a join between
-// two files that nothing else checks. `tsc` sees a string. Every unit test passes,
-// because the rules underneath are fine. The step simply lights nothing — and only
-// running the tour on a real first launch would ever find out.
-//
-// So: every static anchor must exist in index.html, and every anchor flagged `dynamic`
-// must NOT — the flag has to be a decision about an element built at runtime, not a
-// stale escape hatch left on something that has since become static.
+// A source-parsing contract test (like dispatch/ipc): a tour step's `anchor` is a join
+// with index.html that nothing else checks. Every static anchor must exist there, and
+// every `dynamic` one must not, or the flag is a stale escape hatch.
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const SIDEBARVIEW = readFileSync(new URL("../src/sidebarview.ts", import.meta.url), "utf8");
@@ -26,7 +20,7 @@ const SET_TABS: Record<string, string> = Object.fromEntries(
   [...SETTINGS.matchAll(/id: "(\w+)", label: "([^"]+)"/g)].map((m) => [m[1], m[2]]),
 );
 
-/** Does this (deliberately small) selector grammar match anything in index.html? */
+/** Does this selector match anything in index.html? The throw below lists the shapes understood. */
 function inHtml(sel: string): boolean {
   let m: RegExpExecArray | null;
   if ((m = /^#([A-Za-z0-9_-]+)$/.exec(sel))) return HTML.includes(`id="${m[1]}"`);
@@ -58,8 +52,6 @@ describe("tour anchors are joined to index.html", () => {
   });
 
   it("keeps every DYNAMIC anchor genuinely dynamic", () => {
-    // The other direction. An anchor that has since been added to index.html should
-    // lose the flag, so the static check above starts covering it.
     const stale = allSteps()
       .filter(({ s }) => s.anchor && s.dynamic && inHtml(s.anchor))
       .map(({ c, s }) => `${c.id}: "${s.title}" -> ${s.anchor} is in index.html; drop dynamic`);
@@ -68,8 +60,7 @@ describe("tour anchors are joined to index.html", () => {
 });
 
 describe("the rail legend the tour teaches", () => {
-  // Duplicated from ./sidebarview rather than imported — a logic module may not import a
-  // view — so this is what keeps the two tables honest in both directions.
+  // Read out of sidebarview.ts: ./tour may not import a view, so its legend is a copy.
   const table = (name: string): Record<string, string> => {
     const m = new RegExp(`export const ${name}: Record<string, string> = \\{([^}]*)\\}`).exec(SIDEBARVIEW);
     if (!m) throw new Error(`could not find ${name} in sidebarview.ts`);
@@ -93,8 +84,7 @@ describe("the rail legend the tour teaches", () => {
   });
 
   it("teaches every state the sidebar can show", () => {
-    // `thinking` and `working` share a glyph and a class, so the legend is keyed by the
-    // pair rather than by state name — what a user has to tell apart is what they see.
+    // `thinking` and `working` share a glyph and a class, so the legend is keyed by the pair.
     const shown = new Set(Object.keys(GLYPH).map((k) => `${GLYPH[k]}|${GCLASS[k]}`));
     const taught = new Set(RAIL_LEGEND.map((l) => `${l.glyph}|${l.cls}`));
     expect([...shown].filter((k) => !taught.has(k))).toEqual([]);
@@ -127,9 +117,7 @@ describe("the manifest is well formed", () => {
   });
 
   it("moves the hole between steps", () => {
-    // Two steps in a row on one anchor leave the hole exactly where it was, which reads
-    // as a Next that did not land. (`#setBtn` carried two consecutive steps, neither of
-    // which ever opened Settings.) Different chapters may of course reuse an anchor.
+    // Two steps in a row on one anchor leave the hole where it was: a Next that did not land.
     const same: string[] = [];
     for (const c of CHAPTERS) {
       for (let i = 1; i < c.steps.length; i++) {
@@ -141,10 +129,8 @@ describe("the manifest is well formed", () => {
   });
 
   it("declares the panel every anchor lives in", () => {
-    // ⌘I removes the inspector outright and ⌘B collapses the rail, taking every anchor
-    // inside them with it — and a control that is not on screen is not a missing anchor
-    // to step over, it is a panel to open first (TourStep.needs). Anything listed here
-    // must say so, or the step lights nothing for anyone who works with it collapsed.
+    // ⌘I removes the inspector and ⌘B collapses the rail, so a step anchored inside either
+    // must list it in `needs`, or it lights nothing for anyone who works with it collapsed.
     const PANEL: Record<string, "rail" | "inspector"> = {
       "[data-add]": "rail", ".padd": "rail", ".phead": "rail", "#projects": "rail",
       "#inspector": "inspector", ".attn-btns": "inspector", ".wset": "inspector",
@@ -157,9 +143,7 @@ describe("the manifest is well formed", () => {
   });
 
   it("only sends you to a Settings tab that exists", () => {
-    // "Settings › Sounds" is a join with SET_TABS in settings.ts that nothing else
-    // checks — the same shape as an anchor, and the same failure: copy that confidently
-    // names a window the app does not have.
+    // "Settings › Sounds" is a join with settings.ts's tabs, the same shape as an anchor.
     const labels = Object.values(SET_TABS);
     expect(labels.length).toBeGreaterThan(4);
     const bad: string[] = [];
@@ -188,8 +172,7 @@ describe("parseTourState", () => {
   });
 
   it("does NOT treat a present-but-empty record as a first run", () => {
-    // The whole point: writing anything ends the first run. A guard that asked "does
-    // this look used" is how 0.13.0 shipped silent (docs/releases.md).
+    // Writing anything ends the first run; never guard on "does this look used" (docs/releases.md).
     expect(shouldOfferPicker(JSON.stringify(tourDefaults()))).toBe(false);
   });
 
@@ -236,7 +219,7 @@ describe("recording a chapter", () => {
   });
 
   it("re-offers a chapter whose rev has been bumped", () => {
-    // The reason `done` holds id@rev: rewriting a chapter can deliberately re-offer it.
+    // `done` holds id@rev so a rewritten chapter can be re-offered.
     const st = recordDone(tourDefaults(), cost);
     expect(isDone(st, { ...cost, rev: cost.rev + 1 })).toBe(false);
   });
@@ -304,12 +287,8 @@ describe("the Quick start predicates", () => {
   });
 
   it("opens the project page before it asks for a session", () => {
-    // The bug this chapter was rewritten for. `＋ Session` acts on whatever is on the
-    // stage; with nothing there it opens ⌘K instead of the launcher, so the old step
-    // waiting on `open: ["wt"]` could never be satisfied and the user was left driving
-    // a palette the tour had never mentioned. The page is what gives the button a
-    // project — and the row is the only affordance a session-less project has, since
-    // ./sidebar builds `.padd` only for a project that already has one.
+    // `＋ Session` acts on whatever is on the stage, and with nothing there it opens ⌘K, so
+    // the step must wait for the project page: that is what gives the button a project.
     const open = at("Open the project");
     expect(open.done!({ ...W0, projects: 1 })).toBe(false);
     expect(open.done!({ ...W0, projects: 1, stage: "dash" })).toBe(true);
@@ -331,20 +310,16 @@ describe("the Quick start predicates", () => {
   it("holds the prompt step until Claude asks — or until the turn ends without asking", () => {
     const s = at("Give it a first job");
     expect(s.done!(W0)).toBe(false);
-    // Working is NOT enough: the step after this one lights the reactor badge, which for
-    // a single session on the stage only ever appears while a permission is pending.
+    // Working is not enough: the next step lights the badge, which needs a pending permission.
     expect(s.done!({ ...W0, phase: "working" })).toBe(false);
     expect(s.done!({ ...W0, permPending: true })).toBe(true);
-    // ...and nothing waits on an event that is not coming: a bypass-mode turn that
-    // finishes without ever asking releases it too.
+    // ...and a bypass-mode turn that finishes without ever asking releases it too.
     expect(s.done!({ ...W0, phase: "done" })).toBe(true);
   });
 
   it("only offers the reactor step while the badge is actually on screen", () => {
-    // `.attn-badge` is display:none without `.show`, and ./attn does not count the pane
-    // you are looking at — so on a first run the badge exists for exactly as long as the
-    // permission does. The old chapter lit it one step AFTER the answer, and so skipped
-    // itself silently on every single run.
+    // ./attn does not count the pane you are looking at, so on a first run the badge exists
+    // for exactly as long as the permission does; a step after the answer skips itself.
     const s = at("It wants you");
     expect(s.when!(W0)).toBe(false);
     expect(s.when!({ ...W0, permPending: true })).toBe(true);
@@ -352,14 +327,12 @@ describe("the Quick start predicates", () => {
   });
 
   it("does not call the permission answered before one was ever raised", () => {
-    // The trap this predicate exists to avoid: `!permPending` is also true on a fresh
-    // session, which would skip the most important step in the chapter instantly.
+    // `!permPending` is also true on a fresh session, which would skip the step instantly.
     const s = at("Blocked on you");
     expect(s.done!(W0)).toBe(false);
     expect(s.done!({ ...W0, permPending: true })).toBe(false);
     expect(s.done!({ ...W0, permAnswered: true })).toBe(true);
-    // A turn that ended without ever asking releases it as well — the step then reads as
-    // an explanation of what would have happened rather than a wait for it.
+    // A turn that ended without ever asking releases it too; the step then reads as an explanation.
     expect(s.done!({ ...W0, phase: "done" })).toBe(true);
     expect(s.done!({ ...W0, phase: "done", permPending: true })).toBe(false);
   });
@@ -367,11 +340,8 @@ describe("the Quick start predicates", () => {
 
 describe("the What's new hand-off", () => {
   it("asks whether the chapter is still worth offering, not just whether it exists", () => {
-    // `releaseChapter` answers "does this version ship one"; `shouldOfferRelease` (via
-    // ./tourui's `tourForVersion`) also asks whether it has been taken. Calling the
-    // first left "Show me →" sitting on the entry forever, offering a chapter you had
-    // already walked as though it were new — and left the predicate that knows better
-    // exported and uncalled.
+    // `releaseChapter` only asks whether the version ships one; `tourForVersion` also asks
+    // whether it has been taken, or "Show me →" sits on the entry forever.
     expect(CHANGELOGUI).toMatch(/tourForVersion\(/);
     expect(CHANGELOGUI).not.toMatch(/\breleaseChapter\(/);
   });
@@ -387,9 +357,7 @@ describe("the permission modes it plans around", () => {
   });
 
   it("only names modes the app actually ships", () => {
-    // The same join as a step's anchor, and the same silent failure: a typo'd mode id
-    // makes `permAsks` false for everybody, so the quickstart quietly stops teaching the
-    // permission card to the people who would get one.
+    // A typo'd mode id makes `permAsks` false for everybody, and nothing else would notice.
     expect(shipped).toEqual(expect.arrayContaining([...ASKING_MODES]));
   });
 
@@ -409,9 +377,8 @@ describe("Quick start under a mode that answers for you", () => {
   const auto = { ...W0, permMode: "auto", permissionCanAsk: false, stage: "session", sessions: 1 };
 
   it("does not hold the prompt step waiting for an ask that is not coming", () => {
-    // The 20s "Skip this step" is a backstop for a predicate that turns out wrong on
-    // somebody's machine, not a design. Under `auto` the mode has already said no card
-    // is coming, so the turn starting is the whole of it.
+    // Under `auto` no card is coming, so the turn starting is the whole of it; the 20s
+    // "Skip this step" is a backstop for a wrong predicate, not a design.
     const s = at("Give it a first job");
     expect(s.done!({ ...auto, phase: "working" })).toBe(true);
     // ...while an asking mode still holds, because the step after it needs the badge lit.
@@ -443,9 +410,8 @@ describe("the Leave it running predicates", () => {
   const ch = CHAPTERS.find((c) => c.id === "unattended")!;
 
   it("waits for the Sounds tab by an id settings.ts actually ships", () => {
-    // Two steps, because it is two gestures: the window, then the tab inside it. The
-    // hole has to move onto the tab or the user is asked to click something the veil has
-    // just darkened.
+    // Two gestures, two steps: the hole has to move onto the tab, or the user is asked to
+    // click something the veil has just darkened.
     const open = ch.steps.find((st) => st.title.startsWith("Everything else is in here"))!;
     const tab = ch.steps.find((st) => st.title.startsWith("Tune what you hear"))!;
     expect(open.done!(W0)).toBe(false);

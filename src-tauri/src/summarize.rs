@@ -1,26 +1,6 @@
-// The Trail's one generated sentence — and nothing else.
-//
-// Everything else the Trail shows is derived from evidence Episko already keeps
-// (transcripts, the usage rollup, git). This module exists for the single part that
-// cannot be derived: a readable one-line label for a day. It is deliberately the only
-// place in Episko that spends money to render a view, which is why it is also the only
-// place with a cache, a timeout and an off switch.
-//
-// Four rules shape it:
-//
-// - **Ask once, ever.** A day that is over cannot change, so its summary is written to
-//   disk and never recomputed. Only today re-summarises (the frontend decides, via
-//   `dayIsClosed`, and asks with `force`). Opening the Trail ten times costs nothing.
-// - **Never touch a real session.** `claude -p` still writes a transcript, under an
-//   encoding of its cwd — so this runs in a scratch directory. Pointing it at a project
-//   folder would scatter one-line summariser transcripts through the user's own history,
-//   and reusing a session id would *append to that conversation*.
-// - **A stripped PATH is the norm.** Same constraint as the hooks: a GUI app launched
-//   from Finder inherits almost no PATH, so the binary comes from `resolve_claude()` and
-//   the environment from `augmented_path()`.
-// - **It must be allowed to fail.** No summary is a fine state — the day still renders
-//   with its deterministic headline — so every failure path returns an error the caller
-//   shrugs off rather than surfacing as breakage.
+//! The Trail's one generated sentence: `summarize_day` (Haiku via `claude -p`) and the
+//! committed `.episko/digest.md`. Ask once per closed day, run in a scratch cwd (never a
+//! real project), and let it fail: no summary is a fine state. See docs/dashboard.md.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -31,13 +11,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::platform::{augmented_path, physical_cwd, resolve_claude, sys_command};
 
-/// Long enough for a small prompt on a slow link, short enough that a wedged CLI is
-/// noticed rather than leaking a blocked thread for the life of the app.
+/// Long enough for a slow link, short enough that a wedged CLI does not leak a blocked thread.
 const TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Where summaries live. The app config dir, not `$TMPDIR/cc-launcher` where the
-/// instrument files go: those are per-launch scratch and *should* evaporate, while a
-/// summary that vanished on reboot would be silently re-bought.
+/// The app config dir, not `$TMPDIR`: a summary that vanished on reboot would be re-bought.
 fn cache_path(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_config_dir().ok()?;
     let _ = std::fs::create_dir_all(&dir);
@@ -52,8 +29,7 @@ fn read_cache(app: &AppHandle) -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
-/// Temp-then-rename, like `tasks.rs` writes `tasks.toml`: a crash mid-write must not
-/// leave a truncated file that then fails to parse and loses every earlier summary.
+/// Temp-then-rename: a crash mid-write must not lose every earlier summary.
 fn write_cache(app: &AppHandle, map: &serde_json::Map<String, serde_json::Value>) {
     let Some(path) = cache_path(app) else { return };
     let tmp = path.with_extension("json.tmp");
@@ -66,23 +42,10 @@ fn write_cache(app: &AppHandle, map: &serde_json::Map<String, serde_json::Value>
     }
 }
 
-/// A scratch cwd for the summariser's own transcripts, kept out of every real project.
-///
-/// Keeping them out of a project folder is only half the job: they are still real
-/// transcripts under `~/.claude/projects/<enc(this)>`, so History's whole-machine scan
-/// finds them and lists one "Below is a factual record of one day of …" row per day
-/// summarised. `scan_history_in` skips this directory by name, which is why this is
-/// `pub(crate)` and why it must NOT create anything — the scan calls it too, and a
-/// read-only listing has no business making directories. `run_claude` creates it.
-///
-/// It resolves through `physical_cwd` at the **temp dir**, not at the leaf, and that is
-/// what makes the skip hold. Claude writes the transcript under an encoding of the
-/// child's `getcwd()`, which is always the resolved spelling (macOS `$TMPDIR` is
-/// `/var/folders/…`, a symlink to `/private/var/folders/…`) — so an unresolved path
-/// here encodes to a different folder than the one the transcripts are in. The leaf
-/// cannot do the resolving: `physical_cwd` passes a path that does not exist straight
-/// through, and the OS purges `/var/folders` while `~/.claude` keeps the transcripts,
-/// which is exactly the state where the rows would come back.
+/// Scratch cwd for the summariser's own transcripts. `scan_history_in` skips it by name,
+/// so it must not create anything (`run_claude` does) and must resolve through
+/// `physical_cwd` at the temp dir: Claude encodes the child's resolved `getcwd()`, and the
+/// leaf may not exist yet, which `physical_cwd` would pass through unresolved.
 pub(crate) fn scratch_cwd() -> PathBuf {
     let mut d = PathBuf::from(physical_cwd(&std::env::temp_dir().to_string_lossy()));
     d.push("cc-launcher");
@@ -90,33 +53,22 @@ pub(crate) fn scratch_cwd() -> PathBuf {
     d
 }
 
-/// Which of a day's two sentences is being asked for.
-///
-/// **`Me` and `Project` are not one prompt over different facts.** They describe
-/// different things and one of them gets committed, so they need different instructions
-/// as well as different records: told it is reading a developer's day, the model
-/// narrates an afternoon — "spent the morning on" — which is fair enough about your own
-/// sessions and is invention when all it has is a list of commit subjects. Getting that
-/// wrong is what makes generated prose in a repo embarrassing rather than useful.
+/// Which of a day's two sentences is asked for. The two get different prompts: told it
+/// is reading a developer's day, the model narrates an afternoon it never saw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
-    /// Your day: your sessions, your spend. Cached locally, never written to a file.
-    Me,
-    /// The project's day: commits and pull requests, which everyone with the checkout
-    /// has. Reproducible, and therefore the half that can be committed.
-    Project,
+    Me, // your sessions and spend; cached locally, never written to a file
+    Project, // commits and pull requests, which everyone has; the committable half
 }
 
 impl Scope {
-    /// Anything unrecognised is `Me` — the private one. A typo must not promote a
-    /// sentence into a committed file.
+    /// Anything unrecognised is `Me`: a typo must not promote a sentence into a committed file.
     fn parse(s: &str) -> Self {
         if s.eq_ignore_ascii_case("project") { Scope::Project } else { Scope::Me }
     }
 }
 
-/// The instruction. Deliberately narrow: the model is labelling facts it is handed, not
-/// investigating anything, so it gets no tools, no context and no room to editorialise.
+/// Narrow on purpose: the model labels facts it is handed, with no tools and no room to editorialise.
 fn prompt_for(scope: Scope, facts: &str) -> String {
     let preamble = match scope {
         Scope::Me =>
@@ -124,8 +76,7 @@ fn prompt_for(scope: Scope, facts: &str) -> String {
 AI coding agents ran, the commits that landed, and what it cost.\n\n\
 Write ONE plain sentence, at most 18 words, describing what the day was about. Name the \
 dominant project if one clearly dominates.",
-        // No "they", no "the developer", no time of day: this sentence is read by a
-        // colleague months later and describes a repository, not a person's afternoon.
+        // No "they", no time of day: read by a colleague months later, about a repository.
         Scope::Project =>
             "Below is one day of a software project's committed history — the commits that \
 landed and the pull requests that moved. It is the whole record: nobody's sessions, \
@@ -142,11 +93,7 @@ FACTS\n{facts}"
     )
 }
 
-/// Where one day's sentence lives in the cache.
-///
-/// `Me` keeps the bare `root\0day` form it has always had, so every summary already
-/// bought stays valid; the shared one is a third segment rather than a different file,
-/// because they expire together and a second file is a second thing to keep consistent.
+/// `Me` keeps the bare `root\0day` form so summaries already bought stay valid; `Project` adds a segment.
 fn cache_key(root: &str, day: &str, scope: Scope) -> String {
     match scope {
         Scope::Me => format!("{root}\u{0}{day}"),
@@ -154,15 +101,11 @@ fn cache_key(root: &str, day: &str, scope: Scope) -> String {
     }
 }
 
-/// Run `claude -p`, bounded. Returns the trimmed stdout.
-///
-/// The child's stdout is drained by a reader thread rather than collected after the
-/// wait: a `wait()` that only reads afterwards deadlocks the moment the child writes
-/// more than one pipe buffer, and "the summariser hung the app" is a far worse failure
-/// than "there is no summary today".
+/// Run `claude -p`, bounded; returns the trimmed stdout. A reader thread drains stdout,
+/// since a `wait()` that only reads afterwards deadlocks past one pipe buffer.
 fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
     let cwd = scratch_cwd();
-    let _ = std::fs::create_dir_all(&cwd); // `scratch_cwd` only names it — see above
+    let _ = std::fs::create_dir_all(&cwd); // `scratch_cwd` only names it
     let mut child = sys_command(resolve_claude())
         .env("PATH", augmented_path())
         .current_dir(cwd)
@@ -204,19 +147,11 @@ fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
 }
 
 // ---------- the shared half: .episko/digest.md ----------
-// A summary costs money, and every teammate opening the same dashboard would pay for
-// the same sentence again. So a generated day is also written into the project as a
-// plain markdown file, which is committable, diffable, and readable by a colleague who
-// never opens Episko. Read before generate: the second person to look at a week pays
-// nothing for it.
-//
-// ONE file, not one per month. A year of one-line entries is ~365 lines — small enough
-// that a single read answers any window, and a single diff shows what changed. It is
-// also the second file Episko is allowed to write inside a user's repo (after
-// `.episko/tasks.toml`), which is why creating it asks first: see `create`.
+// A generated day is also written into the project as one committable markdown file, so a
+// teammate opening the same dashboard pays nothing. Read before generate. Creating it asks
+// first (`create`): a new committable file in someone's repo is a real side effect.
 
-/// The digest is markdown because a human reads it in a PR, not because anything here
-/// needs markdown. `## YYYY-MM-DD` sections, newest first, one paragraph each.
+/// Markdown because a human reads it in a PR: `## YYYY-MM-DD` sections, newest first, one paragraph each.
 const DIGEST_HEAD: &str = "# Work log\n\n\
 One line per day, generated by [Episko](https://episko.dev) from that day's commits and \
 agent sessions. Committed so the team shares one history instead of each re-deriving it.\n";
@@ -225,9 +160,7 @@ fn digest_path(root: &str) -> PathBuf {
     PathBuf::from(root).join(".episko").join("digest.md")
 }
 
-/// Day → sentence, from whatever is on disk. A missing or malformed file is an empty
-/// map, never an error: a digest is an optimisation, and a project without one has to
-/// behave exactly like a project that has never heard of it.
+/// Day → sentence. A missing or malformed file is an empty map, never an error.
 fn parse_digest(text: &str) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     let mut day: Option<String> = None;
@@ -247,8 +180,7 @@ fn parse_digest(text: &str) -> std::collections::BTreeMap<String, String> {
         if let Some(rest) = line.trim_end().strip_prefix("## ") {
             flush(&mut day, &mut buf, &mut out);
             let d = rest.trim();
-            // Only a real date starts a section. Anything else is prose in someone's
-            // hand-edited file and must not become a key.
+            // Only a real date starts a section; prose in a hand-edited file must not become a key.
             if d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-'
                 && d.bytes().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
             {
@@ -264,14 +196,12 @@ fn parse_digest(text: &str) -> std::collections::BTreeMap<String, String> {
 
 fn render_digest(map: &std::collections::BTreeMap<String, String>) -> String {
     let mut s = String::from(DIGEST_HEAD);
-    // Newest first: the file is read top-down by a human, and the useful end is today.
-    for (day, line) in map.iter().rev() {
+    for (day, line) in map.iter().rev() { // newest first: the useful end is today
         s.push_str(&format!("\n## {day}\n{line}\n"));
     }
     s
 }
 
-/// Every day the project's committed digest already knows about.
 #[tauri::command]
 pub(crate) fn read_digest(root: String) -> std::collections::BTreeMap<String, String> {
     std::fs::read_to_string(digest_path(&root))
@@ -279,20 +209,14 @@ pub(crate) fn read_digest(root: String) -> std::collections::BTreeMap<String, St
         .unwrap_or_default()
 }
 
-/// Whether this project already has a digest — what the frontend asks before offering
-/// to create one, so "may Episko write a file into your repo" is asked once and only
-/// when the answer isn't already yes.
+/// Asked before offering to create one, so "may Episko write a file into your repo" is asked once.
 #[tauri::command]
 pub(crate) fn has_digest(root: String) -> bool {
     digest_path(&root).is_file()
 }
 
-/// Add or replace one day, preserving every other entry.
-///
-/// Read-modify-write rather than append: today's line is re-generated as the day goes
-/// on, and appending would leave a file with the same date three times over.
-/// `create` gates the very first write, because a new committable file in someone's
-/// repo is a real side effect — the same stance `tasks.rs` takes with `tasks.toml`.
+/// Add or replace one day. Read-modify-write, since today's line is regenerated as the
+/// day goes on; `create` gates the first write into someone's repo.
 #[tauri::command]
 pub(crate) fn write_digest(root: String, key: String, line: String, create: bool) -> Result<(), String> {
     let path = digest_path(&root);
@@ -306,26 +230,16 @@ pub(crate) fn write_digest(root: String, key: String, line: String, create: bool
     map.insert(key, line);
     let dir = path.parent().ok_or("bad root")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    // Temp-then-rename, like the cache above and like tasks.toml: a crash mid-write
-    // must not truncate a file that is under version control.
+    // Temp-then-rename: a crash mid-write must not truncate a file under version control.
     let tmp = path.with_extension("md.tmp");
     std::fs::write(&tmp, render_digest(&map)).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
-/// One day's summary sentence, cached.
-///
-/// `root` scopes it to a project — the dashboard is per-project, and two projects on
-/// the same day are two different sentences. `key` is the calendar day (`YYYY-MM-DD`),
-/// `facts` the record built in the frontend — titles and commit subjects only, never
-/// transcript bodies. `scope` picks which of the day's two sentences this is (`"me"` or
-/// `"project"`, see `Scope`), and the caller is responsible for handing over the record
-/// that matches: this end cannot tell a private fact from a shared one by looking.
-/// `force` re-asks for a day that is still being written (today); every other day is
-/// answered from disk forever after the first time.
-///
-/// Runs on a blocking thread: a synchronous command would hold the main thread for the
-/// length of a model call and freeze the UI.
+/// One day's sentence, cached per `root` and `key` (`YYYY-MM-DD`). `facts` is titles and
+/// commit subjects only, never transcript bodies; the caller hands over the record that
+/// matches `scope`, since this end cannot tell a private fact from a shared one. `force`
+/// re-asks for today; every other day is answered from disk. Runs on a blocking thread.
 #[tauri::command]
 pub(crate) async fn summarize_day(
     app: AppHandle,
@@ -336,8 +250,6 @@ pub(crate) async fn summarize_day(
     scope: String,
     force: bool,
 ) -> Result<String, String> {
-    // Project-scoped, so two dashboards can't answer each other's days. The old
-    // day-only key is not migrated: it was never shipped outside the spike branch.
     let scope = Scope::parse(&scope);
     let cache_key = cache_key(&root, &key, scope);
     if !force {
@@ -357,8 +269,7 @@ pub(crate) async fn summarize_day(
         .await
         .map_err(|e| e.to_string())??;
 
-    // A model that answers with nothing is a failure, not an empty summary to cache —
-    // caching "" would make the day permanently unsummarisable.
+    // An empty answer is a failure, never cached: "" would make the day permanently unsummarisable.
     let line = first_sentence(&text);
     if line.is_empty() {
         return Err("empty summary".into());
@@ -370,11 +281,7 @@ pub(crate) async fn summarize_day(
     Ok(line)
 }
 
-/// Keep the first non-empty line, and only that.
-///
-/// The prompt asks for one sentence; this enforces it rather than trusting it. A model
-/// that adds a preamble line or a bulleted afterthought would otherwise break the day
-/// row's layout, and clamping here is cheaper than re-prompting.
+/// The first non-empty line only: the prompt asks for one sentence, and this enforces it.
 fn first_sentence(raw: &str) -> String {
     let line = raw
         .lines()
@@ -383,8 +290,7 @@ fn first_sentence(raw: &str) -> String {
         .unwrap_or("")
         .trim_matches('"')
         .trim();
-    // A long paragraph that slipped through is cut at a word boundary rather than
-    // mid-word, so the row degrades to something still readable.
+    // Cut at a word boundary so the row still reads.
     if line.chars().count() <= 160 {
         return line.to_string();
     }
@@ -414,17 +320,14 @@ mod tests {
             cache_key("/w/episko", "2026-07-31", Scope::Project),
         );
         assert_ne!(a, b);
-        // The private one keeps the shape it shipped with, so nothing already bought is
-        // re-bought when this lands.
+        // The private one keeps the shape it shipped with.
         assert_eq!(a, "/w/episko\u{0}2026-07-31");
-        // …and no root can ever collide with another root's project entry: the day
-        // segment sits between them.
+        // The day segment sits between root and scope, so no root collides with another's project entry.
         assert_ne!(cache_key("/w/a", "2026-07-31\u{0}project", Scope::Me), b);
     }
 
     #[test]
     fn an_unknown_scope_falls_back_to_the_private_one() {
-        // A typo must never promote a sentence into the half that gets committed.
         assert_eq!(Scope::parse("project"), Scope::Project);
         assert_eq!(Scope::parse("PROJECT"), Scope::Project);
         assert_eq!(Scope::parse("me"), Scope::Me);
@@ -438,13 +341,10 @@ mod tests {
         let mine = prompt_for(Scope::Me, facts);
         let theirs = prompt_for(Scope::Project, facts);
         assert_ne!(mine, theirs);
-        // Both carry the record itself and the one-sentence clamp.
         for p in [&mine, &theirs] {
             assert!(p.contains(facts));
             assert!(p.contains("ONE plain sentence"));
         }
-        // The shared one must not invite the model to describe a person's day — that is
-        // the failure mode that reads as invention once it is committed.
         assert!(theirs.contains("committed history"));
         assert!(!theirs.contains("developer's work"));
         assert!(mine.contains("developer's work"));
@@ -457,15 +357,14 @@ mod tests {
         m.insert("2026-07-31".to_string(), "Six branches landed and 0.12.0 went out.".to_string());
         let out = parse_digest(&render_digest(&m));
         assert_eq!(out, m);
-        // Newest first, because a human reads the file top-down and today is the useful end.
+        // Newest first.
         let text = render_digest(&m);
         assert!(text.find("2026-07-31").unwrap() < text.find("2026-07-30").unwrap());
     }
 
     #[test]
     fn a_hand_edited_file_keeps_its_prose_out_of_the_keys() {
-        // Someone will add a heading. It must not become a day, and it must not eat
-        // the entry above it either.
+        // A hand-added heading must not become a day, nor eat the entry above it.
         let text = "# Work log\n\n## Notes for the team\nignore me\n\n## 2026-07-31\nReal entry.\n";
         let m = parse_digest(text);
         assert_eq!(m.len(), 1);
@@ -484,7 +383,6 @@ mod tests {
     fn writing_refuses_to_create_the_file_until_it_is_allowed_to() {
         let root = scratch_dir();
         let root_s = root.to_string_lossy().to_string();
-        // The first write into someone's repo is a real side effect, so it is gated.
         assert!(write_digest(root_s.clone(), "2026-07-31".into(), "One.".into(), false).is_err());
         assert!(!root.join(".episko").join("digest.md").exists());
 
@@ -492,7 +390,7 @@ mod tests {
         let f = root.join(".episko").join("digest.md");
         assert!(f.is_file());
 
-        // …and once it exists, no further permission is needed.
+        // Once it exists, no further permission is needed.
         write_digest(root_s.clone(), "2026-07-30".into(), "Two.".into(), false).unwrap();
         let m = parse_digest(&std::fs::read_to_string(&f).unwrap());
         assert_eq!(m.len(), 2);
@@ -501,8 +399,6 @@ mod tests {
 
     #[test]
     fn re_writing_a_day_replaces_it_rather_than_appending() {
-        // Today's line is regenerated as the day goes on; appending would leave the
-        // same date in the file three times over.
         let root = scratch_dir();
         let root_s = root.to_string_lossy().to_string();
         write_digest(root_s.clone(), "2026-07-31".into(), "First take.".into(), true).unwrap();
@@ -514,8 +410,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_day_does_not_rewrite_the_file() {
-        // The dashboard re-summarises today on every open; dirtying a tracked file
-        // each time would put .episko/digest.md in every `git status` for nothing.
+        // Dirtying a tracked file on every open would put digest.md in every `git status`.
         let root = scratch_dir();
         let root_s = root.to_string_lossy().to_string();
         write_digest(root_s.clone(), "2026-07-31".into(), "Same.".into(), true).unwrap();
@@ -533,8 +428,6 @@ mod tests {
 
     #[test]
     fn strips_a_preamble_or_bullets_the_model_added() {
-        // The prompt forbids these; enforcing it keeps one bad generation from
-        // breaking the row rather than trusting the model to have complied.
         assert_eq!(first_sentence("- point one\n- point two"), "");
         assert_eq!(first_sentence("# Summary\nShipped the release."), "Shipped the release.");
     }

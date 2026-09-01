@@ -1,12 +1,5 @@
-// App self-update, and the footer's version label it hangs off.
-//
-// Installing an update RESTARTS the app, which kills every live PTY and every Claude
-// session with it — so nothing here is automatic. A check surfaces as a footer chip
-// and (when asked for) a toast; the install only runs after a confirmation that names
-// how many sessions it would end.
-//
-// Self-contained: it needs no hook, because the one thing it reads about the rest of
-// the app is how many live panes there are, and that is ./state.
+// App self-update and the footer's version label. Installing RESTARTS the app and kills every
+// live PTY, so nothing here is automatic: the install waits on a confirmation that counts them.
 
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -17,16 +10,9 @@ import { ask } from "./confirm";
 import { dlog, setAppVersion } from "./debug";
 import { sessions } from "./state";
 
-// show the running app's version (from tauri.conf.json) in the footer, so it's
-// clear which build is installed after an update.
 getVersion().then((v) => { setAppVersion(v); $("fVer").textContent = "v" + v; }).catch(() => {});
 
 // ---------- app self-update (Tauri updater plugin) ----------
-// Checks the latest GitHub release (respeak-io/episko) for a newer Episko.
-// Installing an update RESTARTS the app, which kills every live PTY/Claude
-// session — so we never auto-install: the update surfaces as a footer chip and
-// a one-time toast, and only downloads + relaunches after an explicit,
-// session-count-aware confirmation. Clicking the version label re-checks.
 let pendingUpdate: Awaited<ReturnType<typeof check>> | null = null;
 let updateBusy = false;
 
@@ -47,10 +33,8 @@ async function checkForUpdates(manual: boolean) {
     }
   } catch (e) {
     const msg = String(e);
-    // The update manifest (latest.json) may not list this platform yet — e.g. no
-    // Windows release has been published. The updater reports that as "None of the
-    // fallback platforms [...] were found in the response platforms object". That's
-    // "no update for this platform", not a failure — surface it quietly.
+    // A manifest that does not list this platform yet (no Windows release, say) reports as
+    // "None of the fallback platforms … were found": no update for us, not a failure.
     if (msg.includes("were found in the response")) {
       $("fUpdate").hidden = true;
       dlog("info", "no update published for this platform yet");
@@ -91,10 +75,6 @@ async function runUpdate() {
 
 $("fUpdate").addEventListener("click", runUpdate);
 $("fVer").addEventListener("click", () => checkForUpdates(true));
-// quiet check on launch, once the app has settled.
-setTimeout(() => checkForUpdates(false), 3000);
-// "Check for Updates…" in the menu-bar menu. Without this the only checks are the
-// one at launch and the easily-missed click on the version label, so a long-running
-// Episko never learns about a release until it's restarted. Manual → it reports
-// either way ("you're on the latest version"), so the menu item always answers.
+setTimeout(() => checkForUpdates(false), 3000); // quiet check once the app has settled
+// "Check for Updates…" in the tray menu; a long-running Episko otherwise never learns of a release.
 listen("tray-check-updates", () => { void checkForUpdates(true); });

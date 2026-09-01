@@ -1,6 +1,4 @@
-// Provider-specific approval routing belongs at the control-plane boundary. Claude's
-// blocking HTTP hook and integrated sidecars use different backend commands; shared
-// actions and lifecycle reducers should not know that distinction.
+// Routes an approval to the provider's own backend command; shared actions never learn the split.
 
 import { invoke } from "@tauri-apps/api/core";
 import { CLAUDE_CLI, type Sess } from "../types";

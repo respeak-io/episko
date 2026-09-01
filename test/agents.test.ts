@@ -42,8 +42,7 @@ describe("Codex provider adapter", () => {
   it("normalizes thread identity, commands and approvals", () => {
     expect(codexEvents(raw("thread/started", { thread: { id: "thread-1", name: "Fix it" } }))[0])
       .toEqual({ type: "thread", id: "thread-1", title: "Fix it" });
-    // App Server's generated schema calls this `threadName`; the thread snapshot's
-    // `name` spelling does not carry over to this notification.
+    // App Server's schema spells this one `threadName`, unlike the thread snapshot's `name`.
     expect(codexEvents(raw("thread/name/updated", { threadId: "thread-1", threadName: "Fixed" }))[0])
       .toEqual({ type: "thread", id: "thread-1", title: "Fixed" });
     expect(codexEvents(raw("item/started", { item: { type: "commandExecution", id: "call-1", command: "pnpm test", cwd: "/w/episko", status: "inProgress" } }))[0])
@@ -52,12 +51,8 @@ describe("Codex provider adapter", () => {
       .toMatchObject({ type: "permission", id: "ask-1", tool: "Bash", risk: "high" });
   });
 
-  // A turn you stopped yourself must not look like an outage. The chain this guards is
-  // four modules long and every link already existed: `failed: true` → `finishAgentTurn`
-  // stamps `apiErr {kind:"unknown"}` → ./revive buckets `unknown` as `other` → `other` is
-  // in `REVIVE_DEFAULTS.kinds`, so the watchdog types the prompt back in and presses
-  // Enter. Asserting on `failed` alone would pass against the bug for the wrong reason,
-  // so this asserts the thing that actually matters: no `apiErr` on the session.
+  // Asserts on `apiErr`, not on `failed`: any apiErr is what ./revive's watchdog retries
+  // against, so a stopped turn stamped with one would be typed back in and re-run.
   it("treats a turn somebody stopped as done, not as a failure to be revived", () => {
     for (const status of ["aborted", "cancelled", "canceled", "interrupted", "stopped"]) {
       const s = sess();

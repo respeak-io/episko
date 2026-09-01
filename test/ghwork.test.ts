@@ -151,11 +151,9 @@ describe("isoDay", () => {
   });
 });
 
-// The two-account case. `gh` keeps one ACTIVE account per host and switches it globally,
-// so the only way a work identity and a personal one can both be right at once is a
-// per-project answer — and GitHub's reply when they are not ("could not resolve to a
-// Repository") names no account at all, which is why every surface here is built to say
-// which one it used.
+// The two-account case. `gh` keeps one ACTIVE account per host and switches it globally, so a
+// work identity and a personal one are only both right with a per-project answer; GitHub's
+// "could not resolve to a Repository" names no account, so every surface says which it used.
 describe("ghWho", () => {
   const ACCTS: GhAccount[] = [{ login: "octo", active: true }, { login: "octo-work", active: false }];
 

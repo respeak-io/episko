@@ -1,8 +1,5 @@
-// The GitHub half of the dashboard's rules — how open work is ordered, which issues
-// triage dares suggest closing, and who already has one.
-//
-// No DOM and no Tauri, so it unit-tests in isolation like ./dash and ./claim;
-// ./dashview owns the markup and ./dashboard the fetch. See test/ghwork.test.ts.
+// The GitHub half of the dashboard's rules: ordering, triage, who has what. No DOM, no Tauri;
+// ./dashview owns the markup, ./dashboard the fetch. See docs/dashboard.md.
 
 import { claimIsStale, type ClaimRecord } from "./claim";
 
@@ -35,24 +32,8 @@ export interface KeptIssue { number: number; who: string; at: string }
 /// One github.com account `gh` is logged in to, as `gh_accounts` returns it.
 export interface GhAccount { login: string; active: boolean }
 
-/**
- * Which account a project's `gh` calls run as, and where that answer came from.
- *
- * **Two accounts at once is the case this exists for.** `gh` has one *active* account
- * per host, switched globally, so a machine holding a work identity and a personal one
- * reads every repo as whichever was switched to last — and GitHub answers a private repo
- * the other account owns exactly as it answers a repo that does not exist. Nothing in
- * that failure mentions an identity, which is why the setting is per project and why
- * this returns the *source* rather than just a login: "Blaxzter, because that is gh's
- * default" and "Blaxzter, because I chose it here" look identical on screen and mean
- * opposite things when the reads are failing.
- *
- * `known` is the third state and the one worth having: a pin gh has since forgotten
- * (`gh auth logout`) still reads as pinned rather than quietly reverting to the active
- * account, because reverting is exactly what the pin was set to prevent — and the
- * backend refuses the call rather than answering as somebody else, so the picker has to
- * be able to show why.
- */
+// `gh` has one active account per host, and a private repo the other account owns reads like
+// one that does not exist: hence a per-project pin. `known: false` = pinned but gh logged it out.
 export interface GhWho {
   login: string | null;
   source: "pinned" | "active" | "none";
@@ -67,25 +48,18 @@ export function ghWho(pinned: string | null, accounts: GhAccount[]): GhWho {
     : { login: null, source: "none", known: false };
 }
 
-/// Whether to offer the choice at all. One account is not a choice, and a picker over it
-/// is a control that cannot change its own answer — the same rule the branch sweep and
-/// the agent picker's "more supported" fold follow: say nothing rather than nothing useful.
 export const ghPickable = (accounts: GhAccount[]): boolean => accounts.length > 1;
 
 // ---------- ordering ----------
 
-/// When something last moved, as a bucket. The overlay groups by these because "how
-/// recent" is the only ordering that survives a repo with sixty open issues — a flat
-/// list sorted by number tells you nothing about what is alive.
+// "How recent" is the only ordering that survives sixty open issues.
 export type Bucket = "today" | "week" | "older";
 
 const DAY = 86_400_000;
 
 export function bucketOf(updatedAt: string, now: number): Bucket {
   const t = Date.parse(updatedAt);
-  // An unparseable timestamp sorts oldest rather than newest: a row that quietly
-  // claims to be from today would be the one thing you act on first.
-  if (!Number.isFinite(t)) return "older";
+  if (!Number.isFinite(t)) return "older"; // never newest: a row falsely from today is acted on first
   const age = now - t;
   if (age < DAY) return "today";
   if (age < 7 * DAY) return "week";
@@ -107,9 +81,6 @@ export function bucketed(threads: GhThread[], now: number): { bucket: Bucket; ro
   return order.map((bucket) => ({ bucket, rows: by.get(bucket)! })).filter((g) => g.rows.length);
 }
 
-/// The compact card shows this many, most recently active first. Issues and PRs
-/// together: they were competing for the same rows, the enlarged view already showed
-/// them as one list, and a kind chip separates them more cheaply than a heading.
 export const CARD_ROWS = 4;
 export function cardRows(threads: GhThread[]): GhThread[] {
   return [...threads].sort(byRecency).slice(0, CARD_ROWS);
@@ -117,26 +88,12 @@ export function cardRows(threads: GhThread[]): GhThread[] {
 
 // ---------- triage ----------
 
-/// How quiet an issue has to be before it is worth asking about. Four days is longer
-/// than a weekend and shorter than a sprint — below it, triage would nag about work
-/// somebody put down on Friday.
-export const STALE_DAYS = 4;
+export const STALE_DAYS = 4; // longer than a weekend, shorter than a sprint
 
-/// How many the card offers at once. Three, because triage is a side task: a list of
-/// twenty is a chore, and a chore gets dismissed wholesale rather than considered.
-export const TRIAGE_ROWS = 3;
+export const TRIAGE_ROWS = 3; // a longer list is a chore, and a chore gets dismissed wholesale
 
-/**
- * The quietest open issues worth asking about, quietest first.
- *
- * **Issues only, never pull requests.** A PR that has gone quiet needs review or a
- * rebase, not closing, and offering to close it would be actively wrong.
- *
- * **Drafts and assigned issues are left alone**: somebody has said they are on it,
- * and a bot second-guessing that is exactly the behaviour that makes a team switch
- * triage off. `kept` is the project's committed decision list — the whole point is
- * that a decision is made once, by anyone, and never surfaces again.
- */
+// Quietest first. Issues only (a quiet PR needs review, not closing), unassigned, and not on
+// the project's committed keep list, where a decision is made once by anyone.
 export function staleCandidates(
   threads: GhThread[], kept: KeptIssue[], now: number, limit = TRIAGE_ROWS,
 ): GhThread[] {
@@ -147,13 +104,11 @@ export function staleCandidates(
       const at = Date.parse(t.updated_at);
       return Number.isFinite(at) && now - at >= STALE_DAYS * DAY;
     })
-    // Quietest first — the oldest is the one most likely to be genuinely done with.
     .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at) || a.number - b.number)
     .slice(0, limit);
 }
 
-/// How long an issue has been quiet, for the row's subtitle. Days, because an hour is
-/// noise at this timescale and "quiet 3 weeks" is the fact that matters.
+// Days, not hours: "quiet 3 weeks" is the fact that matters.
 export function quietFor(updatedAt: string, now: number): string {
   const t = Date.parse(updatedAt);
   if (!Number.isFinite(t)) return "never touched";
@@ -166,25 +121,16 @@ export function quietFor(updatedAt: string, now: number): string {
 
 // ---------- who has it ----------
 
-/// What the row shows instead of a ▶. A claim is a hint, never a lock — see ./claim —
-/// so this only ever *describes*; nothing here refuses a dispatch.
+// What the row shows instead of a ▶. A claim is a hint, never a lock (./claim), so this
+// only describes; nothing here refuses a dispatch.
 export interface Holder {
   who: string;
-  /// Yours, so the row can offer to jump to the pane rather than start a second agent.
-  mine: boolean;
-  /// A claim older than CLAIM_STALE_MS. Presenting a dead claim as live is the failure
-  /// that makes people stop trusting the signal.
-  stale: boolean;
+  mine: boolean;  // yours: the row offers to jump to the pane rather than start a second agent
+  stale: boolean; // older than CLAIM_STALE_MS
 }
 
-/**
- * Who is on this, from the three signals that can say so.
- *
- * Order matters and is not arbitrary: **our own local ledger wins**, because it knows
- * a dispatch that has not been pushed anywhere yet; then an assignee, which is the
- * explicit human signal; then the `agent:` label, which only says *a machine* is on
- * it and cannot say whose. An assignee that is you still reads as yours.
- */
+// Our local ledger wins (it knows a dispatch not yet pushed), then an assignee, then the
+// `agent:` label, which cannot say whose machine.
 export function holderOf(
   t: GhThread, viewer: string | null, claims: ClaimRecord[], now: number,
 ): Holder | null {
@@ -198,35 +144,25 @@ export function holderOf(
   return null;
 }
 
-/// The comment Episko posts when closing a stale issue. Prefilled and editable — the
-/// user sends it, so it has to read as something a person would write, and it has to
-/// say what would make closing it wrong.
+// Prefilled for the user to send, so it reads as a person's and says what would make it wrong.
 export function closeComment(t: GhThread, now: number): string {
   return `Closing as stale after ${quietFor(t.updated_at, now)}, with nothing that seems to be waiting on it. `
     + `Reopen if that's wrong.`;
 }
 
-/// The sticky claim comment — ONE per thread, edited in place, so it says what is true
-/// now rather than accumulating a log of every dispatch.
-///
-/// It says "hint, not a lock" out loud because that is the rule the whole module is
-/// built on, and a machine comment that reads like a reservation is the one that makes
-/// a team switch claiming off.
+// ONE sticky comment per thread, edited in place. It says "hint, not a lock" out loud on purpose.
 export function claimComment(who: string, now: number): string {
   return `🤖 An agent${who ? ` from @${who}` : ""} started work on this on ${isoDay(now)}.\n\n`
     + `This is only a hint. Pick it up anyway if you want to, and say so here.`;
 }
 
-/// The same comment once the agent has stopped. The comment is *edited*, never deleted:
-/// a claim that vanishes leaves a reader wondering whether they imagined it, and the
-/// fact that something was attempted is worth more than a clean thread.
+// Edited, never deleted: the attempt is worth more than a clean thread.
 export function releaseComment(who: string, now: number): string {
   return `🤖 The agent${who ? ` from @${who}` : ""} working on this stopped on ${isoDay(now)}, `
     + `without pushing. Free to pick up.`;
 }
 
-/// Today, as `YYYY-MM-DD` local — what the keep list and shared notes record. Day
-/// resolution on purpose: an hour adds nothing and churns the committed diff.
+// Local `YYYY-MM-DD`; day resolution so the committed diff does not churn.
 export function isoDay(now: number): string {
   const d = new Date(now);
   const p = (n: number) => String(n).padStart(2, "0");

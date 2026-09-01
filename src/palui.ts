@@ -1,22 +1,10 @@
-// The ⌘K palette's UI, to ./palette's decisions — the same split tasks.ts / taskui.ts
-// already has, and the reason moving this buys no coverage: fuzzy matching, scoring,
-// prefix parsing and frecency are extracted and tested next door (39 tests). What is
-// here is the box, the group assembly, the row markup and the key handling.
-//
-// It renders on demand and never from renderAll(), so unlike the sidebar/footer/tray
-// slices this one is size-and-readability only.
-//
-// It is also the widest-reaching surface in the app — a palette row can do almost
-// anything the app can do — which is why it takes a host object rather than ten
-// setters, exactly as settings.ts does (PLAN: "a control panel may take one host
-// object instead of N setters").
+// The ⌘K palette's UI; the ranking rules are ./palette's and tested there. Renders on
+// demand, never from renderAll(). Takes one host object rather than a dozen setters.
 
 import { $, chord, FILE_MANAGER, IS_MAC } from "./dom";
 import { esc, tilde } from "./format";
 import { iconFor } from "./icons";
 import { setEngine } from "./footer";
-// runGit went to ./panes with the rest of a session's lifecycle, so it is a plain
-// import rather than a host member (seam rule 1).
 import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
@@ -33,9 +21,7 @@ import {
 } from "./state";
 import { activeBind, comboKeys, type KeyAction } from "./keys";
 
-// Everything a palette row can do that this module does not own. Twelve callees is
-// past the point where per-callee setters read as anything but noise, so this follows
-// settings.ts and takes one host; all default to no-ops so the module stands alone.
+// Everything a palette row can do that this module does not own; no-op defaults so it stands alone.
 let host: {
   setActive: (id: string) => void;
   resolvePermission: (id: string, behavior: string) => void;
@@ -61,11 +47,8 @@ let host: {
 export function setPaletteHost(h: typeof host) { host = h; }
 
 // ---------- palette (⌘K) ----------
-// A fused switcher + command runner. Prefixes scope the search (⟩ commands,
-// @ sessions/projects, / by state); results are grouped with the "Needs you" set
-// pinned on top, fuzzy-matched with highlight, and frecency-ranked. ⌘K on a session
-// opens an action panel (jump, terminal, worktree, kill, answer permission) without
-// leaving the box — a page stack you back out of with Backspace/Esc.
+// Prefixes scope the search (⟩ commands, @ sessions/projects, / by state); "Needs you" is
+// pinned on top. ⌘K on a session opens an action page you back out of with ⌫/Esc.
 interface PalGroup { name: string; count?: number; items: PalItem[] }
 let palGroups: PalGroup[] = [];
 let palFlat: PalItem[] = [];   // the selectable rows, in display order
@@ -73,7 +56,6 @@ let palSel = 0;
 let palPage: "root" | "actions" = "root";
 let palActionSess: Sess | null = null;
 
-// The ⌘K-within action list for one session.
 function sessionActions(s: Sess): PalItem[] {
   const mk = (label: string, glyph: string, run: () => void): PalItem => ({ kind: "action", key: "", label, labelHtml: esc(label), glyph, run });
   const a: PalItem[] = [mk("Jump to session", "→", () => host.setActive(s.id))];
@@ -83,7 +65,6 @@ function sessionActions(s: Sess): PalItem[] {
     a.push(mk("Answer it in the terminal", "❯", () => host.resolvePermission(s.pendingPermId!, "terminal")));
   }
   if (isAgent(s)) {
-    // Only offered for repo sessions — s.git is null when the workdir isn't one.
     if (s.git) {
       const b = s.git.behind, ah = s.git.ahead;
       a.push(mk("Fetch from the remote", "↻", () => runGit(s.id, "fetch")));
@@ -91,32 +72,19 @@ function sessionActions(s: Sess): PalItem[] {
       a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
-  // Not gated on agent capabilities — every pane kind has a real directory behind it (a task's
-  // run cwd, a shell's launch dir), and unlike the `reveal` shortcut this names
-  // *this* session's folder rather than whichever one holds the stage.
+  // Every pane kind has a real directory behind it; unlike `reveal`, this names this session's folder.
   a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
     a.push(mk("New session here…", "⑃", () => openWt(s.project, s.colorKey)));
-    // Only when this session lives in a worktree (not the repo's main checkout):
-    // clean up its worktree (and merged branch) without dropping to a shell.
     if (s.worktree) a.push(mk("Remove this worktree…", "⌫", () => removeWorktreeSession(s)));
   }
-  // Above Close, and only where it can be kept: shelving is the softer of the two and
-  // the one you want offered first, but on a shell or a terminal-only agent the row
-  // would promise a resume that does not exist (`canShelve` in ./types).
+  // Shelve above Close, and only where a resume exists (`canShelve` in ./types).
   if (canShelve(s)) a.push(mk("Shelve session · stop it, keep the row", "⇩", () => host.shelveSession(s.id)));
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));
   return a;
 }
-// A row names the ACTION its chord belongs to rather than spelling the chord out:
-// the shortcuts are rebindable (Settings › Keys), and this table is built once at
-// module load, so a literal here would keep advertising the default forever. The
-// glyphs are resolved per refresh in `refreshPal` below.
-//
-// **Every `run` is a closure over `host`, never a bare `host.method` reference.** This
-// table is evaluated at module load, when `host` is still the all-no-op default object;
-// a bare reference copies THAT function, and `setPaletteHost` reassigning the variable
-// afterwards never reaches the copy. Seven rows here (and the no-matches fallback below)
-// were captured that way and did nothing at all when clicked.
+// A row names the ACTION its chord belongs to, never the chord: bindings change and this
+// table is built once. Every `run` must be a closure over `host`, never a bare `host.method`:
+// the table is evaluated before setPaletteHost runs, so a bare reference copies the no-op.
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; act?: KeyAction }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: () => host.addProject() },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: () => host.openPlainTerminal(), act: "terminal" },
@@ -131,14 +99,12 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
   { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
-/// A command row's chord as it stands right now, or nothing if the user cleared it —
-/// a hint that named a shortcut which no longer fires is worse than no hint.
+// The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
 function palShortcut(act?: KeyAction): string[] | undefined {
   const keys = act ? comboKeys(activeBind(keyPrefs, act), IS_MAC) : [];
   return keys.length ? keys : undefined;
 }
-/// The switcher is one binding over nine digits, so its row swaps the "1–9" glyph for
-/// the digit this particular session actually answers to.
+// One binding over nine digits; swap the "1–9" glyph for this session's own digit.
 function palDigitShortcut(n: number): string[] | undefined {
   const keys = comboKeys(activeBind(keyPrefs, "sessionSwitch"), IS_MAC);
   if (!keys.length) return undefined;
@@ -146,7 +112,6 @@ function palDigitShortcut(n: number): string[] | undefined {
   return keys;
 }
 function buildPalGroups(raw: string): PalGroup[] {
-  // action panel page — one group of the target session's actions, fuzzy-filtered
   if (palPage === "actions" && palActionSess) {
     const t = raw.trim();
     const items = sessionActions(palActionSess).map((it) => scoreItem(it, t)).filter(Boolean) as PalItem[];
@@ -163,8 +128,7 @@ function buildPalGroups(raw: string): PalGroup[] {
 
   const sessCands: PalItem[] = [...sessions.values()].filter(matchesState).map((s) => {
     const i = order.get(s.id);
-    // An agent pane's `title` is its CLI's name and never changes, so the `||` chain
-    // below already lands on "Codex" — no arm of its own here, deliberately.
+    // An agent pane's `title` is its CLI's name, so the `||` chain lands on "Codex"; no arm of its own.
     const label = `${s.project} · ${s.kind === "task" ? "▶ " + (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
     const sub = s.kind === "shell" ? "shell"
       : s.kind === "task" ? `task · ${taskStateText(s)}`
@@ -172,8 +136,7 @@ function buildPalGroups(raw: string): PalGroup[] {
       : `${verbFor(s).toLowerCase()}${s.ctxPct != null ? ` · ${Math.round(s.ctxPct)}% ctx` : ""}${s.cost != null ? ` · $${s.cost.toFixed(2)}` : ""}`;
     return { kind: "session", key: "session:" + s.id, label, labelHtml: esc(label), sub, sw: accentFor(s.colorKey), icon: iconFor(s.colorKey) || undefined, shortcut: i != null && i < 9 ? palDigitShortcut(i + 1) : undefined, session: s, run: () => host.setActive(s.id) };
   });
-  // Tasks for the active project. Discovery is async, so this reads a cache the
-  // palette warms on open — an empty first frame is corrected in place.
+  // Discovery is async; this reads a cache the palette warms on open, corrected in place.
   const taskCands: PalItem[] = palTasks.map((r) => ({
     kind: "task", key: "task:" + r.id, label: `Run ${r.label}`, labelHtml: esc(`Run ${r.label}`),
     sub: `${r.source} · ${execCmd(r)}`, glyph: r.blocked ? "⃠" : "▶",
@@ -184,9 +147,7 @@ function buildPalGroups(raw: string): PalGroup[] {
       runRunnable(r, c.project, o);
     },
   }));
-  // Same source as the sidebar (see allProjects) — a project detected from an external
-  // session is just as launchable as a favourite, and hiding it here made "+ Session"
-  // with nothing selected look like it was picking projects at random.
+  // Same source as the sidebar (allProjects): an externally detected project is just as launchable.
   const launchCands: PalItem[] = allProjects().map((p) => ({ kind: "launch", key: "launch:" + p.path, label: `Launch ${p.name}`, labelHtml: esc(`Launch ${p.name}`), sub: tilde(p.path), sw: accentFor(p.path), icon: iconFor(p.path) || undefined, run: () => host.requestLaunch(p.name, p.path) }));
   const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: palShortcut(c.act), run: c.run }));
   for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`, labelHtml: esc(`New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`), sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
@@ -197,9 +158,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   const sessNatural = (a: PalItem, b: PalItem) => urgencyRank(a.session!) - urgencyRank(b.session!) || b.session!.lastActivity - a.session!.lastActivity;
 
   const sess = score(sessCands), launch = score(launchCands), cmds = score(cmdCands), tsk = score(taskCands);
-  // `attnPending`, not `needsYou`: a session you have already been to since it finished
-  // is not one the palette should still be pushing to the top of the list. A blocking
-  // permission stays in this group however often you look at it — see ./attn.
+  // `attnPending`, not `needsYou`: a session visited since it finished is not pinned on top (./attn).
   const needy = sess.filter((i) => attnPending(i.session!)).sort(emptyTerm ? sessNatural : byScore);
   const rest = sess.filter((i) => !attnPending(i.session!)).sort(emptyTerm ? sessNatural : byScore);
 
@@ -264,8 +223,7 @@ $("palInput").addEventListener("keydown", (e) => {
   else if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(palSel - 1, 0); renderPal(); }
   else if (e.key === "Enter") { e.preventDefault(); runPalItem(palFlat[palSel]); }
   else if (meta && e.key.toLowerCase() === "k") {
-    // ⌘K on a session opens its action panel; otherwise swallow it so the global
-    // handler doesn't close the palette out from under an open action list.
+    // Swallowed either way, or the global ⌘K handler closes the palette under an open action list.
     e.preventDefault(); e.stopPropagation();
     const it = palFlat[palSel];
     if (palPage === "root" && it?.session) openPalActions(it.session);

@@ -7,10 +7,7 @@ import {
 import type { DiffFile, DiffLine } from "../src/diff";
 import type { FileHealth, HealthReport } from "../src/types";
 
-// Every rule in this module fails *quietly*: a threshold set too low puts a chip on
-// every file, which reads as noise and gets ignored, and one set too high produces
-// nothing, which reads as a clean change. Neither throws and neither is visible in a
-// screenshot of a diff you don't already know the answer to.
+// Every rule here fails quietly: a threshold too low puts a chip on every file, one too high reads as clean.
 
 const add = (text: string, newNo = 1): DiffLine => ({ kind: "add", text, oldNo: null, newNo });
 const ctx = (text: string, n = 1): DiffLine => ({ kind: "ctx", text, oldNo: n, newNo: n });
@@ -66,10 +63,8 @@ describe("silencedIn", () => {
   });
 
   it("knows a Python comment when the file is Python", () => {
-    // `# never use a bare except:` failed the brace-family comment test, was probed as
-    // code, and earned a red chip — the prose false positive above, in the `#`-comment
-    // languages. The marker is read off the path, and it is a switch rather than a union
-    // of both markers: in C a line-start `#` is a directive, which is code.
+    // The comment marker is read off the path, and it is a switch rather than a union of
+    // both: in C a line-start `#` is a directive, which is code.
     const py = file("a.py", add("# never use a bare except: it hides everything", 3));
     expect(silencedIn(py)).toEqual([]);
     const sh = file("deploy.sh", add("# don't add eslint-disable style pragmas here", 4));
@@ -84,8 +79,7 @@ describe("silencedIn", () => {
   });
 
   it("does fire on the ones that are comments by nature", () => {
-    // @ts-ignore only ever appears in a comment; skipping comment lines would make the
-    // rule unreachable rather than conservative.
+    // @ts-ignore only ever appears in a comment; skipping comment lines would make the rule unreachable.
     const f = file("a.ts", add("  // @ts-ignore", 9), add("  # noqa", 10));
     expect(silencedIn(f).map((s) => s.what)).toEqual(["`@ts-ignore`", "`# noqa`"]);
   });
@@ -95,8 +89,6 @@ describe("silencedIn", () => {
   });
 
   it("does not read a pattern inside a string literal as code doing it", () => {
-    // This module's own pattern table earned six chips on itself and its tests ten —
-    // every one of them the literal pattern sitting inside quotes.
     const f = file("a.ts",
       add(`const SILENCED = [{ re: /x/, what: "a bare \`except:\`" }];`, 4),
       add(`t.push({ what: "\`as any\`" });`, 5));
@@ -163,24 +155,20 @@ describe("fileChips", () => {
   });
 
   it("applies no code-shaped rule to something that is not code", () => {
-    // The CHANGELOG entry *announcing* the silenced-error rule earned a red chip for
-    // containing the word — the exact false positive that teaches you to stop reading.
     const md = file("CHANGELOG.md", add("- a new bare `except:`, an empty `catch`", 25));
     const big = health({ code_lines: 900, code_added: 400, max_nesting: 9, nesting_line: 3 });
     expect(fileChips(md, big, report({ p90_code_lines: 100 }))).toEqual([]);
   });
 
   it("still reports a duplicated block in a file that is not code", () => {
-    // A copy-pasted CI job is a copy-pasted CI job. Only the code-shaped rules go away.
     const yml = file(".github/workflows/ci.yml", add("      run: pnpm test", 12));
     const h = health({ dups: [{ line: 12, other_path: ".github/workflows/release.yml", other_line: 30 }] });
     expect(ids(fileChips(yml, h, report()))).toEqual(["dup"]);
   });
 
   it("points the complexity and length chips at a line the change added", () => {
-    // Their subject is a function, but its declaration can sit hundreds of lines above
-    // the hunk — and a patch renders only its hunks, so the click would scroll to
-    // nothing and flash nothing: indistinguishable from a control that does not work.
+    // The declaration can sit hundreds of lines above the hunk, and a patch renders only
+    // its hunks, so a click on the declaration would scroll to nothing.
     const f = file("src/a.ts", ctx("untouched", 100), add("  changed();", 260));
     const fn = { name: "run", start: 10, end: 300, code_lines: 254, cognitive: 30 };
     const chips = fileChips(f, health({ worst_fn: fn, longest_fn: fn }), report());
@@ -202,8 +190,7 @@ describe("fileChips", () => {
   });
 
   it("claims nothing measured when the backend could not read the file", () => {
-    // `measured: false` carries a row of zeroes, and a zero must never be shown as a
-    // finding of "0" — an unmeasured file has to look different from a clean one.
+    // `measured: false` carries a row of zeroes, and none of them may read as a finding.
     const h = health({ measured: false, code_lines: 0, max_nesting: 0 });
     expect(fileChips(clean, h, report())).toEqual([]);
   });
@@ -233,8 +220,7 @@ describe("fileChips", () => {
   });
 
   it("does not call a big file out when this change barely touched it", () => {
-    // Otherwise the largest file in the project carries a chip forever — including on
-    // the commit that made it smaller.
+    // Otherwise the largest file carries a chip forever, even on the commit that shrank it.
     const h = health({ code_lines: 900, code_added: 2 });
     expect(ids(fileChips(clean, h, report({ p90_code_lines: 400 })))).not.toContain("grew");
   });
@@ -286,8 +272,6 @@ describe("fileChips", () => {
   });
 
   it("takes a project's own thresholds off the report, the way the viewer does", () => {
-    // The whole path a `[health]` table travels: Rust reads the file, puts it on the
-    // report, ./diffview clamps it, and the rules use it instead of the defaults.
     const h = health({ max_nesting: 6, nesting_line: 88 });
     const rep = report({ prefs: { nesting: 8 } });
     expect(ids(fileChips(clean, h, rep, clampHealth(rep.prefs)))).not.toContain("nesting");
@@ -306,8 +290,7 @@ describe("fileChips", () => {
 });
 
 describe("every line a finding covers", () => {
-  // Marking only the first was most of why the old flash read as "something happened
-  // somewhere": a `dup ×3` is three separate blocks and a complex function is a span.
+  // A `dup ×3` is three separate blocks and a complex function is a span.
   it("lists all three places a duplicated block landed", () => {
     const h = health({ dups: [
       { line: 10, other_path: "a.ts", other_line: 1 },
@@ -385,8 +368,7 @@ describe("findingsText", () => {
 
 describe("setChips", () => {
   it("admits that a cut diff means cut findings, not a cleaner change", () => {
-    // The viewer's own note says the *diff* is short, which a reader takes to mean the
-    // listing is short — not that the measurements are.
+    // The viewer's own note says the diff is short, which says nothing about the measurements.
     const got = setChips([], report(), true);
     expect(ids(got)).toEqual(["partial"]);
     expect(got[0].text).toBe("findings incomplete");
@@ -427,16 +409,9 @@ describe("setChips", () => {
   });
 });
 
-// A fourth source-parsing contract test, for the same reason as the other three: the join
-// it guards has nothing between its two halves that can check it.
-//
-// `is_code_file` in health.rs decides which files the backend measures and counts into
-// `p90_code_lines`; `isSourcePath` here decides which of those may carry a chip. health.rs
-// says so in its own doc comment ("The frontend keeps the same list … keep them in step"),
-// and a comment is exactly as strong as whoever reads it. When they drift the failure is
-// silent in the worst direction: the file is measured, the numbers are real, and then
-// `fileChips` takes its early return and says nothing at all. `css`, `scss`, `bash` and
-// `kts` had drifted out of this half.
+// A source-parsing contract test like dispatch/ipc/tour: `is_code_file` in health.rs decides
+// what is measured, `isSourcePath` what may carry a chip, and a drift is silent (the file is
+// measured, the numbers are real, then `fileChips` returns early and says nothing).
 describe("the two source-extension lists are one list", () => {
   it("matches `is_code_file` in health.rs, which says they must", () => {
     const rs = readFileSync(new URL("../src-tauri/src/health.rs", import.meta.url), "utf8");
@@ -446,8 +421,7 @@ describe("the two source-extension lists are one list", () => {
     expect(rust.size, "could not read the rust list — has is_code_file been rewritten?")
       .toBeGreaterThan(15);
 
-    // Drive the TS half through its own public predicate rather than re-reading its
-    // array: what matters is the answer callers get, not how it is spelled.
+    // Drive the TS half through its public predicate: the answer callers get is what matters.
     const onlyRust = [...rust].filter((e) => !isSourcePath(`f.${e}`));
     expect(onlyRust, "health.rs measures these; health.ts will never chip them").toEqual([]);
     for (const e of rust) expect(isSourcePath(`a/b/f.${e}`), e).toBe(true);
@@ -456,10 +430,7 @@ describe("the two source-extension lists are one list", () => {
 });
 
 describe("a chip's tooltip reads as a sentence", () => {
-  // The singular branch interpolated an empty string straight against the first entry,
-  // so one silenced error rendered "This change addsline 42: …". It is the common case,
-  // it is shown as the chip's `title`, and `findingsText` flattens it into the text a
-  // session is handed — so the typo reached an agent as a prompt.
+  // The title is also what `findingsText` hands a session, so a typo in it reaches an agent as a prompt.
   it("does not run the count into the first finding when there is only one", () => {
     const f = file("src/a.ts", add("  const x = y as any;", 42));
     const chips = fileChips(f, health(), report());

@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { alignHunk, parsePatch, tokenize, wordDiff, type DiffHunk, type DiffLine, type Span } from "../src/diff";
 
-// Patches are built from real `git` output shapes. Lines are joined rather than
-// written as template literals because diff bodies contain backticks and ${…}.
+// Real `git` output shapes, joined line by line: diff bodies contain backticks and ${…}.
 const patch = (...lines: string[]) => lines.join("\n");
 
 describe("parsePatch", () => {
@@ -226,16 +225,13 @@ describe("parsePatch", () => {
 });
 
 // ---------- what a reader gets: the word diff and the line pairing ----------
-//
-// These are the two judgement calls in the module, and both fail *quietly*: a bad
-// pairing hangs a mark on the wrong line, and a bad threshold either lights a rewritten
-// line up like confetti or marks nothing at all. Neither throws and neither is visible
-// in a screenshot of a diff you don't already know the answer to.
+// Both judgement calls fail quietly: a bad pairing marks the wrong line, and a bad
+// threshold lights a rewritten line up like confetti or marks nothing at all.
 
 const line = (kind: "ctx" | "add" | "del", text: string): DiffLine =>
   ({ kind, text, oldNo: kind === "add" ? null : 1, newNo: kind === "del" ? null : 1 });
 const hunk = (...lines: DiffLine[]): DiffHunk => ({ header: "", lines });
-/// The marked text of one side, which is what the reader actually sees.
+// The marked text of one side, which is what the reader sees.
 const marks = (spans: Span[] | null) => (spans ?? []).filter((s) => s.changed).map((s) => s.text);
 
 describe("tokenize", () => {
@@ -270,9 +266,7 @@ describe("wordDiff", () => {
   });
 
   it("refuses a rewritten line rather than lighting nine fragments of it", () => {
-    // Two prose lines that share only articles. Positional pairing puts them together
-    // and the reader gets no help from `the`, `is` and `a` being highlighted — this is
-    // the shape that made the first cut of the feature unreadable.
+    // Two prose lines that share only articles: marks on `the`, `is` and `a` help nobody.
     expect(wordDiff(
       "// Which window the inspector's read/written total covers. `run` is the figure",
       "// Whether the panel is open — and, when it is, a `Date.now()` it opened at",
@@ -322,8 +316,7 @@ describe("alignHunk", () => {
   });
 
   it("pairs a changed line with its real counterpart, not with the comment added above it", () => {
-    // The single most common shape an agent's edit has, and the one positional pairing
-    // gets wrong: the changed line is the LAST addition, not the first.
+    // An agent's commonest edit, and the one positional pairing gets wrong: the changed line is last.
     const { rows, unified } = alignHunk(hunk(
       line("del", "const L = [\"a\", \"b\"];"),
       line("add", "// why this list is what it is"),
@@ -347,8 +340,7 @@ describe("alignHunk", () => {
   });
 
   it("pairs positionally once a replacement is too big to be worth aligning", () => {
-    // Over the run cap this falls back rather than running a 200x200 table; the fallback
-    // must still produce one row per line and lose nothing.
+    // Over the run cap it falls back rather than building a 200x200 table, and must lose nothing.
     const dels = Array.from({ length: 70 }, (_, i) => line("del", `old ${i}`));
     const adds = Array.from({ length: 70 }, (_, i) => line("add", `new ${i}`));
     const { rows, unified } = alignHunk(hunk(...dels, ...adds));

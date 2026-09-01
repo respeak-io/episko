@@ -1,17 +1,6 @@
-// The new-session dialog: pick where a session starts — the repo root, an existing
-// worktree, a branch to check out, or a brand-new worktree — plus the branch chooser
-// popover it opens and the worktree removal/switch flows.
-//
-// The biggest single cluster to come out of main.ts, and it moves whole: its markup
-// reads its own dialog state (which row is armed, what is prefetched, whether a
-// create is in flight), so there is no clean view/controller seam to split it on the
-// way the *view.ts modules have. It owns its state, its markup, its git calls and
-// its own click/key handlers — rows are addressed by index into wtRows, so nothing
-// leaks into the global [data-*] dispatcher.
-//
-// Four things it cannot own reach it as hooks (PLAN seam rule 2), and they are all
-// the same kind of thing: this dialog *acts on panes*, which main.ts owns. Starting
-// a session, closing one, putting one on stage, repainting everything.
+// The new-session dialog: where a session starts (the repo root, a worktree, a branch, or
+// a new worktree), the branch chooser popover, and the worktree removal/switch flows.
+// Acting on panes (launch, close, stage, repaint) is main.ts's and arrives as hooks.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, toast } from "./dom";
@@ -19,14 +8,7 @@ import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
-// The one thing an external session's registry file says about what it is doing. A view
-// module, and mirror.ts already reaches for it from the render layer for the same reason:
-// "is that terminal busy?" has one answer and this is where it lives.
 import { extWorking } from "./sidebarview";
-// The branch shapes and the trunk helpers are ./branches's — one owner, so the picker's
-// `vs origin/main` chip and the Branches view's footer can never name different trunks
-// for the same repo. The cleanup itself is that view's; this dialog decides where a
-// session starts and nothing more.
 import {
   remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
 } from "./branches";
@@ -36,15 +18,11 @@ import {
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { agentLogo } from "./providers/logos";
-// The exit waiter is tasks.ts's, and it is the only thing in the app that knows when a
-// killed pane is actually *dead* rather than merely signalled — which is what a
-// directory deletion on Windows has to wait for. A logic module, so no cycle.
 import { waitForExit } from "./tasks";
 
 type LaunchOpts = { colorKey?: string; worktree?: string | null; branch?: string; resume?: string };
-// Resolves to the new session id, or null if the spawn failed. Nothing in this module
-// uses it — the dialog starts a session and is done — but the type must match panes.ts's
-// so a caller that DOES need the id can't be handed a hook that quietly drops it.
+// Must match panes.ts's signature (it resolves to the session id), so a caller that needs
+// the id can't be handed a hook that quietly drops it.
 let launch: (project: string, workdir: string, opts?: LaunchOpts) => Promise<string | null> = async () => null;
 export function setWtLaunch(fn: typeof launch) { launch = fn; }
 let closeSession: (id: string) => void = () => {};
@@ -53,46 +31,23 @@ let setActive: (id: string) => void = () => {};
 export function setWtSetActive(fn: typeof setActive) { setActive = fn; }
 let renderAll: () => void = () => {};
 export function setWtRenderAll(fn: typeof renderAll) { renderAll = fn; }
-// Handing a refused git action to a real terminal needs a pane (or an external
-// window) and the launch engine — main.ts territory, same as the four above.
 let handToTerminal: (project: string, workdir: string, cmd: string, opts?: { colorKey?: string; worktree?: string | null; branch?: string }) => Promise<void> = async () => {};
 export function setWtHandToTerminal(fn: typeof handToTerminal) { handToTerminal = fn; }
-// A removal here is the one change to "what checkouts exist" the app makes itself, so
-// it is the one it must not wait on the poll to notice — the sidebar's ⑃ roster comes
-// from `worktree_heads`, which `renderAll` only paints, never re-reads. A hook rather
-// than an import because panes.ts already imports this module.
+// A removal is the one checkout change the app makes itself, so the ⑃ roster must not wait
+// for the poll to notice. A hook because panes.ts already imports this module.
 let refreshGitViews: () => Promise<void> = async () => {};
 export function setWtRefreshGit(fn: typeof refreshGitViews) { refreshGitViews = fn; }
-// The trunk override is a persisted preference, so the write belongs to actions.ts — but
-// importing it here would close a cycle (actions → panes → worktree), so it arrives as a
-// hook instead. Seam rule 2, and the reason `state.ts`'s bare setter is not called direct.
+// The persisted write is actions.ts's; importing it would close a cycle (actions → panes → worktree).
 let saveCmpBase: (repoDir: string, ref: string) => void = () => {};
 export function setWtSaveCmpBase(fn: typeof saveCmpBase) { saveCmpBase = fn; }
-// A root switch is the app moving HEAD itself, and `refreshGitViews` above covers only
-// what the poll would eventually have found anyway: session branch labels and the ⑃
-// roster. The project dashboard reads the same folder far more deeply (its whole
-// timeline is a `git log` there) and nothing re-reads it on a schedule by design, so it
-// is told outright. A hook rather than an import for the usual reason: this is a dialog,
-// and what a dashboard does with the news is not its business.
+// The dashboard's timeline is a `git log` of this folder and nothing re-reads it on a
+// schedule, so a root switch tells it outright rather than waiting to be found.
 let onBranchSwitched: (repoDir: string) => void = () => {};
 export function setWtOnBranchSwitched(fn: typeof onBranchSwitched) { onBranchSwitched = fn; }
 
-// Every answer to "where should this session run?" is a directory, so every answer
-// is a row: the repo itself, its worktrees, its branches, and whatever you type.
-// One list on the left; the consequences of the highlighted row on the right.
-//
-// The repo row is unconditional — the old dialog only offered the main checkout when
-// `requestLaunch` opened it, so the toolbar button, the context menu and the action
-// panel each led to a dialog that couldn't start a session in the project itself.
-// ahead/behind are versus this branch's OWN remote upstream (empty when it has none),
-// not versus whatever HEAD is on — see the BranchInfo doc comment in lib.rs.
-// `remote: true` inverts how the row is read: it has no local branch at all, so `name`
-// is the local branch a checkout WOULD create and `upstream` the ref it would track.
-// See the BranchInfo doc comment in git.rs.
-// `BranchInfo`/`WtInfo` are ./branches's — one owner for the shapes both the picker and
-// the Branches view read, so a field added to the Rust struct lands in one place here.
 type CommitInfo = { short: string; subject: string; author: string; rel: string };
 
+// Every answer to "where should this session run?" is a directory, so every answer is a row.
 type DestKind = "repo" | "wt" | "branch" | "remote" | "create";
 interface Dest {
   kind: DestKind;
@@ -113,10 +68,8 @@ interface Dest {
 
 let wtCtx: { project: string; repoDir: string } | null = null;
 let wtWts: WtInfo[] = [];
-// Kept apart rather than filtered at each use: `wtBranches` means "branches this repo
-// has", and every existing reader (the base chooser, the switch chooser, delete) is only
-// ever correct for those. A remote-only row is not a branch you can base, switch to or
-// delete — it doesn't exist yet.
+// Kept apart: every reader of wtBranches (base chooser, switch chooser, delete) is only
+// correct for branches that exist locally. A remote-only row doesn't exist yet.
 let wtBranches: BranchInfo[] = [];
 let wtRemotes: BranchInfo[] = [];
 let wtRepoBranch = "";
@@ -131,14 +84,10 @@ let wtGen = 0;                 // bumps on every open/refresh; stales in-flight 
 let wtAgeT: number | undefined;
 let wtLoadedAt = 0;
 const wtCommits = new Map<string, CommitInfo | null>();
-// Keyed by folder. The value is the whole working set rather than its counts,
-// because the pane names the files: "1 file uncommitted" answers how much, and the
-// question you actually walk in with is which.
+// Keyed by folder; the whole working set rather than its counts, because the pane names the files.
 const wtDirty = new Map<string, WorkingSet | null>();
 
-/** Mirror of the backend's path scheme (`create_worktree`): every character git
- *  can't take becomes "-", then "/" does too. Lossy on purpose — and irreversibly
- *  so, which is why nothing here ever tries to derive a branch back out of a folder. */
+/** Mirrors create_worktree's path scheme. Lossy, so never derive a branch back from a folder. */
 function wtSlug(branch: string): string {
   return branch.trim().replace(/[^\p{L}\p{N}\-_/.]/gu, "-").replace(/\//g, "-");
 }
@@ -149,9 +98,8 @@ function wtTargetDir(repoDir: string, branch: string) {
   return `${parentOf(repoDir)}/.cc-worktrees/${basename(repoDir)}/${wtSlug(branch)}`;
 }
 
-// The four ways a checkout's folder and its branch can relate. The folder is the
-// identity (it's what exists, and what removal deletes); the branch is only a label,
-// and `git switch` inside a session rewrites it at will.
+// The folder is the identity (what exists, what removal deletes); the branch is only a
+// label, and `git switch` inside a session rewrites it at will.
 type WtState = "aligned" | "diverged" | "detached" | "foreign";
 function wtStateOf(w: WtInfo, repoDir: string): WtState {
   const base = wtNorm(`${parentOf(repoDir)}/.cc-worktrees/${basename(repoDir)}`);
@@ -159,24 +107,20 @@ function wtStateOf(w: WtInfo, repoDir: string): WtState {
   if (!w.branch || w.branch === "(detached)") return "detached";
   return wtSlug(w.branch) === basename(w.path) ? "aligned" : "diverged";
 }
-/** What to call a checkout. Its branch when it has one; otherwise its folder,
- *  because a row still has to be nameable. */
+/** Its branch when it has one, else its folder: a row still has to be nameable. */
 function wtLabelOf(w: WtInfo) {
   return w.branch && w.branch !== "(detached)" ? w.branch : basename(w.path) + "/";
 }
 const wtSessionsIn = (path: string) => [...sessions.values()].filter((s) => s.workdir === path);
 
-/** Head flexes and ellipsises, tail is pinned: sibling branches often differ only in
- *  their suffix, so a plain tail-ellipsis would render two rows identically. */
+/** Head ellipsises, tail pinned: sibling branches often differ only in their suffix. */
 function wtName(name: string) {
   const TAIL = 9;
   if (name.length <= TAIL + 4) return `<span class="hd">${esc(name)}</span>`;
   return `<span class="hd">${esc(name.slice(0, name.length - TAIL))}</span><span class="tl">${esc(name.slice(-TAIL))}</span>`;
 }
 
-/** A branch's standing against its own remote — the only comparison that answers a
- *  question you'd actually ask here. A branch in sync with its upstream shows nothing;
- *  silence is the clean state. */
+/** Standing against its own upstream. In sync shows nothing; silence is the clean state. */
 function wtSyncMeta(b: BranchInfo): string {
   if (b.gone) return `<span class="wt-tag gone" title="${esc(b.upstream)} no longer exists on the remote, so this branch is local-only now">gone</span>`;
   if (!b.upstream) return `<span class="wt-tag det" title="No remote branch tracks this. It has never been pushed">local</span>`;
@@ -184,10 +128,8 @@ function wtSyncMeta(b: BranchInfo): string {
     + (b.behind ? `<span class="wt-ab wt-behind" title="${b.behind} commit(s) on ${esc(b.upstream)} not pulled yet">↓${b.behind}</span>` : "");
 }
 
-/** A remote-only branch against its remote's default — the standing GitHub's branches
- *  view puts on every row. `base` empty means it could not be measured (no default ref,
- *  a second remote, or a git too old for `%(ahead-behind:)`); silence is then honest,
- *  where `↑0 ↓0` would read as "in sync". */
+/** A remote-only branch against its remote's default. Empty `base` means it could not be
+ *  measured (no default ref, a second remote, an old git); silence beats a false `↑0 ↓0`. */
 function wtBaseMeta(b: BranchInfo): string {
   if (!b.base) return `<span class="wt-tag rem" title="Only on ${esc(b.upstream)}, no local branch yet">${esc(wtRemoteOf(b))}</span>`;
   if (!b.ahead && !b.behind) return `<span class="wt-tag merged" title="Identical to ${esc(b.base)}">even</span>`;
@@ -205,36 +147,13 @@ function wtUpstreamHtml(b: BranchInfo): string {
     + (b.behind ? ` · ↓${b.behind} unpulled` : "");
 }
 
-// One dialog, two doors. **launch** is the original: "where should this session
-// start?", so every branch in the repo is a row, because starting on one is the whole
-// point. **manage** is what a ⑃ cluster's context menu opens — the caller already knows
-// where a session would go, so what it wants is the checkouts themselves: what exists,
-// what's dirty, what can be pruned.
-//
-// The difference is framing, not machinery. The detail pane was always a management
-// surface (folder, HEAD, working tree, merged-or-not, the removal flow and every
-// warning about a locked / detached / vanished checkout); what made it read as a
-// launcher is what surrounds it. So manage mode drops the three pieces that are about
-// *starting* something and keeps the rest:
-//
-//   - **Branches only once you type.** With an empty query the list is the repo plus
-//     its worktrees — a couple of rows. In launch mode that same list is padded with
-//     every branch, which in a real repo buries the four checkouts you came to look
-//     at. Typing still surfaces them, because creating a worktree on a branch is
-//     management and a manager that can't add one is a viewer.
-//   - **No engine chip.** "New sessions open in Embedded" answers a question nobody
-//     asked here.
-//   - **"N checkouts", not "N destinations"** — a destination is somewhere you launch.
-//
-// ⏎ still starts a session, and the row's own `verb` still says so. Changing what
-// Enter does between two modes of one dialog is a worse trap than a verb that is
-// occasionally not what you came for, and the detail pane's buttons are right there.
+// Two doors. `launch` lists every branch as a destination; `manage` (the ⑃ cluster menu)
+// lists only the checkouts until you type, and hides the engine chip. Same machinery, and
+// ⏎ still starts a session in both: changing what Enter does between modes is a worse trap.
 type WtMode = "launch" | "manage";
 let wtMode: WtMode = "launch";
-// `armSwitch` opens straight onto the root's switch card — the ⑃ cluster menu's *Switch
-// branch…* row, which is a verb, not a place to browse. It arms rather than acts: every
-// guard, the branch picker and the dirty-tree handoff live in that card, and a menu row
-// that switched a branch on click would have to grow all three back.
+// `armSwitch` opens onto the root's switch card rather than switching: every guard, the
+// picker and the dirty-tree handoff live in that card.
 export async function openWt(project: string, repoDir: string, knownBranch?: string | null, opts: { manage?: boolean; focusDir?: string; armSwitch?: boolean } = {}) {
   wtCtx = { project, repoDir };
   wtSel = 0; wtArmed = ""; wtBusy = false; wtBase = ""; wtSwitchTo = ""; wtFetchedAt = 0;
@@ -258,16 +177,8 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
     ? `New sessions open in ${eng.label}`
     : `${ag.label} sessions currently stay embedded`;
   ($("wtEng") as HTMLElement).style.display = manage ? "none" : "";
-  // What this launch will be allowed to do, next to where it will open — but only when
-  // that isn't the standard ask-me mode, so the chip means "something is different
-  // here" rather than becoming furniture. A session that starts in Bypass or Plan
-  // otherwise looks exactly like any other until it acts (or refuses to). Hidden in
-  // manage mode alongside the engine chip: nothing is being launched from there, so a
-  // chip describing the next launch would only be furniture of a worse kind.
-  // Which agent this dialog will start, on the same "only when it differs" rule as the
-  // permission chip below — and this one matters more, because picking a non-Claude
-  // agent changes which adapter and capabilities back the cockpit. This is the last
-  // moment before launch where saying so costs nothing.
+  // The agent chip and the mode chip show only when they differ from the default (Claude,
+  // ask-me), so a chip means "something is different here". Both hidden in manage mode.
   const agEl = $("wtAgent") as HTMLElement;
   agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
   agEl.innerHTML = `<span class="agent-logo" aria-hidden="true">${agentLogo(ag.id)}</span>${esc(ag.label)}`;
@@ -275,8 +186,7 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
     + `project's own menu, or in Settings › Sessions.`;
   const pm = providerPermissionMode(ag.id, permissionModeFor(ag.id));
   const modeEl = $("wtMode") as HTMLElement;
-  // A dialog header is a row of facts about the next launch, so only a non-default,
-  // integrated policy earns a chip. Terminal-only providers manage this in their TUI.
+  // Terminal-only providers manage permissions in their own TUI.
   modeEl.hidden = manage || !ag.capabilities.includes("launch-permissions") || !pm || pm.id === "default";
   modeEl.textContent = pm ? `${pm.glyph} ${pm.label}` : "";
   modeEl.title = pm ? `${ag.label} starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)` : "";
@@ -284,13 +194,9 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
   await wtLoad();
-  // After the first read, since that is what builds the rows to search. A checkout git
-  // no longer lists (removed under us) simply leaves the repo row selected.
-  //
-  // `>= 0` rather than `> 0`: index 0 is the repo row, and re-selecting it is a no-op
-  // *unless* something armed a card on it, which is exactly what `armSwitch` does. The
-  // arm has to be set before the render, or the pane paints the row's ordinary detail
-  // and the card only appears on the next keystroke.
+  // After the first read, which builds the rows. `>= 0` because index 0 is the repo row and
+  // re-selecting it matters once `armSwitch` arms a card on it; the arm must precede the
+  // render or the card only appears on the next keystroke.
   const focus = opts.armSwitch ? repoDir : opts.focusDir;
   if (focus && wtCtx) {   // …and not if it was closed while the read was in flight
     const i = wtRows.findIndex((d) => d.dir === focus);
@@ -298,34 +204,23 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   }
 }
 
-// Both lists cost several git calls (a status probe per checkout, a rev-list per ref),
-// so the dialog draws its shape first and fills in. The repo row is real from the
-// first frame — it's the path we were opened with — so ⏎ works at t=0.
-//
-// Two layers of freshness, because they cost different things:
-//   wtReadLocal — pure local git, instant, safe to run whenever.
-//   wtMaybeFetch — network. ahead/behind and `gone` come from %(upstream:track), which
-//     compares against refs/remotes/*, a cache only `git fetch` moves. Without this the
-//     panel's most useful signal would silently reflect whenever you last fetched — and
-//     the Remote branches group is read straight out of refs/remotes, so a colleague's
-//     branch pushed five minutes ago would not be a destination at all.
+// Draws its shape first and fills in; the repo row is real from the first frame, so ⏎
+// works at t=0. wtReadLocal is local git, instant. wtMaybeFetch is network: ahead/behind,
+// `gone` and the Remote branches group all read refs/remotes/*, which only `git fetch` moves.
 async function wtLoad(quiet = false) {
   await wtReadLocal(quiet);
   void wtMaybeFetch();
 }
 
-// Re-list because the repo changed underneath the open dialog — a worktree created or
-// removed by an agent while you were looking at the picker. A no-op when the dialog is
-// closed, so the caller (the git-invalidation path in panes.ts) doesn't have to know
-// whether it is. Local read only: this is not a reason to hit the network.
+// The repo changed under the open dialog (an agent added or removed a worktree). A no-op
+// when closed, so the caller needn't check; local read only, never the network.
 export async function refreshWtDialog() {
   if (!wtCtx) return;
   await wtReadLocal(true);
 }
 
-// Fetch is throttled and best-effort: it runs in the background, never blocks the list,
-// and stays silent on failure (offline, no remote, auth) — a stale number is a better
-// outcome than a toast every time you alt-tab with no network.
+// Throttled and best-effort: runs in the background, never blocks the list, and stays
+// silent on failure (offline, no remote, auth). A stale number beats a toast per alt-tab.
 const WT_FETCH_MIN_MS = 60_000;
 let wtFetchedAt = 0;
 let wtFetching = false;
@@ -345,15 +240,12 @@ async function wtMaybeFetch(force = false) {
   await wtReadLocal(true);
 }
 
-// `quiet` = there is already a list on screen, so don't tear it down: no skeletons, no
-// "not a git repository" toast a second time, and one render at the end instead of two.
-// Skeletons are for the first paint only.
+// `quiet`: a list is already on screen, so no skeletons, no repeat toast, one render at the end.
 async function wtReadLocal(quiet = false) {
   if (!wtCtx) return;
   const { repoDir } = wtCtx;
   const gen = ++wtGen;
-  // The lazily-fetched facts (HEAD lines, the repo's dirty count) are re-derived: a
-  // quiet refresh usually follows something that moved them.
+  // Re-derive the lazily fetched facts: a quiet refresh usually follows something that moved them.
   wtCommits.clear(); wtDirty.clear();
   if (!quiet) { wtLoading = true; wtRender(); }
   const [wts, branches, head] = await Promise.all([
@@ -378,7 +270,7 @@ function wtTickAge() {
   $("wtAge").textContent = s < 5 ? "now" : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`;
 }
 
-// One array, four row kinds. Both the list and the detail pane read only from this.
+// One array; both the list and the detail pane read only from this.
 function wtBuild(): Dest[] {
   if (!wtCtx) return [];
   const { repoDir } = wtCtx;
@@ -387,14 +279,12 @@ function wtBuild(): Dest[] {
   const hit = (s: string) => !q || s.toLowerCase().includes(q);
   const out: Dest[] = [];
 
-  // Remote-only names count as known: typing one must land on its row, not fall through
-  // to "create", which would cut an unrelated branch off HEAD under the very same name.
+  // Remote-only names count as known: typing one must land on its row, not on "create",
+  // which would cut an unrelated branch off HEAD under the same name.
   const known = [...wtWts.map((w) => w.branch), ...wtBranches.map((b) => b.name),
     ...wtRemotes.map((b) => b.name), wtRepoBranch];
   const exact = known.some((n) => n && n.toLowerCase() === q);
 
-  // The typed query, promoted to an action. This is what lets the branch field, its
-  // datalist and the fixed "Create worktree" button all disappear.
   if (q && !exact) {
     const want = wtSlug(raw);
     const clash = wtWts.find((w) => !w.is_main && basename(w.path) === want);
@@ -419,8 +309,7 @@ function wtBuild(): Dest[] {
 
   for (const w of wtWts) {
     if (w.is_main) continue;
-    // Searchable by the branch you want OR the folder you remember — after a
-    // `git switch` inside the checkout those are different strings.
+    // Searchable by branch or folder: after a `git switch` inside the checkout they differ.
     if (!hit(`${w.branch} ${basename(w.path)} ${w.path}`)) continue;
     const st = wtStateOf(w, repoDir);
     const open = wtSessionsIn(w.path).length;
@@ -432,8 +321,7 @@ function wtBuild(): Dest[] {
     if (st === "detached") tags.push(["det", "detached"]);
     if (st === "foreign") tags.push(["ext", "outside"]);
     if (w.dirty) tags.push(["dirty", "uncommitted"]);
-    // `merged` is computed against the main branch and skipped for (detached) — never
-    // imply a detached checkout is a safe cleanup.
+    // `merged` is skipped for a detached checkout: never imply one is a safe cleanup.
     if (w.merged && st !== "detached") tags.push(["merged", "merged"]);
     out.push({
       kind: "wt", group: "Worktrees", ic: "⑃", wt: w,
@@ -447,15 +335,9 @@ function wtBuild(): Dest[] {
     });
   }
 
-  // Branches you could start a NEW worktree on. The current branch (the repo row) and
-  // any already checked out (the worktrees above) are excluded — git refuses either a
-  // second time, so offering them would only produce an error.
-  //
-  // In manage mode they wait for a query: unfiltered, every branch in the repo sits
-  // below the handful of checkouts you opened this to look at. Gated on `q` rather than
-  // dropped, because "add a worktree on an existing branch" is management too — and
-  // dropping them would strand it, since the create row suppresses itself for a name
-  // that is already a branch.
+  // Branches a NEW worktree could start on; current and checked-out ones are excluded since
+  // git refuses a second checkout. Manage mode gates them on a query rather than dropping
+  // them: the create row suppresses itself for an existing name, so this is how you add one.
   const STALE = 45 * 86400, now = Date.now() / 1000;
   for (const b of wtMode === "manage" && !q ? [] : wtBranches) {
     if (b.current || b.checked_out || !hit(b.name)) continue;
@@ -469,9 +351,8 @@ function wtBuild(): Dest[] {
     });
   }
 
-  // Branches that exist on a remote and nowhere here — a colleague's work, or your own
-  // from another machine. Last, because they're the least likely destination and the
-  // only ones that touch a name the repo doesn't have yet.
+  // Remote-only branches last: the least likely destination, and the only ones that bring
+  // a new name into the repo.
   for (const b of wtRemotes) {
     if (!hit(`${b.name} ${b.upstream}`)) continue;
     const clash = wtWts.find((w) => !w.is_main && basename(w.path) === wtSlug(b.name));
@@ -479,12 +360,8 @@ function wtBuild(): Dest[] {
       kind: "remote", group: "Remote branches", ic: "⇣", br: b, clash,
       label: b.name, sub: "", dir: wtTargetDir(repoDir, b.name), branch: b.name,
       tags: [], stale: b.unix > 0 && now - b.unix > STALE,
-      // The row GitHub's branches view shows: how far it is from the default branch, and
-      // whose commit is on the end of it. Both are the questions you actually have about
-      // a branch that exists only on a remote — is there anything on it, and is it mine.
-      // …but only on the row you are actually looking at (hovered or selected). Eleven
-      // rows each carrying a standing and a name is a wall of numbers that squeezes the
-      // one thing you came to read — the branch name — down to `fea…audit-log`.
+      // Standing vs the default branch plus author, as GitHub's branches view shows it, but
+      // only on the hovered/selected row: on every row it squeezes the name to `fea…audit-log`.
       meta: `<span class="wt-rmeta">${wtBaseMeta(b)}`
         + (b.author ? `<span class="wt-who" title="${esc(b.author)} wrote the last commit on this branch">${esc(b.author)}</span>` : "")
         + `</span><span class="wt-when">${esc(b.rel || "")}</span>`,
@@ -494,9 +371,7 @@ function wtBuild(): Dest[] {
   return out;
 }
 
-/** The ref every branch here is measured against, and what the trunk chip can be set to
- *  — ./branches owns both, so the dialog's chip and the Branches view's footer can never
- *  name different trunks for the same repo. */
+/** ./branches owns the trunk, so this chip and the Branches view's footer never name different trunks. */
 const wtTrunk = () => trunkOf(wtBranches.concat(wtRemotes));
 const wtTrunkOptions = (): BranchPick[] => trunkOptions(wtBranches.concat(wtRemotes));
 const wtRemoteOf = branchRemoteOf;
@@ -507,20 +382,15 @@ function wtRender() {
   const cur = wtRows[wtSel];
   if (!cur || cur.kind === "create" || cur.dir !== wtArmed) wtArmed = "";
 
-  // Worktrees is the one group that renders when it holds nothing. Every other group's
-  // absence reads as "nothing to say"; this one's reads as "still loading", because the
-  // skeleton put that heading here a moment ago and what the eye tracks between the two
-  // frames is the heading, not the rows under it. Two gates: an empty query (with a
-  // filter typed, "none" is a fact about the filter, and .wt-empty already says that),
-  // and a repo that git actually answered for — `list_worktrees` returns [] for a
-  // non-repo, where it always lists the main checkout for a real one.
+  // Worktrees is the one group drawn when empty: its absence reads as "still loading" after
+  // the skeleton. Two gates: no filter typed (.wt-empty covers that), and git answered
+  // (`list_worktrees` returns [] for a non-repo and always lists main for a real one).
   const noWts = !wtLoading && !($("wtQ") as HTMLInputElement).value.trim()
     && wtWts.length > 0 && !wtWts.some((w) => !w.is_main);
   const noneHtml = `<div class="wt-gh">Worktrees<span class="rule"></span></div>`
     + `<div class="wt-none"><b>No worktrees yet</b>Type a branch name above to make one</div>`;
-  // Emitted where the group WOULD have been, so it can't drift below Branches: the
-  // first group that sorts after it triggers it, and the end of the list is the
-  // fallback for a repo whose only other rows are the repo itself.
+  // Emitted where the group would have been, so it can't drift below Branches; the end of
+  // the list is the fallback when the repo row is the only other one.
   const afterWt = new Set(["Branches", "Remote branches"]);
   let noneDone = !noWts;
 
@@ -530,9 +400,8 @@ function wtRender() {
     if (d.group && d.group !== lastGroup) {
       lastGroup = d.group;
       const n = wtRows.filter((x) => x.group === d.group).length;
-      // The trunk everything in this dialog is measured against, where the numbers it
-      // decides are shown, and changeable there — git's own default is right until the
-      // day it isn't (a `develop` trunk, a stale origin/HEAD, a release line).
+      // The trunk the numbers are measured against, changeable here: git's own default is
+      // wrong for a `develop` trunk, a stale origin/HEAD, or a release line.
       const cmp = d.group === "Remote branches" && wtTrunk()
         ? `<button class="wt-cmp" type="button" data-wtpick="cmp" title="Branches are measured against this&#10;Click to compare against another branch">vs ${esc(wtTrunk())}</button>`
         : "";
@@ -565,9 +434,7 @@ function wtRender() {
   void wtPrefetch(cur);
 }
 
-// The pane's git facts, fetched for the HIGHLIGHTED row only — a repo can hold
-// BRANCH_LIST_CAP branches plus every worktree, and one `git log` per row would cost
-// far more than the pane is worth.
+// Git facts for the HIGHLIGHTED row only: one `git log` per row would cost more than the pane is worth.
 async function wtPrefetch(d: Dest | undefined) {
   if (!d || !wtCtx) return;
   const gen = wtGen, { repoDir } = wtCtx;
@@ -578,10 +445,8 @@ async function wtPrefetch(d: Dest | undefined) {
     jobs.push(invoke<CommitInfo | null>("git_commit_info", { dir, rev }).catch(() => null)
       .then((c) => { wtCommits.set(ck, c); }));
   }
-  // Every row you can start a session in has a working tree to walk into, so both
-  // ask for one: list_worktrees skips `dirty` for the main worktree entirely, and for
-  // the others it is a bare boolean — true tells you there is uncommitted work without
-  // ever saying what. A folder that is gone has nothing to read.
+  // list_worktrees skips `dirty` for the main worktree and gives a bare boolean for the
+  // rest, so both ask for the working set. A folder that is gone has nothing to read.
   const wsDir = d.kind === "repo" ? repoDir : d.kind === "wt" && d.wt!.exists ? d.dir : "";
   if (wsDir && !wtDirty.has(wsDir)) {
     jobs.push(invoke<WorkingSet | null>("git_working_set", { workdir: wsDir }).catch(() => null)
@@ -593,9 +458,8 @@ async function wtPrefetch(d: Dest | undefined) {
   if (wtRows[wtSel] !== d) return;              // selection moved on
   $("wtDetail").innerHTML = wtDetailHtml(d);
 }
-/** `<dir>\n<rev>` — the argument pair for git_commit_info, newline-joined because
- *  git forbids newlines in ref names and a path may contain spaces. "" when there is
- *  nothing to ask about (an unborn create row has no commit yet). */
+/** `<dir>\n<rev>` for git_commit_info, newline-joined because git forbids newlines in ref
+ *  names and a path may contain spaces. "" when there is nothing to ask about. */
 function wtCommitKey(d: Dest): string {
   if (!wtCtx) return "";
   if (d.kind === "repo") return `${d.dir}\n`;
@@ -606,18 +470,12 @@ function wtCommitKey(d: Dest): string {
   return "";
 }
 
-// The status letter's colour, shared with the diff viewer's file headers so one
-// letter means one thing across the app. An untracked file borrows `added`'s green:
-// it is new, git just hasn't been told yet.
+// Shared with the diff viewer's file headers, so one letter means one thing. `?` borrows `added`'s green.
 const WT_FCLASS: Record<string, string> = {
   M: "s-mod", A: "s-add", "?": "s-add", D: "s-del", R: "s-ren", C: "s-ren", U: "s-del",
 };
-// How many files the pane lists before it stops and says how many are left. The pane
-// is a paragraph of facts, not a diff viewer — ten is enough to recognise the work in
-// a folder, and the rest is one honest line rather than a scroll.
-const WT_FILES_SHOWN = 10;
+const WT_FILES_SHOWN = 10; // the pane is a paragraph of facts, not a diff viewer
 
-/** One uncommitted file: what happened to it, where it is, and its own +/−. */
 function wtFileHtml(f: StatusFile): string {
   const name = f.from
     ? `<span class="from">${esc(f.from)}</span> → ${wtPathHtml(f.path)}`
@@ -628,17 +486,12 @@ function wtFileHtml(f: StatusFile): string {
   return `<li><span class="dstat ${WT_FCLASS[f.code] ?? "s-mod"}">${esc(f.code)}</span>`
     + `<span class="p">${name}</span>${n}</li>`;
 }
-/** The "Working tree" fact: the counts, and then the files themselves.
- *
- *  `pending` is what to show until the fetch lands. The repo row has nothing better
- *  than "reading…", but a worktree row already knows *whether* it is dirty from
- *  `list_worktrees`, so it says so immediately and the list fills in underneath —
- *  arriving at the same answer, never flashing the opposite one on the way. */
+/** `pending` shows until the fetch lands. A worktree row already knows whether it is
+ *  dirty from `list_worktrees`, so it says so at once and never flashes the opposite answer. */
 function wtWorkHtml(dir: string, pending: string): string {
   if (!wtDirty.has(dir)) return pending;
   const g = wtDirty.get(dir);
-  // null is "not a repo, or no commits yet" — nothing to be dirty against.
-  if (!g || !g.dirty) return `<span class="good">clean</span>`;
+  if (!g || !g.dirty) return `<span class="good">clean</span>`; // null: not a repo, or no commits yet
   const shown = g.entries.slice(0, WT_FILES_SHOWN);
   const rest = g.dirty - shown.length;
   return `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
@@ -659,7 +512,6 @@ function wtCommitHtml(d: Dest): string {
   if (!c) return `<span class="dim">no commits yet</span>`;
   return `<span class="em">${esc(c.short)}</span> · ${esc(c.author)} · ${esc(c.rel)}<span class="subj">${esc(c.subject)}</span>`;
 }
-/** Dim the containing directory, emphasise the leaf — the leaf is the identity. */
 function wtPathHtml(p: string) {
   const b = basename(p);
   const i = p.lastIndexOf(b);
@@ -697,9 +549,8 @@ function wtDetailHtml(d: Dest | undefined): string {
       warn = `<div class="wt-warn err"><span class="t">Folder is gone</span>`
         + `Nothing is left at this path except git's record of it. Removing prunes that record; there's nothing to launch into.</div>`;
     } else if (st === "diverged") {
-      // Deliberately does NOT name the branch this folder was created for: wtSlug is
-      // lossy (both "/" and every odd character become "-"), so the folder can't be
-      // turned back into a branch name. Name the folder, which is what exists.
+      // Names the folder, not the branch it was created for: wtSlug is lossy, so the folder
+      // can't be turned back into a branch name.
       warn = `<div class="wt-warn"><span class="t">Folder and branch disagree</span>`
         + `This checkout lives in <b>${esc(basename(w.path))}/</b>, a folder named after the branch it was created for. `
         + `Its HEAD is now <b>${esc(w.branch)}</b>. Something switched inside it. `
@@ -735,8 +586,8 @@ function wtDetailHtml(d: Dest | undefined): string {
       + `</div>`;
   }
 
-  // branch / create — neither has a checkout yet, so both are about the folder that
-  // WOULD be made. Showing that path is what catches a collision before git does.
+  // branch / create: neither has a checkout yet, so both show the folder that WOULD be
+  // made, which catches a collision before git does.
   const clash = d.clash;
   const clashWarn = clash
     ? `<div class="wt-warn err"><span class="t">Folder already taken</span>`
@@ -746,9 +597,8 @@ function wtDetailHtml(d: Dest | undefined): string {
   if (d.kind === "branch") {
     const b = d.br!;
     if (wtArmed === d.dir) return wtBranchConfirmHtml(d);
-    // No live remote is a fact about the branch, not a reason to avoid it — resuming a
-    // branch whose remote was deleted (and pushing a fresh one) is an ordinary thing to
-    // want. Say what will happen instead of leaving the red `gone` chip to imply doom.
+    // A gone or missing remote is a fact about the branch, not a reason to avoid it: say
+    // what will happen rather than let the red `gone` chip imply doom.
     const noRemote = (b.gone || !b.upstream) && !clash
       ? `<div class="wt-warn note"><span class="t">No remote branch right now</span>`
         + `${b.gone ? `<b>${esc(b.upstream)}</b> was deleted` : "This branch has never been pushed"}, so starting a worktree here is fine. `
@@ -767,8 +617,7 @@ function wtDetailHtml(d: Dest | undefined): string {
       + `</div>`;
   }
 
-  // A remote-only branch. Nothing here can be deleted or switched to — there is no local
-  // ref yet — so the pane is entirely about what picking it would bring into existence.
+  // Remote-only: no local ref to delete or switch to, so the pane is about what picking it creates.
   if (d.kind === "remote") {
     const b = d.br!;
     return `<div class="wt-dhead"><span class="wt-dkind">Remote branch · no local copy</span><span class="wt-dname">${esc(b.upstream)}</span></div>`
@@ -803,9 +652,8 @@ function wtDetailHtml(d: Dest | undefined): string {
     + `</div>`;
 }
 
-// Removal, confirmed in the pane rather than a modal on a modal. The checkout and the
-// branch are separate losses — `worktree remove` never touches the branch — so they
-// get separate sentences and separate buttons.
+// Confirmed in the pane, not a modal on a modal. `worktree remove` never touches the
+// branch, so the checkout and the branch get separate sentences and separate buttons.
 function wtConfirmHtml(d: Dest): string {
   const w = d.wt!;
   const folder = `<b>${esc(basename(w.path))}/</b>`;
@@ -836,10 +684,8 @@ function wtConfirmHtml(d: Dest): string {
     + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
 }
 
-// Deleting a local branch, the counterpart to removing a worktree. The copy has to
-// carry one non-obvious fact: a `gone` upstream usually means the PR merged, but if it
-// was SQUASH-merged the commits never became ancestors of HEAD, so git's safe delete
-// refuses anyway. Say that before the click, not after it fails.
+// A `gone` upstream usually means the PR merged, but a squash merge leaves no ancestors of
+// HEAD, so `git branch -d` refuses anyway. Say that before the click, not after it fails.
 function wtBranchConfirmHtml(d: Dest): string {
   const b = d.br!;
   const name = `<b>${esc(b.name)}</b>`;
@@ -885,39 +731,28 @@ async function wtDeleteBranch() {
   } finally { wtBusy = false; renderAll(); }
 }
 
-// The start-point for a NEW branch. Defaults to the repo's HEAD, which is what git
-// does — but silently, and that silence is the problem: a root parked on a feature
-// branch makes every new worktree a child of it. Naming the parent (and letting it be
-// changed) is cheaper and far safer than switching the root just to branch elsewhere.
+// Defaults to the repo's HEAD, as git does silently: a root parked on a feature branch makes
+// every new worktree a child of it, so the parent is named and changeable.
 function wtBaseSelect(): string {
   const head = wtRepoBranch || "HEAD";
   return wtPickBtn("base", wtBase || head) + (wtBase ? "" : ` <span class="dim">the repo's current branch</span>`);
 }
-/** Options for the base chooser: the repo's HEAD first, then every other local branch. */
 function wtBaseOptions(): BranchPick[] {
   const head = wtRepoBranch || "HEAD";
   return [{ name: head, note: "the repo's current branch" }]
     .concat(wtBranches.filter((b) => !b.current).map((b) => ({ name: b.name, note: b.rel || "" })));
 }
 
-// Move the root folder itself to another branch. Episko's answer to "work on another
-// branch" is normally a worktree, and this stays deliberately secondary — but the root's
-// branch is the default parent of every new worktree, so a root parked somewhere stale
-// needed an escape that wasn't "drop to a shell".
-//
-// What blocks it is *work in flight*, not a pane (`midFlight`). The old rule was "any
-// session at all", which made the lever unreachable in exactly the situation you want
-// it: a folder you keep an agent parked in. Closing an idle conversation to rename what
-// HEAD points at is a bad trade, and it was the only one on offer.
+// Moving the root itself stays secondary to a worktree, but the root's branch is the default
+// parent of every new worktree, so a stale root needs an escape. Only work in flight
+// (`midFlight`) blocks it; "any session at all" made it unreachable exactly when wanted.
 function wtSwitchHtml(): string {
   if (!wtCtx) return "";
   const { repoDir } = wtCtx;
   const here = wtSessionsIn(repoDir);
   const busy = here.filter(midFlight);
-  // A session in someone else's terminal is counted the same way, with the one signal
-  // its registry file carries: `extWorking` is the whole of what we know about it, so an
-  // active one blocks and a quiet one only warns — the same shape as our own panes,
-  // reached with far less information.
+  // An external session counts the same way, with the one signal its registry file has:
+  // `extWorking` blocks, a quiet one only warns.
   const extHere = externals.filter((e) => e.cwd === repoDir);
   const extBusy = extHere.filter(extWorking);
   const pick = wtSwitchable();
@@ -941,20 +776,16 @@ function wtSwitchHtml(): string {
       + `<span class="row"><button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
   }
   const sel = wtSwitchTo || pick[0].name;
-  // A remote-only target does one thing more than a switch: it brings a name into the
-  // repo. That is a change to the branch list, not just to HEAD, so it is said before
-  // the click rather than discovered in the toast afterwards.
+  // A remote-only target also brings a name into the repo, a change to the branch list, so
+  // it is said before the click rather than discovered in the toast.
   const from = pick.find((o) => o.name === sel)?.base;
   const cut = from
     ? `<span class="w"><b>${esc(sel)}</b> exists only on <b>${esc(from)}</b>. Switching cuts a local branch from it, `
       + `set to track it, so <b>git push</b> and <b>git pull</b> here take no arguments afterwards.</span>`
     : "";
-  // Whatever is still open here has no work in flight, or the wall above would have
-  // caught it — so say what the switch means for it rather than letting the card imply
-  // the folder is empty. Nothing gets cut off; what moves is the ground the *next* thing
-  // lands on, and an agent whose whole conversation is about the branch it was launched
-  // on has no way to notice that by itself. An exited pane is left out of the count: it
-  // is a transcript on screen, not something the switch reaches.
+  // Nothing open here is mid-turn (the wall above caught that), so say what the switch means
+  // for it: the next prompt or command lands on the new branch, whatever the conversation
+  // reads. An exited pane is a transcript on screen and left out of the count.
   const stay = here.filter((s) => !isExited(s)).length + extHere.length;
   const note = stay
     ? `<div class="wt-warn note"><span class="t">${stay} session${stay === 1 ? "" : "s"} stay${stay === 1 ? "s" : ""} open</span>`
@@ -975,12 +806,10 @@ function wtSwitchHtml(): string {
     + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
 }
 
-/** Branches the root can actually move to: not current, not held by a worktree — plus
- *  every branch that exists only on a remote, which the switch cuts a local ref from. */
+/** Branches the root can move to, plus the remote-only ones the switch cuts a local ref from. */
 function wtSwitchOptions(): BranchPick[] {
-  // git allows exactly one checkout per branch, so anything a worktree holds — or the
-  // root already has — can't be switched to. List them anyway, disabled and explained:
-  // silently omitting them is what made `dev` look like it had gone missing.
+  // One checkout per branch, so anything held is listed disabled with the reason: omitting
+  // it silently made `dev` look like it had gone missing.
   const held = new Map<string, string>();
   for (const w of wtWts) if (!w.is_main && w.branch) held.set(w.branch, basename(w.path));
   const local = wtBranches.map((b) => b.current
@@ -988,11 +817,8 @@ function wtSwitchOptions(): BranchPick[] {
     : held.has(b.name)
       ? { name: b.name, note: `checked out in ${held.get(b.name)}/`, disabled: true }
       : { name: b.name, note: b.rel || "" });
-  // A colleague's branch, or your own from another machine. Nothing here has a local ref
-  // yet — `git_branch_list` only calls a row remote-only when no local branch shares its
-  // name — so none can be held by a worktree, and `base` is what makes the ref the switch
-  // cuts track the one it came from. Last, and marked: they are the only options that
-  // bring a name into the repo rather than moving between names it already has.
+  // Remote-only rows have no local ref (git_branch_list says so), so none is held; `base`
+  // makes the cut ref track its origin. Last and marked: the only options that add a name.
   const remote = wtRemotes.map((b) => ({
     name: b.name, ic: "⇣", base: b.upstream,
     note: `only on ${wtRemoteOf(b)}; creates a local branch tracking it`,
@@ -1009,9 +835,8 @@ async function wtDoSwitch() {
   if (!branch) return;
   wtBusy = true;
   try {
-    // `base` is set for a remote-only target and null otherwise; the backend ignores it
-    // for a branch that turns out to exist locally after all, which is what makes it safe
-    // to send from a list that was read some seconds ago.
+    // `base` is null unless the target is remote-only; the backend ignores it for a branch
+    // that exists locally by now, so a seconds-old list is safe to send.
     const r = await invoke<GitActionResult>("switch_branch", { repoDir, branch, base: target.base ?? null });
     dlog(r.ok ? "info" : "warn", `switch · ${basename(repoDir)} · ${r.summary}`);
     toast(r.ok ? r.summary : `${r.summary} → opening a terminal`);
@@ -1023,11 +848,8 @@ async function wtDoSwitch() {
     wtArmed = ""; wtSwitchTo = ""; wtRepoBranch = branch;
     onBranchSwitched(repoDir);
     await wtLoad(true);
-    // Sessions may now be sitting in this folder, and every one of them is showing the
-    // branch it was launched on. `refreshBranches` would correct them within the 4s poll;
-    // this is the app changing HEAD itself, so it has no excuse to lag behind its own
-    // action — a sidebar naming a branch this dialog just left is a lie about where a
-    // pane is, not a stale label.
+    // Sessions here still show the branch they were launched on; the app moved HEAD itself,
+    // so it must not wait for the 4s poll to correct them.
     void refreshGitViews();
   } catch (e) {
     dlog("error", `switch failed: ${e}`);
@@ -1036,28 +858,15 @@ async function wtDoSwitch() {
 }
 
 // ---------- branch chooser ----------
-// A picker for the two places the dialog needs one: the new-worktree base, and the
-// root-switch target. Built from the .menupop/.mp-item idiom the engine, caffeinate,
-// shortcuts, usage and colour menus already share, so it reads as part of the app
-// rather than as the one piece of system chrome on a fully custom surface.
-//
-// It lives at body level (#bPop) because .wtdlg is overflow:hidden — anchored inside,
-// it would be clipped. Typing filters, because a repo can hold BRANCH_LIST_CAP refs
-// and "scroll until you see it" is not a choice.
+// One picker for the new-worktree base and the root-switch target, in the .menupop idiom.
+// At body level (#bPop) because .wtdlg is overflow:hidden; typing filters, since a repo
+// can hold BRANCH_LIST_CAP refs.
 interface BranchPick {
   name: string;
   note: string;
-  /** Shown, but not choosable — with `note` carrying the reason. A branch that simply
-   *  vanishes from the list reads as a bug: you go looking for `dev`, it isn't there,
-   *  and nothing tells you it's held by a worktree. */
-  disabled?: boolean;
-  /** Overrides the row glyph. Only the remote-only rows set it (`⇣`, the same glyph the
-   *  main list gives them): they are the ones that bring a name into the repo, and a
-   *  note alone doesn't survive being skimmed. */
-  ic?: string;
-  /** The remote-tracking ref to cut this branch from, for a target with no local ref.
-   *  Absent means "the branch is already here" — see `switch_branch`. */
-  base?: string;
+  disabled?: boolean; // shown but not choosable, with `note` saying why: a row that vanishes reads as a bug
+  ic?: string;        // row glyph override; only the remote-only rows set it (⇣)
+  base?: string;      // remote-tracking ref to cut from when there is no local ref (see switch_branch)
 }
 let bPopItems: BranchPick[] = [];
 let bPopSel = 0;
@@ -1065,9 +874,8 @@ let bPopOn: ((name: string) => void) | null = null;
 let bPopAnchor: HTMLElement | null = null;
 
 function bPopOpen() { return $("bPop").classList.contains("show"); }
-// Exported for the Branches view's trunk chip: the popover element and its keyboard
-// handling belong to this dialog, and a second copy of both would be a second thing to
-// keep in step. The view reaches it through `DashHost.pickTrunk`.
+// Exported for the Branches view's trunk chip (via `DashHost.pickTrunk`), so the popover
+// and its keyboard handling exist once.
 export function openBranchPop(anchor: HTMLElement, items: BranchPick[], current: string, onPick: (name: string) => void) {
   bPopItems = items; bPopOn = onPick; bPopAnchor = anchor;
   const at = items.findIndex((i) => i.name === current);
@@ -1100,8 +908,7 @@ function bPopShown(): BranchPick[] {
   const q = (($("bPopQ") as HTMLInputElement)?.value || "").trim().toLowerCase();
   return bPopItems.filter((i) => !q || i.name.toLowerCase().includes(q));
 }
-/** Next choosable row in `dir`, or stay put if there is none — so arrow keys step over
- *  the disabled entries instead of parking on something Enter can't take. */
+/** Next choosable row in `dir`, or stay put: arrows step over the disabled entries. */
 function bPopStep(shown: BranchPick[], from: number, dir: 1 | -1): number {
   for (let i = from + dir; i >= 0 && i < shown.length; i += dir) if (!shown[i].disabled) return i;
   return from;
@@ -1129,7 +936,6 @@ $("bPop").addEventListener("keydown", (e) => {
   else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeBranchPop(); }
 });
 
-/** The trigger: reads as a field holding a value, not as a button. */
 function wtPickBtn(kind: "base" | "switch", label: string): string {
   return `<button class="wt-pick" type="button" data-wtpick="${kind}" aria-haspopup="listbox">`
     + `<span class="v">${esc(label)}</span><span class="c">▾</span></button>`;
@@ -1151,14 +957,12 @@ function wtRun(d: Dest | undefined) {
     const w = d.wt!;
     if (!w.exists) { toast(`${basename(w.path)} is gone, remove it instead`); return; }
     closeWt();
-    // Always a NEW session: a second agent on one branch is a normal thing to want.
-    // The session chips in the pane are what jump to a running one.
+    // Always a NEW session: a second agent on one branch is normal. The session chips jump to a running one.
     launch(project, w.path, { colorKey: repoDir, worktree: wtLabelOf(w), branch: d.branch });
     return;
   }
   if (d.clash) { toast(`${basename(d.clash.path)}/ already exists`); return; }
-  // A remote-only row starts from its remote ref, which is also what makes the new
-  // branch track it — `create_worktree` reads that off the start-point.
+  // A remote-only row starts from its remote ref, which is what makes the new branch track it.
   void wtCreate(d.branch, d.kind === "create" ? wtBase : d.kind === "remote" ? d.br!.upstream : "");
 }
 
@@ -1177,23 +981,15 @@ async function wtCreate(branch: string, base = "") {
   } finally { wtBusy = false; }
 }
 
-// How long to give a killed session to actually die before its folder is touched.
-// The same number and the same reason as actions.ts's KILL_WAIT_MS: `kill_session`
-// sends a signal and returns, so only `pty-exit` proves the process was reaped — and
-// until it is, Windows will not delete a directory that process is sitting in. Bounded
-// because a wedged process must not strand the removal forever; past the bound we
-// proceed and the folder either deletes or reports who has it.
+// Same number and reason as actions.ts's KILL_WAIT_MS: only `pty-exit` proves the process
+// was reaped, and Windows won't delete a directory a live process sits in. Bounded so a
+// wedged process can't strand the removal forever.
 const KILL_WAIT_MS = 5000;
 
-// Close every Episko session in a checkout and wait for the processes to be *gone*,
-// not merely signalled.
-//
-// The ordering is load-bearing twice over. Each waiter is registered BEFORE its kill,
-// or a fast exit resolves into nothing; and `closeSession` comes last, because it
-// settles pending waiters itself (with -1, so a dependency chain can't deadlock) and
-// would otherwise resolve the very wait this exists for. An already-ended pane is
-// excluded from the race entirely — its process is long gone, no `pty-exit` is coming,
-// and waiting on it would spend the whole bound for nothing.
+// Close every session in a checkout and wait for the processes to be gone. Order matters:
+// each waiter is registered BEFORE its kill (a fast exit would resolve into nothing), and
+// `closeSession` comes last because it settles pending waiters itself. Ended panes are
+// skipped: no `pty-exit` is coming for them.
 async function closeSessionsIn(list: Sess[]) {
   const running = list.filter((s) => s.phase !== "ended");
   const dead = running.map((s) => {
@@ -1207,13 +1003,9 @@ async function closeSessionsIn(list: Sess[]) {
   for (const s of list) closeSession(s.id);
 }
 
-// A worktree that has left git's records but whose folder is still on disk. Two steps,
-// and the split is the whole design: processes Episko started are cleared without
-// asking — the click already decided they should die, and finishing that job is not a
-// new decision — while anything else is somebody's editor or build, which is a
-// question. Nothing here is reached unless a delete has already failed and been
-// retried in the backend, so an empty holder list means the OS refused for a reason
-// no process explains, and says so rather than inventing a culprit.
+// A worktree gone from git whose folder is still on disk. Processes Episko started are
+// killed without asking (the click already decided that); anything else is somebody's
+// editor or build, and a question. No holder means the OS refused for another reason: say so.
 async function strandedFlow(s: Stranded, label: string) {
   const purge = (kill: number[]) =>
     invoke<PurgeResult>("purge_worktree_folder", { path: s.path, kill })
@@ -1246,8 +1038,7 @@ async function strandedFlow(s: Stranded, label: string) {
   toast(r?.gone ? `Removed ${label}` : `${basename(cur.path)}/ still wouldn't delete: ${r?.stranded?.reason ?? "unknown"}`);
 }
 
-// The backend never forces: a dirty tree is refused and its --force command handed to
-// a terminal, so nothing uncommitted is ever clobbered by a click here.
+// The backend never forces: a dirty tree is refused and its --force command handed to a terminal.
 async function wtDoRemove(deleteBranch: boolean) {
   const d = wtRows[wtSel];
   if (!d || d.kind !== "wt" || !wtCtx || wtBusy) return;
@@ -1257,9 +1048,8 @@ async function wtDoRemove(deleteBranch: boolean) {
     const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch });
     dlog(r.ok ? "info" : "warn", `worktree remove · ${w.branch || w.path} · ${r.summary}`);
     if (!r.ok && r.suggest) {
-      // git refused and changed nothing, so the roster is exactly as it was. The
-      // handoff must run from the repo root, never the worktree being deleted — git
-      // refuses to remove the tree you're standing in.
+      // git refused and changed nothing. The handoff runs from the repo root, never the
+      // worktree being deleted: git refuses to remove the tree you're standing in.
       toast(`${r.summary} → opening a terminal`);
       closeWt();
       await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir });
@@ -1267,10 +1057,8 @@ async function wtDoRemove(deleteBranch: boolean) {
     }
     toast(r.summary);
     wtArmed = "";
-    // Unconditional from here, where it used to be gated on `ok`: a stranded removal
-    // reports `ok: true` *and* is precisely the case where git has already changed the
-    // roster, so a refresh skipped on failure left a checkout on screen that no longer
-    // existed. A re-read after a harmless refusal costs one listing.
+    // Unconditional: a stranded removal is `ok: true` and has already changed the roster,
+    // and a harmless refusal costs one listing.
     await wtLoad(true);       // this dialog's own list…
     await refreshGitViews();  // …and the ⑃ roster the sidebar draws behind it
     if (r.stranded) await strandedFlow(r.stranded, wtLabelOf(w));
@@ -1280,21 +1068,13 @@ async function wtDoRemove(deleteBranch: boolean) {
   } finally { wtBusy = false; renderAll(); }
 }
 
-// The action-panel "Remove this worktree" flow: a session names its own checkout, so
-// this is just the path-keyed removal below pointed at it.
 export function removeWorktreeSession(s: Sess) {
   return removeWorktreeAt(s.project, s.colorKey, s.workdir, s.branch);
 }
-// Remove the checkout at `path`, whatever is (or isn't) running in it: guard
-// uncommitted work, close the sessions living there, then remove the worktree and
-// safe-delete its branch. The sidebar's ⑃ cluster menu is the other caller, and it
-// is why this is keyed by path rather than by session — a cluster can hold none,
-// one or several, and an empty one is exactly the checkout you most want to prune.
-//
-// The backend refuses while an *Episko* session runs in the tree, so those are closed
-// here first. It cannot see an external one, so that case is refused rather than
-// worked around: `git worktree remove` would delete the folder out from under an
-// agent running in someone else's terminal.
+// Remove the checkout at `path`: guard uncommitted work, close the sessions in it, remove
+// the worktree, safe-delete its branch. Keyed by path because the ⑃ cluster menu may hold
+// no session at all. The backend can't see an external session, so that case is refused:
+// `git worktree remove` would pull the folder from under an agent in someone else's terminal.
 export async function removeWorktreeAt(project: string, repoDir: string, path: string, branch: string) {
   const label = branch || basename(path);
   if (externals.some((e) => e.cwd === path)) {
@@ -1302,27 +1082,18 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     return;
   }
   const live = wtSessionsIn(path);
-  // **Is the folder even there?** A checkout merged and removed outside Episko — a PR
-  // landing, a `git worktree remove` in your own terminal — leaves an administrative
-  // record in `.git/worktrees` and a cluster here for as long as a session of ours still
-  // names it. Asked the generic question below, that read as a destructive warning about
-  // a folder full of work, when nothing was there to lose. The ⑃ dialog has always said
-  // this plainly (`wtConfirmHtml`); this path is the one that didn't.
-  //
-  // The roster is the authority and it is already in memory — `worktree_heads` is what
-  // the sidebar draws from, refreshed every 4s. Unknown means "assume it is there": the
-  // backend removes a vanished checkout cleanly if we are wrong (git exits 0 on one, and
-  // `still_registered` catches the gits that don't), so the cost of guessing that way is
-  // one honest sentence, where the reverse would offer to prune a live checkout.
+  // Is the folder even there? A checkout removed outside Episko keeps its `.git/worktrees`
+  // record while a session names it, and the generic question below reads as a warning
+  // about work to lose. The in-memory roster (`worktree_heads`) is the authority; unknown
+  // means "assume it is there", since the backend removes a vanished checkout cleanly anyway.
   const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => w.path === path);
   const gone = known ? !known.exists : false;
   if (gone) {
     if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone, so this only clears git's record of it. Nothing is lost.`,
       { title: "Prune worktree", kind: "info", okLabel: "Prune", cancelLabel: "Cancel" })) return;
   } else {
-    // Never close a session that still has a dirty tree — hand the decision (and a
-    // shell) over instead. git_diffstat is null for a non-repo; treat that as "clean
-    // enough to try", since the backend still refuses (without forcing) if it's wrong.
+    // Never close a session with a dirty tree; hand over a shell instead. A null diffstat
+    // (non-repo) is "clean enough to try": the backend still refuses, without forcing, if wrong.
     const ds = await invoke<DiffStat | null>("git_diffstat", { workdir: path }).catch(() => null);
     if (ds && ds.dirty > 0) {
       toast(`${label}: uncommitted changes; commit or discard first`);
@@ -1335,23 +1106,17 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
       { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
   }
-  // Waits for the processes to actually be reaped, and that wait is the difference
-  // between a removal that works and one that half-works: git deletes the checkout
-  // directory before it unregisters the worktree, and Windows will not delete a
-  // directory a live process is sitting in. Killing and removing in the same breath
-  // is what produced a worktree gone from git with its folder still on disk.
+  // Wait for the processes to be reaped: git deletes the directory before it unregisters the
+  // worktree, and Windows won't delete a directory a live process sits in.
   await closeSessionsIn(live);
   try {
     const r = await invoke<GitActionResult>("remove_worktree", { repoDir, path, branch, deleteBranch: true });
     dlog(r.ok ? "info" : "warn", `worktree remove · ${label} · ${r.summary}`);
-    // The handoff must run from the repo root, never the worktree being deleted —
-    // git refuses to remove the tree you're standing in.
+    // The handoff runs from the repo root: git refuses to remove the tree you're standing in.
     if (!r.ok && r.suggest) { toast(`${r.summary} → opening a terminal`); await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir }); }
     else toast(r.summary);
-    // The cluster this was invoked from is drawn from the ⑃ roster, which only a
-    // re-read drops — renderAll alone would leave the header on screen until the poll.
-    // Unconditional: a stranded removal is `ok: true` and has already changed the
-    // roster, and a refusal that changed nothing costs one listing to confirm it.
+    // The cluster header is drawn from the ⑃ roster, which only a re-read drops. Unconditional:
+    // a stranded removal is `ok: true` and has already changed the roster.
     await refreshGitViews();
     if (r.stranded) await strandedFlow(r.stranded, label);
   } catch (e) {
@@ -1362,13 +1127,10 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
 }
 
 // ---------- the dialog's own event wiring ----------
-// The dialog handles its own clicks and keys: rows are addressed by index into
-// wtRows, so nothing leaks into the global [data-*] dispatcher.
+// Rows are indexed into wtRows; the data-wt* attributes are handled here, never in main.ts's dispatcher.
 $("wtRefresh").addEventListener("click", () => { void wtReadLocal(true).then(() => wtMaybeFetch(true)); });
-// Coming back to the window is the moment the list is most likely to be wrong: you were
-// just in a terminal, or someone else pushed. Re-read locally and fetch (throttled).
-// Skipped while the branch chooser is open — re-rendering would swap the element its
-// popover is anchored to out from under a choice in progress.
+// Coming back to the window is when the list is most likely stale. Skipped while the chooser
+// is open: a re-render would swap the element its popover is anchored to.
 window.addEventListener("focus", () => {
   if (!$("wtDlg").classList.contains("show") || bPopOpen()) return;
   void wtReadLocal(true).then(() => wtMaybeFetch());
@@ -1393,8 +1155,7 @@ $("wtDlg").addEventListener("click", (e) => {
     if (bPopOpen()) { closeBranchPop(); return; }
     const head = wtRepoBranch || "HEAD";
     if (pick.dataset.wtpick === "cmp") {
-      // Changing the trunk changes numbers only git can recompute, so this re-reads
-      // rather than re-rendering. The empty option clears the override.
+      // A new trunk changes numbers only git can recompute, so re-read; the empty option clears the override.
       openBranchPop(pick, wtTrunkOptions(), cmpBase[wtCtx?.repoDir ?? ""] ?? "", (n) => {
         if (!wtCtx) return;
         saveCmpBase(wtCtx.repoDir, n);
@@ -1429,12 +1190,10 @@ $("wtDlg").addEventListener("click", (e) => {
     return;
   }
   const row = t.closest<HTMLElement>("[data-wti]");
-  // Picking a row is asking about that row, so it cancels an armed removal: one question
-  // on screen at a time.
+  // Picking a row cancels an armed removal: one question on screen at a time.
   if (row) { wtSel = +row.dataset.wti!; wtArmed = ""; wtRender(); ($("wtQ") as HTMLInputElement).focus(); }
 });
-// Double-click a row to go, so the mouse path doesn't require crossing to the pane's
-// button. The first click of the pair already selected it, so this just runs it.
+// Double-click runs the row; the first click of the pair already selected it.
 $("wtList").addEventListener("dblclick", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>("[data-wti]");
   if (row) { e.preventDefault(); wtRun(wtRows[+row.dataset.wti!]); }

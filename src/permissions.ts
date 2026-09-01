@@ -1,7 +1,6 @@
-// Provider-neutral pending-approval queue. The cockpit still presents one request at a
-// time, but no longer loses an earlier ask when parallel tools or child agents raise a
-// second one. Existing UI reads the scalar fields; this module makes those a projection
-// of the queue's head so every call site agrees which request is on screen.
+// Provider-neutral pending-approval queue. The cockpit shows one request at a time but
+// must not lose an earlier ask when parallel tools raise a second; the scalar fields on
+// `Sess` are a projection of the queue's head, so every call site agrees what is on screen.
 
 import type { PendingPermission, Sess } from "./types";
 

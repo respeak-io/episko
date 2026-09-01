@@ -1,22 +1,6 @@
-// Runnables — the task/script layer.
-//
-// A `Runnable` is anything a project declares it can do: an npm script, a task in
-// Episko's own `.episko/tasks.toml`, and (later) a VS Code task, a just recipe, a
-// Make target. Providers *discover* them here; one executor (`spawn_task` in
-// lib.rs) runs them, reusing the same PTY path as a session or a shell.
-//
-// Two rules shape this module:
-//
-// - **Discovery never executes the project.** Most providers here only parse. The
-//   introspecting ones (`just --dump`, `task --list-all`, `mise tasks ls`) evaluate
-//   the file they read — backtick variables and imports run shell at parse time —
-//   so they sit behind a trust gate (`discover(root, trusted)`). Make and Cargo are
-//   parsed statically for the same reason: `make -qp` would expand `$(shell …)`.
-// - **What can't run says so.** An introspector that fails yields a *blocked row*,
-//   never an empty list — see `IntrospectFail`. Silence there is unfalsifiable: it
-//   reads exactly like a project that declares no tasks.
-// - **Ids are stable and namespaced** (`npm:test`, `episko:dev`). The frontend
-//   persists pins and frecency against them, so they must survive a rescan.
+// Runnables: everything a project declares it can do, discovered per provider here and
+// run by `spawn_task`. Rules (docs/tasks.md): discovery never executes an untrusted
+// project; what can't run is a blocked row, never silence; ids like `npm:test` are stable.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -26,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::platform::{augmented_path, sys_command};
 
-/// How to actually run a Runnable. `Argv` is exec'd directly; `Shell` is handed to
-/// a login shell, so it may contain pipes, `&&`, globs and other shell syntax.
+/// `Argv` is exec'd directly; `Shell` goes through a login shell, so it may hold pipes and globs.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "mode", rename_all = "camelCase")]
 pub enum Exec {
@@ -35,9 +18,7 @@ pub enum Exec {
     Shell { line: String },
 }
 
-/// Everything `spawn_task` needs to start a run. A resolved subset of `Runnable` —
-/// the frontend sends this after substituting inputs and choosing a working
-/// directory, so the backend never has to re-derive either.
+/// What `spawn_task` needs: a `Runnable` after the frontend substituted inputs and chose a cwd.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSpec {
@@ -65,36 +46,23 @@ pub struct Runnable {
     /// Absolute working directory. Defaults to the discovery root.
     pub cwd: String,
     pub env: BTreeMap<String, String>,
-    /// Long-running (dev server, watcher): never auto-marked "done" on output, and
-    /// its pane isn't auto-dismissed.
+    /// Long-running (dev server, watcher): never auto-marked "done", pane not auto-dismissed.
     pub background: bool,
-    /// `${input:…}` placeholders this task still contains. The frontend prompts for
-    /// them and substitutes before calling `spawn_task` — discovery deliberately
-    /// leaves them intact, because their values aren't knowable here.
+    /// Left intact; the frontend prompts for `${input:…}` and substitutes before `spawn_task`.
     pub inputs: Vec<InputSpec>,
-    /// Labels of tasks that must run first. The frontend resolves and runs them —
-    /// it owns the PTY panes, so it's the only side that can wait on an exit code.
+    /// Labels of tasks the frontend runs first (it owns the panes, so only it can wait on an exit).
     pub depends_on: Vec<String>,
-    /// "parallel" | "sequence". Parallel is VS Code's default when `dependsOn` is
-    /// an array, which surprises people — but matching it beats inventing our own.
+    /// "parallel" | "sequence". Parallel is VS Code's default for an array; we match it, surprising as it is.
     pub depends_order: String,
-    /// `Some(reason)` → the picker shows it greyed and refuses to run it. Being
-    /// honest about what we can't run beats silently omitting it, which reads as
-    /// "Episko didn't find your task".
+    /// `Some(reason)`: shown greyed and refused, rather than omitted, which reads as "not found".
     pub blocked: Option<String>,
-    /// A task with no command of its own, whose `depends_on` list *is* the work —
-    /// VS Code's compound task, and what ⌘⇧B usually points at ("Dev: Frontend +
-    /// Backend"). It launches no pane; `launchWithDeps` runs the dependencies and
-    /// stops. Not the same as blocked: there is nothing missing here.
+    /// No command of its own; `depends_on` is the work (VS Code's compound task). Launches no pane.
     pub compound: bool,
-    /// `Some("build")` / `Some("test")` when the source file marks this the *default*
-    /// task of that group (`"group": {"kind": "build", "isDefault": true}`). This is
-    /// what makes ⌘⇧B unambiguous — `group` alone can hold many tasks.
+    /// The group this is the `isDefault` task of; what makes ⌘⇧B unambiguous.
     pub default_for: Option<String>,
 }
 
-/// One value the user must supply before a task can run. Mirrors VS Code's
-/// `inputs` section; just recipe parameters map onto `PromptString` too.
+/// One value the user supplies before a run. VS Code's `inputs` shape; just parameters use it too.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InputSpec {
@@ -106,20 +74,14 @@ pub struct InputSpec {
     /// Choices, for `pickString`.
     pub options: Vec<String>,
     pub password: bool,
-    /// The task runs perfectly well with this left empty — a just `*name` parameter
-    /// takes zero or more arguments. The frontend uses it to decide whether a plain
-    /// Run can proceed without a dialog; the field is still offered by *Run with
-    /// parameters…*, because optional is not the same as unwanted.
+    /// Runs fine left empty (a just `*name`): plain Run skips the dialog, "Run with
+    /// parameters…" still offers it.
     pub optional: bool,
 }
 
-/// Discover everything runnable in `root`, in a stable order: Episko's own tasks
-/// first (a human wrote those for this app), then VS Code's, then npm scripts,
-/// then the file-per-recipe runners.
-///
-/// `trusted` gates the providers that have to *run* the project to enumerate it —
-/// see `just_recipes`. An untrusted project still reports that those files exist,
-/// as a blocked row, so the tasks look withheld rather than missing.
+/// Everything runnable in `root`, in a stable order: Episko's own first, then VS Code,
+/// npm, then the file-per-recipe runners. `trusted` gates the introspecting providers;
+/// untrusted, they report a blocked row so the tasks read as withheld, not missing.
 pub fn discover(root: &Path, trusted: bool) -> Vec<Runnable> {
     let mut out = Vec::new();
     out.extend(episko_tasks(root));
@@ -136,9 +98,8 @@ pub fn discover(root: &Path, trusted: bool) -> Vec<Runnable> {
     out
 }
 
-/// Read the `[override.*]` table from `.episko/tasks.toml`. A malformed file already
-/// surfaces as a blocked row via `episko_tasks`, so a parse error here is silent —
-/// reporting it twice would just add noise.
+/// The `[override.*]` table of `.episko/tasks.toml`. A parse error is silent here:
+/// `episko_tasks` already reports the malformed file as a blocked row.
 fn task_overrides(root: &Path) -> BTreeMap<String, EpiskoOverride> {
     std::fs::read_to_string(root.join(EPISKO_TASKS))
         .ok()
@@ -147,12 +108,8 @@ fn task_overrides(root: &Path) -> BTreeMap<String, EpiskoOverride> {
         .unwrap_or_default()
 }
 
-/// Patch discovered tasks with the project's committable overrides. Runs *after*
-/// dedupe, so it keys off the same final ids the frontend pins and re-runs against.
-///
-/// An override whose target isn't present becomes a **blocked row** rather than
-/// disappearing: a typo'd id (`vscode:tset`) then reads as a broken override, not as
-/// nothing — the same honesty the rest of the module applies to what it can't run.
+/// Runs after dedupe so it keys off the final ids the frontend pins against. An
+/// override whose target isn't present becomes a blocked row rather than nothing.
 fn apply_overrides(list: &mut Vec<Runnable>, root: &Path) {
     let overrides = task_overrides(root);
     if overrides.is_empty() {
@@ -175,10 +132,7 @@ fn apply_overrides(list: &mut Vec<Runnable>, root: &Path) {
     list.extend(dangling);
 }
 
-/// Apply one override in place. Only fields the override sets are touched. A new
-/// `run` becomes a shell command and its `${input:…}` prompts are re-derived — kept
-/// from the original task where the id survives, synthesized as a bare prompt where
-/// the override introduced one.
+/// Only the fields the override sets are touched; a new `run` re-derives its `${input:…}` prompts.
 fn apply_override(r: &mut Runnable, ov: &EpiskoOverride, root: &Path) {
     if let Some(label) = &ov.label {
         r.label = label.clone();
@@ -201,9 +155,7 @@ fn apply_override(r: &mut Runnable, ov: &EpiskoOverride, root: &Path) {
     }
 }
 
-/// The `${input:id}` specs for a rewritten command line: keep the original spec
-/// wherever the id still appears, synthesize a plain prompt for any the override
-/// newly introduced.
+/// Keeps the original spec where its id survives; synthesizes a plain prompt for a new one.
 fn redetect_inputs(run: &str, original: &[InputSpec]) -> Vec<InputSpec> {
     referenced_inputs(&[run.to_string()])
         .into_iter()
@@ -222,43 +174,25 @@ fn redetect_inputs(run: &str, original: &[InputSpec]) -> Vec<InputSpec> {
 }
 
 // ── the discovery cache ─────────────────────────────────────────────────────
-//
-// Parsing two small files was cheap enough to redo on every picker open. Three of
-// the providers now *spawn a process* to enumerate themselves, and run-on-stop
-// asks for a project's tasks once per agent turn rather than once per click — so
-// repeat discovery goes through a cache keyed by (root, trusted).
-//
-// Invalidation is by **stamp, not by a watcher**: every file a provider reads is
-// probed for (mtime, len), and an entry is stale the moment one of them differs —
-// including appearing or being deleted. A file watcher would need a thread, a
-// crate and a lifecycle per open project to answer the same question ~20
-// `metadata()` calls answer in well under a millisecond, and it would still have
-// to stat everything on the first read.
-//
-// Known gap: files an introspector pulls in *itself* — `just`'s `import`/`mod`,
-// a Taskfile `includes:` — aren't stamped, so editing one is invisible until the
-// importing file changes. Toggling trust re-keys the entry, which is the escape
-// hatch that exists today.
+// Keyed by (root, trusted), invalidated by an (mtime, len) stamp of every file a
+// provider reads rather than a watcher. Files an introspector pulls in itself (a just
+// `import`, a Taskfile `includes:`) aren't stamped; `rescan_runnables` covers those.
 
 const EPISKO_TASKS: &str = ".episko/tasks.toml";
 const VSCODE_TASKS: &str = ".vscode/tasks.json";
 const VSCODE_LAUNCH: &str = ".vscode/launch.json";
 const PACKAGE_JSON: &str = "package.json";
 const CARGO_TOML: &str = "Cargo.toml";
-/// `cargo_tasks` reads this only to decide whether there's a binary to `run`, but
-/// it *is* an input to discovery, so the stamp has to see it.
+/// Read only for "is there a binary to `run`", but an input to discovery, so the stamp sees it.
 const CARGO_MAIN: &str = "src/main.rs";
 const JUST_FILES: &[&str] = &["justfile", ".justfile", "Justfile"];
 const MAKE_FILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
-/// `package_runner` reads these by existence to pick the npm task runner, so a
-/// lockfile appearing or vanishing changes discovery output (`exec.program`) even
-/// when `package.json` is byte-identical — the stamp has to see them too.
+/// `package_runner` picks the runner by which exists; that changes `exec.program`, so stamp them.
 const LOCK_FILES: &[&str] =
     &["pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "package-lock.json"];
 
-/// Every path discovery reads, relative to the project root. **A new provider file
-/// belongs in this list too** — one that's missing goes stale behind the cache,
-/// which reads as "Episko didn't pick up my edit".
+/// Every path discovery reads. A new provider's file belongs here too, or an edit to
+/// it goes stale behind the cache.
 fn source_files() -> Vec<&'static str> {
     let mut v = vec![EPISKO_TASKS, VSCODE_TASKS, VSCODE_LAUNCH, PACKAGE_JSON, CARGO_TOML, CARGO_MAIN];
     v.extend(JUST_FILES);
@@ -269,8 +203,7 @@ fn source_files() -> Vec<&'static str> {
     v
 }
 
-/// `None` = the file isn't there, which is as much a fact about the project as
-/// its contents are: deleting a justfile has to invalidate too.
+/// `None` = absent, which is a fact too: deleting a justfile has to invalidate.
 type Stamp = Vec<Option<(std::time::SystemTime, u64)>>;
 
 fn stamp(root: &Path) -> Stamp {
@@ -284,21 +217,17 @@ fn stamp(root: &Path) -> Stamp {
         .collect()
 }
 
-/// The memo table: `(root, trusted)` -> the stamp the entry was parsed at, and what
-/// that parse found. Named for the same reason `Stamp` above is — the nesting is
-/// what clippy's `type_complexity` objects to, and the alias is where the key and
-/// the value can be explained.
+/// `(root, trusted)` -> (the stamp the entry was parsed at, what it found). An alias
+/// because clippy's `type_complexity` objects to the nesting.
 type CacheMap = HashMap<(String, bool), (Stamp, Vec<Runnable>)>;
 
 static CACHE: LazyLock<Mutex<CacheMap>> = LazyLock::new(Default::default);
 
-/// `discover`, memoised against the source files it read. Anything wanting a
-/// guaranteed-fresh parse (the tests) calls `discover` directly.
+/// `discover`, memoised against the files it read; tests call `discover` for a fresh parse.
 pub fn discover_cached(root: &Path, trusted: bool) -> Vec<Runnable> {
     let key = (root.display().to_string(), trusted);
     let now = stamp(root);
-    // A panic in another thread poisoned nothing that matters here — the worst a
-    // half-written cache costs is one extra parse.
+    // A poisoned lock costs at most one extra parse.
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((was, list)) = cache.get(&key) {
         if *was == now {
@@ -306,9 +235,7 @@ pub fn discover_cached(root: &Path, trusted: bool) -> Vec<Runnable> {
         }
     }
     let list = discover(root, trusted);
-    // Two entries per project at most, and a session's worth of projects is a
-    // handful — but a map that only ever grows is a leak by another name, and
-    // dropping the lot costs one re-parse.
+    // A map that only grows is a leak; dropping the lot costs one re-parse.
     if cache.len() >= 64 {
         cache.clear();
     }
@@ -316,9 +243,7 @@ pub fn discover_cached(root: &Path, trusted: bool) -> Vec<Runnable> {
     list
 }
 
-/// Ids must be unique — the frontend keys pins and frecency off them. A collision
-/// (two `[[task]]` entries with the same label) gets a numeric suffix rather than
-/// silently shadowing.
+/// Ids key pins and frecency, so a collision gets a numeric suffix rather than shadowing.
 fn dedupe_ids(list: &mut [Runnable]) {
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     for r in list.iter_mut() {
@@ -331,24 +256,19 @@ fn dedupe_ids(list: &mut [Runnable]) {
 }
 
 // ── .episko/tasks.toml ──────────────────────────────────────────────────────
-// Episko's own, IDE-agnostic format. The file a team commits *because* of Episko,
-// and the escape hatch for anything the other providers can't express.
+// Episko's own IDE-agnostic format; the escape hatch for what no other provider can express.
 
 #[derive(Deserialize)]
 struct EpiskoFile {
     #[serde(default)]
     task: Vec<EpiskoTask>,
-    /// `[override."vscode:test"]` — a committable patch over a task some *other*
-    /// tool declares, so editing a discovered task never rewrites `.vscode/tasks.json`
-    /// or a justfile. Keyed by the discovered id; applied in `discover` after every
-    /// provider has run. See `apply_overrides`.
+    /// `[override."vscode:test"]`: a committable patch over a task another tool declares,
+    /// keyed by its discovered id. Applied by `apply_overrides`.
     #[serde(default, rename = "override")]
     overrides: BTreeMap<String, EpiskoOverride>,
 }
 
-/// The patch half of a `[[task]]`. Every field optional: an override that only
-/// renames a task carries just `label`. `run`, when present, replaces the command
-/// (and re-derives `${input:…}` prompts from the new line).
+/// Every field optional: an override that only renames carries just `label`.
 #[derive(Deserialize, Default)]
 struct EpiskoOverride {
     #[serde(default)]
@@ -389,8 +309,6 @@ fn episko_tasks(root: &Path) -> Vec<Runnable> {
     };
     let parsed: EpiskoFile = match toml::from_str(&text) {
         Ok(p) => p,
-        // A malformed tasks.toml surfaces as one un-runnable row rather than
-        // vanishing — otherwise a typo looks like "Episko ignored my file".
         Err(e) => {
             return vec![blocked_row(
                 "episko:__error",
@@ -436,9 +354,8 @@ fn episko_tasks(root: &Path) -> Vec<Runnable> {
 
 // ── package.json ────────────────────────────────────────────────────────────
 
-/// Which package manager to invoke, decided by the lockfile that's actually
-/// present. Guessing wrong is worse than it looks: `npm run` in a pnpm workspace
-/// resolves a different (or missing) dependency tree.
+/// Picked by the lockfile present: `npm run` in a pnpm workspace resolves a different
+/// (or missing) dependency tree.
 fn package_runner(root: &Path) -> &'static str {
     for (lock, runner) in [
         ("pnpm-lock.yaml", "pnpm"),
@@ -496,15 +413,11 @@ fn npm_scripts(root: &Path) -> Vec<Runnable> {
 }
 
 // ── .vscode/tasks.json ──────────────────────────────────────────────────────
-// VS Code's format, minus the editor. Most of the work here is being honest about
-// the difference: a task built around ${file} has no meaning in an app with no
-// open file, so it's marked blocked rather than run with an empty string spliced in.
+// VS Code's format minus the editor: a task built around ${file} is blocked rather
+// than run with an empty string spliced in.
 
-/// Expand VS Code's `${…}` variables against what Episko actually knows.
-///
-/// `${input:…}` is left *intact* — the frontend prompts for it at launch. Anything
-/// that needs an open editor (or a VS Code command / setting we can't evaluate)
-/// returns `Err(reason)`, which becomes the Runnable's `blocked` message.
+/// Expand VS Code's `${…}` variables. `${input:…}` is left intact for the frontend;
+/// anything needing an editor, a command or a setting is `Err(reason)`, the `blocked` message.
 fn substitute(s: &str, root: &Path, cwd: &str) -> Result<String, String> {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -552,8 +465,7 @@ fn home_dir() -> Option<String> {
     std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()
 }
 
-/// The `${input:id}` ids still present in any of a task's strings, in first-seen
-/// order — so the prompt asks in the order the command reads.
+/// The `${input:id}` ids in first-seen order, so the prompt asks in the order the command reads.
 fn referenced_inputs(parts: &[String]) -> Vec<String> {
     let mut ids = Vec::new();
     for p in parts {
@@ -598,8 +510,7 @@ fn parse_input_specs(root: &Path, cwd: &str, raw: Option<&serde_json::Value>) ->
         .filter_map(|i| {
             let id = i.get("id")?.as_str()?.to_string();
             let kind = i.get("type").and_then(|v| v.as_str()).unwrap_or("promptString");
-            // `command` inputs run a VS Code command to produce their value — there's
-            // nothing to run them with here, so the task that needs one is blocked.
+            // A `command` input needs VS Code to run it; dropping it blocks the task that uses it.
             let kind = match kind {
                 "pickString" => "pickString",
                 "promptString" => "promptString",
@@ -627,9 +538,7 @@ fn parse_input_specs(root: &Path, cwd: &str, raw: Option<&serde_json::Value>) ->
                     })
                     .unwrap_or_default(),
                 password: i.get("password").and_then(|v| v.as_bool()).unwrap_or(false),
-                // VS Code has no notion of an optional input — every declared one is
-                // asked for, so nothing here may claim it can be skipped.
-                optional: false,
+                optional: false, // VS Code asks for every declared input
                 id,
                 kind: kind.to_string(),
             })
@@ -642,8 +551,7 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
     let path = root.join(VSCODE_TASKS);
     let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
 
-    // tasks.json is JSONC: comments and trailing commas are normal, and VS Code's
-    // own template ships with both.
+    // JSONC: VS Code's own template ships comments and trailing commas.
     let json: serde_json::Value = match jsonc_parser::parse_to_serde_value(&text, &Default::default()) {
         Ok(Some(v)) => v,
         Ok(None) => return Vec::new(),
@@ -696,8 +604,7 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 })
                 .unwrap_or_default();
 
-            // Substitute every string that ends up in the command line; the first
-            // failure blocks the whole task, with the reason the picker shows.
+            // The first substitution failure blocks the whole task, with its reason.
             let mut parts = vec![command.to_string()];
             parts.extend(args.iter().cloned());
             let subbed: Result<Vec<String>, String> =
@@ -718,10 +625,8 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 }
             }
 
-            // dependsOn names other tasks by *label*; the frontend resolves them
-            // against the same discovery result and runs them before this one.
-            // Parsed *before* the command, because whether a missing command is a
-            // fault or the whole point depends on whether there are dependencies.
+            // Parsed before the command, because whether a missing command is a fault
+            // or the whole point depends on whether there are dependencies.
             let depends_on: Vec<String> = match t.get("dependsOn") {
                 Some(serde_json::Value::String(one)) => vec![one.clone()],
                 Some(serde_json::Value::Array(many)) => {
@@ -730,17 +635,13 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 _ => Vec::new(),
             };
 
-            // A VS Code **compound task**: no command of its own, and a `dependsOn`
-            // list that *is* the work. `"Dev: Frontend + Backend"` is the canonical
-            // shape, and it is usually what ⌘⇧B points at — so blocking it as "no
-            // command" withheld exactly the task a whole stack is started from.
-            // Deliberately lenient about `type`: a compound declares none, and a
-            // stray one alongside real dependencies is not worth refusing over.
+            // A compound task (no command; `dependsOn` is the work) is usually what ⌘⇧B
+            // points at, so it must not be blocked as "no command". Lenient about `type`
+            // on purpose: a compound declares none, and a stray one is not worth refusing.
             let compound = subbed[0].trim().is_empty() && !depends_on.is_empty();
 
             let exec = if compound {
-                // Nothing to spawn. `spawn_task`'s empty-line guard is the backstop
-                // if this ever reaches it, which `launchWithDeps` makes sure it can't.
+                // `launchWithDeps` runs the deps and stops; `spawn_task`'s empty-line guard is the backstop.
                 Exec::Shell { line: String::new() }
             } else {
                 match ttype {
@@ -778,9 +679,8 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 .unwrap_or("parallel")
                 .to_string();
 
-            // `"group"` is either a bare string or `{kind, isDefault}`. The kind is a
-            // display bucket (many tasks share it); `isDefault` is what makes exactly
-            // one of them the answer to ⌘⇧B, so it is kept separately.
+            // `group` is a bare string or `{kind, isDefault}`. Many tasks share a kind;
+            // only `isDefault` answers ⌘⇧B, so it is kept apart.
             let group_val = t.get("group");
             let group = group_val.and_then(|g| {
                 g.as_str().map(str::to_string).or_else(|| Some(g.get("kind")?.as_str()?.to_string()))
@@ -796,8 +696,6 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
                     // A compound has no command line to show, so name what it runs.
-                    // "no command" as a subtitle read like a defect; this reads like
-                    // the answer to "what will this start?".
                     .or_else(|| if compound {
                         Some(format!("runs {}", depends_on.join(", ")))
                     } else {
@@ -823,10 +721,8 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
 }
 
 // ── .vscode/launch.json ─────────────────────────────────────────────────────
-// "Run without debugging" — VS Code's ⌃F5, not F5. Episko has no debug adapter,
-// so it starts the same program with the same args, env and cwd, and says so.
-// A config that only makes sense *with* a debugger (an attach request) is blocked
-// rather than silently started as a plain process.
+// "Run without debugging" (⌃F5): the same program, args, env and cwd, with no debug
+// adapter. An attach request is blocked rather than started as a plain process.
 
 fn launch_configs(root: &Path) -> Vec<Runnable> {
     let rel = format!(".vscode{}launch.json", std::path::MAIN_SEPARATOR);
@@ -848,8 +744,7 @@ fn launch_configs(root: &Path) -> Vec<Runnable> {
             let id = format!("launch:{}", slugify(&name));
             let mk_blocked = |why: &str| Some(blocked_row(&id, &name, &rel, "launch", root, why));
 
-            // A compound config chains other configs; that's dependsOn by another
-            // name, and it isn't wired up here yet.
+            // A compound config chains others: dependsOn by another name, not wired up yet.
             if c.get("configurations").is_some() {
                 return mk_blocked("compound configuration — not supported yet");
             }
@@ -944,7 +839,6 @@ fn launch_configs(root: &Path) -> Vec<Runnable> {
             Some(Runnable {
                 id,
                 label: name,
-                // Says plainly that this is the run half of a debug config.
                 detail: Some(format!("{line}  (no debugger)")),
                 source: "launch".into(),
                 source_file: rel.clone(),
@@ -966,10 +860,8 @@ fn launch_configs(root: &Path) -> Vec<Runnable> {
 
 // ── Cargo.toml ──────────────────────────────────────────────────────────────
 
-/// Rust projects don't declare tasks — the toolchain *is* the task list. These are
-/// the five commands you'd type anyway, offered without having to write them down.
-/// Purely conventional: the file is read only to confirm it's a crate and to see
-/// whether there's a binary to `run`.
+/// Rust declares no tasks; the toolchain is the task list. `Cargo.toml` is read only
+/// to confirm a crate and to see whether there's a binary to `run`.
 fn cargo_tasks(root: &Path) -> Vec<Runnable> {
     let Ok(text) = std::fs::read_to_string(root.join(CARGO_TOML)) else { return Vec::new() };
     // A virtual workspace root has no package to build; its members do.
@@ -1012,26 +904,18 @@ fn cargo_tasks(root: &Path) -> Vec<Runnable> {
 /// (name, doc) pairs pulled out of a tool's JSON listing.
 type TaskListing = Vec<(String, Option<String>)>;
 
-/// Why an introspector produced no listing. Both arms become a blocked row: an
-/// introspector that silently yields nothing is indistinguishable from a project
-/// with no tasks, which is the one thing this module refuses to be.
+/// Why an introspector produced no listing. Both arms become a blocked row.
 enum IntrospectFail {
-    /// The tool isn't on the PATH we can see. Its own message, not the OS's:
-    /// `NotFound` from a GUI app usually means installed-but-elsewhere, not absent.
+    /// Not on the PATH we can see; from a GUI app that usually means installed elsewhere.
     NoProgram,
     /// It ran and refused — a parse error in the file, a bad flag, a missing import.
     Failed(String),
 }
 
-/// Run a listing tool and hand back its stdout.
-///
-/// Two things here are not incidental. **`augmented_path`**: a Finder-launched app
-/// inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so a bare `Command::new("just")`
-/// cannot find a Homebrew or Cargo install and fails with `NotFound` — which is why
-/// a perfectly good justfile went undiscovered with no error anywhere. The PATH here
-/// must stay a superset of what a `Shell` task gets in `spawn_task`, or discovery
-/// and execution disagree about whether the tool exists. **`sys_command`**: this
-/// runs on every cache miss, and on Windows a bare spawn flashes a console window.
+/// `augmented_path` is required: a Finder-launched app's PATH has no Homebrew or Cargo
+/// bin, so a bare spawn fails with `NotFound`. It must stay a superset of what a
+/// `Shell` task gets in `spawn_task`, or discovery and execution disagree about whether
+/// the tool exists. `sys_command`, because a bare spawn on Windows flashes a console.
 fn introspect_output(program: &str, args: &[&str], root: &Path) -> Result<Vec<u8>, IntrospectFail> {
     let out = sys_command(program)
         .args(args)
@@ -1045,9 +929,7 @@ fn introspect_output(program: &str, args: &[&str], root: &Path) -> Result<Vec<u8
     }
 }
 
-/// The blocked-row message for a failed introspection. `NoProgram` names the PATH
-/// explicitly, because "not installed" is the wrong guess more often than the right
-/// one — the tool is usually there and the *app's* PATH is what's short.
+/// `NoProgram` names the PATH: the tool is usually installed and the app's PATH is what's short.
 fn fail_reason(e: &IntrospectFail, program: &str) -> String {
     match e {
         IntrospectFail::NoProgram => format!("`{program}` is not on Episko's PATH"),
@@ -1056,10 +938,8 @@ fn fail_reason(e: &IntrospectFail, program: &str) -> String {
     }
 }
 
-/// Shared shape for the providers that must *run* the project's own tool to list
-/// its tasks. Each one evaluates the file it reads, so all of them sit behind the
-/// same trust gate — and when untrusted, each reports one blocked row rather than
-/// disappearing, so the tasks read as withheld rather than absent.
+/// A provider that must run the project's own tool to list its tasks. All sit behind
+/// the trust gate; untrusted, each reports one blocked row.
 struct Introspector {
     source: &'static str,
     /// Marker files, any of which means "this project uses me".
@@ -1181,13 +1061,9 @@ const MISE: Introspector = Introspector {
 
 // ── justfile ────────────────────────────────────────────────────────────────
 
-/// just recipes, via `just --dump --dump-format json`.
-///
-/// This is the one provider that *runs* the project: `just` evaluates backtick
-/// variable assignments and processes `import`/`mod` while dumping. That's why it
-/// is gated — opening a folder in Episko must never execute code from it. An
-/// untrusted project with a justfile gets a single blocked row instead, so the
-/// recipes read as withheld rather than absent.
+/// just recipes via `just --dump --dump-format json`. Dumping evaluates backtick
+/// assignments and `import`/`mod`, so it is gated on trust: opening a folder must
+/// never execute code from it. Untrusted, one blocked row stands in for the recipes.
 fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
     let Some(found) = JUST_FILES.iter().find(|n| root.join(n).exists()) else { return Vec::new() };
     if !trusted {
@@ -1224,11 +1100,8 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
             if name.starts_with('_') || r.get("private").and_then(|p| p.as_bool()).unwrap_or(false) {
                 return None;
             }
-            // A recipe parameter with no default has to come from somewhere — except
-            // a variadic `*name`, which takes zero or more arguments and so is
-            // perfectly runnable empty. `just` reports that as `kind: "star"`; a
-            // `+name` (one or more) and a bare parameter both genuinely require a
-            // value, and `just` refuses the recipe without one.
+            // A parameter with no default becomes a prompt. A variadic `*name` (`kind: "star"`)
+            // runs fine empty, so it is optional; `+name` and a bare parameter are required.
             let inputs: Vec<InputSpec> = r
                 .get("parameters")
                 .and_then(|p| p.as_array())
@@ -1268,8 +1141,7 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
                 source: "just".into(),
                 source_file: found.to_string(),
                 group: infer_group(name, ""),
-                // Through a login shell so `just` resolves the same way it does in
-                // the user's own terminal.
+                // A login shell, so `just` resolves as it does in the user's own terminal.
                 exec: Exec::Shell { line: format!("just {name}{arg_line}") },
                 cwd: root.display().to_string(),
                 env: BTreeMap::new(),
@@ -1289,11 +1161,8 @@ fn just_recipes(root: &Path, trusted: bool) -> Vec<Runnable> {
 
 // ── Makefile ────────────────────────────────────────────────────────────────
 
-/// Make targets by static parse. Deliberately *not* `make -qp`, which expands the
-/// whole makefile — including `$(shell …)` — just to list targets.
-///
-/// Picks up the self-documenting convention (`target: ## description`), which is
-/// also the signal that a target is meant for humans.
+/// Make targets by static parse, never `make -qp`, which expands `$(shell …)` just to
+/// list targets. Picks up the `target: ## description` convention.
 fn make_targets(root: &Path) -> Vec<Runnable> {
     let Some(found) = MAKE_FILES.iter().find(|n| root.join(n).exists()) else { return Vec::new() };
     let Ok(text) = std::fs::read_to_string(root.join(found)) else { return Vec::new() };
@@ -1358,8 +1227,7 @@ fn make_targets(root: &Path) -> Vec<Runnable> {
     out
 }
 
-/// A row that exists only to explain why it can't run — a parse error, a missing
-/// capability, an untrusted folder.
+/// A row that exists only to say why it can't run.
 fn blocked_row(id: &str, label: &str, file: &str, source: &str, root: &Path, why: &str) -> Runnable {
     Runnable {
         id: id.to_string(),
@@ -1392,8 +1260,7 @@ fn exec_line(e: &Exec) -> String {
 
 // ── shared inference ────────────────────────────────────────────────────────
 
-/// Group a task by what it's obviously for. Only used when the source file didn't
-/// say (VS Code tasks and tasks.toml can declare a group outright).
+/// A group by name, only when the source file didn't declare one.
 fn infer_group(name: &str, body: &str) -> Option<String> {
     let n = name.to_ascii_lowercase();
     let b = body.to_ascii_lowercase();
@@ -1421,10 +1288,8 @@ fn infer_group(name: &str, body: &str) -> Option<String> {
     None
 }
 
-/// Long-running by convention. Deliberately conservative — a false positive means
-/// a finished task never settles into "done", which is more confusing than a dev
-/// server that briefly claims it finished. `.episko/tasks.toml` can always say so
-/// explicitly with `background = true`.
+/// Conservative on purpose: a false positive means a finished task never settles into
+/// "done". `background = true` in tasks.toml is the explicit route.
 fn is_background(name: &str, body: &str) -> bool {
     let n = name.to_ascii_lowercase();
     let b = body.to_ascii_lowercase();
@@ -1464,13 +1329,9 @@ fn first_line(s: &str) -> String {
 }
 
 // ── writing .episko/tasks.toml ──────────────────────────────────────────────
-// The one file Episko owns, and the only one it ever writes. Discovered VS Code
-// tasks, justfiles and Makefiles are read-only: editing them would mean rewriting
-// a file another tool owns, which Episko shouldn't do behind your back.
-//
-// Edits go through `toml_edit` rather than a serialize-the-whole-struct round trip
-// so a hand-written file keeps its comments, ordering and spacing. Someone wrote
-// that file by hand; a save shouldn't reformat it.
+// The one file Episko writes; discovered VS Code tasks, justfiles and Makefiles stay
+// read-only. Edits go through `toml_edit` so a hand-written file keeps its comments,
+// ordering and spacing.
 
 /// One task as the editor panel sends it.
 #[derive(Deserialize, Clone, Debug)]
@@ -1504,9 +1365,8 @@ fn write_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), String> {
     std::fs::write(path, doc.to_string()).map_err(|e| format!("write tasks.toml: {e}"))
 }
 
-/// Write tasks.toml and immediately drop the project's cache — every write goes
-/// through here so a saved edit can never be masked by a stale, stamp-matching entry.
-/// `workdir` is the project root; `path` is `<workdir>/.episko/tasks.toml`.
+/// Every write goes through here and drops the project's cache, so a stale entry the
+/// stamp happens to match can never mask a saved edit.
 fn write_doc_for(workdir: &str, path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), String> {
     write_doc(path, doc)?;
     invalidate(workdir);
@@ -1532,9 +1392,8 @@ fn fill_table(t: &mut toml_edit::Table, task: &EpiskoTaskInput, id: &str) {
     }
 }
 
-/// Find the `[[task]]` entry Episko addresses as `id`. Tasks Episko wrote carry an
-/// explicit `id`; hand-written ones are matched on their label's slug, which is
-/// exactly how discovery derived their id in the first place.
+/// Tasks Episko wrote carry an explicit `id`; hand-written ones match on their label's
+/// slug, which is how discovery derived their id.
 fn find_task_index(arr: &toml_edit::ArrayOfTables, id: &str) -> Option<usize> {
     arr.iter().position(|t| {
         let explicit = t.get("id").and_then(|v| v.as_str());
@@ -1579,10 +1438,8 @@ pub fn save_episko_task(
     Ok(format!("episko:{new_id}"))
 }
 
-/// Write `[override."<id>"]` for a task some other provider declared. The key is the
-/// discovered id (`vscode:test`, `just:deploy`); `toml_edit` preserves the rest of a
-/// hand-authored file. `run` is written verbatim so a `${input:…}` the user typed
-/// survives — discovery re-derives the prompt from it.
+/// Write `[override."<id>"]` for a task another provider declared. `run` is written
+/// verbatim so a `${input:…}` the user typed survives; discovery re-derives the prompt.
 #[tauri::command]
 pub fn save_task_override(
     workdir: String,
@@ -1597,8 +1454,7 @@ pub fn save_task_override(
     }
     let path = tasks_toml_path(&workdir);
     let mut doc = load_doc(&path)?;
-    // A dotted [override."id"] table, implicit at the `override` level so the file
-    // reads as one section rather than a run of standalone tables.
+    // Implicit at the `override` level, so the file reads as one section.
     let over = doc
         .entry("override")
         .or_insert(toml_edit::Item::Table({
@@ -1620,17 +1476,14 @@ pub fn save_task_override(
         Some(c) if !c.is_empty() => t["cwd"] = toml_edit::value(c.as_str()),
         _ => {}
     }
-    // Written unconditionally, unlike a `[[task]]`: an override's job includes turning
-    // a discovered `background` flag *off*, which an absent key (meaning "inherit")
-    // couldn't express.
+    // Always written, unlike a `[[task]]`: an override may turn `background` off, which
+    // an absent key (inherit) can't express.
     t["background"] = toml_edit::value(task.background);
     over[&id] = toml_edit::Item::Table(t);
     write_doc_for(&workdir, &path, &doc)
 }
 
-/// Drop a task's override, reverting it to what its own tool declares. Removing the
-/// last one takes the now-empty `[override]` section with it, so reverting your only
-/// override leaves no residue.
+/// Removing the last override takes the now-empty `[override]` section with it.
 #[tauri::command]
 pub fn remove_task_override(workdir: String, id: String) -> Result<(), String> {
     let path = tasks_toml_path(&workdir);
@@ -1647,9 +1500,7 @@ pub fn remove_task_override(workdir: String, id: String) -> Result<(), String> {
     write_doc_for(&workdir, &path, &doc)
 }
 
-/// The discovered ids the project currently overrides — the panel uses this to mark
-/// a row overridden and offer *revert*. Reads the file directly (not the cache), so a
-/// just-written override shows immediately.
+/// Reads the file directly, not the cache, so a just-written override shows immediately.
 #[tauri::command]
 pub fn list_task_overrides(workdir: String) -> Result<Vec<String>, String> {
     Ok(task_overrides(Path::new(&workdir)).into_keys().collect())
@@ -1669,36 +1520,27 @@ pub fn delete_episko_task(workdir: String, id: String) -> Result<(), String> {
     write_doc_for(&workdir, &path, &doc)
 }
 
-/// Whether the project already has a tasks.toml — the panel asks before creating
-/// one, because a new committable file in someone's repo is a real side effect.
+/// The panel asks before creating a new committable file in someone's repo.
 #[tauri::command]
 pub fn episko_tasks_file(workdir: String) -> Result<(String, bool), String> {
     let p = tasks_toml_path(&workdir);
     Ok((p.display().to_string(), p.exists()))
 }
 
-/// Drop every cache entry for a project. Called by `rescan_runnables` and by every
-/// command that writes `.episko/tasks.toml` — a write must never be masked by a stale
-/// entry the `(mtime, len)` stamp happened to match (two edits inside one filesystem
-/// mtime tick that leave the length unchanged would otherwise not invalidate).
+/// Called by `rescan_runnables` and every write: two edits inside one mtime tick that
+/// leave the length unchanged would not change the stamp.
 fn invalidate(workdir: &str) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.retain(|(root, _), _| root != workdir);
 }
 
-/// Force the next `discover_runnables(workdir, …)` to re-parse from disk, dropping
-/// both the trusted and untrusted cache entries for this project. The stamp already
-/// catches edits to files Episko *reads*; this is the escape hatch for the one thing
-/// it can't see — a file an introspector pulls in itself (`just` `import`, a Taskfile
-/// `includes:`) — and the honest answer to a "Rescan" button.
+/// The escape hatch for what the stamp can't see: a file an introspector pulls in itself.
 #[tauri::command]
 pub fn rescan_runnables(workdir: String) {
     invalidate(&workdir);
 }
 
-/// Parse the project's runnables. Memoised per (root, trusted) and invalidated by
-/// the source files' own mtimes — see the discovery-cache block above — so calling
-/// this on every picker open, palette open and agent turn stays cheap.
+/// Memoised per (root, trusted), so calling this on every picker open and agent turn is cheap.
 #[tauri::command]
 pub fn discover_runnables(workdir: String, trusted: bool) -> Result<Vec<Runnable>, String> {
     let root = Path::new(&workdir);
@@ -1847,10 +1689,8 @@ env = { RUST_LOG = "debug" }
         assert!(discover_runnables("/definitely/not/here".into(), false).is_err());
     }
 
-    /// The frontend hands a discovered `exec` straight back to `spawn_task`, so the
-    /// serialized and deserialized shapes have to be the same object. This pins the
-    /// wire format both ways — a rename here silently breaks every task launch, and
-    /// nothing else in the suite would notice.
+    /// Pins the wire format both ways: the frontend hands `exec` straight back to
+    /// `spawn_task`, and nothing else in the suite would notice a rename.
     #[test]
     fn exec_round_trips_through_the_shape_the_frontend_sees() {
         let argv = Exec::Argv { program: "pnpm".into(), args: vec!["run".into(), "test".into()] };
@@ -1949,10 +1789,7 @@ env = { RUST_LOG = "debug" }
         assert_eq!(one.depends_order, "parallel");
     }
 
-    /// A **compound task** — no command, only `dependsOn` — is the shape ⌘⇧B usually
-    /// points at ("Dev: Frontend + Backend"), and blocking it as "no command"
-    /// withheld the one task a whole stack gets started from. Taken verbatim from a
-    /// real project's tasks.json, including the `isDefault` marker.
+    /// Taken verbatim from a real project's tasks.json, including the `isDefault` marker.
     #[test]
     fn a_vscode_compound_task_runs_its_dependencies_instead_of_a_command() {
         let t = Tmp::new("vsccompound");
@@ -1973,10 +1810,8 @@ env = { RUST_LOG = "debug" }
         assert!(dev.compound, "no command of its own — nothing to spawn");
         assert_eq!(dev.depends_on, vec!["Frontend (vite dev)", "Backend (uvicorn)"]);
         assert_eq!(dev.depends_order, "parallel");
-        // `isDefault` is what makes ⌘⇧B unambiguous; `group` alone holds many tasks.
         assert_eq!(dev.default_for.as_deref(), Some("build"));
         assert_eq!(dev.group.as_deref(), Some("build"));
-        // The subtitle has to say something useful — "no command" read as a defect.
         assert_eq!(dev.detail.as_deref(), Some("runs Frontend (vite dev), Backend (uvicorn)"));
 
         // A commandless task with NO dependencies is still genuinely broken.
@@ -1989,8 +1824,7 @@ env = { RUST_LOG = "debug" }
         assert!(!fe.compound && fe.default_for.is_none() && fe.background);
     }
 
-    /// `group` without `isDefault` must NOT claim the ⌘⇧B slot — otherwise the first
-    /// build-ish task in the file silently becomes "the" build task.
+    /// Otherwise the first build-ish task in the file silently becomes "the" build task.
     #[test]
     fn a_group_without_isdefault_does_not_claim_the_build_shortcut() {
         let t = Tmp::new("vscgroup");
@@ -2050,7 +1884,6 @@ env = { RUST_LOG = "debug" }
         assert_eq!(server.env.get("NODE_ENV").map(String::as_str), Some("development"));
         assert!(server.detail.as_deref().unwrap().contains("no debugger"));
 
-        // Honest about the two it can't do.
         let attach = found.iter().find(|r| r.label == "Attach").unwrap();
         assert!(attach.blocked.as_deref().unwrap().contains("attaches"));
         let weird = found.iter().find(|r| r.label == "Weird").unwrap();
@@ -2181,11 +2014,9 @@ env = { RUST_LOG = "debug" }
 
     // ── introspecting providers ──────────────────────────────────────────
 
-    /// The regression that made a real justfile invisible: a Finder-launched app
-    /// inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so `just` in `/opt/homebrew/bin`
-    /// (or `~/.cargo/bin`) could not be found and discovery returned an empty list.
-    /// Asserting the *child's* PATH is the only way to catch this from a dev machine,
-    /// whose own PATH already has those directories.
+    /// A Finder-launched app inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so `just` in
+    /// `/opt/homebrew/bin` went unfound. Only the child's PATH can show this from a dev
+    /// machine, whose own PATH already has those directories.
     #[test]
     #[cfg(not(windows))]
     fn an_introspector_child_gets_the_augmented_path() {
@@ -2199,9 +2030,7 @@ env = { RUST_LOG = "debug" }
         }
     }
 
-    /// An introspector whose tool can't be spawned must produce a *blocked row*, not
-    /// silence. Silence is unfalsifiable — it reads exactly like "this project has no
-    /// tasks", which is how the justfile bug hid.
+    /// Silence is unfalsifiable: it reads exactly like "this project has no tasks".
     #[test]
     fn an_unspawnable_introspector_yields_a_blocked_row() {
         let t = Tmp::new("inoprog");
@@ -2272,8 +2101,7 @@ env = { RUST_LOG = "debug" }
         assert_eq!(deploy.inputs[0].id, "env");
         assert!(!deploy.inputs[0].optional, "`just deploy` fails with no argument");
 
-        // `*name` takes zero or more, so it is offered but never demanded — this is
-        // what stops the input dialog opening on every run of such a recipe.
+        // `*name` takes zero or more: offered, never demanded.
         let start = found.iter().find(|r| r.label == "start").unwrap();
         assert_eq!(start.exec, Exec::Shell { line: "just start ${input:services}".into() });
         assert!(start.inputs[0].optional);
@@ -2404,7 +2232,6 @@ env = { RUST_LOG = "debug" }
         let tasks_json = r#"{"tasks":[{"label":"Test","type":"shell","command":"vitest"}]}"#;
         t.write(".vscode/tasks.json", tasks_json);
 
-        // Rename it and give it a different command.
         save_task_override(
             wd.clone(),
             "vscode:test".into(),
@@ -2487,8 +2314,7 @@ env = { RUST_LOG = "debug" }
         t.write("package.json", r#"{"scripts":{"test":"vitest"}}"#);
         // Prime the cache.
         assert_eq!(discover_cached(&t.0, true).iter().find(|r| r.id == "npm:test").unwrap().label, "test");
-        // A write must be visible on the very next cached read, without waiting for
-        // the mtime stamp to happen to differ.
+        // Visible on the very next cached read, without waiting for the stamp to differ.
         save_task_override(
             wd,
             "npm:test".into(),
@@ -2505,9 +2331,7 @@ env = { RUST_LOG = "debug" }
         t.write("package.json", r#"{"scripts":{"test":"vitest"}}"#);
         assert_eq!(discover_cached(&t.0, true).len(), 1);
         rescan_runnables(wd);
-        // Nothing to assert on timing, but the entry is gone: a subsequent call
-        // re-parses rather than serving stale data. Correctness is covered by the
-        // stamp test; this just proves the command doesn't panic and clears its key.
+        // The entry is gone; the next call re-parses rather than serving stale data.
         assert_eq!(discover_cached(&t.0, true).len(), 1);
     }
 
@@ -2544,9 +2368,7 @@ env = { RUST_LOG = "debug" }
         assert!(episko_tasks_file(wd).unwrap().1);
     }
 
-    /// Dogfood: discovery has to work on this repo, which has both a package.json
-    /// (with a pnpm lockfile) and a committed .episko/tasks.toml. Asserts the shape
-    /// rather than specific task names, so renaming a script doesn't break the suite.
+    /// Dogfood. Asserts shape rather than task names, so renaming a script doesn't break the suite.
     #[test]
     fn discovers_this_repo() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -2589,9 +2411,7 @@ env = { RUST_LOG = "debug" }
         assert!(bare.env.is_empty());
     }
 
-    /// The cache must never be the reason an edit doesn't show up: writing,
-    /// changing and deleting a provider file each have to be visible on the very
-    /// next call.
+    /// The cache must never be the reason an edit doesn't show up.
     #[test]
     fn the_cache_follows_the_files_it_read() {
         let t = Tmp::new("cache");
@@ -2599,7 +2419,7 @@ env = { RUST_LOG = "debug" }
         let first = discover_cached(&t.0, false);
         assert_eq!(first.len(), 1, "one npm script");
 
-        // An unchanged tree serves the same answer — that's the whole point.
+        // An unchanged tree serves the same answer.
         assert_eq!(discover_cached(&t.0, false), first);
 
         t.write("package.json", r#"{"scripts":{"test":"vitest run","build":"tsc"}}"#);
@@ -2629,9 +2449,8 @@ env = { RUST_LOG = "debug" }
         assert_ne!(untrusted, trusted, "trust re-keys rather than reusing the entry");
     }
 
-    /// A lockfile is an input to discovery — `package_runner` picks the npm runner
-    /// from it — so one appearing must invalidate the cache even though the file that
-    /// *declares* the tasks (`package.json`) never changed.
+    /// `package_runner` picks the runner from the lockfile, so one appearing must
+    /// invalidate even though `package.json` never changed.
     #[test]
     fn a_new_lockfile_invalidates_the_cache() {
         let t = Tmp::new("lockstamp");

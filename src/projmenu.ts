@@ -1,13 +1,6 @@
-// The project context menu, the worktree one, and the appearance panel they share
-// with the sidebar's colour dots. One module because they are one interaction: the
-// panel opens either standalone at the cursor or as the menu's Appearance submenu,
-// and each closes the other — the panel clears the menu's `.sub-open` row, and every
-// button in it commits and so closes the whole stack. The two menus share the one
-// `#ctxMenu` element and its `.mp-*` skin for the same reason; only one can be open,
-// so each opener clears the other's target.
-//
-// Cosmetic, in Phase-1 terms: nothing here is on renderAll()'s path. It paints on
-// right-click and on a dot click, and nowhere else.
+// The project context menu, the worktree one, and the appearance panel the sidebar's
+// colour dots share. Every mode shares the one #ctxMenu and its .mp-* skin, so each opener
+// clears every other mode's target. Nothing here is on renderAll()'s path.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, toast } from "./dom";
@@ -31,9 +24,8 @@ import {
 } from "./state";
 import { ghPickable, ghWho } from "./ghwork";
 
-// The eight things a menu row does that this module does not own — panes, the project
-// list and the repaint all belong to main.ts. Past the ~4 where per-callee setters
-// stop reading as anything but noise, so it takes one host (settings.ts's deviation).
+// What a menu row does that this module does not own; one host object rather than nine
+// setters, as settings.ts does.
 let host: {
   renderAll: () => void;
   requestLaunch: (project: string, path: string) => void;
@@ -51,7 +43,7 @@ let host: {
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
-// recolor a project — click its color dot, or right-click the project
+// ---------- the appearance panel ----------
 // 12 perceptually distinct hues around the wheel
 const SWATCHES = ["#f2555a", "#fb923c", "#facc15", "#a3e635", "#34d399", "#2dd4bf", "#22d3ee", "#38bdf8", "#818cf8", "#a78bfa", "#d084f5", "#f472b6"];
 let popKey: string | null = null;
@@ -60,18 +52,14 @@ function normalizeHex(v: string): string | null {
   if (/^[0-9a-fA-F]{3}$/.test(x)) x = x.split("").map((c) => c + c).join("");
   return /^[0-9a-fA-F]{6}$/.test(x) ? "#" + x.toLowerCase() : null;
 }
-// Show a floating panel, then clamp it inside the viewport against its *measured*
-// size — these panels change height with their optional rows, so a hard-coded
-// estimate would hang them off-screen.
+// Clamps against the measured size: these panels change height with their optional rows.
 function placePop(el: HTMLElement, x: number, y: number) {
   el.classList.add("show");
   el.style.left = Math.max(8, Math.min(x, window.innerWidth - el.offsetWidth - 8)) + "px";
   el.style.top = Math.max(8, Math.min(y, window.innerHeight - el.offsetHeight - 8)) + "px";
 }
-// The appearance panel: colour swatches + logo. Opens standalone at the cursor
-// (clicking a colour dot) or as the context menu's submenu — `flipFrom` is the
-// parent menu's rect, so a panel that won't fit to its right lands on its left
-// instead of being shoved back over the menu it belongs to.
+// Opens standalone at the cursor or as the context menu's submenu; `flipFrom` is the
+// parent menu's rect, so a panel that won't fit to its right lands on its left instead.
 export function openColorPopover(key: string, x: number, y: number, flipFrom?: DOMRect) {
   popKey = key;
   closeFootMenus("colorPop");
@@ -115,8 +103,7 @@ $("colorPop").addEventListener("click", (e) => {
   if (t.classList.contains("sw-apply")) { const inp = $("colorPop").querySelector<HTMLInputElement>(".sw-hex"); if (inp) commitHex(inp.value); return; }
   const b = t.closest<HTMLElement>("[data-c]");
   if (!b || !popKey) return;
-  // Every button here commits something, so the whole stack (submenu + the menu
-  // that opened it) closes with it.
+  // Every button here commits, so the whole stack (submenu + menu) closes with it.
   const key = popKey;
   closeCtxMenu();
   if (b.dataset.c === "delicon") { clearIcon(key); closeColorPop(); return; }
@@ -129,13 +116,10 @@ $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
   if (t.classList.contains("sw-hex") && e.key === "Enter") { e.preventDefault(); commitHex((t as HTMLInputElement).value); }
 });
 // ---------- project context menu ----------
-// Right-clicking anything that carries a project folder (`data-key` — a project
-// head, an external row, a rail button) opens a real menu: one verb per row, with
-// colour and logo tucked into an Appearance submenu (the swatch panel above,
-// reused verbatim) so the everyday actions stay one click deep.
+// Right-click on anything carrying a project folder (`data-key`): one verb per row, with
+// colour and logo in an Appearance submenu so the everyday verbs stay one click deep.
 let ctxKey: string | null = null;
 const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name || basename(key);
-// Where "Open project folder" actually lands, so the row can name it.
 
 type CtxRow = { act: string; ic?: string; logo?: string; label: string; sub?: string; cls?: string; chev?: boolean };
 const ctxRowHtml = (r: CtxRow) =>
@@ -148,13 +132,12 @@ const ctxRowHtml = (r: CtxRow) =>
 const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
   rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
 
-// Where the menu was opened, so a drill-down (Move to group…) and its ‹ Back land on
-// the same pixels rather than jumping to wherever the pointer has since wandered.
+// Where the menu was opened, so a drill-down and its ‹ Back land on the same pixels.
 let menuX = 0, menuY = 0;
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = agentKey = ghKey = null; // one #ctxMenu, one target — see the module header
+  wtTarget = gTarget = pickPath = agentKey = ghKey = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -163,43 +146,31 @@ function openCtxMenu(key: string, x: number, y: number) {
   const agent = effectiveAgent(key);
   const ic = iconFor(key);
   const rows: (CtxRow | null)[] = [
-    // The sub names the agent instead of saying "Claude Code" unconditionally, which
-    // is the whole point of the row below it: the button that starts a session is the
-    // last honest moment to say what it is about to start.
+    // Names the agent: this button is the last honest moment to say what it is about to start.
     { act: "launch", ic: "＋", label: "New session", sub: live ? `${live} already running here` : `start ${agent.label} in this folder` },
     { act: "worktree", ic: "⑃", label: "New worktree session…", sub: "on a branch of its own" },
     { act: "terminal", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
-    // Always present, even on a machine with nothing but Claude installed — which is
-    // the case where it earns the most: the picker behind it is where "Episko supports
-    // twenty-one of these, here is what it looked for" is written down. Dropping it
-    // then would hide the feature from exactly the person who has not found it yet.
+    // Always present, even with only Claude installed: the picker behind it is the one
+    // place that says which agents Episko supports and looked for.
     { act: "agents", logo: agentLogo(agent.id), label: `Agent · ${agent.label}`, sub: agentSub(key), chev: true },
-    // Only on a machine logged in to more than one GitHub account, which is the only
-    // machine where it can change an answer. One account is not a choice — the same
-    // rule the agent picker's "more supported" fold and the branch sweep follow — and a
-    // row that always reads "GitHub · you" would be four words of noise on every menu.
+    // Only with more than one GitHub account logged in, the only case where it can change
+    // an answer; "GitHub · you" on every menu would be noise.
     ghPickable(ghLogins)
       ? { act: "ghacct", ic: "◈", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
       : null,
     null,
-    // Dropped below unless the probe says this folder is a repo — a graph row on a
-    // plain directory would open a panel with nothing but an error in it.
+    // Dropped below unless the probe says this folder is a repo.
     { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
     { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
-    // Named after where the project already is, when it is somewhere: "Group: Work"
-    // answers the question the row would otherwise raise, and the picker behind it is
-    // the same one either way.
     grouped
       ? { act: "movegroup", ic: "▤", label: `Group · ${grouped.name}`, sub: "move to another, or take it out", chev: true }
       : { act: "movegroup", ic: "▤", label: "Add to group…", sub: "collect projects under one collapsible heading", chev: true },
     { act: "appearance", ic: "◐", label: "Appearance", sub: "color, logo", chev: true },
     null,
-    // Not every group in the sidebar is pinned: a folder also shows up while it has
-    // a live or external session, then vanishes with it. So the row is about
-    // *permanence*, not presence — say so, or "add" reads as a lie about a project
-    // that's plainly already listed.
+    // A project can be listed without being pinned (it has a live session), so the row is
+    // about permanence, not presence; "add" would read as a lie about a listed project.
     fav
       ? { act: "removeproj", ic: "✕", label: "Remove project", sub: "unpins it; sessions keep running", cls: "mp-danger" }
       : { act: "addproj", ic: "☆", label: "Pin to sidebar", sub: "keeps it listed with no session running" },
@@ -212,11 +183,9 @@ function openCtxMenu(key: string, x: number, y: number) {
     + `<span class="mp-hmain"><span class="mp-hname">${esc(projName(key))}</span><span class="mp-hpath">${esc(tilde(key))}</span></span></div>`
     + ctxRowsHtml(rows);
   placePop(menu, x, y);
-  // Two rows only mean something in a git repo. Ask *after* opening — the menu must
-  // feel instant — then drop what doesn't apply and re-place the (now shorter) menu.
-  // One probe answers both: `git_head` returns None for anything that isn't a repo
-  // with a commit, and a null `branch` inside it means a detached HEAD, which still
-  // has a history to graph but no branch to fork a worktree from.
+  // Asked after opening so the menu feels instant, then the shorter menu is re-placed. One
+  // probe answers both rows: `git_head` is None for anything but a repo with a commit, and
+  // a null `branch` is a detached HEAD, with a history to graph but no branch to fork from.
   invoke<{ branch: string | null; short: string } | null>("git_head", { workdir: key }).then((h) => {
     if (ctxKey !== key) return; // menu closed or moved to another project meanwhile
     const drop = (act: string) => menu.querySelector<HTMLElement>(`[data-ctx="${act}"]`)?.remove();
@@ -230,21 +199,14 @@ export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-al
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
-// Right-clicking a ⑃ cluster header in the sidebar. The header's ＋ already covers
-// the one verb worth a single click; everything else a checkout can be — opened,
-// walked to in a terminal, pruned — lives here rather than as four more glyphs
-// crowding an 11px row.
-//
-// Deliberately NOT the project menu with different rows: a cluster is one checkout,
-// and its verbs act on `dir` while still belonging to `root` (the colorKey the whole
-// project groups under). Conflating them is what would put a worktree session in a
-// project group of its own — the same trap `launchWorktree` exists to avoid.
+// Right-click on a ⑃ cluster header. Not the project menu with different rows: a cluster
+// is one checkout, whose verbs act on `dir` while belonging to `root` (the project's
+// colorKey); conflating them would put a worktree session in a project group of its own.
 type WtTarget = { dir: string; root: string; project: string; branch: string; isMain: boolean };
 let wtTarget: WtTarget | null = null;
 
-// What removing this checkout would actually cost, said before it is clicked. An
-// external session blocks it outright (the backend can't see one, and git would
-// delete the folder out from under it), so that row is disabled rather than offered.
+// What removing this checkout would cost, said before it is clicked. An external session
+// blocks it outright: the backend can't see one, and git would delete the folder under it.
 function removeRow(t: WtTarget): CtxRow {
   const ext = externals.filter((e) => e.cwd === t.dir).length;
   if (ext) return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub: `blocked: ${ext} session${ext > 1 ? "s" : ""} running outside Episko`, cls: "dis" };
@@ -255,21 +217,9 @@ function removeRow(t: WtTarget): CtxRow {
   return { act: "wtremove", ic: "⌫", label: "Remove worktree…", sub, cls: "mp-danger" };
 }
 
-// Moving the root folder to another branch, from the header that names it.
-//
-// **The main checkout's row only** — a worktree exists precisely so its branch doesn't
-// move, so the verb has nothing to offer there and a greyed row would be answering a
-// question nobody asked. That is the opposite call from *Remove worktree…* below, which
-// IS greyed on the main checkout, and the difference is whether the row reads as a gap:
-// removal is what you go to a checkout's menu for, so its absence would look like a bug;
-// switching a worktree's branch is a thing the model deliberately doesn't do.
-//
-// What it does say, when it is shown, is what the click will cost — `midFlight` for our
-// own panes and `extWorking` for a terminal we can only see from the outside. Same
-// bargain `removeRow` makes: a greyed row with a reason beats a click into a wall. This
-// block is *transient* where removal's is permanent, so it names what to wait for rather
-// than implying the verb is unavailable, and *All worktrees…* one row up still reaches
-// the card that lists the offending sessions and jumps to them.
+// Main checkout only: a worktree exists so its branch doesn't move, so there the row is
+// absent rather than greyed (unlike removal, whose absence would look like a bug). When
+// busy it names what to wait for; *All worktrees…* one row up lists those sessions.
 function switchRow(t: WtTarget): CtxRow {
   const busy = [...sessions.values()].filter((s) => s.workdir === t.dir && midFlight(s)).length
     + externals.filter((e) => e.cwd === t.dir && extWorking(e)).length;
@@ -287,16 +237,13 @@ function switchRow(t: WtTarget): CtxRow {
 
 function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
-  ctxKey = null; // one #ctxMenu, one target — see the module header
+  ctxKey = null; // one #ctxMenu, one target
   wtTarget = t;
-  // Stamped for the same reason `openCtxMenu` stamps it: the agent picker replaces
-  // this menu in place, and its ‹ Back has to reopen on the same pixels.
   menuX = x; menuY = y;
   const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isAgent(s)).length;
   const rows: (CtxRow | null)[] = [
-    // No agent row of its own: the override is keyed by repo (`colorKey`), which is
-    // what every checkout of it launches under, so a per-worktree picker would be
-    // setting something other than what it appeared to. Naming it is the honest half.
+    // No agent row: the override is keyed by repo (`colorKey`), which every checkout of it
+    // launches under, so a per-worktree picker would set something other than it appeared to.
     { act: "wtlaunch", ic: "＋", label: "New session here", sub: live ? `${live} already running in this checkout` : `start ${effectiveAgent(t.root).label} on this branch` },
     { act: "wtterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
     null,
@@ -304,12 +251,10 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
     { act: "wtcopy", ic: "⧉", label: "Copy path" },
     null,
     { act: "wtdialog", ic: "⑃", label: "All worktrees…", sub: "create, switch, prune" },
-    // Spread, not a `null` — in this list a null IS a separator, so a row that should be
-    // absent has to be an empty array rather than a falsy entry.
+    // A spread, not a null: in this list a null is a separator.
     ...(t.isMain ? [switchRow(t)] : []),
     null,
-    // The main checkout is not removable and never will be — git refuses it. Saying so
-    // beats dropping the row, which would read as "Episko forgot how to prune this one".
+    // git refuses to remove the main checkout; saying so beats dropping the row.
     t.isMain
       ? { act: "", ic: "⌫", label: "Remove worktree…", sub: "this is the repo's main checkout", cls: "dis" }
       : removeRow(t),
@@ -333,60 +278,42 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "wtterm": openTerminalIn(t.project, t.dir); break;
     case "wtfolder": host.openProjectFolder(t.dir); break;
     case "wtcopy": copyPath(t.dir); break;
-    // The dialog is the repo's, not the checkout's — it opens on the root, which is
-    // also the only cwd `git worktree add` can be driven from. But in *manage* mode
-    // and focused at this checkout: reached from a cluster header it is the worktree
-    // list, not the launcher, and every difference between the two is in `openWt`.
+    // The dialog is the repo's, so it opens on the root (the only cwd `git worktree add`
+    // runs from), in manage mode and focused at this checkout.
     case "wtdialog": openWt(t.project, t.root, null, { manage: true, focusDir: t.dir }); break;
-    // Same dialog, opened on the answer rather than on the list: `armSwitch` selects the
-    // repo row and paints its switch card, so the branch picker is the next click. The
-    // header we were opened from IS the root here (the row is main-only), so `t.branch`
-    // is the branch being left — seed it, or the card reads "—" until the git call lands.
+    // Same dialog, opened on the answer: `armSwitch` paints the repo row's switch card. The
+    // row is main-only, so `t.branch` is the branch being left; seed it or the card reads "—".
     case "wtswitch": openWt(t.project, t.root, t.branch, { manage: true, armSwitch: true }); break;
     case "wtremove": void removeWorktreeAt(t.project, t.root, t.dir, t.branch); break;
   }
 });
 
 // ---------- which agent this project runs: the picker ----------
-// A fourth mode of the one #ctxMenu, and a drill-down rather than a submenu for the
-// same reason "which group?" is one: it is a list of rows, so it replaces the menu in
-// place and offers ‹ Back.
-//
-// It sets a preference; it does not launch. That is the whole difference from the
-// version this replaced, which asked "which agent, this time?" on every single start —
-// nobody switches agent per session, they switch per project, so the answer is stored
-// and `＋ New session` reads it. One picker, one meaning.
+// A drill-down of the one #ctxMenu (a list of rows, so it replaces the menu in place with
+// ‹ Back). It sets a per-project preference and does not launch: nobody switches agent
+// per session, so `＋ New session` reads the stored answer.
 let agentKey: string | null = null;   // the project whose agent is being chosen
 
-/// What the "Agent · X" row says underneath. Names where the answer came from, because
-/// the same label means two different things: a repo pinned to Codex must not read
-/// identically to one that merely inherits Codex from the global default — otherwise
-/// clearing an override you forgot you set is guesswork.
+// Names where the answer came from: a repo pinned to Codex must not read the same as one
+// inheriting Codex from the default, or clearing a forgotten override is guesswork.
 function agentSub(key: string): string {
   if (agentByProject[key]) return "set for this project";
   const n = allAgents().length - 1;
   return n ? `the default · ${n} other${n === 1 ? "" : "s"} installed` : "the default · nothing else installed";
 }
 
-/// Whether the picker is showing the agents this machine hasn't got. Sticky for the
-/// app's life rather than per-open: somebody who expanded it once is shopping, and
-/// re-collapsing under them on the next open would read as the menu forgetting.
+// Sticky for the app's life, not per open: re-collapsing under somebody who expanded it
+// would read as the menu forgetting.
 let agentShowAll = false;
 
 // ---------- which GitHub account this project reads as ----------
-// The fifth mode of the one #ctxMenu, and a copy of the agent picker above on purpose:
-// it answers the same shape of question (a per-project override of a global default)
-// and anybody who has found one has learnt the other.
-//
-// It exists because `gh` holds one *active* account per host and switches it globally,
-// so two identities on one machine cannot both be right at once — and the failure when
-// they are not is GitHub replying that a repository you can see in a browser "could not
-// be resolved", which names no account and suggests no fix.
+// A copy of the agent picker on purpose: the same shape of question. It exists because
+// `gh` holds one active account per host, and the failure when it is the wrong one is a
+// "could not be resolved" that names no account and suggests no fix.
 let ghKey: string | null = null;   // the project whose account is being chosen
 
-/// What the "GitHub · X" row says underneath — the same three states `ghWho` returns,
-/// because "I set this" and "this is gh's default" are indistinguishable on the row
-/// above and are the whole answer when the reads are failing.
+// The same three states `ghWho` returns: "set for this project" and "gh's default" look
+// alike on the row above and are the whole answer when the reads are failing.
 function ghSub(key: string): string {
   const w = ghWho(ghAccountFor(key), ghLogins);
   if (w.source !== "pinned") return "gh's active account";
@@ -404,13 +331,11 @@ function openGhPicker(key: string, x: number, y: number) {
     null,
     ...ghLogins.map((a) => ({
       act: `hpick:${a.login}`, ic: a.login === w.login ? "✓" : "▪", label: a.login,
-      // The tick marks the effective account whichever way it was reached; this line is
-      // what tells the two apart, exactly as the agent picker's does.
+      // The tick marks the effective account; this line tells a pin from the default.
       sub: a.login === cur ? "set for this project" : a.active ? "gh's active account" : "logged in, not active",
     })),
-    // A pin gh has forgotten is still in force — the backend refuses the read rather
-    // than answering as somebody else — so it needs a row of its own to be seen and
-    // cleared. Without it the menu would show a tick on nothing.
+    // A pin gh has forgotten is still in force (the backend refuses the read rather than
+    // answering as somebody else), so it gets a row of its own to be seen and cleared.
     cur && !w.known ? { act: `hpick:${cur}`, ic: "✓", label: cur, sub: "set for this project · gh is not logged in as it", cls: "dis" } : null,
     cur ? { act: "hclear", ic: "⊘", label: "Follow gh's active account", sub: "what every project with no setting uses" } : null,
   ];
@@ -434,35 +359,28 @@ function openAgentPicker(key: string, x: number, y: number) {
   const rows: (CtxRow | null)[] = [
     { act: "aback", ic: "‹", label: "Back", sub: projName(key) },
     null,
-    // Above the fold: Claude plus what the probe FOUND. A row here is a promise the
-    // binary exists, and the probe is the only thing that can make that promise.
+    // Claude plus what the probe found: a row here promises the binary exists.
     ...allAgents().map((a) => ({
       act: `apick:${a.id}`, logo: agentLogo(a.id), label: a.label,
-      // The tick marks the *override*, not the effective agent: ticking an inherited
-      // row would make "follow the default" below it look like a no-op.
+      // The tick marks the override, not the effective agent: ticking an inherited row
+      // would make "Follow the default" below it look like a no-op.
       sub: a.id === cur ? "✓ set for this project"
         : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
         : tilde(a.path ?? ""),
     })),
     cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Sessions · ${defaultAgentDef().label}` } : null,
-    // …and below it, everything Episko supports that this machine hasn't got. Folded,
-    // because twelve rows you cannot pick would bury the ones you can — but present,
-    // because a *missing* row is indistinguishable from "Episko doesn't support Codex"
-    // and the only place to take that question is the issue tracker. Same rule as a
-    // Runnable that cannot run and a worktree that cannot be removed: say why.
+    // Below the fold, what Episko supports but this machine lacks: folded so they don't
+    // bury the pickable rows, present so a missing row isn't read as "not supported".
     ...(missing.length ? [null, {
       act: "amore", ic: agentShowAll ? "−" : "+",
       label: `${missing.length} more supported`,
       sub: agentShowAll ? "installed ones are above" : "not found on this machine",
     }] as (CtxRow | null)[] : []),
-    // `cls: "dis"` is what makes them inert: every click listener on this menu bails on
-    // a `.dis` row before reading its act, so there is no dead branch to write.
+    // `cls: "dis"` makes them inert: every click listener on this menu bails on a `.dis` row.
     ...(agentShowAll
       ? missing.map((a) => ({
         act: "", logo: agentLogo(a.id), label: a.label, cls: "dis",
-        // The binary name IS the answer to "why isn't it here?" — it says exactly what
-        // Episko searched the PATH for, which no install link could tell you as
-        // precisely, and which cannot rot the way twenty-one vendor URLs would.
+        // The binary name says exactly what Episko searched PATH for, and cannot rot like a URL.
         sub: `not on PATH · ${a.bin}`,
       }))
       : []),
@@ -478,14 +396,9 @@ function openAgentPicker(key: string, x: number, y: number) {
 
 
 // ---------- project groups: the picker, and a group's own menu ----------
-// Two more modes of the one #ctxMenu, and they are drill-downs rather than submenus:
-// Appearance hangs a *panel* off the menu's edge because a colour grid is not a list of
-// rows, but "which group?" is exactly a list of rows, so it replaces the menu in place
-// and offers ‹ Back. One element, one skin, no second popover to position.
-//
-// Naming a group is an inline `<input>` in the menu (the `.sw-hex` field in the colour
-// panel is the precedent) rather than a dialog: it is one short string, and a modal for
-// it would be heavier than the thing it creates.
+// Drill-downs, not submenus: "which group?" is a list of rows, so it replaces the menu in
+// place with ‹ Back. Naming a group is an inline <input> in the menu (as .sw-hex is in the
+// colour panel): one short string, and a modal would be heavier than what it creates.
 let pickPath: string | null = null;   // the project being filed
 let gTarget: string | null = null;    // the group whose menu is open
 
@@ -533,12 +446,10 @@ function openGroupMenu(gid: string, x: number, y: number) {
       ? { act: "gopen", ic: "▾", label: "Expand group", sub: `show its ${n} project${n === 1 ? "" : "s"}` }
       : { act: "gopen", ic: "▸", label: "Collapse group", sub: n ? `fold ${n} project${n === 1 ? "" : "s"} away` : "it is empty" },
     { act: "grename", ic: "✎", label: "Rename group…" },
-    // Only worth offering once there is more than one group to act on — otherwise
-    // "collapse all" is a longer way of saying the row directly above it.
+    // Only worth offering with more than one group; otherwise it repeats the row above.
     ...(many ? [null, { act: "gcollapseall", ic: "⇱", label: "Collapse all groups" }, { act: "gexpandall", ic: "⇲", label: "Expand all groups" }] as (CtxRow | null)[] : []),
     null,
-    // Not destructive to anything but the heading, and the sub says so — "Delete" over
-    // a list of someone's repos has to be unmistakable about what it takes with it.
+    // Destroys only the heading, and the sub must say so.
     { act: "gdelete", ic: "✕", label: "Delete group", sub: "the projects stay, at the top level", cls: "mp-danger" },
   ];
   const menu = $("ctxMenu");
@@ -566,29 +477,13 @@ function openRenameGroup(gid: string) {
   setTimeout(() => menu.querySelector<HTMLInputElement>(".mp-in")?.select(), 40);
 }
 
-/// A row that REPLACES this menu's markup instead of committing has to stop the click
-/// dead, and the reason is not obvious enough to leave unwritten — there are *two*
-/// things that would otherwise close the menu it just opened.
-///
-/// 1. main.ts's outside-click closer asks `t.closest("#ctxMenu")` of the original
-///    target, and by the time it runs the innerHTML has been swapped — so the node it
-///    is asking about is detached, answers null, and the menu we just opened is closed
-///    as an outside click. Appearance never hit this because it only adds a class;
-///    every drill-down here re-renders.
-/// 2. **The sibling listeners on this very element.** `#ctxMenu` carries three click
-///    listeners (worktree menu, drill-downs, project menu) and they fire in
-///    registration order; `stopPropagation` only stops the trip *onward*, so every one
-///    of them still sees a click any one of them has already handled. A drill-down
-///    reopens its parent menu synchronously, which means a later listener finds its
-///    own target set again and an act it has no case for — and falls through to the
-///    unconditional `closeCtxMenu()` before its switch. That is why ‹ Back on *Move to
-///    group* used to blink the menu shut instead of going back, and it is why this is
-///    `stopImmediatePropagation` rather than the `stopPropagation` it was.
+// A row that re-renders this menu instead of committing must stop the click dead, and
+// stopPropagation is not enough: main.ts's outside-click closer sees the original target
+// detached by the innerHTML swap and closes the menu, and the sibling click listeners on
+// #ctxMenu still run, find their target set again by the reopen, and fall through to closeCtxMenu().
 const keepMenuOpen = (e: Event) => e.stopImmediatePropagation();
 
-// One listener for all three drill-downs, guarded on their own targets exactly as the
-// project and worktree menus guard on theirs — four modes, one element, no shared
-// branch.
+// One listener for all the drill-downs, each guarded on its own target.
 $("ctxMenu").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
   if (!b || b.classList.contains("dis")) return;
@@ -596,12 +491,9 @@ $("ctxMenu").addEventListener("click", (e) => {
   if (agentKey) {
     const key = agentKey;
     if (act === "aback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
-    // Anything else is not this picker's vocabulary — leave the menu exactly as it is
-    // rather than closing it on a row we did not draw. Belt and braces behind
-    // `keepMenuOpen` above, which is what actually keeps a sibling listener's click
-    // from arriving here at all.
-    // The fold is a re-render in place, not a commit — same shape as ‹ Back above it.
+    // The fold is a re-render in place, not a commit, like ‹ Back.
     if (act === "amore") { keepMenuOpen(e); agentShowAll = !agentShowAll; openAgentPicker(key, menuX, menuY); return; }
+    // A row this picker did not draw leaves the menu alone.
     if (act !== "aclear" && !act.startsWith("apick:")) return;
     closeCtxMenu();
     host.setProjectAgent(key, act === "aclear" ? null : act.slice(6));
@@ -610,8 +502,6 @@ $("ctxMenu").addEventListener("click", (e) => {
   if (ghKey) {
     const key = ghKey;
     if (act === "hback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
-    // Same guard as the agent picker's: a row this picker did not draw leaves the menu
-    // alone rather than closing it on somebody else's vocabulary.
     if (act !== "hclear" && !act.startsWith("hpick:")) return;
     closeCtxMenu();
     host.setGhAccount(key, act === "hclear" ? null : act.slice(6));
@@ -619,8 +509,6 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
   if (pickPath) {
     const path = pickPath;
-    // Back is the one row that reopens rather than commits — same coordinates, so the
-    // menu appears not to have moved at all.
     if (act === "gback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(path, menuX, menuY); return; }
     closeCtxMenu();
     if (act === "gclear") setProjectGroup(path, null);
@@ -636,8 +524,7 @@ $("ctxMenu").addEventListener("click", (e) => {
   else if (act === "gexpandall") collapseAllProjGroups(false);
   else if (act === "gdelete") deleteProjectGroup(gid);
 });
-// The inline name field: Enter commits, Esc backs out. It carries no `data-ctx`, so
-// every click listener above already ignores it and the menu stays open while typing.
+// The name field carries no `data-ctx`, so the click listeners above ignore it while typing.
 $("ctxMenu").addEventListener("keydown", (e: KeyboardEvent) => {
   const t = e.target as HTMLElement;
   if (!t.classList.contains("mp-in")) return;
@@ -651,19 +538,16 @@ $("ctxMenu").addEventListener("keydown", (e: KeyboardEvent) => {
   else if (gid) renameProjectGroup(gid, value);
 });
 
-// Appearance is the one row that opens rather than commits: the menu stays put and
-// the swatch panel hangs off its edge. Re-entrant — `mouseover` fires again for
-// every child span the pointer crosses, and re-rendering the panel under the
-// cursor would wipe a half-typed hex.
+// Appearance opens rather than commits: the panel hangs off the menu's edge. Re-entrant,
+// since `mouseover` fires per child span crossed and a re-render would wipe a half-typed hex.
 function openAppearanceSub(row: HTMLElement) {
   if (!ctxKey || row.classList.contains("sub-open")) return;
   row.classList.add("sub-open");
   const m = $("ctxMenu").getBoundingClientRect(), r = row.getBoundingClientRect();
   openColorPopover(ctxKey, m.right + 6, r.top - 6, m);
 }
-// Hover opens the submenu, the way a menu should. Moving onto any *other* row
-// folds it away again; moving right, into the panel itself, leaves the menu
-// entirely, so nothing here fires and it stays put.
+// Hover opens the submenu and any other row folds it away; moving right into the panel
+// leaves the menu entirely, so nothing here fires.
 $("ctxMenu").addEventListener("mouseover", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
   if (!row) return;
@@ -676,13 +560,9 @@ $("ctxMenu").addEventListener("click", (e) => {
   const key = ctxKey, name = projName(key);
   // Clicking it is the keyboard/touch path to the same thing hover already did.
   if (b.dataset.ctx === "appearance") { openAppearanceSub(b); return; }
-  // The other row that opens rather than commits — it replaces this menu in place
-  // (see openGroupPicker), so it must not fall through to the close below, and the
-  // click must not reach main.ts's outside-click closer (see keepMenuOpen).
+  // Drill-downs replace the menu in place, so they take keepMenuOpen and must not reach the close below.
   if (b.dataset.ctx === "movegroup") { keepMenuOpen(e); openGroupPicker(key, menuX, menuY); return; }
-  // Third row that opens rather than commits, same rule as the two above it.
   if (b.dataset.ctx === "agents") { keepMenuOpen(e); openAgentPicker(key, menuX, menuY); return; }
-  // Fourth, and the last of the drill-downs.
   if (b.dataset.ctx === "ghacct") { keepMenuOpen(e); openGhPicker(key, menuX, menuY); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
@@ -696,13 +576,9 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "removeproj": host.removeFavorite(key); toast(`Removed ${name}`); break;
   }
 });
-// `data-wt` is matched first and on its own element: a ⑃ cluster header sits inside a
-// project group, so a single `[data-key],[data-wt]` closest() would be decided by
-// which happens to be nearer in the tree rather than by what was actually clicked.
-//
-// `data-gid` is the same rule one level up, and is why it sits on the fold's HEADER
-// and not on the fold: a project inside the group would find a wrapper's `data-gid` as
-// an ancestor and open the group's menu instead of its own.
+// `data-wt` is matched first and on its own: a ⑃ cluster header sits inside a project
+// group, so one `[data-key],[data-wt]` closest() would be decided by tree distance.
+// `data-gid` is the same rule one level up, and why it sits on the fold's header, not the fold.
 document.addEventListener("contextmenu", (e) => {
   const fold = (e.target as HTMLElement).closest<HTMLElement>("[data-gid]");
   if (fold?.dataset.gid) {

@@ -1,9 +1,6 @@
-//! Provider control planes that run beside an interactive agent PTY.
-//!
-//! The terminal remains the vendor's real UI. An integrated provider adds a sidecar
-//! transport that Episko observes independently and forwards as provider events; the
-//! frontend adapter normalizes those into its shared session reducer. Codex uses one
-//! loopback App Server per pane and connects its own TUI with `codex --remote`.
+//! Provider control planes beside an interactive agent PTY. The terminal stays the vendor's
+//! UI; a sidecar transport is observed and forwarded as provider events for the frontend
+//! adapter. Codex gets one loopback App Server per pane and its TUI connects with `--remote`.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -262,9 +259,8 @@ fn routed_child(bound: Option<&str>, routed: &HashSet<String>, value: &Value) ->
         .then_some(message_thread != bound)
 }
 
-/// Rolling rate-limit notifications omit fields that have not changed and use null for
-/// account metadata that is merely unavailable. Fold only concrete values into the last
-/// complete `account/rateLimits/read` snapshot before anything reaches the frontend.
+/// Rolling rate-limit notifications omit unchanged fields and null out unavailable account
+/// metadata, so only concrete values are folded into the last complete snapshot.
 fn merge_sparse(base: &mut Value, update: &Value) {
     if update.is_null() {
         return;
@@ -286,10 +282,9 @@ fn merge_sparse(base: &mut Value, update: &Value) {
     }
 }
 
-/// App Server exposes a stable identity only for ChatGPT auth. API-key and Bedrock
-/// responses name the auth *kind* but not which credential is active, so sharing those
-/// would merge unrelated accounts. Hash ChatGPT's native identity so the frontend can
-/// share account-wide snapshots without receiving PII.
+/// Only ChatGPT auth exposes a stable identity; API-key and Bedrock responses name the auth
+/// kind, not the credential, so sharing those would merge unrelated accounts. Hashed so the
+/// frontend can share account-wide snapshots without receiving PII.
 fn account_scope(result: &Value) -> Option<String> {
     let account = result.get("account")?;
     if account.get("type").and_then(Value::as_str) != Some("chatgpt") {
@@ -313,9 +308,8 @@ fn account_request(id: u64) -> Value {
     json!({ "method": "account/read", "id": id, "params": { "refreshToken": false } })
 }
 
-/// Forget every value derived from the previous account before asking App Server for
-/// identity again. In-flight quota reads are deliberately invalidated: their response
-/// ids must not be allowed to inherit the next account's sharing scope.
+/// Forget everything derived from the previous account before re-reading identity, in-flight
+/// quota reads included: their response ids must not inherit the next account's scope.
 fn invalidate_account_state(
     account_read_request: &mut Option<u64>,
     rate_limit_requests: &mut HashSet<u64>,
@@ -406,19 +400,16 @@ fn observer_loop(
 ) {
     let mut thread_id: Option<String> = None;
     let mut routed_threads: HashSet<String> = HashSet::new();
-    // Request id 1 identifies the account without exposing it to the frontend. Its
-    // response earns the initial complete quota read; reload refreshes take the same
-    // route so an account switch cannot accidentally reuse the old sharing scope.
+    // Request id 1 is the account read sent at startup; its response earns the first complete
+    // quota read. Reload refreshes take the same route so an account switch never reuses the old scope.
     let mut account_read_request = Some(1u64);
     let mut rate_limit_requests: HashSet<u64> = HashSet::new();
     let mut rate_limit_snapshot = Value::Object(serde_json::Map::new());
     let mut rate_limit_scope: Option<String> = None;
     let mut next_id = 2u64;
     let mut resume_request: Option<u64> = None;
-    // `account/usage/read` is the App Server's own API-equivalent estimate for a
-    // thread. Only keep one request in flight: token notifications can arrive in a
-    // burst at turn end, and an older estimate racing a newer one would make the live
-    // cost gauge move backwards. `usage_dirty` earns exactly one follow-up read.
+    // One `account/usage/read` in flight at a time: token notifications burst at turn end, and
+    // an older estimate landing after a newer one would move the cost gauge backwards.
     let mut usage_request: Option<u64> = None;
     let mut usage_dirty = false;
     let mut usage_supported = true;
@@ -448,8 +439,7 @@ fn observer_loop(
                     }
                 }
                 Ok(Control::Refresh) => {
-                    // One account read in flight is enough. It is followed by a complete
-                    // quota snapshot below; thread/cost refreshes can run alongside it.
+                    // One account read in flight is enough; thread and cost refreshes run alongside it.
                     if account_read_request.is_none() {
                         match request_account_refresh(
                             &mut socket,
@@ -575,13 +565,11 @@ fn observer_loop(
                 );
             } else if let Some(error) = value.get("error") {
                 if method_not_found(&value) {
-                    // This method was added after the first App Server releases. A
-                    // stale CLI must lose the estimate, not its whole observer.
+                    // A stale CLI without this method loses the estimate, not the whole observer.
                     usage_supported = false;
                     log::debug!("Codex App Server has no thread usage estimate · {session_id}");
                 } else {
-                    // Authentication and provider failures can heal. Leave the method
-                    // enabled so the next token update gets another honest attempt.
+                    // Auth and provider failures can heal, so the next token update tries again.
                     log::warn!("codex observer usage estimate failed · {session_id}: {error}");
                 }
             }
@@ -603,9 +591,8 @@ fn observer_loop(
             continue;
         }
 
-        // The response to our subscription carries the complete thread plus model and
-        // sandbox settings. Forward it as a synthetic provider event so the adapter
-        // needn't know which JSON-RPC id this observer happened to allocate.
+        // The subscription's response carries the whole thread plus model and sandbox settings;
+        // forward it as a synthetic event so the adapter needn't know this observer's JSON-RPC ids.
         if resume_request.is_some_and(|id| value.get("id") == Some(&json!(id))) {
             resume_request = None;
             if let Some(result) = value.get("result") {
@@ -625,9 +612,8 @@ fn observer_loop(
         let method = value.get("method").and_then(Value::as_str).unwrap_or("");
         let mut params = value.get("params").cloned().unwrap_or(Value::Null);
 
-        // Sign-in, sign-out and account switches invalidate both the opaque sharing
-        // scope and the complete quota snapshot. Always supersede any account read
-        // already in flight: the notification is newer evidence than its response.
+        // Sign-in, sign-out and account switches invalidate both the sharing scope and the quota
+        // snapshot. Supersede any account read in flight: the notification is newer evidence.
         if method == "account/updated" {
             if let Err(e) = request_account_refresh(
                 &mut socket,
@@ -639,9 +625,8 @@ fn observer_loop(
             ) {
                 log::warn!("Codex account update refresh failed · {session_id}: {e}");
             }
-            // Clear the webview's old scope immediately too. If authentication is
-            // broken, the follow-up reads may never succeed; leaving yesterday's
-            // account quota visible and shareable would be worse than no reading.
+            // Clear the webview's old scope now too: if auth is broken the follow-up reads may
+            // never succeed, and yesterday's shareable quota would be worse than no reading.
             emit_provider_event(
                 &app,
                 &session_id,
@@ -652,13 +637,11 @@ fn observer_loop(
             continue;
         }
 
-        // Live quota notifications are sparse. Publish the rolling complete view under
-        // the account scope established above so reloads and sibling panes never replace
-        // a known window with an omitted one.
+        // Quota notifications are sparse; publish the rolling complete view under the account
+        // scope so reloads and sibling panes never replace a known window with an omitted one.
         if method == "account/rateLimits/updated" {
-            // Until identity is known, a notification could belong to either side of
-            // an account switch. The complete read chained from account/read will
-            // publish an authoritative snapshot under the new scope.
+            // Until identity is known a notification could belong to either side of an account
+            // switch; the complete read chained from account/read publishes the authoritative one.
             if account_read_request.is_some() {
                 continue;
             }
@@ -678,11 +661,9 @@ fn observer_loop(
             continue;
         }
 
-        // Each pane owns a dedicated App Server, so its root thread is unambiguous.
-        // Do not compare `cwd`: App Server reports a resolved path while the launcher
-        // may retain the user's symlink spelling. A byte-for-byte comparison prevented
-        // the observer from ever subscribing, leaving its terminal alive but all item
-        // (tool/file) events invisible. A later root is `/clear`; replace the route.
+        // Each pane owns its App Server, so its root thread is unambiguous. Never compare `cwd`:
+        // App Server reports a resolved path while the launcher may keep the user's symlink
+        // spelling. A later root is `/clear`; replace the route.
         if method == "thread/started" && thread_matches(&value) {
             let Some(id) = message_thread_id(&value).map(str::to_owned) else {
                 continue;
@@ -707,9 +688,8 @@ fn observer_loop(
             continue;
         }
 
-        // A spawned thread belongs to this pane when its parent is already routed. Keep
-        // the full descendant set so nested subagents work too, while unrelated
-        // top-level work observed on the same server remains invisible to this pane.
+        // A spawned thread belongs to this pane when its parent is already routed; the full
+        // descendant set lets nested subagents through while unrelated top-level work stays invisible.
         if method == "thread/started" {
             register_descendant(&mut routed_threads, &value);
         }
@@ -756,10 +736,9 @@ fn observer_loop(
 
         if !method.is_empty() {
             emit_provider_event(&app, &session_id, method, params, None);
-            // The token event says the cumulative estimate may have changed. Ask for
-            // the provider's per-model grouped reading rather than repricing one latest
-            // aggregate; its USD value wins, with the adapter supplying the public-rate
-            // fallback for subscription routes that only return groups.
+            // A token event means the cumulative estimate may have changed; ask for the provider's
+            // per-model reading rather than repricing one aggregate. Its USD value wins, with the
+            // adapter's public-rate fallback for subscription routes that only return groups.
             if method == "thread/tokenUsage/updated" && !is_child && usage_supported {
                 if usage_request.is_some() {
                     usage_dirty = true;
@@ -788,9 +767,8 @@ fn observer_loop(
     }
 }
 
-/// Provider control-plane registry. `pty.rs` owns the generic PTY and deliberately
-/// knows no vendor command shape; a future integrated provider adds its sidecar and
-/// launch arguments here, while an unlisted provider keeps the terminal-only path.
+/// What a provider sidecar needs to launch. `pty.rs` knows no vendor command shape; an
+/// integrated provider adds its sidecar and arguments here, an unlisted one stays terminal-only.
 pub(crate) struct ProviderLaunch<'a> {
     session_id: &'a str,
     workdir: &'a str,
@@ -837,17 +815,15 @@ pub(crate) fn start_provider(
     }
 }
 
-/// Map Episko's provider-owned Codex policy ids to stable CLI primitives. The mode
-/// string itself never becomes an argument: this is the same security/correctness
-/// boundary as Claude's `permission_mode_arg`, and an unknown future id degrades to
-/// Codex's own config rather than making every launch fail.
+/// Whitelist from Episko's Codex policy ids to CLI primitives; the mode string itself never
+/// becomes an argument (the same boundary as Claude's `permission_mode_arg`), and an unknown
+/// id degrades to Codex's own config rather than failing every launch.
 fn codex_permission_args(mode: Option<&str>) -> &'static [&'static str] {
     match mode.map(str::trim) {
         None | Some("") | Some("default") => &[],
         Some("on-request") => &["--ask-for-approval", "on-request"],
         Some("read-only") => &["--ask-for-approval", "never", "--sandbox", "read-only"],
-        // The current stable spelling of the old full-auto behavior: no approval
-        // pauses, but writes remain constrained to the workspace sandbox.
+        // The old full-auto: no approval pauses, but writes stay inside the workspace sandbox.
         Some("auto") => &[
             "--ask-for-approval",
             "never",
@@ -986,9 +962,8 @@ pub(crate) fn resolve_agent_request(
         .map_err(|_| "agent observer has stopped".to_string())
 }
 
-/// Re-publish provider state that can have changed while the webview was absent. The
-/// PTY and observer survive a frontend reload, so orphan adoption asks the existing
-/// control plane for a fresh thread snapshot, usage estimate and account quota.
+/// Re-publish provider state that may have changed while the webview was absent: the PTY and
+/// observer survive a reload, so orphan adoption asks the live control plane for a fresh snapshot.
 #[tauri::command]
 pub(crate) fn refresh_agent_state(
     state: State<AppState>,
@@ -1006,9 +981,8 @@ pub(crate) fn refresh_agent_state(
         .map_err(|_| "agent observer has stopped".to_string())
 }
 
-/// Read provider history through its public control plane, never by depending on its
-/// private on-disk rollout format. The History dialog asks for either the recent list
-/// or one thread with turns populated.
+/// Provider history through its public control plane, never its private on-disk rollout
+/// format: either the recent list or one thread with turns populated.
 #[tauri::command]
 pub(crate) async fn agent_history(
     provider: String,

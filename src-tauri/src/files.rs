@@ -1,61 +1,28 @@
-//! The project index behind the explorer: one list of the files a project contains.
-//!
-//! For a repo the whole implementation is `git ls-files --cached --others
-//! --exclude-standard`, and deliberately so. It answers "tracked, plus untracked that
-//! git would not ignore" in a single process — which is exactly the set a person means
-//! by *the project's files* — with `.gitignore` honoured by the tool that owns it
-//! rather than by a parser of ours. Every alternative (a walker plus an ignore crate,
-//! a cached tree, a watcher) is more code that agrees with git less often.
-//!
-//! A folder that is not a repo still has to work, since Episko will open any directory,
-//! so that case gets a bounded walk instead. The bounds are the point: no depth beyond
-//! `MAX_DEPTH`, no dot-directories, none of the build directories nobody means, and a
-//! hard cap on the count. A truncated index says so and the UI repeats it, because a
-//! file list that silently stops is a file list that lies about what a project holds.
-//!
-//! Nothing here watches anything. The index is read when the explorer opens and cached
-//! on the frontend for the length of that visit; the app has no filesystem watcher by
-//! design (docs/worktrees.md), and this must not be what introduces one.
+//! The explorer's project index: `git ls-files` for a repo (git honours `.gitignore`, so no parser
+//! of ours), a bounded walk for anything else. Nothing here watches anything (docs/explorer.md).
 
 use crate::platform::sys_command;
 
-/// The cap exists so a mis-aimed open (a home directory, `/`) cannot hang the overlay.
-const MAX_FILES: usize = 20_000;
-/// Deep enough for a monorepo, shallow enough that a symlink loop cannot outlive the call.
-const MAX_DEPTH: usize = 8;
-/// Directories a file *finder* is never asking about. `.git` and friends are covered by
-/// the dot rule; these are the ones that are ordinary names but hold generated trees.
+const MAX_FILES: usize = 20_000; // so a mis-aimed open (a home directory, `/`) cannot hang the overlay
+const MAX_DEPTH: usize = 8;      // deep enough for a monorepo, shallow enough to bound the walk
+/// Ordinary names that hold generated trees; `.git` and friends are covered by the dot rule.
 const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "__pycache__"];
 
 #[derive(serde::Serialize)]
 pub(crate) struct FileIndex {
-    /// Repo-relative paths with forward slashes, sorted, deduplicated.
-    files: Vec<String>,
-    /// True when the cap stopped the walk early — the overlay says so rather than
-    /// letting a partial list read as the whole project.
-    truncated: bool,
-    /// Whether git produced this list. The empty state reads differently for a folder
-    /// that is not a repo, and it is the only honest way to explain a missing file.
-    repo: bool,
+    files: Vec<String>, // repo-relative, forward slashes, sorted, deduplicated
+    truncated: bool,    // the cap stopped the walk early; the overlay says so
+    repo: bool,         // whether git produced the list; the empty state reads differently
 }
 
-/// Every file in the project, for the explorer's find and browse modes.
-///
-/// Browse is derived from this same flat list on the frontend rather than from a second
-/// `read_dir` command: one source means the two modes cannot disagree about what the
-/// project contains, and there is no second round trip per folder you step into.
+/// One flat list feeds both explorer modes, so they cannot disagree and no folder costs a round trip.
 #[tauri::command(async)]
 pub(crate) fn project_files(root: String) -> FileIndex {
     let (files, truncated, repo) = index_of(&root);
     FileIndex { files, truncated, repo }
 }
 
-/// The same list, for callers inside the crate — `health.rs` measures every file in it.
-///
-/// Extracted rather than copied so there is exactly one answer to "what files does this
-/// project contain": the explorer's list and the one the duplicate index is built from
-/// must be the same set, or a block could be reported as duplicated against a file the
-/// explorer says is not in the project.
+/// The in-crate half: `health.rs` measures exactly the files the explorer lists.
 pub(crate) fn index_of(root: &str) -> (Vec<String>, bool, bool) {
     if let Some((files, truncated)) = git_index(root) {
         return (files, truncated, true);
@@ -64,15 +31,8 @@ pub(crate) fn index_of(root: &str) -> (Vec<String>, bool, bool) {
     (files, truncated, false)
 }
 
-/// `git ls-files`, or None when this is not a repo (or git is unavailable, which is the
-/// same thing from here: the walk is the answer either way).
-///
-/// Returns whether the list was cut, decided at the cut rather than measured afterwards:
-/// `.take(MAX_FILES)` happens before the sort/dedup, so a post-dedup `len() >= MAX_FILES`
-/// both claims truncation for a repo of exactly MAX_FILES files and — mid-merge, where
-/// `--cached` lists a conflicted path once per stage — misses a genuine cut that
-/// deduplicated back under the line. The second is the one that matters: it hands the
-/// explorer a partial project and lets it present it as the whole thing.
+/// None when this is not a repo or git is unavailable (the walk answers). Truncation is decided
+/// before dedup: a mid-merge `--cached` lists a conflicted path once per stage.
 fn git_index(root: &str) -> Option<(Vec<String>, bool)> {
     let out = sys_command("git")
         .env("LC_ALL", "C")
@@ -83,22 +43,17 @@ fn git_index(root: &str) -> Option<(Vec<String>, bool)> {
     if !out.status.success() {
         return None;
     }
-    // `-z` rather than lines: a path may contain anything but NUL, and this is the one
-    // place a quoted or newline-bearing filename would silently split into two rows.
+    // `-z`: a path may contain a newline, never a NUL.
     let text = String::from_utf8_lossy(&out.stdout);
     let mut it = text.split('\0').filter(|s| !s.is_empty());
     let mut files: Vec<String> = it.by_ref().take(MAX_FILES).map(|s| s.to_string()).collect();
-    // Whether anything was left behind, asked of the iterator we stopped pulling from.
     let truncated = it.next().is_some();
-    // `--cached` lists a conflicted path once per stage, so the same name can arrive
-    // three times mid-merge.
     files.sort();
     files.dedup();
     Some((files, truncated))
 }
 
-/// The non-repo fallback: a bounded, breadth-limited walk that skips what no file
-/// finder is looking for.
+/// The non-repo fallback: a bounded walk that skips what no file finder is looking for.
 fn walk_index(root: &std::path::Path) -> (Vec<String>, bool) {
     let mut files = Vec::new();
     let mut truncated = false;
@@ -110,19 +65,13 @@ fn walk_index(root: &std::path::Path) -> (Vec<String>, bool) {
                 return (finish(files), true);
             }
             let name = e.file_name().to_string_lossy().to_string();
-            // A dot-entry is configuration or version control, not what "find a file"
-            // means; skipping them here is also what keeps `.git` out of the list.
+            // A dot-entry is configuration or version control; this is also what keeps `.git` out.
             if name.starts_with('.') {
                 continue;
             }
             let Ok(ft) = e.file_type() else { continue };
-            // Tested BEFORE `is_dir`, and this is the whole of the fix: `file_type()`
-            // never follows a link, so a symlink to a directory answers `is_dir() ==
-            // false` and `is_symlink() == true`. The old guard sat inside the `is_dir`
-            // arm where it could never be false — dead code — and, because `is_dir` was
-            // false, the link fell through to the file arm below and `vendor ->
-            // ../shared` was listed as a file. Skipping it outright keeps the walk
-            // bounded (a link can point at an ancestor) and keeps the list to real files.
+            // Before `is_dir`: `file_type()` never follows a link, so a symlink to a directory would
+            // be listed as a file. Skipping links also bounds the walk.
             if ft.is_symlink() {
                 continue;
             }
@@ -154,9 +103,6 @@ mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
 
-    /// The repo path is the one that matters: it must return tracked *and* untracked
-    /// files, and must not return anything `.gitignore` names — the property that lets
-    /// the explorer skip having an ignore parser at all.
     #[test]
     fn project_files_lists_tracked_and_unignored_untracked() {
         let dir = scratch_dir();
@@ -183,8 +129,6 @@ mod tests {
         assert!(!idx.truncated);
     }
 
-    /// The fallback has to work in a plain folder, and has to skip the two things that
-    /// would otherwise dominate it: dot-directories and generated trees.
     #[test]
     fn project_files_walks_a_folder_that_is_not_a_repo() {
         let dir = scratch_dir();

@@ -4,7 +4,6 @@ import type { Drift } from "../src/types";
 
 describe("gitMutates", () => {
   it("catches every ordinary way an agent moves HEAD", () => {
-    // `checkout` and `switch` are the same case, whatever the user's habit.
     expect(gitMutates("git checkout main")).toBe(true);
     expect(gitMutates("git checkout -b feat/thing")).toBe(true);
     expect(gitMutates("git switch dev")).toBe(true);
@@ -25,10 +24,8 @@ describe("gitMutates", () => {
     // Compound commands are the norm, so this can't be a prefix match.
     expect(gitMutates("cd sub && git switch dev")).toBe(true);
     expect(gitMutates("git worktree add ../x && cd ../x && pnpm install")).toBe(true);
-    // Global flags sit between `git` and the verb.
     expect(gitMutates("git -C /Users/t/dev/some/deep/path checkout main")).toBe(true);
     expect(gitMutates("git --no-pager branch -a")).toBe(true);
-    // Multi-line heredoc-ish blobs still match.
     expect(gitMutates("set -e\ngit fetch origin\ngit checkout main\n")).toBe(true);
   });
 
@@ -49,27 +46,21 @@ describe("gitMutates", () => {
   });
 
   it("accepts the false positives it is designed to tolerate", () => {
-    // `checkout -- <path>` restores a file and moves nothing. Matching it is fine and
-    // deliberate: the re-read finds no change and renders nothing. This test exists so
-    // that if someone later tightens the regex to exclude it, they do so knowingly —
-    // the risk of a clever exclusion is missing a real `checkout` that looks like it.
+    // `checkout -- <path>` moves nothing; matching it anyway beats an exclusion that could miss a real one.
     expect(gitMutates("git checkout -- src/main.ts")).toBe(true);
-    // A word merely containing a verb must not trigger on its own, though.
+    // a verb inside another word must not match
     expect(gitMutates("./scripts/branchless-deploy.sh")).toBe(false);
     expect(gitMutates("echo 'nothing to see'")).toBe(false);
   });
 
   it("does not let the match run away into an unrelated later command", () => {
-    // `git` early, a verb far later in a long unrelated pipeline: the bounded gap is
-    // what stops this reading as a branch change.
     const far = "git status && " + "echo padding ".repeat(20) + "&& npm run reset";
     expect(gitMutates(far)).toBe(false);
   });
 });
 
 describe("driftTarget", () => {
-  // The shape the roster reports, and the shape of the real case this was written for:
-  // a session launched in exp-overview whose agent created ../overview and moved there.
+  // The roster as worktree_heads reports it: launched in exp-overview, the agent moved to ../overview.
   const WT = "/Users/t/w/cc-launcher-spike";
   const REPO = "/Users/t/repos/cc-launcher-spike";
   const roster = [
@@ -85,7 +76,6 @@ describe("driftTarget", () => {
       .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
     expect(driftTarget(launched, "Edit", { file_path: `${WT}/overview/src-tauri/src/usage.rs` }, null, roster))
       .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
-    // Drifting into the repo's own main checkout counts exactly the same.
     expect(driftTarget(launched, "Write", { file_path: `${REPO}/README.md` }, null, roster))
       .toEqual({ dir: REPO, branch: "main", via: "write" });
   });
@@ -96,15 +86,13 @@ describe("driftTarget", () => {
   });
 
   it("only writes count — a read lands anywhere and would make this flap", () => {
-    // Every one of these is an ordinary thing for an agent to do from exp-overview.
     expect(driftTarget(launched, "Read", { file_path: `${WT}/overview/src/usage.ts` }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Bash", { file_path: `${WT}/overview/src/usage.ts` }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Grep", { file_path: `${WT}/overview/src/usage.ts` }, null, roster)).toBeNull();
   });
 
   it("ignores writes outside the repo entirely", () => {
-    // A scratch file, a global config, another project: none of these are a move, and
-    // treating them as one would offer to relocate a live session into $TMPDIR.
+    // a false positive here offers to relocate a live session into $TMPDIR
     expect(driftTarget(launched, "Write", { file_path: "/tmp/scratch/notes.md" }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Write", { file_path: "/Users/t/.claude/settings.json" }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Write", { file_path: "/Users/t/repos/other-project/src/a.ts" }, null, roster)).toBeNull();
@@ -115,25 +103,21 @@ describe("driftTarget", () => {
   });
 
   it("picks the innermost checkout when one worktree sits inside another", () => {
-    // Claude Code's own worktrees live at `<repo>/.claude/worktrees/<name>`, so the repo
-    // root also contains them and a longest-match is the only thing that names the right
-    // branch. This is not hypothetical — it is where `EnterWorktree` puts them.
+    // EnterWorktree puts worktrees at `<repo>/.claude/worktrees/<name>`, inside the root,
+    // so only a longest match names the right branch.
     const nested = [
       { path: "/r", branch: "main", exists: true, is_main: true },
       { path: "/r/.claude/worktrees/feature", branch: "feat/x", exists: true, is_main: false },
     ];
     expect(driftTarget("/r", "Write", { file_path: "/r/.claude/worktrees/feature/a.ts" }, null, nested))
       .toEqual({ dir: "/r/.claude/worktrees/feature", branch: "feat/x", via: "write" });
-    // …and from inside that worktree, writing back up into the repo is drift too.
     expect(driftTarget("/r/.claude/worktrees/feature", "Write", { file_path: "/r/src/a.ts" }, null, nested))
       .toEqual({ dir: "/r", branch: "main", via: "write" });
   });
 
   it("does not mistake a sibling with a shared name prefix for a match", () => {
-    // `/w/overview-old` starts with `/w/overview` as a *string*; only a path-boundary
-    // test keeps them apart. The roster must include the session's own checkout, as a
-    // real one from `worktree_heads` always does — without it there is no home to
-    // compare against and the answer is (correctly) nothing at all.
+    // The roster includes the session's own checkout, as a real one always does: with no
+    // home to compare against, the answer is null.
     const sib = [
       { path: launched, branch: "exp/overview", exists: true, is_main: false },
       { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
@@ -145,25 +129,22 @@ describe("driftTarget", () => {
       .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "write" });
   });
 
-  // The regression guard for the review finding: the roster is resolved and normalised
-  // in Rust, while `workdir` is however the user spelled the folder they picked. When
-  // the two cannot be reconciled, the old code compared the target against `undefined`
-  // and every write into the session's OWN checkout read as a move — permanently.
+  // The roster is normalised in Rust and `workdir` is however the user spelled it; an
+  // unplaceable home must answer nothing, never read every write as a move.
   it("says nothing at all when the session's own folder isn't in the roster", () => {
     const elsewhere = [
       { path: `${WT}/overview`, branch: "feat/overview", exists: true, is_main: false },
     ];
     expect(driftTarget("/some/symlinked/spelling", "Write", { file_path: `${WT}/overview/a.ts` }, null, elsewhere)).toBeNull();
     expect(driftUpdate(null, "/some/symlinked/spelling", "Write", { file_path: `${WT}/overview/a.ts` }, `${WT}/overview`, elsewhere)).toBeNull();
-    // …and an unplaceable home must not retire a drift either, in the other direction.
+    // …and must not retire a drift either
     const held = { dir: `${WT}/overview`, branch: "feat/overview", via: "write" as const };
     expect(driftUpdate(held, "/some/symlinked/spelling", "Write", { file_path: "/some/symlinked/spelling/a.ts" }, undefined, elsewhere))
       .toEqual(held);
   });
 
   it("compares paths case-insensitively, as norm_path and the filesystem both do", () => {
-    // `worktree_heads` upper-cases a Windows drive letter; Claude Code may report it
-    // lower-case. Left case-sensitive, the whole feature goes dark on Windows.
+    // worktree_heads upper-cases a Windows drive letter; Claude Code may report it lower-case
     const win = [
       { path: "C:/r/main", branch: "main", exists: true, is_main: true },
       { path: "C:/r/feat", branch: "feat/x", exists: true, is_main: false },
@@ -174,7 +155,6 @@ describe("driftTarget", () => {
   });
 
   it("treats a session launched in a subfolder of a checkout as being in it", () => {
-    // Launching in `overview/src-tauri` and writing to `overview/src` is not a move.
     expect(driftTarget(`${WT}/overview/src-tauri`, "Write", { file_path: `${WT}/overview/src/a.ts` }, null, roster)).toBeNull();
   });
 
@@ -192,25 +172,21 @@ describe("driftTarget", () => {
     expect(driftTarget(launched, "Write", { file_path: "   " }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Write", { file_path: 42 }, null, roster)).toBeNull();
     expect(driftTarget(launched, "Write", { file_path: `${WT}/overview/a.ts` }, null, [])).toBeNull();
-    // …and no `tool_input` at all, which is what a hook for a tool with no arguments sends.
+    // no tool_input at all: what a hook for an argument-less tool sends
     expect(driftTarget(launched, "Write", undefined, null, roster)).toBeNull();
     expect(driftTarget(launched, "Write", "not an object", null, roster)).toBeNull();
   });
 
-  // The Bash arm. Written from a real session that ran 99 hooks, every one of them
-  // `Bash`, and reported the branch it launched on the whole time: told to prefer the
-  // shell, it created files with `cat > f <<'EOF'` and edited them with inline `python3`
-  // heredocs, so `WRITE_TOOLS` never fired and case 1 had `cwd` pinned. Both signals
-  // blind at once, and nothing on screen said so.
+  // An agent told to prefer the shell writes with heredocs and `sed -i`, so WRITE_TOOLS never fires
+  // and Claude Code keeps cwd pinned to the launch dir: both signals blind at once.
   describe("the Bash arm — an agent that calls no write tool at all", () => {
     const WROTE = `${WT}/overview`;
     const moved = { dir: WROTE, branch: "feat/overview", via: "write" as const };
-    // `cwd` is what case 1 leaves on every hook: the launch dir, whatever the agent did.
+    // cwd defaults to the launch dir, where Claude Code resets it on every hook
     const bash = (command: string, wd = launched, r = roster, cwd: unknown = wd) =>
       driftTarget(wd, "Bash", { command }, cwd, r);
 
     it("names the checkout a write-shaped command ran in", () => {
-      // Verbatim shapes from that session.
       expect(bash(`cd ${WROTE} && cat > src/toolio.ts <<'TSEOF'\nexport const x = 1;\nTSEOF`))
         .toEqual({ dir: WROTE, branch: "feat/overview", via: "write" });
       expect(bash(`cd ${WROTE} && python3 - <<'PY'\np="src/phase.ts"\ns=open(p).read()\nopen(p,"w").write(s)\nPY`))
@@ -224,44 +200,33 @@ describe("driftTarget", () => {
         .toEqual({ dir: WROTE, branch: "feat/overview", via: "write" });
     });
 
-    // The half this arm shipped without, found on the session that created a worktree
-    // with `git worktree add -b feat/tour ../tour` and then worked in it for an hour
-    // while the sidebar went on saying `dev`: 25 write-shaped commands, every one of
-    // them a relative `cd ../tour`, and exactly one absolute `cd` in 61 commands.
     it("resolves a relative cd against the cwd the hook carried", () => {
-      // Verbatim shapes from that session, with the names of this fixture.
       expect(bash(`cd ../overview && cat > src/tour.ts <<'TOUREOF'\nexport const x = 1;\nTOUREOF`))
         .toEqual(moved);
       expect(bash(`cd ../overview && python3 - <<'PY'\np="src/x.ts"\nopen(p,"w").write(s)\nPY`))
         .toEqual(moved);
       expect(bash(`cd ../overview && cat >> src/styles.css <<'CSSEOF'\n.a{}\nCSSEOF`))
         .toEqual(moved);
-      // `..` may climb more than once, and lands on the repo's own checkout as readily.
       expect(bash(`cd ../../../repos/cc-launcher-spike && cat > README.md <<'E'\nE`))
         .toEqual({ dir: REPO, branch: "main", via: "write" });
-      // Two spellings of one directory are one directory, so the "exactly one" rule
-      // still sees a single answer rather than declining.
+      // two spellings of one directory still satisfy the "exactly one" rule…
       expect(bash(`cd ../overview && cat > a.ts <<'E'\nE\ncd ${WT}/overview && cat > b.ts <<'E'\nE`))
         .toEqual(moved);
-      // …and two spellings of two directories still decline.
+      // …and two directories still decline
       expect(bash(`cd ../overview && cat > a.ts <<'E'\nE\ncd ${REPO} && cat > b.ts <<'E'\nE`))
         .toBeNull();
     });
 
     it("declines a relative cd on a payload that carried no cwd", () => {
-      // Nothing to resolve against, and an unplaceable target may well be a *second*
-      // directory — the same reason two named directories answer nothing.
+      // an unplaceable target may be a second directory, which declines for the same reason
       expect(bash(`cd ../overview && cat > a.ts <<'E'\nE`, launched, roster, null)).toBeNull();
       expect(bash(`cd ../overview && cat > a.ts <<'E'\nE`, launched, roster, 42)).toBeNull();
-      // An absolute one needs no cwd and is unaffected.
       expect(bash(`cd ${WT}/overview && cat > a.ts <<'E'\nE`, launched, roster, null))
         .toEqual(moved);
     });
 
     it("stays silent when the command only read", () => {
-      // The whole reason writes and not reads drive this: an agent reads everywhere,
-      // constantly, and a drift set by a read would put a wrong branch on screen and
-      // offer to relocate a live session into it.
+      // an agent reads everywhere; a drift set by a read would offer to relocate a live session
       expect(bash(`cd ${WROTE} && sed -n '1,80p' src/files.ts`)).toBeNull();
       expect(bash(`cd ${WROTE} && cat src/a.ts`)).toBeNull();
       expect(bash(`cd ${WROTE} && grep -rn "toolUseId" src/`)).toBeNull();
@@ -269,49 +234,39 @@ describe("driftTarget", () => {
       expect(bash(`cd ${WROTE} && pnpm exec tsc --noEmit`)).toBeNull();
     });
 
-    // Each of these was found in that session's own traffic, not imagined.
     it("does not mistake shell punctuation or heredoc code for a redirect", () => {
-      // `2>&1` and `>/dev/null` are every third command an agent runs.
       expect(bash(`cd ${WROTE} && pnpm install 2>&1 | tail -5`)).toBeNull();
       expect(bash(`cd ${WROTE} && ls src/ >/dev/null`)).toBeNull();
-      // A TypeScript arrow inside a heredoc body: 11 of the 99 commands carried one.
       expect(bash(`cd ${WROTE} && grep -n "const k = (a: Act): string => a.id" src/x.ts`))
         .toBeNull();
-      // …and a comparison inside one, which is why the target must look like a path.
+      // a `>` inside quoted code: the redirect target must look like a path
       expect(bash(`cd ${WROTE} && grep -n "if (s.activity.length > 12)" src/phase.ts`))
         .toBeNull();
     });
 
     it("declines when the command names more than one directory", () => {
-      // Genuinely unanswerable, so it answers nothing — the same fail-closed rule the
-      // rest of the module runs on. The second `cd` may be a real one…
+      // fail closed: the second cd may be a real one…
       expect(bash(`cd ${WROTE} && cat > a/b.ts <<'E'\nE\ncd ${REPO} && cat > c/d.ts <<'E'\nE`))
         .toBeNull();
-      // …or just a line of a shell script inside the heredoc being written.
+      // …or a line of the shell script being written
       expect(bash(`cd ${WROTE} && cat > setup.sh <<'E'\ncd ${REPO}\nE`)).toBeNull();
     });
 
     it("needs a cd it can actually place", () => {
-      // A relative cd that stays inside the checkout re-derives the launch dir, which is
-      // home by definition — the reason this arm was absolute-only at first, and the
-      // half of that reasoning that was right.
+      // a cd that stays inside the checkout lands on home
       expect(bash(`cd src && cat > a.ts <<'E'\nE`)).toBeNull();
       expect(bash(`cd ./src/x && cat > a.ts <<'E'\nE`)).toBeNull();
       // Only a shell could expand these, so they land on a path no checkout contains.
       expect(bash(`cd ~/w/overview && cat > a.ts <<'E'\nE`)).toBeNull();
       expect(bash(`cd $WT/overview && cat > a.ts <<'E'\nE`)).toBeNull();
-      // No cd at all: the write went to the pinned cwd, which is home by definition.
+      // no cd: the write went to the pinned cwd, i.e. home
       expect(bash(`cat > src/a.ts <<'E'\nE`)).toBeNull();
-      // Outside the repo, or a folder the roster has never heard of. A false positive
-      // here offers to relocate a live session into $TMPDIR.
       expect(bash(`cd /tmp/scratch && cat > notes.md <<'E'\nE`)).toBeNull();
       expect(bash(`cd ${WT}/gone && cat > a.ts <<'E'\nE`)).toBeNull();   // registered, off disk
       expect(bash(`cd ${WROTE} && cat > a.ts <<'E'\nE`, launched, [])).toBeNull();
     });
 
     it("is not extended to any other tool, and reads no other field", () => {
-      // `command` is Bash's field; a Bash payload has no `file_path` and the write tools
-      // have no `command`, so neither can borrow the other's evidence.
       expect(driftTarget(launched, "Read", { command: `cd ${WROTE} && cat > a.ts <<'E'\nE` }, null, roster))
         .toBeNull();
       expect(driftTarget(launched, "Bash", { file_path: `${WROTE}/src/a.ts` }, null, roster)).toBeNull();
@@ -328,7 +283,6 @@ describe("driftTarget", () => {
       expect(bash("cd C:\\r\\feat && cat > src/a.ts <<'E'\nE", "c:/r/main", win))
         .toEqual({ dir: "C:/r/feat", branch: "feat/x", via: "write" });
       expect(bash("cd C:/r/main && cat > src/a.ts <<'E'\nE", "c:/r/main", win)).toBeNull();
-      // A relative one resolves against a cwd spelled with backslashes just as well.
       expect(bash("cd ..\\feat && cat > src/a.ts <<'E'\nE", "c:/r/main", win, "C:\\r\\main"))
         .toEqual({ dir: "C:/r/feat", branch: "feat/x", via: "write" });
     });
@@ -337,20 +291,17 @@ describe("driftTarget", () => {
       const cmd = (dir: string) => ({ command: `cd ${dir} && cat > src/a.ts <<'E'\nE` });
       const upd = (prev: Drift | null, input: unknown) =>
         driftUpdate(prev, launched, "Bash", input, launched, roster);
-      // Set, then latch through the reads an agent does constantly from where it moved.
       expect(upd(null, cmd(WROTE))).toEqual(moved);
       expect(upd(moved, { command: `cd ${launched} && grep -rn x src/` })).toEqual(moved);
       expect(upd(moved, { command: `cd ${launched} && pnpm test 2>&1 | tail -3` })).toEqual(moved);
-      // …and a write home retires it, exactly as an `Edit` home does. Letting the shell
-      // arm set but never clear would strand a Bash-first session on a stale card
-      // offering to move it into a checkout it had already come back from.
+      // a write home retires it; an arm that sets but never clears would strand a stale card
       expect(upd(moved, cmd(launched))).toBeNull();
     });
   });
 
   describe("driftUpdate — two signals, one answer", () => {
     const moved = { dir: `${WT}/overview`, branch: "feat/overview", via: "write" as const };
-    // Case 1: cwd is pinned to the launch dir for the whole life of the drift.
+    // Claude Code resets cwd to the launch dir on every hook, so it stays pinned for the drift's whole life.
     const upd = (prev: Drift | null, tool: string, fp: unknown, cwd: unknown = launched) =>
       driftUpdate(prev, launched, tool, { file_path: fp }, cwd, roster);
 
@@ -359,8 +310,7 @@ describe("driftTarget", () => {
     });
 
     it("holds through everything that isn't a write home", () => {
-      // This is the whole point of latching, and it is the common case: an agent that
-      // moved to a new checkout goes on reading the one it came from, constantly.
+      // an agent that moved keeps reading the checkout it came from
       expect(upd(moved, "Read", `${launched}/src/phase.ts`)).toEqual(moved);
       expect(upd(moved, "Grep", `${launched}/src`)).toEqual(moved);
       expect(upd(moved, "Bash", undefined)).toEqual(moved);
@@ -385,34 +335,25 @@ describe("driftTarget", () => {
       expect(upd(null, "Bash", undefined)).toBeNull();
     });
 
-    // The sequence that got away in full: a worktree created next door, then an hour of
-    // shell-only work inside it while `cwd` never left the launch dir for a moment.
     it("follows an agent into the worktree it just created next door", () => {
       const cmd = (prev: Drift | null, command: string) =>
         driftUpdate(prev, launched, "Bash", { command }, launched, roster);
-      // The `git worktree add` wrote no file of its own, so it sets nothing: what makes
-      // the new checkout knowable at all is the roster poll behind `refreshWorktrees`.
+      // `worktree add` writes no file and sets nothing; the roster poll (refreshWorktrees) sees the checkout
       expect(cmd(null, "git worktree add -b feat/overview ../overview dev 2>&1 | tail -3")).toBeNull();
       const d = cmd(null, `cd ../overview && cat > src/tour.ts <<'E'\nE`);
       expect(d).toEqual(moved);
-      // …and it latches through the reads that follow, which is most of what such a
-      // session does — from the checkout it moved to, and from the one it left.
       expect(cmd(d, "cd ../overview && grep -n renderAllNow src/main.ts")).toEqual(moved);
       expect(cmd(d, "cd src && sed -n '1,40p' phase.ts")).toEqual(moved);
-      // A write with no `cd` at all names no directory, so it leaves the answer alone
-      // rather than reading the pinned cwd as "came home" — the heredoc it is writing
-      // may well carry the absolute path of the checkout it moved to.
+      // a write with no cd names no directory and must not read the pinned cwd as "came home":
+      // the heredoc it writes may carry the absolute path of the checkout it moved to
       expect(cmd(d, `cat > src/phase.ts <<'E'\nE`)).toEqual(moved);
-      // Going home the way it left retires it, by the same evidence that set it.
       expect(cmd(d, `cd ${launched} && cat > src/phase.ts <<'E'\nE`)).toBeNull();
     });
 
     // --- the cwd signal: Claude Code moving the session itself ---
 
     it("reads a moved cwd as drift with no write at all", () => {
-      // The EnterWorktree case, exactly: three Bash calls, zero writes, and the only
-      // thing that changed is the cwd riding along on every hook. The write signal is
-      // blind here, which is why this half exists.
+      // EnterWorktree: no write at all, only the cwd riding along on every hook moves
       expect(driftUpdate(null, launched, "Bash", { file_path: undefined }, `${WT}/overview`, roster))
         .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" });
       expect(driftUpdate(null, launched, "Bash", { file_path: undefined }, `${WT}/overview/src`, roster))
@@ -420,15 +361,13 @@ describe("driftTarget", () => {
     });
 
     it("does not read a cd within the same checkout as a move", () => {
-      // `cd src && …` moves the cwd and changes no checkout. Without resolving both
-      // sides to a checkout first, every such call would read as a relocation.
+      // both sides resolve to a checkout before comparing, or every `cd src` reads as a move
       expect(driftUpdate(null, launched, "Bash", { file_path: undefined }, `${launched}/src`, roster)).toBeNull();
       expect(driftUpdate(null, launched, "Bash", { file_path: undefined }, launched, roster)).toBeNull();
     });
 
     it("lets cwd outrank a write, since it also moves the conversation", () => {
-      // Both signals firing at once: cwd wins, and the `via` it carries is what tells
-      // the repair that the transcript has already been re-homed by Claude.
+      // `via: "cwd"` tells the repair that Claude has already re-homed the transcript
       expect(driftUpdate(null, launched, "Write", { file_path: `${REPO}/a.ts` }, `${WT}/overview`, roster))
         .toEqual({ dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" });
     });
@@ -438,19 +377,15 @@ describe("driftTarget", () => {
       expect(driftUpdate(byCwd, launched, "Bash", { file_path: undefined }, launched, roster)).toBeNull();
     });
 
-    // The regression guard for the bug this whole feature exists to fix.
     it("NEVER lets a home cwd clear a write drift", () => {
-      // In case 1 the cwd reads "home" on every single hook for the entire life of the
-      // drift — Claude Code resets it. If that were allowed to clear the flag, the
-      // feature would work for exactly one tool call and then delete its own answer.
+      // Claude Code resets cwd to home on every hook, so a home cwd clearing the flag
+      // would undo the drift one call later.
       expect(upd(moved, "Bash", undefined, launched)).toEqual(moved);
       expect(upd(moved, "Read", `${WT}/overview/a.ts`, launched)).toEqual(moved);
       expect(upd(moved, "Read", `${launched}/a.ts`, `${launched}/src`)).toEqual(moved);
     });
 
     it("says nothing when cwd names no checkout of this repo", () => {
-      // A session whose cwd is a scratch dir tells us nothing about checkouts, so it
-      // must neither set a drift nor retire one.
       expect(driftUpdate(null, launched, "Bash", { file_path: undefined }, "/tmp/whatever", roster)).toBeNull();
       expect(driftUpdate(moved, launched, "Bash", { file_path: undefined }, "/tmp/whatever", roster)).toEqual(moved);
       const byCwd = { dir: `${WT}/overview`, branch: "feat/overview", via: "cwd" as const };
@@ -460,10 +395,8 @@ describe("driftTarget", () => {
   });
 });
 
-// The same resolution read as a grouping answer: which checkout does this *directory*
-// belong to. ./grouping keys its worktree clusters on it, so a pane that starts below
-// its checkout (a task's declared cwd, or a shell that inherited one) still lands in
-// the row its branch is on.
+// The same resolution as a grouping answer: which checkout a directory belongs to, so a
+// pane started below its checkout still lands in the row its branch is on (./grouping).
 describe("checkoutDir", () => {
   const REPO = "E:\\w\\epi";
   const WT = "E:\\w\\wt-feat";
@@ -478,17 +411,13 @@ describe("checkoutDir", () => {
   });
 
   it("keeps the caller's spelling for the checkout itself", () => {
-    // Both sides name one directory; the roster's has been through norm_path in Rust
-    // and the caller's has not. Handing back the roster's would break every comparison
-    // the caller makes against its own paths.
+    // the roster's spelling has been through norm_path; handing it back breaks the caller's comparisons
     expect(checkoutDir(REPO, roster)).toBe(REPO);
     expect(checkoutDir("E:/w/epi", roster)).toBe("E:/w/epi");
     expect(checkoutDir(REPO + "\\", roster)).toBe(REPO + "\\");
   });
 
   it("returns a folder it cannot place untouched", () => {
-    // No roster yet, a scratch dir, another project entirely: fail closed, exactly as
-    // drift does — the alternative is a pane clustered under a repo it isn't in.
     expect(checkoutDir(`${WT}/x`, [])).toBe(`${WT}/x`);
     expect(checkoutDir("C:\\tmp\\scratch", roster)).toBe("C:\\tmp\\scratch");
   });

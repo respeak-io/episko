@@ -1,30 +1,10 @@
-// External (non-Episko) Claude Code sessions.
-//
-// Claude Code writes a per-process registry file at
-// `~/.claude/sessions/<pid>.json` for every running interactive session, e.g.
-//   {"pid":80629,"sessionId":"…","cwd":"/…","name":"repo-a3","status":"idle",…}
-// Episko's own sessions DO register here too (verified on CC 2.1.211), so we
-// filter them out by pid — see `owned_pids` and the ancestry walk in
-// `list_external_sessions`. We must NOT filter by session id alone: /resume and
-// /clear rewrite this file with a new id, which would otherwise resurface our
-// own live session as "external". What remains is the sessions started outside
-// Episko (a plain terminal, an IDE, etc.) — we jump to their terminal window and
-// show a read-only mirror of their transcript.
-//
-// The registry format and directory are identical on Windows (verified on CC
-// 2.1.216: `%USERPROFILE%\.claude\sessions\<pid>.json`, VS Code-hosted sessions
-// included), so LISTING is fully cross-platform: liveness/ownership checks go
-// through `ProcTable`, an in-process `sysinfo` snapshot that works the same on
-// macOS, Windows and Linux. Only `focus_external_session` (jumping to the
-// owning terminal window) is written twice — AppleScript on macOS, the window
-// APIs on Windows — because "which window is that pid's terminal" has no
-// portable answer.
+// External (non-Episko) Claude Code sessions (docs/sessions.md), read from Claude's registry
+// at `~/.claude/sessions/<pid>.json`. Ours are filtered out by pid, never by session id, which
+// /resume and /clear rewrite. Listing is portable via `ProcTable`; only focusing is per OS.
 
 use tauri::State;
 
-// `ps_one` is reached only from the macOS focus path, so on Windows an
-// unconditional import is an unused-import warning; `sys_command` isn't wanted at
-// all here — `osascript` is spawned directly.
+// Only the macOS focus path uses `ps_one`; an unconditional import is unused on Windows.
 #[cfg(not(windows))]
 use crate::platform::ps_one;
 use crate::git::git_repo_info;
@@ -41,18 +21,12 @@ pub(crate) struct ExternalSession {
     status_updated_at: Option<i64>,
     started_at: Option<i64>,
     version: String,
-    /// Main worktree root of this session's repo — the key the sidebar groups by, so
-    /// every worktree of one repo lands under it. None when cwd isn't a git repo.
-    repo_root: Option<String>,
-    /// Branch checked out in this session's cwd (None when detached / not a repo).
-    branch: Option<String>,
+    repo_root: Option<String>, // main worktree root, what the sidebar groups by; None outside a repo
+    branch: Option<String>, // None when detached or not a repo
 }
 
-/// A point-in-time snapshot of the system process table (pid → parent + name),
-/// taken in-process via `sysinfo` so the exact same code serves macOS, Windows
-/// and Linux — no `ps`/`tasklist` child processes. The frontend polls external
-/// sessions every ~3s; refreshing only the bare process list (no CPU/memory/
-/// exe/cmd lookups) keeps a snapshot to a few milliseconds.
+/// A snapshot of the process table (pid → parent + name) via `sysinfo`: no `ps` child, and
+/// only the bare list is refreshed, since the frontend polls this every ~3s.
 pub(crate) struct ProcTable {
     /// pid → (ppid, lowercased process name)
     procs: std::collections::HashMap<u32, (Option<u32>, String)>,
@@ -80,20 +54,13 @@ impl ProcTable {
         Self { procs }
     }
 
-    /// True if `pid` is currently a live process whose name contains "claude" —
-    /// the identity check that guards against stale registry files and pid
-    /// reuse. Matched loosely because the name varies: `claude` on macOS/Linux,
-    /// `claude.exe` on Windows, and self-update renames like
-    /// `claude.exe.old.<ts>` for a binary updated while running.
+    /// Guards stale registry files and pid reuse. Loose match: `claude`, `claude.exe`,
+    /// and a self-update's `claude.exe.old.<ts>`.
     fn is_live_claude(&self, pid: u32) -> bool {
         self.procs.get(&pid).is_some_and(|(_, name)| name.contains("claude"))
     }
 
-    /// True if `pid` is `ancestor`, or a descendant of it (walks the ppid chain).
-    /// Used to recognise `claude` processes Episko launched — directly (embedded
-    /// PTY) or via a child terminal (e.g. Ghostty) — regardless of their session
-    /// id. The iteration cap also bounds ppid cycles, which Windows can produce
-    /// after pid reuse (a dead parent's pid handed to a new process).
+    /// Walks the ppid chain. The cap also bounds the ppid cycles Windows produces after pid reuse.
     fn is_descendant_of(&self, pid: u32, ancestor: u32) -> bool {
         let mut cur = pid;
         for _ in 0..24 {
@@ -111,27 +78,16 @@ impl ProcTable {
 
 // ---------- which ports our sessions are actually listening on ----------
 
-/// One TCP port a session's process tree has open, as the frontend reads it.
 #[derive(serde::Serialize, Debug, PartialEq, Eq)]
 pub(crate) struct SessionPort {
-    /// The Episko pane whose PTY child this socket descends from.
-    session_id: String,
+    session_id: String, // the pane whose PTY child this socket descends from
     port: u16,
-    /// The process actually holding the socket — `node.exe`, `python.exe`. It is
-    /// several hops below the pane (a real chain measured here was
-    /// `node <- cmd <- node <- cmd <- node <- cmd <- pwsh <- claude <- episko`), so
-    /// this is a leaf's name, not the command the user or the agent ran.
-    pid: u32,
-    name: String,
+    pid: u32, // the leaf holding the socket, several hops below the pane
+    name: String, // that leaf's name (node.exe), not what the user or agent ran
 }
 
-/// Collapse the several sockets one server really has down to one row per
-/// (session, port).
-///
-/// A dev server binding "everywhere" is three or four listeners: `0.0.0.0`, `[::]`,
-/// and often `127.0.0.1` and a LAN address besides — a real one measured here showed
-/// up five times. They are one server and one row. The lowest pid wins so the answer
-/// is stable across polls rather than reordering with the OS's enumeration.
+/// One row per (session, port): a server bound "everywhere" is several listeners (`0.0.0.0`,
+/// `[::]`, `127.0.0.1`, a LAN address). Lowest pid wins so the row is stable across polls.
 fn dedupe_ports(mut found: Vec<SessionPort>) -> Vec<SessionPort> {
     found.sort_by(|a, b| {
         (a.session_id.as_str(), a.port, a.pid).cmp(&(b.session_id.as_str(), b.port, b.pid))
@@ -140,27 +96,12 @@ fn dedupe_ports(mut found: Vec<SessionPort>) -> Vec<SessionPort> {
     found
 }
 
-/// Every TCP port listened on by a process descended from one of our panes.
-///
-/// **This is the ground truth the rest of the running-server feature only approximates.**
-/// A parsed log line is a guess about somebody else's output format; a listening socket
-/// either exists or it does not. It is also the only thing that can see a server nobody
-/// announced — one started by hand in a shell pane, or one whose banner we cannot parse
-/// — because it asks the kernel rather than the process.
-///
-/// Attribution is by ancestry, and it reaches: the chain from a `vite` leaf back to
-/// `episko.exe` measured **eight** hops on Windows (node → cmd → node → cmd → node →
-/// cmd → pwsh → claude), well inside `is_descendant_of`'s cap. What it cannot do is
-/// name a server whose chain is *broken* — an orphan whose session has exited — and
-/// that is deliberate: those have no pane to belong to, and inventing one would be
-/// worse than leaving them out.
-///
-/// Spawn-free on every platform (`GetExtendedTcpTable`, libproc, `/proc`), like
-/// `ProcTable` above, because this is polled.
+/// Every TCP port listened on by a descendant of a pane's PTY child: the kernel's answer,
+/// the only one that sees a server nobody announced. An orphan (chain broken by its
+/// session's exit) is left out on purpose. Spawn-free on every OS, because it is polled.
 #[tauri::command]
 pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
-    // The roster first: with no panes open there is nothing any socket could belong
-    // to, and the whole scan is skipped.
+    // Roster first: with no panes open the whole scan is skipped.
     let roster: Vec<(String, u32)> = state
         .sessions
         .lock()
@@ -175,8 +116,7 @@ pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
     let table = ProcTable::snapshot();
     let mut found = Vec::new();
     for l in all {
-        // TCP only, and only actually-listening sockets: SSDP, NetBIOS and mDNS are
-        // UDP and would otherwise read as somebody's dev server.
+        // Listening TCP only: SSDP, NetBIOS and mDNS are UDP and would read as dev servers.
         if l.protocol != listeners::Protocol::TCP || l.state != listeners::SocketState::Listen {
             continue;
         }
@@ -194,9 +134,7 @@ pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
     dedupe_ports(found)
 }
 
-/// Parse one `~/.claude/sessions/<pid>.json` registry file into an
-/// `ExternalSession` (repo_root/branch enriched later). None for malformed
-/// files and non-interactive entries (`claude -p`, SDK runs).
+/// None for a malformed file or a non-interactive entry (`claude -p`, SDK runs).
 pub(crate) fn parse_registry_entry(txt: &str) -> Option<ExternalSession> {
     let v: serde_json::Value = serde_json::from_str(txt).ok()?;
     if v.get("kind").and_then(|k| k.as_str()) != Some("interactive") {
@@ -221,10 +159,8 @@ pub(crate) fn parse_registry_entry(txt: &str) -> Option<ExternalSession> {
     })
 }
 
-/// List interactive Claude Code sessions running OUTSIDE Episko. `exclude` is the
-/// set of session ids Episko already owns (belt-and-suspenders — ours don't
-/// register anyway). Dead/stale registry files are filtered by verifying the pid
-/// is still a live `claude` process.
+/// Sessions running outside Episko. `exclude` (ids we own) is belt-and-braces beside the
+/// pid filter below; stale files are dropped by checking the pid is still a live `claude`.
 #[tauri::command(async)]
 pub(crate) fn list_external_sessions(state: State<AppState>, exclude: Vec<String>) -> Vec<ExternalSession> {
     let home = home_dir();
@@ -251,37 +187,27 @@ pub(crate) fn list_external_sessions(state: State<AppState>, exclude: Vec<String
         return parsed;
     }
 
-    // Liveness + identity: one process-table snapshot for all pids; keep those
-    // still running `claude` (guards against stale files and pid reuse).
     let table = ProcTable::snapshot();
     parsed.retain(|s| table.is_live_claude(s.pid));
 
-    // Drop Episko's OWN sessions, matched by pid — NOT by session id. Their id on
-    // disk changes when the user runs /resume or /clear (the pid file is rewritten
-    // with the new id), so a session-id exclude alone lets a live, Episko-owned
-    // session resurface here as "external". The pid is stable for the process'
-    // lifetime. `owned_pids` covers embedded PTYs directly; the ancestry walk also
-    // catches sessions launched into a child terminal (e.g. Ghostty).
+    // `owned_pids` covers embedded PTYs; the ancestry walk catches a session launched into
+    // a child terminal such as Ghostty. Never by session id: /resume and /clear rewrite it.
     let self_pid = std::process::id();
     let owned = state.owned_pids.lock().unwrap().clone();
     parsed.retain(|s| !owned.contains(&s.pid) && !table.is_descendant_of(s.pid, self_pid));
 
-    // Enrich survivors with their repo root + branch so worktrees of one repo group
-    // together (and merge into that repo's project) rather than each cwd becoming its
-    // own top-level entry. After the filters, so no git runs on stale or owned pids.
+    // After the filters, so git never runs for a stale or owned pid.
     for s in parsed.iter_mut() {
         let (root, branch) = git_repo_info(&s.cwd);
         s.repo_root = root;
         s.branch = branch;
     }
 
-    // most-recently-active first (Reverse, because sort_by_key sorts ascending)
-    parsed.sort_by_key(|s| std::cmp::Reverse(s.status_updated_at.unwrap_or(0)));
+    parsed.sort_by_key(|s| std::cmp::Reverse(s.status_updated_at.unwrap_or(0))); // most recently active first
     parsed
 }
 
-/// Walk up the process tree from `pid` to the owning GUI terminal app.
-/// Returns (app_pid, app_exe_path) — e.g. (719, "/…/Terminal.app/Contents/MacOS/Terminal").
+/// Walk up from `pid` to the first ancestor inside a `.app` bundle: (app_pid, exe path).
 #[cfg(not(windows))]
 fn owning_terminal(pid: u32) -> Option<(u32, String)> {
     let mut cur = pid;
@@ -302,7 +228,6 @@ fn owning_terminal(pid: u32) -> Option<(u32, String)> {
     None
 }
 
-/// One visible top-level window: who owns it, which window, and its caption.
 #[cfg(windows)]
 struct Win {
     pid: u32,
@@ -310,16 +235,10 @@ struct Win {
     title: String,
 }
 
-/// Every visible top-level window on the desktop, in Z-order — `EnumWindows`
-/// enumerates front-to-back, so the *first* entry for a pid is that app's most
-/// recently fronted window. The filter is the one that decides a taskbar button:
-/// visible, unowned, and titled. Without it a single app answers with the
-/// invisible message-only and tool windows it also owns, and raising one of
-/// those does nothing the user can see.
-///
-/// `GetWindowTextW` is safe to call across processes — for a window owned by
-/// another process it reads the stored caption rather than sending `WM_GETTEXT`,
-/// so a wedged terminal can't hang this walk.
+/// Visible top-level windows in Z-order (front to back, so a pid's first entry is its most
+/// recently fronted). Filtered like a taskbar button (visible, unowned, titled), or an app
+/// also answers with its message-only and tool windows. `GetWindowTextW` reads a foreign
+/// window's stored caption without `WM_GETTEXT`, so a wedged terminal cannot hang this.
 #[cfg(windows)]
 fn top_level_windows() -> Vec<Win> {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
@@ -348,15 +267,9 @@ fn top_level_windows() -> Vec<Win> {
     out
 }
 
-/// Pick one of `pid`'s windows. Z-order makes the first its most recently
-/// fronted, which is the right default — but one process can own a window per
-/// project, and then the default is right once and wrong every other time: three
-/// VS Code windows here are all owned by a single `code.exe`, so every jump
-/// landed on whichever was last in front. `hint` (the session's project folder)
-/// breaks that tie against the caption, which both VS Code and Windows Terminal
-/// put the folder in. A hint that matches nothing falls back to the topmost, and
-/// a hint that matches the *wrong* window can only ever pick another window of
-/// the terminal we already resolved — never a different app.
+/// Z-order's first window is the default, but one process can own a window per project
+/// (VS Code), so `hint` (the project folder) is matched against the caption first. A hint
+/// that matches nothing falls back to the topmost; it can never cross to another process.
 #[cfg(windows)]
 fn pick_window(pid: u32, wins: &[Win], hint: &str) -> Option<isize> {
     let mine = || wins.iter().filter(|w| w.pid == pid);
@@ -369,11 +282,8 @@ fn pick_window(pid: u32, wins: &[Win], hint: &str) -> Option<isize> {
     mine().next().map(|w| w.hwnd) // Z-order: this app's most recently fronted window
 }
 
-/// Processes a console session can hang off that are never "its terminal". Only
-/// `explorer.exe` really matters — the others own no titled window anyway — but
-/// it matters a lot: a shell started from the Run box or a shortcut has the
-/// desktop shell as its parent, and returning *that* would front a File Explorer
-/// window (or the desktop) instead of admitting we didn't find the terminal.
+/// Ancestors that are never "its terminal". `explorer.exe` is the one that matters: a shell
+/// started from the Run box has it as parent, and fronting File Explorer is a wrong answer.
 #[cfg(windows)]
 const NOT_A_TERMINAL: [&str; 6] = [
     "explorer.exe",
@@ -384,23 +294,10 @@ const NOT_A_TERMINAL: [&str; 6] = [
     "system",
 ];
 
-/// Walk up from `pid` to the window of the terminal hosting it, taking the
-/// desktop as data (`wins`) so the whole walk is testable without one.
-///
-/// Two shapes have to come out right, and only one of them walks upward:
-///
-/// - **The terminal is an ancestor** — Windows Terminal (`WindowsTerminal.exe` →
-///   `OpenConsole.exe` → shell → claude) and Electron hosts alike. VS Code puts a
-///   *windowless* `Code.exe` pty-host between the shell and the windowed
-///   `Code.exe`, so this must not stop at the first ancestor, only at the first
-///   ancestor that owns a window (verified against live VS Code-hosted sessions).
-/// - **The console host is a CHILD** — the classic `conhost.exe` case. It owns
-///   the window but is spawned *by* the console process, so no upward walk can
-///   reach it; hence the per-level child scan. Verified on Win11 with the console
-///   delegation GUIDs unset.
-///
-/// The 16-level cap is not decoration: pid reuse hands a dead parent's pid to a
-/// new process, and this machine's own table contains a two-process ppid cycle.
+/// Walk up from `pid` to its host terminal's window, with the desktop passed in as data.
+/// Two shapes: the terminal is an ancestor (stop at the first one that owns a window, since
+/// VS Code puts a windowless pty-host `Code.exe` in between), or the console host is a child
+/// (`conhost.exe` is spawned by the shell), hence the per-level child scan. The cap bounds ppid cycles.
 #[cfg(windows)]
 fn terminal_window_for(pid: u32, table: &ProcTable, wins: &[Win], hint: &str) -> Option<isize> {
     let mut cur = pid;
@@ -428,19 +325,10 @@ fn terminal_window_for(pid: u32, table: &ProcTable, wins: &[Win], hint: &str) ->
     None
 }
 
-/// Bring the terminal window hosting an external session to the front.
-///
-/// Window-level only: Windows has no tty to match a tab by, so a Windows
-/// Terminal window with five tabs comes forward showing whichever tab it was
-/// last on — the same tradeoff macOS accepts for Electron hosts, one rung
-/// coarser. `SetForegroundWindow` is allowed here because Episko *is* the
-/// foreground process when the user clicks the jump button; if that ever isn't
-/// true Windows silently refuses, so say so rather than reporting success.
-///
-/// The session's own registry file supplies the project folder used to
-/// disambiguate a host that owns several windows — the frontend already knows
-/// that cwd, but re-reading one small file keeps this command's signature (and
-/// the whole macOS half) untouched.
+/// Window-level only: Windows has no tty to match a tab by. `SetForegroundWindow` works
+/// because Episko is the foreground process at the click; when it is not, Windows refuses
+/// silently, so the return value is checked. The hint is re-read from the registry file
+/// rather than passed in, to keep the command's signature shared with the macOS half.
 #[cfg(windows)]
 #[tauri::command]
 pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
@@ -462,8 +350,7 @@ pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
 
     let hwnd = hwnd as HWND;
     unsafe {
-        // Foreground and minimised are independent: raising a minimised window
-        // leaves it minimised, so restore first or the jump does nothing visible.
+        // Raising a minimised window leaves it minimised, so restore first.
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         }
@@ -474,9 +361,7 @@ pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Bring the terminal window/tab hosting an external session to the front.
-/// Exact tab focus for Terminal.app + iTerm2 (matched by tty); best-effort app
-/// activation for anything else.
+/// Exact tab focus for Terminal.app and iTerm2 (by tty); best-effort app activation otherwise.
 #[cfg(not(windows))]
 #[tauri::command]
 pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
@@ -494,11 +379,8 @@ pub(crate) fn focus_external_session(pid: u32) -> Result<(), String> {
             "tell application \"iTerm2\"\n  activate\n  repeat with w in windows\n    repeat with t in tabs of w\n      repeat with s in sessions of t\n        try\n          if tty of s ends with \"{tty}\" then\n            select t\n            select w\n            return \"ok\"\n          end if\n        end try\n      end repeat\n    end repeat\n  end repeat\nend tell"
         )
     } else {
-        // Generic (VS Code, Warp, Ghostty, …): we can't address an individual
-        // tab/pane by tty via AppleScript, and Electron apps run the shell under a
-        // *helper* process that isn't in System Events' process list — targeting it
-        // by unix id fails with -1719. So just bring the owning app to the front by
-        // opening its top-level .app bundle (the first `.app` in the exe path).
+        // Electron hosts run the shell under a helper absent from System Events' process
+        // list (targeting it by unix id fails with -1719), so just open the .app bundle.
         let app_bundle = app_exe
             .split_once(".app/")
             .map(|(head, _)| format!("{head}.app"))
@@ -540,10 +422,8 @@ mod tests {
         SessionPort { session_id: session.into(), port, pid, name: "node.exe".into() }
     }
 
-    /// One dev server is several sockets. Vite binding "everywhere" shows up as
-    /// `0.0.0.0`, `[::]`, `127.0.0.1` and a LAN address — a real process measured on
-    /// this machine appeared five times — and every one of them is the same server and
-    /// must be one row. Without this the header would count a single `pnpm dev` as four.
+    /// A server bound "everywhere" appears once per address and must be one row, or the
+    /// header counts one `pnpm dev` as four.
     #[test]
     fn dedupe_ports_collapses_one_server_to_one_row() {
         let got = dedupe_ports(vec![
@@ -554,18 +434,13 @@ mod tests {
         assert_eq!(got.iter().map(|p| p.port).collect::<Vec<_>>(), vec![5555, 8787]);
     }
 
-    /// The same port in two panes is two servers, not one. Two worktrees of the same
-    /// repo each running their own dev server is the normal way this happens — they
-    /// cannot both hold 5555, but a `--strictPort`-less vite will land one on 5556, and
-    /// collapsing across sessions would still be wrong the moment the ports differ.
+    /// Two worktrees each running a dev server: the same port in two panes is two servers.
     #[test]
     fn dedupe_ports_keeps_the_same_port_in_two_panes_apart() {
         let got = dedupe_ports(vec![sp("a", 5555, 1), sp("b", 5555, 2)]);
         assert_eq!(got.len(), 2, "sessions must not collapse into each other: {got:?}");
     }
 
-    /// The lowest pid wins, so a row does not reshuffle between polls just because the
-    /// OS enumerated its sockets in a different order.
     #[test]
     fn dedupe_ports_is_stable_across_enumeration_order() {
         let a = dedupe_ports(vec![sp("s", 3000, 900), sp("s", 3000, 100)]);
@@ -574,22 +449,9 @@ mod tests {
         assert_eq!(a[0].pid, 100);
     }
 
-    /// A contract test for somebody else's crate, on whatever OS is running the suite.
-    ///
-    /// `listeners` is the one dependency here whose whole job is a platform API we do not
-    /// own — three separate implementations (`GetExtendedTcpTable`, libproc, `/proc`) of
-    /// the same question — and it is the half of this feature that cannot be checked from
-    /// a developer's machine, because only one OS is in front of you at a time. A release
-    /// that broke its macOS arm would leave every other test in this file green while the
-    /// header's server list silently emptied.
-    ///
-    /// **So the test opens a socket and demands the crate find it.** Merely asserting that
-    /// the returned rows are well-formed would pass *vacuously* on an implementation that
-    /// returned nothing at all, which is precisely the failure being guarded against —
-    /// and "assert it found at least one" would lean on the machine happening to have a
-    /// server up. Binding our own removes both problems: the answer is known, it is ours,
-    /// and the assertion covers the whole chain this feature needs — the socket, its port,
-    /// and the owning pid that `session_ports` walks ancestry from.
+    /// `listeners` has one implementation per OS, and a broken arm would empty the header's
+    /// server list with every other test still green. Opening our own socket is the one
+    /// assertion that is neither vacuous (well-formed rows) nor machine-dependent (at least one).
     #[test]
     fn listeners_sees_a_socket_we_just_opened() {
         // Port 0 → the kernel picks a free one, so this cannot collide with anything.
@@ -650,8 +512,6 @@ mod tests {
 
     #[test]
     fn proc_table_snapshot_sees_this_process() {
-        // Real sysinfo snapshot on whatever OS runs the tests: our own pid must
-        // be present and count as its own descendant.
         let t = ProcTable::snapshot();
         let me = std::process::id();
         assert!(t.procs.contains_key(&me), "own pid missing from process snapshot");
@@ -663,16 +523,12 @@ mod tests {
         entries.iter().map(|&(pid, hwnd, title)| Win { pid, hwnd, title: title.to_string() }).collect()
     }
 
-    /// The window walk, exercised over the three process shapes a Windows session
-    /// actually comes in. No desktop involved — `wins` is the desktop.
     #[cfg(windows)]
     #[test]
     fn terminal_window_finds_the_host_in_every_shape() {
         let win = |pid: u32| wins(&[(pid, 0x1234, "a terminal")]);
 
-        // VS Code (the shape live sessions on this machine have): a *windowless*
-        // Code.exe pty host between the shell and the windowed Code.exe. Stopping
-        // at the first ancestor would find nothing.
+        // VS Code: a windowless Code.exe pty host sits between the shell and the windowed one.
         let vscode = table(&[
             (300, Some(200), "claude.exe"),
             (200, Some(100), "code.exe"),
@@ -690,8 +546,7 @@ mod tests {
         ]);
         assert_eq!(terminal_window_for(300, &wt, &win(100), ""), Some(0x1234));
 
-        // Classic conhost: the host owns the window but is a CHILD of the shell,
-        // so only the per-level child scan can reach it.
+        // Classic conhost: the window's owner is a child of the shell, not an ancestor.
         let conhost = table(&[
             (300, Some(200), "claude.exe"),
             (200, Some(50), "powershell.exe"),
@@ -701,14 +556,10 @@ mod tests {
         assert_eq!(terminal_window_for(300, &conhost, &win(400), ""), Some(0x1234));
     }
 
-    /// The two ways the walk must give up rather than guess. Both are failures
-    /// the user sees as a wrong window, not as an error, if they aren't caught.
     #[cfg(windows)]
     #[test]
     fn terminal_window_refuses_the_desktop_shell_and_survives_pid_reuse() {
-        // A shell started from the Run box: no conhost, and explorer.exe owns a
-        // real (File Explorer) window. Fronting it would be a wrong answer that
-        // looks like a right one.
+        // A shell from the Run box: no conhost, and explorer.exe owns a real File Explorer window.
         let orphan = table(&[
             (300, Some(200), "claude.exe"),
             (200, Some(50), "powershell.exe"),
@@ -716,14 +567,12 @@ mod tests {
         ]);
         assert_eq!(terminal_window_for(300, &orphan, &wins(&[(50, 0x1234, "Downloads")]), ""), None);
 
-        // Pid reuse produces ppid cycles — this machine's own process table has
-        // one. The walk must terminate instead of spinning.
+        // A ppid cycle from pid reuse; the walk must terminate.
         let cycle = table(&[(300, Some(10), "claude.exe"), (10, Some(20), "a.exe"), (20, Some(10), "b.exe")]);
         assert_eq!(terminal_window_for(300, &cycle, &[], ""), None);
     }
 
-    /// One host process, one window per project — the live VS Code case, where
-    /// Z-order alone sends every jump to the same window.
+    /// One host process, one window per project: VS Code.
     #[cfg(windows)]
     #[test]
     fn pick_window_prefers_the_project_over_the_topmost() {
@@ -742,8 +591,7 @@ mod tests {
 
     #[test]
     fn parse_registry_entry_accepts_interactive_rejects_rest() {
-        // Shape verified against a real CC 2.1.216 registry file on Windows;
-        // the keys are identical on macOS.
+        // A real registry file from Windows; the keys are identical on macOS.
         let win = r#"{"pid":41708,"sessionId":"20283E01-6874-4FBB-B696-C29A89F13CC6","cwd":"E:\\Programming\\Work\\Respeak\\episko","startedAt":1784613714619,"procStart":"639202177128968910","version":"2.1.216","peerProtocol":1,"kind":"interactive","entrypoint":"cli","name":"episko-15","nameSource":"derived","status":"busy","updatedAt":1784614124255,"statusUpdatedAt":1784614124255}"#;
         let s = parse_registry_entry(win).expect("interactive entry should parse");
         assert_eq!(s.pid, 41708);
@@ -751,7 +599,6 @@ mod tests {
         assert_eq!(s.status, "busy");
         assert_eq!(s.status_updated_at, Some(1784614124255));
 
-        // Non-interactive (`claude -p`, SDK) and malformed entries are skipped.
         assert!(parse_registry_entry(r#"{"pid":1,"sessionId":"x","kind":"print"}"#).is_none());
         assert!(parse_registry_entry(r#"{"sessionId":"x","kind":"interactive"}"#).is_none());
         assert!(parse_registry_entry("not json").is_none());

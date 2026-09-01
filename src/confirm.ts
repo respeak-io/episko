@@ -1,66 +1,26 @@
-// The app's own yes/no dialog — the thing every confirmation in Episko goes through.
-//
-// WHY THIS EXISTS. All ten of these questions used to be `ask()` from
-// tauri-plugin-dialog, which draws a *native* box: a Windows task dialog, a macOS
-// sheet. Three things were wrong with that, and none of them are fixable from the
-// call site:
-//
-//   • It looks like a different program. System font, system chrome, square on top of
-//     an app whose every other surface is a blurred violet panel — and on Windows it
-//     arrives with the OS ding.
-//   • It cannot say which answer is the dangerous one. "Remove worktree" and "Cancel"
-//     come back as two identical grey buttons in whatever order the platform likes,
-//     so the one that deletes a checkout reads exactly like the one that doesn't.
-//   • It renders the message as one flat blob of text. Every one of these messages was
-//     written with paragraphs, and one of them with a bullet list of the processes it
-//     is about to kill; the native box shows the newlines and nothing else.
-//
-// So the markup is ours now. `ask` keeps the plugin's signature *exactly* — same
-// message string, same `{ title, kind, okLabel, cancelLabel }` — because the ten call
-// sites' wording was already reviewed prose and this change is about the box, not the
-// words. Swapping the import is the whole diff at each one. test/confirm.test.ts is
-// what stops the plugin's `ask` creeping back in beside it.
-//
-// The one native dialog that stays is the *file picker* (`open`, in ./actions and
-// ./icons). That one is not chrome we are imitating badly — it is the OS's file
-// browser, with its sidebar, its recents and its permissions, and an in-app copy would
-// be strictly worse.
+// The app's own yes/no dialog. `ask` keeps tauri-plugin-dialog's signature so a call site changes
+// only its import; the OS file picker (`open`) is the one native dialog left (docs/native-ui.md).
 
 import { $ } from "./dom";
 import { dialogBody } from "./format";
 
-/** The plugin's option bag, kept name-for-name so a call site reads unchanged. */
 export type AskKind = "info" | "warning" | "error";
 export interface AskOpts {
   title: string;
-  /// Decides the glyph, the accent and — the part the native box could not do — whether
-  /// the confirming button reads as destructive. `info` is the only one that doesn't.
-  kind?: AskKind;
+  kind?: AskKind; // `info` gets the accent button; `warning`/`error` mark the confirming button destructive
   okLabel?: string;
   cancelLabel?: string;
 }
 
-// A letter in a box rather than ⚠/ℹ️: those two are emoji-presentation on Windows in
-// half the fonts we might land in, so they arrive as full-colour stickers next to
-// 11px UI text. A glyph we draw the box for renders the same everywhere.
+// A letter in a box rather than ⚠/ℹ️, which arrive as colour emoji in half the Windows fonts.
 const GLYPH: Record<AskKind, string> = { info: "i", warning: "!", error: "!" };
 
-/// Resolver for the question currently on screen; null when nothing is up.
-let settleOpen: ((v: boolean) => void) | null = null;
-/// Questions that arrived while one was already up. The scrim blocks the pointer, so
-/// the only way to get here is async code (the quit guard firing mid-removal, say) —
-/// and the honest answer to that is to ask both, in order, rather than to silently
-/// cancel one of them.
+let settleOpen: ((v: boolean) => void) | null = null; // resolver of the question on screen
+// Questions raised while one is up are asked afterwards, in order, never dropped.
 const waiting: Array<() => void> = [];
-/// What had focus before we took it, so Esc puts the caller back where it was — the
-/// worktree dialog's list, the task manager's row.
 let restoreFocus: HTMLElement | null = null;
 
-/**
- * Ask a yes/no question. Resolves `true` only for the confirming button — Esc, the
- * cancel button and a click on the backdrop all resolve `false`, which is the same
- * contract the plugin's `ask` had, and the reason no call site needed rewriting.
- */
+/** Resolves `true` only for the confirming button; Esc, Cancel and the backdrop resolve `false`. */
 export function ask(message: string, opts: AskOpts): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const run = () => paint(message, opts, resolve);
@@ -79,19 +39,15 @@ function paint(message: string, opts: AskOpts, resolve: (v: boolean) => void) {
   $("cfmIc").textContent = GLYPH[kind];
   $("cfmTitle").textContent = opts.title;
   $("cfmBody").innerHTML = dialogBody(message);
-  // textContent, not markup: these are button faces, and a label is a label.
   $("cfmYes").textContent = ok;
   $("cfmNo").textContent = cancel;
 
   const dlg = $("cfmDlg");
   dlg.className = `cfm k-${kind}`;
-  // `info` is the only kind whose confirming button is not a loss: everything else here
-  // ends a session, deletes a checkout or terminates somebody else's process.
   $("cfmYes").className = kind === "info" ? "cfm-btn go" : "cfm-btn danger";
   dlg.classList.add("show");
   $("cfmScrim").classList.add("show");
-  // After the class lands, so the browser has a laid-out element to focus. Focus goes
-  // to the confirming button because ⏎ confirms — the ring has to agree with the key.
+  // After the class lands, so there is a laid-out element to focus; ⏎ confirms, so Yes gets the ring.
   setTimeout(() => ($("cfmYes") as HTMLElement).focus(), 30);
 }
 
@@ -100,57 +56,22 @@ function settle(v: boolean) {
   if (!r) return;
   settleOpen = null;
   $("cfmDlg").classList.remove("show");
-  $("cfmScrim").classList.remove("show");
-  // Its own backdrop, never the shared #scrim: these open *over* the worktree dialog
-  // and the task manager, and sharing would mean either dropping their backdrop out
-  // from under them or teaching `dropScrim` about a dialog that outranks all of them.
+  $("cfmScrim").classList.remove("show"); // never the shared #scrim: the dialog under us still needs it
   restoreFocus?.focus();
   restoreFocus = null;
   r(v);
-  // `r(v)` only *schedules* the caller's continuation — it does not run it — so draining
-  // synchronously here painted the queued question first and pushed the caller's own
-  // follow-up behind it, which is the opposite of what this comment used to claim. One
-  // microtask hop puts the drain after that continuation.
-  //
-  // The `settleOpen` test is what makes the hop safe: if the continuation asked its own
-  // question, it is on screen now and the queue must not overwrite it. That question's
-  // own `settle` drains the queue next, so nothing is stranded — the order just ends up
-  // caller-first, which is the intent.
+  // `r(v)` only schedules the caller's continuation, so drain a microtask later: a follow-up
+  // question it asks must paint before a queued one, and its own `settle` then drains the queue.
   queueMicrotask(() => { if (!settleOpen) waiting.shift()?.(); });
 }
 
 $("cfmYes").addEventListener("click", () => settle(true));
 $("cfmNo").addEventListener("click", () => settle(false));
-// Backdrop dismiss is safe here and only here: the answer it gives is always the
-// non-destructive one.
 $("cfmScrim").addEventListener("click", () => settle(false));
 
-/**
- * The modality. A native dialog owned the whole window; this one has to earn that.
- *
- * Registered at module scope and in the CAPTURE phase deliberately. main.ts's own
- * `keydown` listeners — the shortcut dispatcher, the Esc chain, and the capture-phase
- * one for `reveal` — are added at the bottom of *its* module body, which runs after
- * every module it imports. So this handler is registered first and, on the same target
- * in the same phase, first registered is first called. That ordering is the whole
- * mechanism: without it ⌘K would open the palette *underneath* a question you have not
- * answered yet.
- *
- * Everything is stopped while a question is up, not just the three keys handled here,
- * because the alternative is the app's fourteen shortcuts staying live behind a modal.
- *
- * `stopImmediatePropagation`, never plain `stopPropagation` — and that distinction is
- * load-bearing rather than defensive. Stopping propagation moves the event on from the
- * *node*, so it does block main.ts's bubble-phase dispatcher (the event never reaches
- * the target, so it never comes back up). It does NOT block another listener on the
- * same node in the same phase, and main.ts has exactly one: the capture-phase handler
- * for `reveal`. Registered after this one, on `window`, in capture — so with the weaker
- * call ⌘⇧⏎ opened a Finder window from behind an unanswered "Remove worktree?".
- *
- * `preventDefault` is deliberately NOT part of the blanket: a `<button>` activates on
- * Space by its default action, and cancelling it would leave the two buttons keyboard-
- * dead for the one key most people reach for.
- */
+// Capture phase at module scope, so it runs before main.ts's keydown listeners (same target and
+// phase, added later). `stopImmediatePropagation`, never plain `stopPropagation`: only the former
+// also blocks main.ts's capture-phase `reveal` handler. No blanket `preventDefault`: buttons need Space.
 window.addEventListener("keydown", (e) => {
   if (!settleOpen) return;
   const dlg = $("cfmDlg");
@@ -158,8 +79,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); settle(false); return; }
   if (e.key === "Enter") {
     e.stopImmediatePropagation();
-    // A focused button already turns ⏎ into a click, and that click knows which button
-    // it was. Answering here as well would make ⏎ confirm even with Cancel focused.
+    // A focused button already turns ⏎ into a click; answering here too would confirm with Cancel focused.
     if (!(document.activeElement instanceof HTMLButtonElement && dlg.contains(document.activeElement))) {
       e.preventDefault();
       settle(true);
@@ -167,8 +87,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Tab") {
-    // Two buttons, so the trap is a toggle rather than a ring walk.
-    e.preventDefault(); e.stopImmediatePropagation();
+    e.preventDefault(); e.stopImmediatePropagation(); // two buttons, so the focus trap is a toggle
     const on = document.activeElement === $("cfmYes") ? "cfmNo" : "cfmYes";
     ($(on) as HTMLElement).focus();
     return;

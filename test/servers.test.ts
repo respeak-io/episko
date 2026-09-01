@@ -8,21 +8,8 @@ import {
 } from "../src/servers";
 import type { BgMissReason, BgServer } from "../src/types";
 
-// The payload shapes below are not invented. They were captured off the real CLI by
-// running a session with a stdin-dumping PostToolUse hook and backgrounding a shell,
-// and the log excerpts are real vite / uvicorn / pnpm output taken off disk. That
-// matters more here than in most suites: every field this module reads belongs to a
-// format nobody in this repo controls, so a fixture written from memory would only
-// prove that the code agrees with the guess it was written from.
-//
-// `timedOutAfterMs` was added to that rule the same way, and it is worth saying where
-// from: **143** real background payloads were read out of `~/.claude/projects` on this
-// machine. 131 were shells the model asked for (`run_in_background: true`); the other
-// **12** carry `timedOutAfterMs: 120000` and no `run_in_background` at all — Claude Code
-// backgrounding a foreground command that outlived its own timeout. The servers among
-// the 131 are `pnpm dev`, `pnpm tauri dev` and `just saas-start`; the rest are `npm ci`,
-// `pytest`, `vue-tsc`, `gh run watch` polls and `until …; do sleep …; done` waits, which
-// is why no rule below reads the command string.
+// Every payload and log excerpt below was captured off the real CLI and real vite/uvicorn/pnpm
+// output: each field this module reads belongs to a format nobody in this repo controls.
 
 /** A PostToolUse payload for a shell the agent backgrounded, as the hook delivers it. */
 const started = (id: string, cmd = "pnpm dev") => ({
@@ -31,8 +18,7 @@ const started = (id: string, cmd = "pnpm dev") => ({
   response: { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: id },
 });
 
-/** The same payload for a command Claude backgrounded itself, at the 120s timeout. Note
- *  what is NOT in the input: the model never asked for this. */
+/** A command Claude backgrounded itself at the 120s timeout; the input never asked for it. */
 const autoBg = (id: string, cmd: string) => ({
   tool: "Bash",
   input: { command: cmd, description: "Run the check" },
@@ -42,12 +28,10 @@ const autoBg = (id: string, cmd: string) => ({
   },
 });
 
-/** A record as `applyBg` builds one. */
 const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
   ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
 
-/** A `read_bg_log` answer that RESOLVED, as the command shapes it. `missing` is
- *  intersected in at the invoke site and never reaches these rules. */
+/** A resolved `read_bg_log` answer; `missing` is intersected in at the invoke site, never here. */
 const read = (text: string, unchanged = false): BgRead =>
   ({ path: "/tmp/x.output", text, len: text.length, unchanged, reason: "none", tried: [], rootRank: 0, discovered: false });
 
@@ -62,15 +46,12 @@ describe("recognising a backgrounded shell", () => {
   });
 
   it("does not invent one from `run_in_background` alone", () => {
-    // The input says the agent asked for a background shell; the response says whether
-    // it got one. Only the second is a fact, and only the second carries the handle
-    // TaskStop needs — so an input-only payload must produce no record at all.
+    // Only the response says whether it got one, and only it carries the handle TaskStop needs.
     expect(bgTaskId("Bash", { stdout: "", stderr: "" })).toBe("");
   });
 
   it("ignores the tools that OPERATE on a shell rather than create one", () => {
-    // TaskOutput's response can echo the same id. Reading that as a start is how a
-    // record the sentinel had already retired would come back from the dead.
+    // TaskOutput echoes the same id; reading it as a start would resurrect a retired record.
     expect(bgTaskId("TaskOutput", { backgroundTaskId: "bczk8s47b" })).toBe("");
     expect(bgTaskId("TaskStop", { backgroundTaskId: "bczk8s47b" })).toBe("");
   });
@@ -82,10 +63,6 @@ describe("recognising a backgrounded shell", () => {
   });
 
   it("reads the timeout Claude Code stamps on a command it auto-backgrounded", () => {
-    // Twelve of the 143 captured payloads are this: a command that crossed 120s in the
-    // foreground and was backgrounded out from under the model. One of them was a
-    // one-shot `python3 -c …` that had already done its work, and it reached the header
-    // pill as a "running server" — the false positive that started this.
     const p = autoBg("bc4t2mzq1", "python3 -c 'import time; time.sleep(600)'");
     expect(p.input).not.toHaveProperty("run_in_background");
     expect(bgTimedOut(p.response)).toBe(120000);
@@ -97,12 +74,7 @@ describe("recognising a backgrounded shell", () => {
   });
 
   it("leaves the timeout unset on a background the agent actually asked for", () => {
-    // The ABSENCE case, and the pair above is worth nothing without it. A rule that
-    // answers "timed out" for everything — a bad default, a `Number()` of a missing
-    // field, reading `run_in_background` instead — passes the test above unchanged.
-    // Every record then becomes a job: no silent one may ever adopt a loose port again
-    // and the popover files every dev server under the wrong heading, with tsc, vitest
-    // and the rest of this suite all green.
+    // The absence case: a rule answering "timed out" for everything passes the test above.
     const p = started("bs0hhu7b4");
     expect(bgTimedOut(p.response)).toBe(0);
     expect(bgTimedOut({})).toBe(0);
@@ -142,9 +114,7 @@ describe("applyBg", () => {
     applyBg(list, p.tool, p.input, p.response, "t.jsonl", now);
     expect(applyBg(list, "TaskStop", { task_id: "bs0hhu7b4" }, {}, "t.jsonl", now + 90)).toBe(true);
     expect(list[0].ended).toBe(now + 90);
-    // A stop is a kill, not an exit: there is no code, and `null` is what the log's own
-    // `[killed]` sentinel means too. It carries no `endReason` either, deliberately —
-    // unqualified `exit: null` has always meant "somebody asked for this".
+    // A stop is a kill, not an exit; an unqualified `exit: null` means "somebody asked for this".
     expect(list[0].exit).toBeNull();
     expect(list[0].endReason).toBeUndefined();
     expect(bgOutcome(list[0])).toBe("stopped");
@@ -197,14 +167,12 @@ describe("reading the log", () => {
   });
 
   it("prefers the announcement over a URL the agent merely mentioned", () => {
-    // A health check the process logged is not the address of the process.
     const log = "Uvicorn running on http://127.0.0.1:8787\nGET http://localhost:9999/ping 200\n";
     expect(serverUrl(log)).toBe("http://127.0.0.1:8787");
   });
 
   it("takes the LAST announcement, so a self-restart wins over the stale line", () => {
-    // vite reprints its banner when the config changes, sometimes on a new port. The
-    // line above it points at a port nothing is on any more.
+    // vite reprints its banner on a config change, sometimes on a new port.
     const log = VITE + "\n[vite] config changed, restarting\n\n  ➜  Local:   http://localhost:5556/\n";
     expect(serverUrl(log)).toBe("http://localhost:5556");
   });
@@ -219,16 +187,12 @@ describe("reading the log", () => {
     expect(bgSentinel("done\n[exited with code 0]\n")).toEqual({ kind: "exit", code: 0 });
     expect(bgSentinel("boom\n[exited with code 1]\n")).toEqual({ kind: "exit", code: 1 });
     expect(bgSentinel("\n[killed]")).toEqual({ kind: "killed" });
-    // Still running is `undefined` — distinct from a kill, because one of them must
-    // never end a record and the other must.
+    // Still running is `undefined`, distinct from a kill: only one of them may end a record.
     expect(bgSentinel(VITE)).toBeUndefined();
   });
 
   it("reads [exited with code unknown] as an ending, without calling it a failure", () => {
-    // Claude Code's reaper writes this whenever it has no status for the shell it just
-    // reaped. The old `number | null | undefined` had nowhere to put it: `null` already
-    // means "killed, somebody asked for this", so folding an unknown exit into it would
-    // report back a request nobody ever made.
+    // Written when the reaper has no status; `exit: null` alone means killed, so `endReason` carries it.
     expect(bgSentinel("gone\n[exited with code unknown]\n")).toEqual({ kind: "unknown" });
 
     const b = mk("b1");
@@ -237,23 +201,18 @@ describe("reading the log", () => {
     expect(b.exit).toBeNull();
     expect(b.endReason).toBe("unknown");
     expect(bgOutcome(b)).toBe("ended");
-    // `exit: null` is what keeps the header pill from going red for a shell that never
-    // failed — nobody can act on "it ended and we do not know how".
+    // `exit: null` keeps the header pill from going red for a shell that never failed.
     expect(failedServers([b])).toEqual([]);
   });
 
   it("is not fooled by the two bracket lines that are NOT endings", () => {
-    // Both are written into a log that is still being appended to. Ending on either
-    // would take a live dev server off the count while it is still serving, and the
-    // 5GB one lands on exactly the long-running processes this feature is about.
+    // Both are written into a log still being appended to; ending on either drops a live server.
     expect(bgSentinel("...\n[output truncated: exceeded 5GB disk cap]\n")).toBeUndefined();
     expect(bgSentinel("[output omitted: it could not be written to disk]\n")).toBeUndefined();
   });
 
   it("collapses a redrawn line to what a terminal would have shown", () => {
-    // Every progress bar in the ecosystem redraws with \r. Splitting on \n alone turns
-    // one install spinner into hundreds of lines and pushes the real output out of the
-    // peek entirely.
+    // Progress bars redraw with \r; splitting on \n alone turns one spinner into hundreds of lines.
     expect(logLines("Progress: 1%\rProgress: 50%\rProgress: 100%\ndone")).toEqual(["Progress: 100%", "done"]);
   });
 
@@ -270,18 +229,13 @@ describe("applyBgLog", () => {
     expect(applyBgLog(b, read("  ➜  Local:   http://localhost:5555/\n"), 10)).toBe(true);
     expect(b.log).toBe("/tmp/x.output");
     expect(b.url).toBe("http://localhost:5555");
-    // Leading indentation is kept: a peek that reflows its own output reads as a
-    // different program's. Only the trailing edge (and \r redraws) are tidied.
+    // Leading indentation is kept; only the trailing edge and \r redraws are tidied.
     expect(b.tail).toEqual(["  ➜  Local:   http://localhost:5555/"]);
-    // …and the rank the root resolved under, which is what says "moved" out loud one
-    // release before the fallback stops matching too.
     expect(b.rootRank).toBe(0);
   });
 
   it("reports NO change on an identical re-read", () => {
-    // The poll re-reads every live server every few seconds, and a dev server nobody is
-    // hitting writes nothing for hours. If this returned true the app would repaint
-    // itself forever over a file that never moved.
+    // The poll re-reads every live log every few seconds; true here would repaint forever.
     const b = mk("b1");
     const text = "  ➜  Local:   http://localhost:5555/\n";
     applyBgLog(b, read(text), 10);
@@ -300,9 +254,7 @@ describe("applyBgLog", () => {
   });
 
   it("never un-ends a record the agent's TaskStop already ended", () => {
-    // TaskStop ends the record at the click; the process writes its `[killed]` line a
-    // moment later, and until it does the file still reads as running. A poll landing in
-    // that window must not resurrect the row — it would flicker back into the count.
+    // The `[killed]` line lands a poll after the TaskStop; a poll in between must not resurrect the row.
     const b = mk("b1", { ended: 50, exit: null, log: "/tmp/x.output", tail: ["still going"] });
     expect(applyBgLog(b, read("still going\n"), 60)).toBe(false);
     expect(b.ended).toBe(50);
@@ -312,39 +264,31 @@ describe("applyBgLog", () => {
 
 describe("a read that found nothing", () => {
   it("folds a missing read's reason and tried list without touching the peek", () => {
-    // The row has to be able to say WHERE it looked. Before this a total miss came back
-    // with an empty path and was dropped on the floor, so every one of them read "no
-    // output yet" for the life of the session with nothing to reveal and nothing to copy.
+    // The row has to be able to say where it looked.
     const b = mk("a", { url: "http://localhost:5173", tail: ["serving"] });
     const tried = ["/tmp/claude-501/-p-proj/8191/tasks/a.output", "/tmp/claude/-p-proj/8191/tasks/a.output"];
     expect(applyBgMiss(b, miss("noRoot", { tried }), 10)).toBe(true);
     expect(b.reason).toBe("noRoot");
     expect(b.tried).toEqual(tried);
     expect(b.rootRank).toBe(-1);
-    // What the row already knows is left alone. A probe that lost the log is not
-    // evidence that the server stopped serving.
+    // A probe that lost the log is not evidence that the server stopped serving.
     expect(b.url).toBe("http://localhost:5173");
     expect(b.tail).toEqual(["serving"]);
     expect(b.ended).toBeUndefined();
-    // The reveal falls back to the first place we looked: "I looked here and it is not
-    // there" is a sentence somebody can act on, and a dead button is not.
+    // The reveal falls back to the first place looked, which is something a person can act on.
     expect(bgLogPath(b)).toBe(tried[0]);
-    // The poll asks again every four seconds, and the backend builds a fresh array each
-    // time — an identical answer must move nothing, or a blind fleet repaints forever.
+    // The backend builds a fresh `tried` array each poll; an identical answer must move nothing.
     expect(applyBgMiss(b, miss("noRoot", { tried: [...tried] }), 14)).toBe(false);
   });
 
   it("keeps the file a notYet is waiting for, and forgets the search once it lands", () => {
-    // `notYet` is the one miss that has a path: the root was found and the log simply is
-    // not in it yet, which is every background shell for its first second or two.
+    // `notYet` is the one miss with a path: the root was found and the log is not in it yet.
     const b = mk("a");
     const path = "/tmp/claude-501/-p-proj/8191/tasks/a.output";
     expect(applyBgMiss(b, miss("notYet", { path, tried: [path], rootRank: 0 }), 10)).toBe(true);
     expect(b.log).toBe(path);
     expect(b.reason).toBe("notYet");
 
-    // …and the moment a read resolves, the stale search goes with it. A row still
-    // offering to reveal the places the log turned out not to be is a row that lies.
     applyBgLog(b, read("  ➜  Local:   http://localhost:5555/\n"), 20);
     expect(b.reason).toBe("none");
     expect(b.tried).toEqual([]);
@@ -352,23 +296,17 @@ describe("a read that found nothing", () => {
   });
 
   it("says which silence a row is in", () => {
-    // Six silences that used to read as one, and "no output yet" is true for exactly one
-    // of them. For the whole life of this feature it was also what a log the app was
-    // hunting for in a directory Claude Code has never written to said, every four
-    // seconds, for as long as the session lasted.
     expect(bgPeekEmpty(mk("a", { reason: "noRoot", tried: ["/a", "/b", "/c"] })))
       .toBe("no log found — looked in 3 places");
     expect(bgPeekEmpty(mk("a", { reason: "ambiguous" }))).toBe("two logs match — refusing to guess");
     expect(bgPeekEmpty(mk("a", { reason: "notYet" }))).toBe("no log file yet");
     expect(bgPeekEmpty(mk("a", { reason: "unreadable" }))).toBe("the log could not be read");
     expect(bgPeekEmpty(mk("a", { reason: "badId" }))).toBe("no log address for this shell");
-    // The file is there and is genuinely empty, which is the one case the old wording
-    // was right about — and a record nothing has read yet says the same thing.
+    // A genuinely empty file and a record nothing has read yet say the same thing.
     expect(bgPeekEmpty(mk("a", { reason: "none" }))).toBe("no output yet");
     expect(bgPeekEmpty(mk("a"))).toBe("no output yet");
 
-    // Blind is the pair the header says out loud: a fleet nobody can hear must never
-    // look like a quiet one. Waiting is not blind.
+    // Blind is what the header says out loud; waiting is not blind.
     expect(bgBlind(mk("a", { reason: "noRoot" }))).toBe(true);
     expect(bgBlind(mk("a", { reason: "ambiguous" }))).toBe(true);
     expect(bgBlind(mk("a", { reason: "notYet" }))).toBe(false);
@@ -378,9 +316,6 @@ describe("a read that found nothing", () => {
 
 describe("a shell whose log never appears", () => {
   it("retires a record whose root was found and whose log never appeared", () => {
-    // No URL, no peek, and — measured over eleven real logs, of which exactly one had a
-    // sentinel — nothing coming to end it either. Before this the row sat at "starting…"
-    // for the life of the session.
     const b = mk("a", { reason: "notYet" });
     expect(bgRetire(b, BG_RETIRE_MS)).toBe(false); // at the deadline is not past it
     expect(bgRetire(b, BG_RETIRE_MS + 1)).toBe(true);
@@ -392,16 +327,13 @@ describe("a shell whose log never appears", () => {
     expect(shownServers([b])).toEqual([]);
     expect(failedServers([b])).toEqual([]);
 
-    // A record that has an address is never retired, whatever its log is doing:
-    // something answered, and that is better evidence than a file we cannot find.
+    // A record with an address is never retired: something answered, which beats a missing file.
     const serving = mk("b", { reason: "notYet", url: "http://localhost:5173" });
     expect(bgRetire(serving, BG_RETIRE_MS + 1)).toBe(false);
   });
 
   it("never retires a record the probe could not find a root for — that is an outage, not an ending", () => {
-    // The ordering trap this rule exists for. Arm retirement on every miss and the
-    // feature goes from "rows that never leave" to "rows that always leave" the moment
-    // the probe breaks — the same silence one layer along, and much harder to notice.
+    // Retiring on every miss would empty the list the moment the probe breaks.
     for (const reason of ["noRoot", "ambiguous"] as const) {
       const b = mk("a", { reason });
       expect(bgRetire(b, BG_RETIRE_MS * 100)).toBe(false);
@@ -410,11 +342,7 @@ describe("a shell whose log never appears", () => {
   });
 
   it("counts the ten minutes from when the log went missing, not from when the shell started", () => {
-    // The `sleep 900` case, and the one an age test gets exactly backwards. This record
-    // has been read all afternoon; then a /tmp reaper — or an agent tidying up after
-    // itself — takes the file. It is already an hour old at that moment, so retiring on
-    // AGE ends it on the very next poll and labels it "log never appeared" about a log
-    // that appeared and was read for an hour.
+    // A log read for an hour then lost to a /tmp reaper is already old; retiring on age ends it at once.
     const hour = 60 * 60_000;
     const b = mk("a", { startedAt: 0 });
     applyBgLog(b, read("still going\n"), 1_000);
@@ -427,8 +355,7 @@ describe("a shell whose log never appears", () => {
     expect(bgRetire(b, hour + BG_RETIRE_MS + 1)).toBe(true);
     expect(b.endReason).toBe("stale");
 
-    // ...and a log that comes back resets the clock, so the next absence gets its own
-    // ten minutes rather than inheriting the last one's.
+    // A log that comes back resets the clock, so the next absence gets its own ten minutes.
     const c = mk("c", { startedAt: 0 });
     applyBgMiss(c, miss("notYet", { path: "/tmp/x.output", tried: ["/tmp/x.output"] }), 1_000);
     applyBgLog(c, read("back\n"), 2_000);
@@ -439,8 +366,7 @@ describe("a shell whose log never appears", () => {
   });
 
   it("says nothing about a record whose log has not appeared in four seconds", () => {
-    // The log lands seconds AFTER the record does. A rule that fires on ordinary
-    // behaviour is worse than no rule.
+    // The log lands seconds after the record does.
     const b = mk("a", { reason: "notYet" });
     expect(bgRetire(b, 4_000)).toBe(false);
     expect(b.ended).toBeUndefined();
@@ -449,8 +375,7 @@ describe("a shell whose log never appears", () => {
 });
 
 describe("a server Episko itself ran (just / VS Code task / npm script)", () => {
-  // Real output from `just dev`, `npm run dev` and uvicorn, one line at a time — which
-  // is how it actually arrives, on the PTY stream.
+  // Real output, fed one line at a time as it arrives on the PTY stream.
   const feed = (lines: string[], start?: string) =>
     lines.reduce<string | undefined>((u, l) => taskServerUrl(u, l), start);
 
@@ -465,28 +390,20 @@ describe("a server Episko itself ran (just / VS Code task / npm script)", () => 
   });
 
   it("KEEPS it once the banner has scrolled out of the tail", () => {
-    // This is the whole reason it latches. `run.tail` is a rolling 40 lines, so within
-    // seconds of the first HMR update the banner is gone from it — a URL rescanned from
-    // the tail would appear and then silently vanish, which is worse than never showing.
+    // `run.tail` is a rolling 40 lines; a URL rescanned from it would appear and then vanish.
     const hmr = Array.from({ length: 60 }, (_, i) => `18:0${i % 6}:0${i % 9} [vite] hmr update /src/App.vue`);
     expect(feed(hmr, "http://localhost:5555")).toBe("http://localhost:5555");
   });
 
   it("follows a restart onto a new port", () => {
-    // vite reprints its banner when the config changes, sometimes elsewhere. The old
-    // line names a port nothing is on any more.
     expect(feed(["  ➜  Local:   http://localhost:5556/"], "http://localhost:5555"))
       .toBe("http://localhost:5556");
   });
 
   it("refuses to latch onto a URL that is not an announcement", () => {
-    // Stricter than `serverUrl`, and deliberately: that one sees a whole log and can
-    // prefer an announcement *over* a stray URL, so its any-URL fallback is a safety
-    // net. This one sees one line with no context and its answer sticks, so a health
-    // check the task logged would put a wrong address on the row permanently.
+    // Stricter than `serverUrl`: this one sees a single line and its answer sticks.
     expect(feed(['  "GET /api/health" -> http://localhost:9999/ 200'])).toBeUndefined();
     expect(feed(["curl http://localhost:9999/ping"])).toBeUndefined();
-    // …and a real announcement afterwards still wins.
     expect(feed(["curl http://localhost:9999/ping", "Listening on http://localhost:4000"]))
       .toBe("http://localhost:4000");
   });
@@ -506,8 +423,7 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("leaves alone a port a record already names", () => {
-    // The record's own URL is better than a bare port: it carries the scheme, and any
-    // base path the server announced.
+    // The record's own URL carries the scheme and any base path; a bare port does not.
     const list = [mk("a", { url: "http://localhost:5555" })];
     const got = reconcilePorts(list, undefined, [5555]);
     expect(got.loose).toEqual([]);
@@ -519,9 +435,6 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("adopts one loose port onto the one record that never said anything", () => {
-    // The payoff: a background shell we watched start, and exactly one unexplained
-    // socket under the same pane. That is its server, and now the row has an address
-    // instead of "starting…" forever.
     const silent = mk("a");
     const got = reconcilePorts([silent], undefined, [5555]);
     expect(got.changed).toBe(true);
@@ -530,9 +443,7 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("refuses to guess when either side is ambiguous", () => {
-    // Two silent records and one port, or one record and two ports: there is no way to
-    // tell which belongs to which, and a row pointing at the wrong port is worse than
-    // one still saying "starting…". Fail closed, like checkoutDrift in ./gitwatch.
+    // Fail closed, like checkoutDrift in ./gitwatch: a wrong port is worse than "starting…".
     const two = [mk("a"), mk("b")];
     expect(reconcilePorts(two, undefined, [5555]).changed).toBe(false);
     expect(two.every((b) => !b.url)).toBe(true);
@@ -540,15 +451,10 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
     const one = [mk("a")];
     expect(reconcilePorts(one, undefined, [5555, 8787]).changed).toBe(false);
     expect(one[0].url).toBeUndefined();
-    // …and both ports are then reported as unexplained, so neither is lost.
     expect(reconcilePorts(one, undefined, [5555, 8787]).loose).toEqual([5555, 8787]);
   });
 
   it("never lets an auto-backgrounded command adopt a loose port", () => {
-    // The false positive that started this: a `python3 -c …` Claude backgrounded when it
-    // crossed 120s, sitting silent under a pane that also had a dev server on 5173. The
-    // one-and-one rule would hand it that port and put a live address on a row whose
-    // process serves nothing at all.
     const job = mk("a", { cmd: "python3 -c 'import time; time.sleep(600)'", timedOut: 120000 });
     const got = reconcilePorts([job], undefined, [5173]);
     expect(got.changed).toBe(false);
@@ -558,10 +464,7 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("adopts once the only other silent record turns out to be a job", () => {
-    // The WIN direction, and it needs a test of its own: two silent records against one
-    // port is a fail-closed no-op, so cutting the job out is what leaves a 1-and-1 pair
-    // that can adopt. "Refuses to guess when either side is ambiguous" above passes with
-    // or without the exclusion and therefore guards neither half of this.
+    // The fail-closed case passes with or without the job exclusion, so it guards neither half of this.
     const server = mk("a"), job = mk("b", { cmd: "pytest -q", timedOut: 120000 });
     const got = reconcilePorts([server, job], undefined, [5173]);
     expect(got.changed).toBe(true);
@@ -571,8 +474,7 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("ignores a record that has already ended", () => {
-    // A crashed shell must not adopt the port of whatever replaced it — which is the
-    // exact shape of "restart the dev server after it failed to bind".
+    // A crashed shell must not adopt the port of whatever replaced it.
     const dead = mk("a", { ended: 5, exit: 1 });
     const got = reconcilePorts([dead], undefined, [5555]);
     expect(dead.url).toBeUndefined();
@@ -580,10 +482,7 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("drops the sockets that are not servers", () => {
-    // Measured on a real machine: one `wrangler dev` held five listening sockets — the
-    // server on 8788, Node's inspector on 9229, and three kernel-assigned control
-    // channels in the 63xxx range. Listing all five puts four pieces of noise in front
-    // of the one useful row.
+    // One real `wrangler dev` holds five listening sockets, of which one is the server.
     expect(usefulPort(8788)).toBe(true);
     expect(usefulPort(3000)).toBe(true);
     expect(usefulPort(9229)).toBe(false); // node --inspect
@@ -594,23 +493,17 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
   });
 
   it("never adopts a control socket onto a silent record", () => {
-    // The dangerous half: a record with no URL and one loose ephemeral port would
-    // otherwise be handed an address that serves nothing at all.
     const silent = mk("a");
     expect(reconcilePorts([silent], undefined, [63720]).changed).toBe(false);
     expect(silent.url).toBeUndefined();
   });
 
   it("reports a port nothing here can explain", () => {
-    // The whole reason this exists: somebody typed `pnpm dev` in a shell pane, or a
-    // server printed a banner in a format nothing parses. No hook, no log, no record —
-    // and the kernel still knows.
+    // A server typed by hand into a shell pane has no hook, log or record; the kernel still knows.
     expect(reconcilePorts([], undefined, [8100]).loose).toEqual([8100]);
   });
 
   it("counts one server once however many addresses it bound", () => {
-    // The backend dedupes by (session, port), but a caller handing the same port twice
-    // must not produce two rows either.
     expect(reconcilePorts([], undefined, [3000, 3000, 3000]).loose).toEqual([3000]);
   });
 });
@@ -623,9 +516,7 @@ describe("the poll's cheap path", () => {
   });
 
   it("folds NOTHING from an unchanged read, whose text is empty by construction", () => {
-    // The backend never opened the file, so `text: ""` means "I didn't look", not "the
-    // log is empty". Treating it as content would blank the URL and the peek on every
-    // poll — the row would flicker between knowing its port and not.
+    // `text: ""` on an unchanged read means "I didn't look", not "the log is empty".
     const b = mk("b1");
     applyBgLog(b, read("  Local: http://localhost:5555/\n"), 10);
     expect(b.url).toBe("http://localhost:5555");
@@ -639,8 +530,7 @@ describe("the poll's cheap path", () => {
 
 describe("a server that died on its own", () => {
   it("stays on the list, because vanishing is the silence the feature exists to end", () => {
-    // The commonest real failure: a dev server exits on EADDRINUSE two seconds after
-    // starting. If it dropped off the list the count would go 1 → 0 and say nothing.
+    // The commonest failure is EADDRINUSE two seconds in; dropping the row would say nothing.
     const list = [mk("crashed", { ended: 5, exit: 1 })];
     expect(failedServers(list).map((b) => b.taskId)).toEqual(["crashed"]);
     expect(shownServers(list).map((b) => b.taskId)).toEqual(["crashed"]);
@@ -649,8 +539,7 @@ describe("a server that died on its own", () => {
   });
 
   it("does not keep an ending somebody asked for", () => {
-    // `exit: 0` is a background one-shot that simply finished; `exit: null` is a kill —
-    // the agent's TaskStop, or the session ending. Reporting either back is noise.
+    // `exit: 0` is a one-shot that finished, `exit: null` a kill; neither is news.
     const list = [mk("clean", { ended: 5, exit: 0 }), mk("killed", { ended: 5, exit: null })];
     expect(failedServers(list)).toEqual([]);
     expect(shownServers(list)).toEqual([]);
@@ -664,17 +553,14 @@ describe("a server that died on its own", () => {
   });
 
   it("names an ending the process never announced, without claiming somebody asked for it", () => {
-    // Three of the four endings carry `exit: null`, and each would otherwise read as
-    // "stopped" — which claims a request. Only the unnamed one means that.
+    // Three of the four endings carry `exit: null`; only the unnamed one means "somebody asked".
     const gone = mk("a");
     expect(endBg(gone, 5, "session", null)).toBe(true);
     expect(bgOutcome(gone)).toBe("session ended");
     expect(failedServers([gone])).toEqual([]);
     expect(shownServers([gone])).toEqual([]);
 
-    // An ending never moves once it has landed. The log's `[killed]` arrives a poll
-    // after the TaskStop that caused it, and re-ending would restamp the time and
-    // relabel the ending on every read from then on.
+    // An ending never moves once landed: the log's `[killed]` arrives a poll after the TaskStop.
     expect(endBg(gone, 99, "sentinel", 1)).toBe(false);
     expect(gone.ended).toBe(5);
     expect(gone.exit).toBeNull();
@@ -682,8 +568,6 @@ describe("a server that died on its own", () => {
   });
 
   it("is dismissable, and a LIVE one is not", () => {
-    // The guard is the point: forgetting a running server would put the app straight
-    // back to saying nothing about a port that is still held.
     const list = [mk("live"), mk("crashed", { ended: 5, exit: 1 })];
     expect(forgetServer(list, "live")).toBe(false);
     expect(list).toHaveLength(2);
@@ -700,29 +584,22 @@ describe("what the header counts", () => {
   });
 
   it("badges only the ones that have announced a URL", () => {
-    // A `sleep 45` an agent backgrounded is live and listed, but it is not something you
-    // can go and look at — counting it green would make the pill mean "the agent is
-    // busy", which the phase glyphs already say better.
+    // A backgrounded `sleep 45` is live and listed, but not something you can go and look at.
     const list = [mk("a"), mk("c", { url: "http://localhost:3000" }), mk("d", { url: "http://localhost:4000", ended: 9 })];
     expect(servingUrls(list).map((b) => b.taskId)).toEqual(["c"]);
   });
 
   it("splits the list on evidence: a URL is a server, everything else is a job", () => {
-    // Never on the command string. `pnpm dev` and `npm ci` are the same text to a rule,
-    // and of the 143 captured payloads most are the second kind — a heading that guessed
-    // from the command would be wrong about them out loud.
+    // Never on the command string: `pnpm dev` and `npm ci` are the same text to a rule.
     expect(bgKind(mk("a", { url: "http://localhost:5173" }))).toBe("server");
     expect(bgKind(mk("a", { cmd: "pnpm dev" }))).toBe("job"); // …until it says otherwise
 
-    // An adopted port counts, which is the point of adopting one: the record said
-    // nothing, the kernel did, and the row is a server either way.
+    // An adopted port counts; the kernel said what the record did not.
     const adopted = mk("a");
     reconcilePorts([adopted], undefined, [5173]);
     expect(bgKind(adopted)).toBe("server");
 
-    // And a command Claude backgrounded on its own timeout is still a server the moment
-    // it announces one. `timedOutAfterMs` decides who may adopt a port, never the
-    // heading — the two questions are different and must not collapse into each other.
+    // `timedOutAfterMs` decides who may adopt a port, never the heading; the two must not collapse.
     expect(bgKind(mk("a", { timedOut: 120000, url: "http://localhost:5173" }))).toBe("server");
     expect(isJob(mk("a", { timedOut: 120000, url: "http://localhost:5173" }))).toBe(true);
   });

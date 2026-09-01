@@ -1,33 +1,11 @@
-// What a session has been *into*: the files it read, edited and created, kept as a set
-// rather than as a log. The rules behind the inspector's Context card.
-//
-// It replaces "the last eight tool calls" with "the working set of this conversation",
-// because those answer different questions. A timeline tells you what happened at
-// 14:32; it cannot tell you whether the agent has opened the file you're worried about,
-// and on a busy turn eight rows is roughly forty seconds of history — long enough to
-// scroll `Bash`, `Bash`, `Grep`, `Bash` past you and nothing else. The set survives the
-// whole conversation, dedupes by path, and sorts the two answers you actually want
-// (what did it change / what did it look at) into their own groups.
-//
-// Pure logic, no DOM and no Tauri: the view is `filesHtml` in ./inspectorview and the
-// only writer is `applyHook` in ./phase.
-//
-// **Bash is deliberately not modelled here.** `touch`, `>`, `sed -i` and `mv` all
-// change files and none of them reaches us as a path — reconstructing that would mean
-// parsing shell, and getting it half-right would put wrong filenames on screen with the
-// same confidence as the right ones. What Bash actually did to the tree is already
-// answered, correctly, by the working-set card above this one, which reads git. So the
-// non-file tools are counted and summarised in one line (`otherTools`) rather than
-// guessed at.
+// The inspector's Context card: the files a session read, edited and created, as a set
+// rather than a log. Bash is not modelled: what it did to the tree is git's answer, on the
+// working-set card; the non-file tools are tallied in one line (`otherTools`) instead.
 
 import type { FileTouch, TouchKind } from "./types";
 
-/**
- * Provider file events are allowed to name a path relative to the thread cwd. Everything
- * after the neutral reducer — labels, open/reveal and Explorer joins — consumes absolute
- * paths, so resolve the provider spelling once as it enters Sess state. Existing absolute
- * POSIX, UNC and drive-letter paths pass through byte-for-byte.
- */
+// A provider may name a path relative to the thread cwd; everything downstream wants absolute,
+// so resolve it once as it enters `Sess`. Absolute POSIX, UNC and drive paths pass through.
 export function absoluteTouchPath(path: string, workdir: string): string {
   const p = path.trim();
   if (!p || !workdir || /^[A-Za-z]:[/\\]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return p;
@@ -35,28 +13,16 @@ export function absoluteTouchPath(path: string, workdir: string): string {
   return `${workdir.replace(/[/\\]+$/, "")}${sep}${p.replace(/[/\\]/g, sep)}`;
 }
 
-/// Kinds rank, and a file's kind only ever moves up this ladder. Three reasons it is a
-/// ladder rather than "the last thing that happened":
-///
-///   • an agent re-reads what it just wrote constantly (to check its own edit), so a
-///     last-write-wins field would demote half the edited files to "read" seconds later;
-///   • "created" is the fact with the shortest shelf life — it is only knowable at the
-///     moment of the write — so it has to be the one that sticks;
-///   • the groups are meant to be read as claims about the file ("this one is new"),
-///     not as a most-recent-verb, and a claim that flickers is worse than no claim.
+// A kind only ever climbs: an agent re-reads what it just wrote, so last-write-wins would
+// demote edited files to "read" seconds later, and "created" is only knowable at the write.
 const RANK: Record<TouchKind, number> = { read: 0, edited: 1, created: 2 };
 
 const READ_TOOLS = new Set(["Read", "NotebookRead"]);
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 
-/// How many paths one session keeps. A long session on a big repo genuinely reads
-/// hundreds of files, and the card only ever draws a couple of dozen of them, so this
-/// is a memory bound rather than a display one — generous, because the cheapest way to
-/// make the card lie is to have silently dropped the file being asked about.
-const CAP = 400;
+const CAP = 400; // a memory bound, not a display one; the card draws a couple of dozen
 
-/// Provider-neutral half of `applyTouch`: record a path when an adapter already knows
-/// the resulting kind (Codex file-change items carry add/update/delete explicitly).
+// For an adapter that already knows the kind (Codex file-change items carry add/update/delete).
 export function noteTouch(list: FileTouch[], path: string, kind: TouchKind, now: number): void {
   if (!path.trim()) return;
   const at = list.findIndex((f) => f.path === path);
@@ -69,9 +35,7 @@ export function noteTouch(list: FileTouch[], path: string, kind: TouchKind, now:
   if (list.length > CAP) evict(list);
 }
 
-/// Which of the three things a tool does to a file, or null if it does none of them.
-/// Also the definition the "also ran" tally filters by, so the two halves of the card
-/// can never disagree about what counts as a file tool.
+// Also what `otherTools` filters by, so the two halves of the card agree on what a file tool is.
 export function touchTool(tool: string): "read" | "edit" | "write" | null {
   if (READ_TOOLS.has(tool)) return "read";
   if (EDIT_TOOLS.has(tool)) return "edit";
@@ -79,30 +43,15 @@ export function touchTool(tool: string): "read" | "edit" | "write" | null {
   return null;
 }
 
-/// The path a file tool's input names. Absolute on every payload Claude Code sends,
-/// which is what makes the row clickable at all. `notebook_path` is NotebookEdit's
-/// spelling of the same field; `path` is deliberately NOT read — Glob and Grep use it
-/// for a *directory*, and this is only ever consulted for the tools above, so leaving
-/// it out costs nothing and removes the one way a folder could land in the file list.
+// `path` is not read: Glob and Grep use it for a directory.
 export function touchPath(input: unknown): string {
   const i = input as Record<string, unknown> | null | undefined;
   const v = i?.file_path ?? i?.notebook_path;
   return typeof v === "string" && v.trim() ? v : "";
 }
 
-/// Did a `Write` create the file or overwrite one that was already there?
-///
-/// Claude Code answers this itself: the Write tool's PostToolUse `tool_response` carries
-/// `type: "create" | "update"`. That is the authority when it's there — and it is
-/// treated as optional, because it is one undocumented field of a payload shape we
-/// don't control, and a card that goes blank when Claude Code renames a key is a worse
-/// failure than one that occasionally mislabels a row.
-///
-/// The fallback: a path this session has never read or written before is one it has
-/// just brought into existence. That is right in the normal case (an agent reads a file
-/// before it rewrites it, essentially always) and wrong for a cold overwrite of an
-/// existing file it never opened — which lands in "Created" instead of "Edited". The
-/// row, its path and its click all still work; only the heading is optimistic.
+// The Write response's `type` is the authority but undocumented, so optional. Fallback: a path never
+// seen before was created; a cold overwrite then lands in "Created", the heading being optimistic.
 function writeKind(list: readonly FileTouch[], path: string, response: unknown): TouchKind {
   const t = response && typeof response === "object" ? (response as Record<string, unknown>).type : "";
   if (t === "create") return "created";
@@ -110,9 +59,7 @@ function writeKind(list: readonly FileTouch[], path: string, response: unknown):
   return list.some((f) => f.path === path) ? "edited" : "created";
 }
 
-/// Fold one completed tool call into the session's file set. Mutates in place, like
-/// `openActivity` next door — the caller owns the array and there is exactly one.
-/// A tool that touched no file leaves it untouched.
+// Mutates in place; the caller owns the array. A tool that touched no file leaves it alone.
 export function applyTouch(list: FileTouch[], tool: string, input: unknown, response: unknown, now: number): void {
   const act = touchTool(tool);
   if (!act) return;
@@ -131,12 +78,7 @@ export function applyTouch(list: FileTouch[], tool: string, input: unknown, resp
   if (list.length > CAP) evict(list);
 }
 
-/// Drop one entry when the cap is hit: the lowest-ranked, and among equals the oldest.
-/// Reads go first and that ordering is the point — a read is the cheapest fact in the
-/// set (the agent looked at something), while an edit or a create is the expensive one
-/// (the agent *changed* something, and that is what you came to the card to find). A
-/// plain oldest-first eviction would let a long read-heavy sweep push the morning's
-/// edits out of a list that has room for them.
+// Lowest rank first, then oldest: a read-heavy sweep must not push the morning's edits out.
 function evict(list: FileTouch[]): void {
   let worst = 0;
   for (let i = 1; i < list.length; i++) {
@@ -149,9 +91,7 @@ function evict(list: FileTouch[]): void {
 export interface FileGroups { created: FileTouch[]; edited: FileTouch[]; read: FileTouch[] }
 export const GROUP_ORDER = ["created", "edited", "read"] as const;
 
-/// The set split into the card's three sections, each most-recent-first. Recency rather
-/// than alphabetical: the file the agent touched thirty seconds ago is the one you are
-/// looking for, and a name sort would bury it under whatever starts with an `a`.
+// Most-recent-first: the file touched thirty seconds ago is the one you are looking for.
 export function groupTouches(list: readonly FileTouch[]): FileGroups {
   const g: FileGroups = { created: [], edited: [], read: [] };
   for (const f of list) g[f.kind].push(f);
@@ -160,25 +100,15 @@ export function groupTouches(list: readonly FileTouch[]): FileGroups {
 }
 
 export interface FileLabel {
-  /// The basename — what the row leads with, because it is what you are scanning for.
   name: string;
-  /// Where it sits: relative to the session's folder when it's inside it, absolute when
-  /// it isn't. Empty for a file in the folder's root.
-  dir: string;
-  /// True when the file is outside the session's own folder — a config in `$HOME`, a
-  /// sibling checkout, a dependency's source. Worth its own tint: it is the one case
-  /// where the folder matters more than the filename.
-  outside: boolean;
+  dir: string;      // relative to the session's folder when inside it, else absolute; "" at the root
+  outside: boolean; // a config in $HOME, a sibling checkout, a dependency: worth its own tint
 }
 
 const slash = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
 
-/// Split a path into what the row shows. Comparison is case-insensitive and
-/// separator-levelled for the same reason ./gitwatch's `norm` is: one side is however
-/// the user spelled the project folder, the other is however Claude Code spelled the
-/// path, and both mainstream desktop filesystems are case-insensitive anyway. The
-/// *original* spelling is what gets sliced and returned — only the comparison is
-/// normalised, so the row shows the path as it really is.
+// Compared case-insensitive and separator-levelled, like ./gitwatch's `norm`; only the
+// comparison is normalised, the row shows the path as spelled.
 export function fileLabel(path: string, workdir: string): FileLabel {
   const p = slash(path);
   const cut = p.lastIndexOf("/");
@@ -192,21 +122,13 @@ export function fileLabel(path: string, workdir: string): FileLabel {
   return { name, dir, outside: true };
 }
 
-/// Count one tool call. Every tool, including the file ones — `otherTools` filters, so
-/// the raw tally stays a true record of what the session ran and a later surface can
-/// ask it a different question without this having thrown the answer away.
+// Every tool, file ones included; `otherTools` filters, so the raw tally stays a true record.
 export function bumpTally(tally: Record<string, number>, tool: string): void {
   if (!tool) return;
   tally[tool] = (tally[tool] ?? 0) + 1;
 }
 
-/// The one-line footer: the tools that moved no file, busiest first. This is what the
-/// old timeline is reduced to, and reducing it is the point — "Bash ×47" is the whole
-/// of what forty-seven `Bash` rows were telling you, in one line, without crowding out
-/// the files.
-///
-/// `TodoWrite` and `ExitPlanMode` are dropped as well as the file tools: they are the
-/// plan, and the plan is its own card directly above.
+// Busiest first. `TodoWrite` and `ExitPlanMode` are dropped too: the plan is its own card above.
 export function otherTools(tally: Record<string, number>, top = 6): { tool: string; n: number }[] {
   return Object.entries(tally)
     .filter(([t]) => !touchTool(t) && t !== "TodoWrite" && t !== "ExitPlanMode")
@@ -215,9 +137,7 @@ export function otherTools(tally: Record<string, number>, top = 6): { tool: stri
     .slice(0, top);
 }
 
-/// `mcp__github__create_issue` → `github·create_issue`. MCP tool names are namespaced
-/// three deep and the footer has one line; the server is the half worth keeping, since
-/// it is what tells you *whose* tool ran.
+// `mcp__github__create_issue` → `github·create_issue`: the server says whose tool ran.
 export function shortTool(tool: string): string {
   const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(tool);
   return m ? `${m[1]}·${m[2]}` : tool;

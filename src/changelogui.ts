@@ -1,11 +1,6 @@
-// *What's new* — the release history, and the one moment it opens by itself.
-//
-// ./changelog owns the parsing and the "should this open" rule and is tested; this owns
-// the dialog, its markup and its events. The file itself is bundled at build time
-// (`?raw`), so this reaches no network and a build can only ever describe itself.
-//
-// Deliberately NOT on renderAll's path: it is opened by a click or once after an
-// update, and nothing about it changes while it is shut.
+// *What's new*: the release history dialog, and the one moment it opens by itself.
+// ./changelog owns the parsing and the "should this open" rule; CHANGELOG.md is bundled
+// at build time (`?raw`), so a build can only describe itself. Not on renderAll's path.
 
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -20,34 +15,25 @@ import {
 } from "./changelog";
 
 const LOG: Release[] = parseChangelog(raw);
-/// Every version this machine has had *What's new* opened for, newest last. A list
-/// rather than a single last-seen string so that returning to a version already read
-/// stays quiet — `parseSeen` / `recordSeen` / `shouldAnnounce` in ./changelog own the
-/// rules, and this module only owns where the list is kept.
+// Every version What's new has been opened for, newest last; ./changelog owns the rules.
 const SEEN = "cc-seen-versions";
-/// 0.13.0's single-value key, folded into the list above by `parseSeen`.
-const SEEN_LEGACY = "cc-seen-version";
+const SEEN_LEGACY = "cc-seen-version"; // 0.13.0's single-value key, folded in by parseSeen
 
 let version = "";
 let sel = 0;
 
 export const changelogOpen = () => $("clDlg").classList.contains("show");
 
-/// Read fresh each time rather than cached: it is a handful of calls a session, and a
-/// stale copy would leave the footer handle lit after the screen had been opened.
+// Read fresh, not cached: a stale copy would leave the footer handle lit after opening.
 const seenVersions = () => parseSeen(localStorage.getItem(SEEN), localStorage.getItem(SEEN_LEGACY));
 
-/// The footer handle stays lit until the running version has been read once. It is the
-/// only signal that there is something new — which is why it sits beside the version
-/// number rather than in the top bar: that number is the thing it explains.
 function syncHandle() {
   const unread = !!version && !seenVersions().includes(version);
   $("clBtn").classList.toggle("fresh", unread);
   $("clBtn").title = unread ? `What's new in ${version}` : "What's new";
 }
 
-/// Mark the running version read. Called on open, not on close: opening it *is* the
-/// reading, and a user who closes with Esc has still seen it.
+// Called on open, not on close: a user who closes with Esc has still seen it.
 function markSeen() {
   if (!version) return;
   localStorage.setItem(SEEN, JSON.stringify(recordSeen(seenVersions(), version)));
@@ -56,8 +42,7 @@ function markSeen() {
 
 export function openChangelog(atVersion?: string) {
   if (!LOG.length) return;                    // nothing to show; the handle stays hidden
-  // `releaseFor` owns which one to land on, including the dev-build fallback — it is
-  // tested, and re-deriving it here is how the two would drift.
+  // releaseFor owns the landing choice (incl. the dev-build fallback); don't re-derive it here.
   const target = releaseFor(atVersion ?? version, LOG);
   sel = Math.max(0, LOG.indexOf(target!));
   $("scrim").classList.add("show");
@@ -86,23 +71,15 @@ function render() {
   }).join("");
 
   const running = r.released && r.version === version;
-  // A release that ships a guided chapter offers it HERE and nowhere else. This dialog
-  // already opens itself once per version, so the ask costs no new interruption — and
-  // it is the one place the release is already being explained. Declining leaves the
-  // button sitting here for later; nothing re-asks.
-  //
-  // `tourForVersion` and not `releaseChapter`: the offer is only an offer while the
-  // chapter is untaken. Asking the manifest alone left "Show me →" on the entry forever,
-  // still calling a chapter you had already walked something new. Once taken it lives in
-  // Settings › Guide, which is what the tour's own closing card sends you to.
+  // A release's guided chapter is offered here and nowhere else. `tourForVersion`, not
+  // `releaseChapter`: the offer lapses once the chapter is taken (it then lives in Settings › Guide).
   const guide = tourForVersion(r.version);
   $("clMain").innerHTML =
     `<div class="cl-vh"><h4>${esc(r.released ? `Episko ${r.version}` : "Next release")}</h4>
       ${r.date ? `<span class="when">${esc(r.date)}</span>` : `<span class="when">not released yet</span>`}
       ${running ? `<span class="chip ok">you're running this</span>` : ""}
       ${guide ? `<button class="cl-guide" data-clstart="${esc(guide.id)}">Show me &rarr;</button>` : ""}</div>`
-    // A lede carries the same markup an entry does — 0.10.0's and 0.11.0's both open on
-    // a bold clause — so it goes through the same renderer rather than plain `esc`.
+    // A lede carries entry markup (a bold opening clause), so inlineMd rather than esc.
     + (r.lede ? `<p class="cl-lede">${inlineMd(r.lede)}</p>` : "")
     + grouped(r).map((g) => `<div class="cl-group">
         <div class="cl-gh"><span class="t">${esc(MARK_LABEL[g.mark])}</span></div>
@@ -117,24 +94,15 @@ function render() {
 const shortDate = (d: string) => (d ? d.slice(5).replace("-", "/") : "—");
 
 // ---------- wiring ----------
-/**
- * @param quiet The guided tour has claimed the screen (a genuine first run). Mark the
- * running version read and do not announce.
- *
- * This is what finally retires the compromise `docs/releases.md` records: dropping the
- * fresh-install guard meant "a first-time user sees their installed version's notes
- * once", over an app they have not looked at yet. Now the tour is that introduction,
- * and the notes wait until there is a *second* version to announce. Note this is not
- * the old guard coming back: it keys on the tour having actually opened, not on the
- * seen-record being absent, so it cannot misfire on the release that introduces a key.
- */
+// `quiet`: the guided tour has claimed the screen (a first run), so mark the running
+// version read and announce nothing. Keyed on the tour having opened, not on a missing
+// seen-record, so it is not the fresh-install guard docs/releases.md retired.
 export function initChangelog(quiet = false) {
   getVersion().then((v) => {
     version = v;
     syncHandle();
     if (quiet) { markSeen(); return; }
-    // The one moment it opens by itself. Deliberately after the version resolves
-    // rather than on a timer: opening over a half-painted app reads as a glitch.
+    // After the version resolves, not on a timer: opening over a half-painted app reads as a glitch.
     if (shouldAnnounce(v, seenVersions(), LOG)) {
       dlog("info", `changelog: first run of v${v}`);
       openChangelog(v);
@@ -149,8 +117,7 @@ export function initChangelog(quiet = false) {
     sel = +v.dataset.clv!;
     render();
   });
-  // The release-intro hand-off. Closing first is not tidiness: every anchor the chapter
-  // lights is behind this dialog.
+  // Close first: every anchor the chapter lights is behind this dialog.
   $("clMain").addEventListener("click", (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-clstart]");
     if (!b) return;

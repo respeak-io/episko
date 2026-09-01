@@ -1,27 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 
-// The IPC argument contract, made impossible to break silently.
-//
-// `invoke("gh_claim", {…})` and `#[tauri::command] fn gh_claim(…)` are two halves of one
-// signature with nothing between them that can check the join. Tauri deserializes the
-// argument object at runtime and rejects the WHOLE call on one missing key — so an
-// invoke that forgets an argument does not degrade, it fails completely, and it fails
-// with a rejected promise that a `.catch(() => {})` or a `dlog` warning swallows whole.
-//
-// Nothing else catches this. `tsc` sees `invoke`'s parameter as `InvokeArgs`, an index
-// signature, so every object literal type-checks. Every unit test is happy — the pure
-// modules underneath are fine. `cargo` is happy — the command compiles. The feature is
-// simply dead on arrival, and only running the app and reading a log finds out.
-//
-// That is exactly how claiming shipped: `gh_claim` was invoked without its `body`
-// argument (and with a `pushBranch` the command never took), so for three releases
-// every dispatch was rejected before `gh` ran — no assignee, no label, no comment —
-// while the dashboard said "Started on #232". `gh_release` had the same defect and was
-// even quieter, behind a bare `.catch(() => {})`. This test is why that cannot recur.
-//
-// Same shape as ./dispatch: parse both halves out of the source and compare them, in
-// both directions, because each direction is a different bug.
+// The IPC argument contract: `invoke("x", {…})` and `#[tauri::command] fn x(…)` are two
+// halves of one signature nothing else checks, and Tauri rejects the whole call on one
+// missing key. Both halves are parsed out of source and compared in both directions.
 
 const SRC = new URL("../src/", import.meta.url);
 const RS = new URL("../src-tauri/src/", import.meta.url);
@@ -32,8 +14,7 @@ const rsFiles = readdirSync(RS).filter((f) => f.endsWith(".rs"));
 
 // ---------- the Rust half ----------
 
-/// Tauri injects these by TYPE, not by name — they never appear in the JS argument
-/// object, so requiring them would fail every command that takes state or a window.
+// Injected by Tauri by type, so they never appear in the JS argument object.
 const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Runtime|Request<|Channel<)/;
 
 interface Cmd { name: string; required: string[]; optional: string[]; file: string }
@@ -138,7 +119,6 @@ function invokeSites(): Site[] {
   const sites: Site[] = [];
   for (const f of tsFiles) {
     const src = read(SRC, f);
-    // `invoke("cmd"` and `invoke<T>("cmd"`, wherever they appear.
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>()]*>)?\s*\(\s*"([a-z0-9_]+)"/g)) {
       const cmd = m[1];
       const rest = src.slice(m.index! + m[0].length);
@@ -175,7 +155,6 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("passes EVERY required argument — a missing one rejects the whole call", () => {
-    // The failing case reads: dashboard.ts: gh_claim is missing [body].
     const bad: string[] = [];
     for (const s of checkable) {
       const missing = cmds.get(s.cmd)!.required.filter((k) => !s.keys.includes(k));
@@ -185,8 +164,7 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("passes NO argument the command does not take", () => {
-    // A stray key is not itself fatal, but it is always a sign the two halves have
-    // drifted — `pushBranch` sat in the gh_claim call for a command that never had it.
+    // A stray key is not itself fatal, but it is always a sign the two halves have drifted.
     const bad: string[] = [];
     for (const s of checkable) {
       const c = cmds.get(s.cmd)!;
@@ -198,49 +176,25 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("says what it could not check, rather than reading as full coverage", () => {
-    // A non-literal argument object is unverifiable from source. Zero is not required —
-    // this asserts the blind spot stays small enough to know about.
+    // Zero is not required; this keeps the blind spot small enough to know about.
     const opaque = sites.filter((s) => !s.literal).map((s) => `${s.file}: ${s.cmd}`);
     expect(opaque.length).toBeLessThan(5);
   });
 });
 
 // ---------- what a command RETURNS ----------
-//
-// The argument object is only half of an invoke. A command's RETURN shape has the same
-// two authors and nothing between them either: `#[derive(serde::Serialize)] struct BgLog`
-// decides the keys that go on the wire, `interface BgRead` in servers.ts decides the keys
-// the frontend reads back, and serde spells a `snake_case` field camelCase only if
-// somebody remembered `rename_all`. Every `BgLog` field was a single word until
-// `root_rank` — that, and nothing else, is why this has never bitten.
-//
-// It fails the way the argument contract does: silently and completely. A `root_rank`
-// that arrives under its Rust name leaves `read.rootRank` `undefined`, every rule reading
-// it answers "no", the row draws its empty state for the life of the session — and `tsc`
-// is happy (the interface promises `number`, and the invoke boundary is a cast), vitest
-// is happy (the pure modules underneath are fine) and cargo is happy (the struct
-// compiles). That is the exact shape of the bug the background-log probe exists to fix,
-// reintroduced by its own fix.
-//
-// So both halves are read out of the source and compared in both directions, and once
-// more against a written-down list, so that a rename on BOTH sides is still a decision
-// somebody has to make on purpose.
+// A return shape has the same two authors: `#[derive(Serialize)] struct BgLog` decides the
+// wire keys, `interface BgRead` what is read back, and serde camelCases a snake_case field
+// only under `rename_all`. Compared in both directions, and against a written-down list.
 
 /** Tauri v2 hands a snake_case field to the frontend camelCased — but only via serde. */
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
 
-/** Sorted for comparison, ignoring case. A plain `.sort()` is by UTF-16 code unit, which
- *  puts `noRoot` before `none` — true, and useless: the written-down lists below are read
- *  by people, and a list nobody can check by eye is a list nobody checks. */
+/** Case-insensitive sort: a plain `.sort()` puts `noRoot` before `none`, which nobody can check by eye. */
 const sorted = (xs: string[]) => [...xs].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
-/**
- * Read from `from` (an index of `{`) to its matching `}`, dropping comments and the
- * insides of string literals as it goes. Both declarations below are documented in
- * prose, and prose is exactly what breaks a naive scan: one apostrophe in "Claude's"
- * or one `{` in an example would end the body somewhere in the middle of it. Rust and
- * TypeScript spell comments and strings the same way, so one scanner does both.
- */
+/** Read from `from` (an index of `{`) to its matching `}`, dropping comments and strings:
+ *  an apostrophe or a `{` in a doc comment would otherwise end the body early. */
 function declBody(s: string, from: number): string {
   let depth = 0, out = "";
   for (let i = from; i < s.length; i++) {
@@ -296,23 +250,20 @@ const TYPES = read(SRC, "types.ts");
 
 const bgLogHead = /pub\(crate\)\s+struct\s+BgLog\s*\{/.exec(PTY);
 const bgLogFields = bgLogHead ? rustFields(declBody(PTY, bgLogHead.index + bgLogHead[0].length - 1)) : [];
-/// The derives and `#[serde(…)]` attributes sitting above the struct, and nothing else.
+// The derives and `#[serde(…)]` attributes above the struct, and nothing else.
 const bgLogAttrs = bgLogHead ? PTY.slice(Math.max(0, bgLogHead.index - 120), bgLogHead.index) : "";
 const bgReadFields = tsFields(bodyOf(SERVERS, /export\s+interface\s+BgRead\s*\{/));
 const bgMiss = rustEnum("BgMiss");
 
 describe("what a command returns", () => {
   it("finds both halves to compare", () => {
-    // A regex that quietly stops matching must not read as agreement. Both counts are
-    // floors rather than equalities: this test is here to police the JOIN, and a field
-    // added to both sides at once is the one change it should let through.
+    // Floors, not equalities: a field added to both sides at once is the change to let through.
     expect(bgLogFields.length).toBeGreaterThanOrEqual(9);
     expect(bgReadFields.length).toBeGreaterThanOrEqual(8);
   });
 
   it("renames its multi-word fields on the way out", () => {
-    // Without `rename_all`, `root_rank` reaches the frontend under that name and every
-    // `read.rootRank` in the app is `undefined` — with all three gates still green.
+    // Without `rename_all`, `root_rank` arrives under that name and every `read.rootRank` is undefined.
     const unrenamed = /rename_all\s*=\s*"camelCase"/.test(bgLogAttrs)
       ? []
       : bgLogFields.filter((f) => f.includes("_"));
@@ -320,28 +271,21 @@ describe("what a command returns", () => {
   });
 
   it("names in BgRead exactly what BgLog serializes, bar `missing`", () => {
-    // `missing` is deliberately OUTSIDE `BgRead` and intersected at the invoke site, so
-    // that `applyBgLog` cannot reach it and decide for itself what a miss means — that
-    // is `applyBgMiss`'s question. Every other key is the same key on both sides.
+    // `missing` stays outside `BgRead` and is intersected at the invoke site, so `applyBgLog`
+    // cannot decide what a miss means; that is `applyBgMiss`'s question.
     expect(sorted(bgLogFields.map(camel).filter((f) => f !== "missing"))).toEqual(sorted(bgReadFields));
   });
 
   it("keeps the wire keys written down, so a rename on both sides is still a change", () => {
-    // The comparison above passes happily if the two halves are renamed together in one
-    // commit — which is the moment every OTHER reader of this shape (the debug snapshot,
-    // the `bglog-health` payload, a hand-written fixture) silently stops matching.
+    // A rename on both sides passes the join above and breaks every other reader of the shape.
     expect(sorted(bgLogFields.map(camel))).toEqual(
       ["discovered", "len", "missing", "path", "reason", "rootRank", "text", "tried", "unchanged"],
     );
   });
 
   it("gives BgMissReason exactly BgMiss's variants", () => {
-    // `reason` is the one field whose VALUES are a contract as well as its name, and it
-    // is the field the whole feature turns on: `bgRetire` fires on `notYet` and must
-    // never fire on `noRoot`. A variant Rust can emit and TypeScript has never heard of
-    // lands as a `reason` that matches nothing, and the record neither retires nor
-    // reports itself blind. The enum needs its own `rename_all` for the same reason the
-    // struct does — plain serde would put `BadId` on a wire that says `badId`.
+    // `reason`'s values are the contract: `bgRetire` fires on `notYet` and never on `noRoot`.
+    // The enum needs its own `rename_all`, or serde puts `BadId` on a wire that says `badId`.
     expect(bgMiss.renamed).toBe(true);
     const wire = sorted(bgMiss.variants.map((v) => v[0].toLowerCase() + v.slice(1)));
     expect(wire).toEqual(sorted(tsUnion(TYPES, "BgMissReason")));

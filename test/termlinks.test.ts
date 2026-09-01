@@ -3,7 +3,7 @@ import { findLinks, linkBases, trimUrl, type PathHit, type UrlHit } from "../src
 
 const paths = (line: string) => findLinks(line).filter((h): h is PathHit => h.kind === "path");
 const urls = (line: string) => findLinks(line).filter((h): h is UrlHit => h.kind === "url");
-/// What the backend would be asked, in the order it would try them.
+// What the backend would be asked, in the order it would try them.
 const cands = (line: string, n = 0) => paths(line)[n]?.cands.map((c) => c.text) ?? [];
 
 describe("trimUrl", () => {
@@ -14,7 +14,6 @@ describe("trimUrl", () => {
   });
 
   it("keeps a bracket the URL opened and drops one the prose did", () => {
-    // Both shapes are ordinary and they want opposite answers.
     expect(trimUrl("https://en.wikipedia.org/wiki/Foo_(bar)")).toBe("https://en.wikipedia.org/wiki/Foo_(bar)");
     expect(trimUrl("https://episko.dev/a)")).toBe("https://episko.dev/a");
   });
@@ -34,8 +33,7 @@ describe("findLinks · URLs", () => {
   });
 
   it("never also proposes the address as a path", () => {
-    // `episko.dev/docs` reads exactly like a relative path, and would resolve against
-    // nothing — but a proposal there would fight the URL for the same cells.
+    // `episko.dev/docs` reads like a relative path and would fight the URL for the same cells.
     expect(paths("see https://episko.dev/docs now")).toEqual([]);
   });
 });
@@ -64,8 +62,7 @@ describe("findLinks · what looks like a path", () => {
   });
 
   it("stays off ordinary prose, flags and version numbers", () => {
-    // German prose is the case that prompted this: it is full of capitalised words
-    // and colons, and none of them is a file.
+    // German prose is full of capitalised words and colons, and none of them is a file.
     expect(paths("Fertig. Kurzfassung: der Termin steht schon im Kalender")).toEqual([]);
     expect(paths("passed --no-verify to the commit")).toEqual([]);
     expect(paths("upgraded to 2 and then 3")).toEqual([]);
@@ -73,16 +70,14 @@ describe("findLinks · what looks like a path", () => {
 });
 
 describe("findLinks · paths with spaces", () => {
-  // The case this feature exists for. A folder tree a person organised has spaces in
-  // it, and a space is the one character every other token boundary is made of — so
-  // the answer cannot be a match, only a proposal that disk confirms.
+  // The case this feature exists for: a space is every other token boundary, so this can
+  // only be a proposal that disk confirms.
   const LINE = "Team-Material/I_Projekte/BA Reinickendorf/2_Kickoff_2026-09-03/deck.pdf";
 
   it("proposes the whole path before any prefix of it", () => {
     const c = cands(`Deck: ${LINE}`);
     expect(c[0]).toBe(LINE);
-    // The bare first token is still offered, last — it is what wins on a line where
-    // the following words really were a sentence.
+    // The bare first token is still offered, last: it wins when the following words were a sentence.
     expect(c).toContain("Team-Material/I_Projekte/BA");
     expect(c.indexOf(LINE)).toBeLessThan(c.indexOf("Team-Material/I_Projekte/BA"));
   });
@@ -101,8 +96,7 @@ describe("findLinks · paths with spaces", () => {
   });
 
   it("never extends a bare filename across a space", () => {
-    // `report.pdf final version` is two words and a filename, and proposing the whole
-    // of it would put an underline on half the output of any pane.
+    // Proposing `report.pdf final version` whole would underline half the output of any pane.
     expect(cands("wrote report.pdf final version")).toEqual(["report.pdf"]);
   });
 
@@ -113,10 +107,8 @@ describe("findLinks · paths with spaces", () => {
 });
 
 describe("findLinks · escapes an agent printed rather than typed", () => {
-  // The case the first real hover found. `printf 'a src/main.ts\nline ref b'` puts
-  // `src/main.ts\nline` in the output as ONE whitespace-delimited token — and the
-  // backslash even makes it look like a Windows path, so it is proposed and then
-  // resolves to nothing. The path is the part before the escape.
+  // `printf 'a src/main.ts\nline'` puts `src/main.ts\nline` in the output as one token, and the
+  // backslash even makes it look like a Windows path. The path is the part before the escape.
   it("reads the path out of a literal \\n", () => {
     expect(cands("plain      src/main.ts\\nline ref   x")).toContain("src/main.ts");
   });
@@ -141,10 +133,8 @@ describe("findLinks · escapes an agent printed rather than typed", () => {
   });
 
   it("keeps the bare file within the cap, however many readings a line generates", () => {
-    // A cap that truncates is indistinguishable from a path that does not exist, and
-    // this line generates the most readings the rules allow. Cutting the escape out of
-    // the LONGEST raw is what puts the answer near the front rather than at the very
-    // end, so dedupe drops the later copies rather than the cap dropping the answer.
+    // A cap that truncates looks like a path that does not exist. Cutting the escape out of
+    // the longest raw puts the bare file near the front, so dedupe drops the later copies.
     const c = cands("see src/main.ts:12\\nand a b c d e f g h");
     expect(c).toContain("src/main.ts");
     expect(c.length).toBeLessThanOrEqual(24);
@@ -153,9 +143,8 @@ describe("findLinks · escapes an agent printed rather than typed", () => {
 
 describe("findLinks · one proposal per path-shaped token", () => {
   it("still proposes a second path the first one's longest candidate swallowed", () => {
-    // `src/a.ts and docs/b.md` is a real candidate for the first start and will lose
-    // to `src/a.ts` on disk — so stopping the scan at its end would silently cost the
-    // second file its link. ./terminal drops the clash once disk has answered.
+    // `src/a.ts and docs/b.md` is a real candidate for the first start; stopping the scan at
+    // its end would cost the second file its link. ./terminal drops the clash once disk answers.
     const line = "src/a.ts and docs/b.md both changed";
     const p = paths(line);
     expect(p.length).toBe(2);
@@ -168,8 +157,7 @@ describe("linkBases", () => {
   const DECK = "/Users/tim/Drive/Meine Ablage/Team-Material/A_Material/decks/kickoff.html";
 
   it("asks the directories the caller already knows, in the order given", () => {
-    // Where the process is NOW beats the checkout it drifted to, which beats where the
-    // pane was launched — a shell that has `cd`ed is the whole reason for the first.
+    // Live cwd, then the drift dir, then the workdir: a shell that has `cd`ed is why the first exists.
     expect(linkBases(["/live", "/drifted", "/launched"], [])).toEqual(["/live", "/drifted", "/launched"]);
   });
 

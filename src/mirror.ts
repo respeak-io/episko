@@ -1,16 +1,6 @@
-// The two kinds of session Episko can show but does not own: one running in someone
-// else's terminal (external), and one from a previous run (dormant/restorable). Plus
-// the roster that produces the second, and the folder-dirty poll both depend on.
-//
-// They are one module because they share one thing — the `mirror` stage pointer in
-// ./state. `activeId` and `mirror` are mutually exclusive, and everything here either
-// sets that pointer, repaints what it points at, or reconciles it when the thing it
-// points at goes away. That is also why the four read-only `render*` functions live
-// here rather than in ./inspector: each is welded to the open/load machinery beside
-// it, and none of them is ever reached with a `Sess`.
-//
-// The roster is a convenience layer, not a system of record: provider history owns
-// the durable conversation, while this remembers which ones were on screen.
+// The sessions Episko shows but does not own: external (someone else's terminal) and
+// dormant (a previous run), plus the roster behind the second. All of it hangs off the
+// `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, takeStage, toast } from "./dom";
@@ -35,9 +25,6 @@ import {
   setExternals, setMirror,
 } from "./state";
 
-// Three callees this module does not own: putting an Episko pane on the stage when a
-// mirror goes away, starting one to resume a dormant session, and the app-wide
-// repaint. Per-callee setters, per PLAN's seam rule 2.
 let setActive: (id: string) => void = () => {};
 export function setMirrorSetActive(fn: typeof setActive) { setActive = fn; }
 let launch: (project: string, workdir: string, opts: {
@@ -47,15 +34,9 @@ export function setMirrorLaunch(fn: typeof launch) { launch = fn; }
 let renderAll: () => void = () => {};
 export function setMirrorRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
-// The roster is "what was open when Episko last closed". Closing a session removes
-// it — an explicit close means done, so only survivors come back. Shell panes are
-// excluded: a login shell has no provider conversation to resume.
-//
-// Exported because *shelving* (./panes) builds the same row from a live session and
-// puts it on the list immediately, rather than waiting for a quit to do it. A shelved
-// row and a leftover from last night are deliberately the same object: both mean "not
-// running, and one click from carrying on", and a second kind of row would only make
-// the shelf harder to read.
+// A roster row: what was open when Episko last closed; shell panes have nothing to resume.
+// Exported for shelving (./panes), which must build the same row rather than a second
+// kind (docs/sessions.md).
 export function rosterEntry(s: Sess): Restorable {
   return {
     id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: s.workdir,
@@ -63,30 +44,20 @@ export function rosterEntry(s: Sess): Restorable {
     title: s.title, lastActivity: s.lastActivity, provider: s.provider || "claude",
   };
 }
-// The roster may not be WRITTEN before this run has READ it, and that is not tidiness.
-// `sessions` and `dormants` are both empty until `adoptOrphans` and `loadDormants` have
-// run, so a save landing before them writes `[]` over the identities every live pane is
-// about to be rebuilt from. A reload's `beforeunload` is exactly such a save, and two
-// Ctrl+R inside the boot window (adoption waits on the `list_agents` PATH probe, ~1s of
-// it) is all it takes: the second unload wipes the roster, the surviving boot adopts
-// every pane with `meta: null`, and each falls back to its workdir. For a pane launched
-// in a repo root that fallback is invisible — the workdir IS the colorKey there — but a
-// pane in a WORKTREE becomes its own top-level project named after the folder, and
-// `adoptSession` then persists that as its identity, so it survives every later restart.
-// Shipped; found by four `app started` lines 1.5s apart in episko.log.
+// The roster must not be written before this run has read it: `sessions` and `dormants`
+// are empty until adoptOrphans and loadDormants finish, and a save before then (a
+// reload's beforeunload) writes [] over the identities every live pane is rebuilt from.
 let rosterReady = false;
 function saveRoster() {
   if (!rosterReady) return;
   const open = [...sessions.values()].filter((s) => hasAgentCapability(s, "resume") && s.workdir).map(rosterEntry);
-  // Dormant rows the user hasn't dismissed stay on the roster, so a restart that
-  // restores only some of them doesn't quietly discard the rest.
+  // Undismissed dormant rows stay, so a partial restore does not quietly discard the rest.
   const live = new Set(open.map((r) => r.id));
   const keep = dormants.filter((d) => !live.has(d.id));
   localStorage.setItem("cc-restore", JSON.stringify([...open, ...keep].slice(0, 60)));
 }
-// Debounced, but with a ceiling: a busy session emits telemetry continuously, and a
-// pure trailing debounce would reset forever and never write at all. Force a save
-// once the roster has been stale for MAX_STALE regardless of how noisy it is.
+// Debounced with a ceiling: a busy session's telemetry would otherwise reset a trailing
+// debounce forever and never write.
 let rosterTimer: number | undefined;
 let rosterSavedAt = Date.now();
 const ROSTER_MAX_STALE = 20000;
@@ -102,24 +73,18 @@ let extTranscriptTimer: number | undefined;
 // ---------- external sessions: discovery, jump, read-only transcript ----------
 export async function refreshExternals() {
   try {
-    // The backend's own PTY roster rides the same poll: it is what lets a busy
-    // check see a reload orphan — a PTY the backend holds while the frontend map
-    // has no pane for it and `list_external_sessions` excludes its pid (#47).
+    // The backend's PTY roster rides the same poll: it is how a reload orphan is seen (#47).
     const [list, live] = await Promise.all([
       invoke<ExtSession[]>("list_external_sessions", { exclude: [...sessions.keys()] }),
       invoke<LiveSess[]>("live_sessions"),
     ]);
     setExternals(list);
     setBackendLive(new Set(live.map((l) => providerSessionKey(l.provider, l.id))));
-    // Scour each external repo for its logo, keyed by the same repo_root the sidebar
-    // groups by — otherwise ext-only projects would forever show the accent dot.
-    // probeIcon dedupes by key, so this hits the backend at most once per repo.
+    // Keyed by the repo_root the sidebar groups by, or an ext-only project never gets its logo.
     for (const e of externals) probeIcon(e.repo_root || e.cwd);
     if (extMirrorId()) {
-      // Re-resolve the mirrored session. If its id rotated (/clear·/compact·/resume
-      // rewrite ~/.claude/sessions/<pid>.json with a new session_id), re-bind by the
-      // stable pid instead of dropping the selection — otherwise the sidebar silently
-      // jumps to an unrelated session (and e.g. the ❯ Terminal button then targets it).
+      // The id rotates on /clear, /compact and /resume; re-bind by the stable pid rather
+      // than let the selection jump to an unrelated session.
       const pid = extMirrorPid();
       const e = externals.find((x) => x.session_id === extMirrorId())
         ?? (pid != null ? externals.find((x) => x.pid === pid) : undefined);
@@ -127,8 +92,7 @@ export async function refreshExternals() {
         setMirror({ kind: "ext", id: e.session_id, pid: e.pid });
         renderExtHeader(e); renderExtInspector(e);
       } else {
-        // Truly gone — fall back to an Episko session, or to the empty card, which
-        // `closeExternalView` has already dropped the stage to.
+        // Truly gone: fall back to an Episko session, or the empty card.
         closeExternalView();
         const next = orderedSessions()[0];
         if (next) setActive(next.id);
@@ -137,39 +101,25 @@ export async function refreshExternals() {
     renderSidebar(); renderMini();
   } catch { /* backend not ready yet */ }
 }
-// The backstop sweep. Agent-driven edits arrive via `markWorkdirStale` and are picked
-// up on the very next tick; this interval exists only for the changes no hook can see —
-// you editing in your own editor, a build writing artefacts, an external session.
+// The backstop sweep; agent edits arrive through markWorkdirStale on the very next tick.
 const DIRTY_SWEEP_MS = 15_000;
 let dirtySweptAt = 0;
-// Uncommitted git state for every folder in play (session workdirs + external cwds), so
-// the sidebar dot and the external diff card are accurate for all projects at once —
-// not just whichever session is active.
-//
-// This used to re-read every folder every 5s, which on an idle fleet was pure waste: a
-// `git status` walk per open worktree, forever, to learn nothing. Now the hook stream
-// says which folders actually moved (a Write/Edit/Bash names its session, and the
-// session names its workdir), and everything else rides the slower sweep. An idle fleet
-// costs nothing; a busy one is *more* responsive than before, because a folder is
-// re-read on the tick after the edit rather than up to 5s later.
+// Uncommitted state for every folder in play, so the dot and the external diff card hold
+// for all projects at once. Only folders the hook stream marked stale are re-read between
+// sweeps, so an idle fleet costs nothing.
 export async function refreshDirtyStates(force = false) {
   const folders = new Set<string>();
-  // An agent pane counts as much as a claude one: the dot means "this checkout has
-  // uncommitted work", and `codex` writing files is exactly that. A *shell* still does
-  // not — one is as often opened to look at a folder as to change it, and each folder
-  // in this set costs a `git_diffstat` every sweep.
+  // An agent pane counts, a shell does not: each folder here costs a git_diffstat per sweep.
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
-  for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f); // prune gone folders
+  for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f);
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
   if (sweep) dirtySweptAt = Date.now();
-  // A folder never read is always read now — otherwise a newly launched session would
-  // show no dot until the first sweep happened to come round.
+  // A folder never read is read now, or a new session shows no dot until the next sweep.
   const targets = [...folders].filter((f) => sweep || dirtyStale.has(f) || !dirtyByFolder.has(f));
   dirtyStale.clear();
   if (!targets.length) return;
-  // Every field the card *prints* belongs here, `dirty` included: it is the file count
-  // the working-set row shows, so a change only it sees still has to reach the paint.
+  // Every field the card prints, `dirty` included, or a change only it sees never repaints.
   const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.dirty}/${g.added}/${g.removed}` : "-");
   let changed = false;
   await Promise.all(targets.map(async (f) => {
@@ -191,10 +141,7 @@ export function openExternal(sid: string) {
   document.documentElement.style.setProperty("--accent", accentFor(e.cwd));
   renderExtHeader(e); renderExtInspector(e); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  // Fill the working-set card promptly, not on the next poll tick. Forced, because
-  // this folder is very likely already cached and would otherwise be skipped — the
-  // point is a fresh read for the card the user just opened.
-  void refreshDirtyStates(true);
+  void refreshDirtyStates(true); // forced: this folder is probably cached and would be skipped
   loadTranscript(e, true);
   clearInterval(extTranscriptTimer);
   extTranscriptTimer = window.setInterval(() => {
@@ -206,19 +153,12 @@ export function closeExternalView() {
   if (mirror == null) return;
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
-  // The dashboard rides the same pointer, so it has the same lifetime: whatever took
-  // the stage just replaced it. `takeStage` is what keeps this module free of a
-  // ./dashboard dependency — it lives in ./dom, which everything may import.
-  //
-  // `none` rather than `session`: every caller either activates a session immediately
-  // after (which re-takes the stage) or wants the empty card, and this one cannot tell
-  // which without importing state it has no other use for.
+  // The dashboard rides the same pointer, so it goes with it. `none` rather than
+  // `session`: every caller either activates a session next or wants the empty card.
   takeStage("none");
 }
 // ---------- dormant (restorable) sessions ----------
-// Clicking a dormant row mirrors its transcript read-only — the same pane an
-// external session uses — so the user can confirm *which* conversation this is
-// before deciding to bring it back.
+// Mirrors the transcript read-only, so you can see which conversation it is before resuming.
 export function openDormant(id: string) {
   const d = dormants.find((x) => x.id === id);
   if (!d) return;
@@ -272,8 +212,7 @@ export function resumeDormant(id: string) {
 export function forgetDormant(id: string) {
   setDormants(dormants.filter((x) => x.id !== id));
   if (pastMirrorId() === id) {
-    // The empty card is where `closeExternalView` leaves the stage, so only the
-    // "there is a session to fall back to" case needs saying.
+    // closeExternalView leaves the empty card; only the fall-back case needs saying.
     closeExternalView();
     const next = orderedSessions()[0];
     if (next) setActive(next.id);
@@ -281,12 +220,9 @@ export function forgetDormant(id: string) {
   flushRoster();
   renderAll();
 }
-// On boot, let each provider reconcile roster entries against its durable history.
-// Titles are refreshed from disk too: `ai-title` beats our in-memory OSC title and,
-// unlike it, exists for sessions launched into an external terminal. So is "last
-// active", and that one is the transcript's newest *record*, not its mtime — a
-// machine that shuts down with six sessions open touches all six files at once, and
-// believing the file stamped every one of those rows with the reboot.
+// Each provider reconciles roster rows against its durable history. Titles and "last
+// active" are refreshed from disk: the latter from the newest record, not the file's
+// mtime, which a shutdown stamps on every open session at once.
 export async function loadDormants() {
   try {
     let roster: Restorable[] = [];
@@ -306,12 +242,8 @@ export async function loadDormants() {
     setDormants(found);
     if (dormants.length) dlog("info", `${dormants.length} restorable session${dormants.length === 1 ? "" : "s"} from a previous run`);
   } finally {
-    // Whatever this run found — rows, an empty roster, or a provider that threw — the
-    // roster has now been read and every pane it identifies has been adopted, so a save
-    // can no longer erase what nothing has seen yet. In a `finally` because the only
-    // thing worse than saving too early is never saving again: this flag is the single
-    // gate on persistence, so no path out of here may skip it. The flush that follows
-    // is what rebuilds a roster an earlier boot window had already emptied.
+    // In a finally: this flag is the single gate on persistence, and never saving again
+    // is worse than saving too early. The flush rebuilds a roster an earlier boot emptied.
     rosterReady = true;
     flushRoster();
     renderAll();
@@ -323,8 +255,7 @@ export function jumpExternal(pid: number) {
 async function loadTranscript(e: ExtSession, initial: boolean) {
   await loadTranscriptInto(e.cwd, e.session_id, initial, () => extMirrorId() === e.session_id);
 }
-// `stillCurrent` is re-checked after the await: the user can click away mid-flight,
-// and a late reply must not paint over whatever mirror is on the stage by then.
+// stillCurrent is re-checked after the await: a late reply must not paint over another mirror.
 async function loadTranscriptInto(cwd: string, sessionId: string, initial: boolean, stillCurrent: () => boolean) {
   try {
     const msgs = await invoke<{ role: string; text: string }[]>("read_transcript", { cwd, sessionId, limit: 80 });
@@ -367,9 +298,7 @@ export function renderExtHeader(e: ExtSession) {
   $("hTitle").textContent = e.name || "";
   $("hPath").textContent = tilde(e.cwd);
 }
-// A read-only working-set peek for an external session's folder — the same card as a
-// Episko session's, minus the fetch/pull/push row (we don't drive this checkout).
-// Shown only when the folder actually has uncommitted changes.
+// The working-set peek minus the fetch/pull/push row: we do not drive this checkout.
 function extPeekHtml(e: ExtSession, g: DiffStat): string {
   return `<div class="wset ext-wset">
     <div class="lab" style="margin-bottom:2px">Working set · in this folder</div>
