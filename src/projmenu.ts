@@ -26,8 +26,10 @@ import { agentCapabilitySummary, isAgent, isExited, midFlight } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
-  engineDef, externals, FAVORITES, missingAgents, projGroups, sessions, termEngine,
+  engineDef, externals, FAVORITES, ghAccountFor, ghLogins, missingAgents, projGroups, sessions,
+  termEngine,
 } from "./state";
+import { ghPickable, ghWho } from "./ghwork";
 
 // The eight things a menu row does that this module does not own — panes, the project
 // list and the repaint all belong to main.ts. Past the ~4 where per-callee setters
@@ -38,12 +40,14 @@ let host: {
   launchWorktree: (project: string, root: string, dir: string, branch: string) => void;
   launchShell: (project: string, workdir: string, opts: { colorKey?: string }) => void;
   setProjectAgent: (colorKey: string, id: string | null) => void;
+  setGhAccount: (colorKey: string, login: string | null) => void;
   openProjectFolder: (key: string) => void;
   addProjectPath: (dir: string) => void;
   removeFavorite: (path: string) => void;
 } = {
   renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
   setProjectAgent: () => {}, openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
+  setGhAccount: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
@@ -150,7 +154,7 @@ let menuX = 0, menuY = 0;
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = agentKey = null; // one #ctxMenu, one target — see the module header
+  wtTarget = gTarget = pickPath = agentKey = ghKey = null; // one #ctxMenu, one target — see the module header
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -170,6 +174,13 @@ function openCtxMenu(key: string, x: number, y: number) {
     // twenty-one of these, here is what it looked for" is written down. Dropping it
     // then would hide the feature from exactly the person who has not found it yet.
     { act: "agents", logo: agentLogo(agent.id), label: `Agent · ${agent.label}`, sub: agentSub(key), chev: true },
+    // Only on a machine logged in to more than one GitHub account, which is the only
+    // machine where it can change an answer. One account is not a choice — the same
+    // rule the agent picker's "more supported" fold and the branch sweep follow — and a
+    // row that always reads "GitHub · you" would be four words of noise on every menu.
+    ghPickable(ghLogins)
+      ? { act: "ghacct", ic: "◈", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
+      : null,
     null,
     // Dropped below unless the probe says this folder is a repo — a graph row on a
     // plain directory would open a panel with nothing but an error in it.
@@ -215,7 +226,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -362,9 +373,60 @@ function agentSub(key: string): string {
 /// re-collapsing under them on the next open would read as the menu forgetting.
 let agentShowAll = false;
 
+// ---------- which GitHub account this project reads as ----------
+// The fifth mode of the one #ctxMenu, and a copy of the agent picker above on purpose:
+// it answers the same shape of question (a per-project override of a global default)
+// and anybody who has found one has learnt the other.
+//
+// It exists because `gh` holds one *active* account per host and switches it globally,
+// so two identities on one machine cannot both be right at once — and the failure when
+// they are not is GitHub replying that a repository you can see in a browser "could not
+// be resolved", which names no account and suggests no fix.
+let ghKey: string | null = null;   // the project whose account is being chosen
+
+/// What the "GitHub · X" row says underneath — the same three states `ghWho` returns,
+/// because "I set this" and "this is gh's default" are indistinguishable on the row
+/// above and are the whole answer when the reads are failing.
+function ghSub(key: string): string {
+  const w = ghWho(ghAccountFor(key), ghLogins);
+  if (w.source !== "pinned") return "gh's active account";
+  return w.known ? "set for this project" : "set for this project · gh is not logged in as it";
+}
+
+function openGhPicker(key: string, x: number, y: number) {
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = pickPath = agentKey = null; // one #ctxMenu, one target
+  ghKey = key;
+  const cur = ghAccountFor(key);
+  const w = ghWho(cur, ghLogins);
+  const rows: (CtxRow | null)[] = [
+    { act: "hback", ic: "‹", label: "Back", sub: projName(key) },
+    null,
+    ...ghLogins.map((a) => ({
+      act: `hpick:${a.login}`, ic: a.login === w.login ? "✓" : "▪", label: a.login,
+      // The tick marks the effective account whichever way it was reached; this line is
+      // what tells the two apart, exactly as the agent picker's does.
+      sub: a.login === cur ? "set for this project" : a.active ? "gh's active account" : "logged in, not active",
+    })),
+    // A pin gh has forgotten is still in force — the backend refuses the read rather
+    // than answering as somebody else — so it needs a row of its own to be seen and
+    // cleared. Without it the menu would show a tick on nothing.
+    cur && !w.known ? { act: `hpick:${cur}`, ic: "✓", label: cur, sub: "set for this project · gh is not logged in as it", cls: "dis" } : null,
+    cur ? { act: "hclear", ic: "⊘", label: "Follow gh's active account", sub: "what every project with no setting uses" } : null,
+  ];
+  const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">GitHub account</span>`
+    + `<span class="mp-hpath">${esc(projName(key))} · reads as ${esc(w.login ?? "—")}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
+}
+
 function openAgentPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = ghKey = null; // one #ctxMenu, one target
   agentKey = key;
   const cur = agentByProject[key];
   const eff = effectiveAgent(key);
@@ -435,7 +497,7 @@ const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputEl
 
 function openGroupPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = agentKey = null;
+  ctxKey = wtTarget = gTarget = agentKey = ghKey = null;
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
@@ -459,7 +521,7 @@ function openGroupPicker(key: string, x: number, y: number) {
 
 function openGroupMenu(gid: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = pickPath = agentKey = null;
+  ctxKey = wtTarget = pickPath = agentKey = ghKey = null;
   gTarget = gid;
   menuX = x; menuY = y;
   const g = groupById(projGroups, gid);
@@ -545,6 +607,16 @@ $("ctxMenu").addEventListener("click", (e) => {
     host.setProjectAgent(key, act === "aclear" ? null : act.slice(6));
     return;
   }
+  if (ghKey) {
+    const key = ghKey;
+    if (act === "hback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
+    // Same guard as the agent picker's: a row this picker did not draw leaves the menu
+    // alone rather than closing it on somebody else's vocabulary.
+    if (act !== "hclear" && !act.startsWith("hpick:")) return;
+    closeCtxMenu();
+    host.setGhAccount(key, act === "hclear" ? null : act.slice(6));
+    return;
+  }
   if (pickPath) {
     const path = pickPath;
     // Back is the one row that reopens rather than commits — same coordinates, so the
@@ -610,6 +682,8 @@ $("ctxMenu").addEventListener("click", (e) => {
   if (b.dataset.ctx === "movegroup") { keepMenuOpen(e); openGroupPicker(key, menuX, menuY); return; }
   // Third row that opens rather than commits, same rule as the two above it.
   if (b.dataset.ctx === "agents") { keepMenuOpen(e); openAgentPicker(key, menuX, menuY); return; }
+  // Fourth, and the last of the drill-downs.
+  if (b.dataset.ctx === "ghacct") { keepMenuOpen(e); openGhPicker(key, menuX, menuY); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
     case "launch": host.requestLaunch(name, key); break;

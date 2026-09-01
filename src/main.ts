@@ -31,7 +31,8 @@ import {
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent, setRevivePrefs,
+  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
+  setRevivePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setScrollback, openDevtools, reloadUi,
@@ -92,7 +93,7 @@ import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
-  releaseClaimFor, renderDash, renderDashHeader, renderDashInspector, setDashHost,
+  releaseClaimFor, reloadDashGh, renderDash, renderDashHeader, renderDashInspector, setDashHost,
   wireDashboard,
 } from "./dashboard";
 import {
@@ -247,7 +248,7 @@ setPaletteHost({
 // list, none of which the menu owns.
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
-  addProjectPath, removeFavorite,
+  addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount,
 });
 // Sign off joins the same popover family, and the two verbs it is made of live in
 // ./panes — which it cannot import without closing a cycle through ./footer.
@@ -328,6 +329,7 @@ setDashHost({
   refreshGit: () => refreshGitViews(),
   pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
+  setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
@@ -335,6 +337,13 @@ setDashHost({
   renderAll,
 });
 wireDashboard();
+// A GitHub account change repaints whichever project's board is on screen. ./actions
+// owns the preference and cannot reach the pane; this is the seam between them.
+setGhReload(reloadDashGh);
+// Which accounts `gh` holds, asked once at startup so the project menu can offer the
+// choice before anything has failed. Fire and forget: an answer that never comes is a
+// picker that is simply absent, which is the same thing a one-account machine sees.
+void refreshGhAccounts();
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 setExplorerCloseFootMenus(closeFootMenus);

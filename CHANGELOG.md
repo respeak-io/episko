@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Pick which of your GitHub accounts a project reads as, from the project menu or from
+  the GitHub card itself. `gh` keeps one active account and switches it globally, so a
+  work login and a personal one could not both be right at once — a private repo the
+  other account owns came back as *could not resolve to a Repository*, which named
+  neither the account nor the fix.
+~ The GitHub card names the account a failed read ran as, instead of passing GitHub's
+  own wording through.
+! `gh: Not Found (HTTP 404)` no longer reads as "GitHub CLI (gh) is not installed".
+
 ## 0.24.0 — 2026-08-28
 
 Put the fleet down for the night and pick it up in the morning. The hook server

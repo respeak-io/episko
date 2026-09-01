@@ -32,6 +32,7 @@ import { clampScrollback, clampVitalsPrefs, type VitalsPrefs } from "./perf";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
+import type { GhAccount } from "./ghwork";
 import { parseMotionPrefs, type MotionPrefs } from "./motion";
 
 export interface Favorite { name: string; path: string }
@@ -354,6 +355,26 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 export function effectiveAgent(colorKey: string): AgentCli {
   return pickAgent(colorKey, defaultAgent, agentByProject, availAgents);
 }
+// --- which GitHub account a project reads as ---------------------------------
+// The fourth per-project fact, and the only one that is about *you* rather than about
+// the folder: `gh` keeps one active account per host and switches it globally, so a
+// machine logged in to two identities reads every repo as whichever was switched to
+// last. Keyed by `colorKey` like the agent override, in localStorage like every other
+// preference, and never committed — which of your accounts you are is not a project
+// fact, and a colleague pulling the repo has their own.
+export const ghAccountByProject: Record<string, string> = strMap(localStorage.getItem("cc-gh-account"));
+export function setProjectGhAccount(colorKey: string, login: string | null) {
+  if (login) ghAccountByProject[colorKey] = login; else delete ghAccountByProject[colorKey];
+}
+/// The pin for a project, or null to follow gh's active account. Read at the call site
+/// and passed to the backend per call — never stored on a `Sess` and never pushed to the
+/// backend as a second copy, for the same reason `effectiveAgent` is read at launch.
+export const ghAccountFor = (colorKey: string): string | null => ghAccountByProject[colorKey] ?? null;
+/// The accounts `gh` is logged in to, as last probed. **Runtime only, never persisted**:
+/// it is gh's state rather than ours, a stale copy would offer an account that has been
+/// logged out, and the probe is one process behind a 60s backend cache.
+export let ghLogins: GhAccount[] = [];
+export function setGhLogins(a: GhAccount[]) { ghLogins = a; }
 /// The global default on its own, ignoring any project override — what the "Follow the
 /// default" row names. Resolved through the same fallback a launch uses (empty overrides
 /// rather than a sentinel key), so the row cannot offer an agent that has since been

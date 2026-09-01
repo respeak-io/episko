@@ -19,7 +19,7 @@ describe("state.ts boots whatever localStorage holds", () => {
   beforeEach(() => { store.clear(); });
 
   it("survives a truncated write of every key it reads at import time", async () => {
-    for (const k of ["cc-agent-by-project", "cc-colors", "cc-favorites", "cc-proj-order"]) {
+    for (const k of ["cc-agent-by-project", "cc-colors", "cc-favorites", "cc-proj-order", "cc-gh-account"]) {
       store.clear();
       store.set(k, '{"a":');     // what a crash mid-write leaves behind
       await expect(boot(), `${k} took the app down`).resolves.toBeTruthy();
@@ -52,6 +52,19 @@ describe("state.ts boots whatever localStorage holds", () => {
     expect(s.projOrder).toEqual(["/w/a", "/w/b"]);
     // The name is re-derived from the path on load, which is the existing self-heal.
     expect(s.FAVORITES).toEqual([{ path: "/w/a", name: "a" }]);
+  });
+
+  it("refuses a GitHub account pin of the wrong shape", async () => {
+    // Same narrowing as the agent override, and it matters for the same reason: this
+    // value is passed to `gh` as the identity to read a project as, so a number or a
+    // null reaching the backend is a rejected invoke and a board that never loads.
+    store.set("cc-gh-account", JSON.stringify({ "/w/a": "octo-work", "/w/b": 7 }));
+    const s = await boot();
+    expect(s.ghAccountByProject).toEqual({ "/w/a": "octo-work" });
+    expect(s.ghAccountFor("/w/a")).toBe("octo-work");
+    // A project with no pin follows gh's active account, which is `null` here rather
+    // than `undefined`: it is passed straight to the backend as an argument.
+    expect(s.ghAccountFor("/w/b")).toBeNull();
   });
 
   it("still reads a well-formed value", async () => {

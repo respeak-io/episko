@@ -39,7 +39,7 @@ import {
   resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
 } from "./claim";
 import {
-  bucketed, cardRows, claimComment, closeComment, holderOf, isoDay, quietFor,
+  bucketed, cardRows, claimComment, closeComment, ghWho, holderOf, isoDay, quietFor,
   releaseComment, staleCandidates, type GhResult, type GhThread, type KeptIssue,
 } from "./ghwork";
 import type { HistEntry } from "./history";
@@ -52,10 +52,11 @@ import {
 import { statusKey, type DiffStat, type GitActionResult, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, permissionModeFor, sessions, setActiveId,
-  setMirror,
+  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, ghAccountFor, ghLogins,
+  permissionModeFor, sessions, setActiveId, setMirror,
 } from "./state";
 import { providerPermissionMode } from "./providers";
+import { refreshGhAccounts } from "./actions";
 
 // What this pane does but does not own. Same host-object shape as ./settings and
 // ./palui: a control surface that touches many things it isn't responsible for takes
@@ -105,6 +106,11 @@ export interface DashHost {
   ) => void;
   /// Persist that choice. A stored preference, so the write belongs to actions.ts.
   saveTrunk: (repoDir: string, ref: string) => void;
+  /// Pin this project to one of your GitHub accounts, or `null` to follow gh's active
+  /// one. A stored preference like `saveTrunk`, so the write is actions.ts's — and it
+  /// drops the cached reads the previous account gave, which this module must not do
+  /// twice from its own side.
+  setGhAccount: (root: string, login: string | null) => void;
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
@@ -112,6 +118,7 @@ let host: DashHost = {
   openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, handToTerminal: () => {}, pickTrunk: () => {}, saveTrunk: () => {},
+  setGhAccount: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
 
@@ -343,15 +350,34 @@ async function loadDash(): Promise<void> {
   if (dashSummaries) void runSummaryQueue();
 }
 
+/// Re-read the GitHub half for one project, if that project is the one on screen.
+///
+/// The account it reads as is a preference ./actions owns, and changing it makes every
+/// answer already on screen the *previous* identity's — so this is the seam it calls
+/// back through. Silent when the dashboard is closed or showing something else: the
+/// next open reads with the new account anyway, and the backend's cached answers for
+/// this root were dropped with the write.
+export function reloadDashGh(r: string): void {
+  if (!dashMirror() || r !== root()) return;
+  ghLoading = true;
+  renderDash();
+  void loadGh(r, true);
+}
+
 /// Issues, PRs, the project's keep list and its claim ceiling. Separate from
 /// `loadDash` so a slow or absent `gh` never delays the timeline.
 async function loadGh(r: string, force = false): Promise<void> {
+  // The account list rides along with the reads rather than waiting for a failure: the
+  // picker is drawn from it, and the card that offers the picker is drawn in the same
+  // pass as the result that failed. Asked for every project, not only a broken one, so
+  // the project menu has an answer before anything goes wrong.
   const [res, k, a] = await Promise.all([
-    invoke<GhResult>("gh_threads", { root: r, force }).catch((e) => ({
+    invoke<GhResult>("gh_threads", { root: r, force, account: ghAccountFor(r) }).catch((e) => ({
       available: false, reason: String(e), threads: [], viewer: null,
     } as GhResult)),
     invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => [] as KeptIssue[]),
     invoke<ClaimAllow>("claim_policy", { root: r }).catch(() => ALLOW_ALL),
+    refreshGhAccounts(),
   ]);
   if (root() !== r) return;   // the user moved on while this was in flight
   // Cleared inside the guard, never before it: a stale call landing after the user has
@@ -793,7 +819,8 @@ export function renderDash(): void {
     : repo + ghCards
       + checkoutsCard(heads, liveIn, folderDirty)
       + notesCard(noteList(root()))
-      + (tier === "github" && !gh.available && gh.reason ? ghUnavailable(gh.reason) : "")
+      + (tier === "github" && !gh.available && gh.reason
+        ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
       + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");
@@ -1091,6 +1118,10 @@ function dashAction(act: string): void {
   else if (act === "folder") host.openFolder(r);
   else if (act === "copypath") host.copyPath(r);
   else if (act === "worklog") void enableDigest();
+  // The account picker on the GitHub card. `ghacctclear` is its own verb rather than an
+  // empty `ghacct:`, so an act that arrives truncated can never read as "clear the pin".
+  else if (act === "ghacctclear") host.setGhAccount(r, null);
+  else if (act.startsWith("ghacct:")) host.setGhAccount(r, act.slice(7));
 }
 
 // ---------- the Branches view ----------
@@ -1120,7 +1151,7 @@ async function loadBranches(force = false): Promise<void> {
   renderDash();
   if (branchPrs || branchPrsLoading) return;
   branchPrsLoading = true;
-  const prs = await invoke<MergedPrs>("gh_merged_prs", { root: r, force: false }).catch(() => null);
+  const prs = await invoke<MergedPrs>("gh_merged_prs", { root: r, force: false, account: ghAccountFor(r) }).catch(() => null);
   branchPrsLoading = false;
   // Guarded on the PROJECT, not on a load counter: this lands a beat after the git reads
   // and must not be discarded because they finished in the meantime. Nothing asks twice.
@@ -1265,7 +1296,7 @@ async function doClose(): Promise<void> {
   sheet = null;
   renderDash();
   try {
-    await invoke("gh_close_issue", { root: r, number: t.number, comment });
+    await invoke("gh_close_issue", { root: r, number: t.number, comment, account: ghAccountFor(r) });
     toast(`#${t.number} closed`);
     await loadGh(r, true);
   } catch (e) {
