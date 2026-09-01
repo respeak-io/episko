@@ -759,6 +759,31 @@ export interface Sess {
   /// `Workflow` call that named it) until the next turn clears it. Null for the great
   /// majority of sessions, which never fan out. See `Fanout` for why it exists.
   fanout: Fanout | null;
+  /// A prompt was typed while this session was mid-tool-call, so it is QUEUED behind a
+  /// turn that has yet to report its own end.
+  ///
+  /// Claude Code fires `UserPromptSubmit` the instant you press Enter, including while
+  /// the previous turn is still running, because a message typed then is queued rather
+  /// than refused. So the outstanding turn's `Stop` lands *after* the new prompt, and
+  /// taking that `Stop` at face value marks the session "your turn" milliseconds before
+  /// it starts the work you just asked for — a green tick, a chime and a badge over a
+  /// pane that then runs for twenty minutes. This flag is what tells `endTurn` whose
+  /// `Stop` it is holding.
+  ///
+  /// A flag and not a count, which is the whole design: queued messages do NOT get one
+  /// `Stop` each. Over six days of this machine's logs, 23 of 25 queued runs answered
+  /// two or more prompts in a single turn (one answered four), so a counter would have
+  /// been left holding a phantom prompt and would have withheld the "your turn" badge
+  /// until the 60s idle nudge cleared it — trading a lie for a silence. Exactly one
+  /// `Stop` consumes this, so the worst it can cost is that one, and the next `Stop`
+  /// (or the idle nudge) is already the correction.
+  ///
+  /// Set only from `working`, i.e. with a tool call demonstrably in flight. A turn that
+  /// answers in prose alone never leaves `thinking`, so a prompt queued behind one is
+  /// missed — deliberately, since `thinking` is also where a second prompt typed at an
+  /// idle REPL lands, and those must not be confused. Such turns are seconds long, which
+  /// is the length of the wrong reading, and `STRAGGLER_MS` bounds it anyway.
+  queuedPrompt: boolean;
   // Set by StopFailure, cleared the moment the session starts a new turn. While it
   // is set the turn is known-failed, which is what stops the 60s idle Notification
   // from relabelling a dead turn "your turn" — see endTurn in phase.ts.

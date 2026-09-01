@@ -79,6 +79,35 @@ describe("costDelta — what a running total owes the day", () => {
     costDelta("conv", 28);
     expect(costDelta("conv", 30)).toBeCloseTo(2, 10);
   });
+  it("lets two live panes share a conversation without booking each other's totals", () => {
+    // The $3,000 day: resume a session whose original pane is still running (a dev
+    // build's reload makes this routine) and two Claude processes report independent
+    // counters against one conversation. With a single shared baseline every reading
+    // looked like a drop and the drop branch re-booked the WHOLE total, ~$12 every
+    // 10s for 26 minutes. Each pane must measure against its own last reading.
+    expect(costDelta("conv", 10, true, "p1")).toBe(10);
+    expect(costDelta("conv", 0.5, true, "p2")).toBe(0.5); // p2's own counter from ~0, not a reset of p1's
+    expect(costDelta("conv", 10.2, true, "p1")).toBeCloseTo(0.2, 10); // p1 unmoved by p2's lower reading
+    expect(costDelta("conv", 0.7, true, "p2")).toBeCloseTo(0.2, 10);
+  });
+  it("hands a conversation's tip to a pane it has never met — the restore path", () => {
+    // A restored pane has a new id but Claude carries the total across; its first
+    // reading must be measured from the conversation, not booked whole.
+    costDelta("conv", 100, true, "p1");
+    expect(costDelta("conv", 100.2, true, "p2")).toBeCloseTo(0.2, 10);
+  });
+  it("keeps the per-pane split across a reboot, and sheds a corrupt one to the tip", async () => {
+    costDelta("conv", 10, true, "p1");
+    costDelta("conv", 0.5, true, "p2");
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 0.7, true, "p2")).toBeCloseTo(0.2, 10); // p2's baseline, not p1's tip
+    // And an entry whose `o` was hand-mangled still boots, seeding from `t` alone.
+    store.set("cc-cost-base", JSON.stringify({ conv: { t: 28, at: Date.now(), o: "junk" } }));
+    vi.resetModules();
+    const { costDelta: rebooted } = await import("../src/usage");
+    expect(rebooted("conv", 30, true, "p3")).toBeCloseTo(2, 10);
+  });
   it("treats a drop as the counter restarting, and follows it down", () => {
     // /clear, /compact, or a cold start: the new reading is all fresh spend, and the
     // next increment must be measured from there rather than from the stale high.

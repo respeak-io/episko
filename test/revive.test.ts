@@ -16,7 +16,7 @@ function sess(o: Partial<Sess> = {}): Sess {
   return {
     id: "s1", kind: "agent", provider: "claude", external: false, phase: "error", attention: null,
     apiErr: { kind: "overloaded", detail: "", at: NOW }, revive: null,
-    agents: new Map(), fanout: null,
+    agents: new Map(), fanout: null, queuedPrompt: false,
     ...o,
   } as Sess;
 }

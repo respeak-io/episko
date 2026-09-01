@@ -277,6 +277,14 @@ And the things that hold however the files are arranged:
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
+- **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
+  Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
+  the running turn's `Stop` arrives *after* it — `Sess.queuedPrompt` (set from `working`,
+  consumed by one `Stop`) is what stops that `Stop` being read as "your turn". And the
+  tool guard in `applyHook` is bounded by `STRAGGLER_MS` rather than by `s.phase ===
+  "done"`: unbounded, one `Stop` silenced every later `PreToolUse`/`PostToolUse` and the
+  row claimed your turn for the whole of the next turn. Both shipped; see
+  `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
