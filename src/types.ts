@@ -79,6 +79,33 @@ export const actKey = (a: Act): string => a.id || `t${a.startMs}`;
 export type TouchKind = "created" | "edited" | "read";
 export interface FileTouch { path: string; kind: TouchKind; n: number; at: number }
 
+/// Why the last `read_bg_log` came back with nothing. Taken off the backend verbatim
+/// and never invented here — the frontend cannot see a filesystem and must not develop
+/// an opinion about one.
+///
+/// The split that carries weight is `notYet` (a root holding this session *was* found,
+/// and the log file simply is not there) against `noRoot`/`ambiguous` (the probe could
+/// not say where to look at all). The first is a shell whose log never appeared and can
+/// be retired; the second is an outage, and retiring on one would turn "rows that never
+/// leave" into "rows that always leave" — the quieter of the two failures, and the one
+/// nobody would notice.
+export type BgMissReason = "none" | "badId" | "notYet" | "noRoot" | "ambiguous" | "unreadable";
+
+/// Which of the four endings a record had. `exit` alone cannot say, because three of
+/// these carry `exit: null` and `null` already meant exactly one thing — "somebody asked
+/// for this". `sentinel` is the process's own last word, `unknown` is Claude Code's
+/// reaper admitting it has no code to report, `stale` is a log that never appeared, and
+/// `session` is the pane the shell belonged to going away. `bgOutcome` reads it; an
+/// agent's own `TaskStop` is the ending with no name here, since unqualified `exit:
+/// null` has always been precisely that.
+export type BgEnd = "sentinel" | "unknown" | "stale" | "session";
+
+/// What a row *is*, split on evidence rather than on the command string: a URL — printed
+/// by the process or adopted off a listening socket — makes it a server, and everything
+/// else is a job. `pnpm dev` and `npm ci` are indistinguishable as text, and a rule that
+/// fires on ordinary commands is worse than no rule.
+export type BgKind = "server" | "job";
+
 /// One background shell an agent started and left running — Claude Code's own
 /// `Bash{run_in_background:true}`, which is how every "let me start the dev server"
 /// ends up. See ./servers for how one is recognised and what the log file answers.
@@ -107,10 +134,11 @@ export interface BgServer {
   /// server that restarts itself (a vite config change) prints a fresh one, and the
   /// stale line above it would send you to a port nothing is on.
   url?: string;
-  /// Set once the log's closing sentinel appears — `[exited with code N]` or `[killed]`,
-  /// the latter carrying no code. A record with `ended` set is history: it stays on the
-  /// session so the popover can say "this one is finished", and is what keeps a crashed
-  /// dev server from silently disappearing off the count.
+  /// Set when the record stopped, whichever of the four ways that was (`endReason`
+  /// below names it — the log's closing sentinel is only one of them, and measured over
+  /// eleven real logs it is the rarest). A record with `ended` set is history: it stays
+  /// on the session so the popover can say "this one is finished", and is what keeps a
+  /// crashed dev server from silently disappearing off the count.
   ended?: number; exit?: number | null;
   /// Last few lines of the log, for the row's expanded peek.
   tail?: string[];
@@ -119,6 +147,23 @@ export interface BgServer {
   /// hitting, whose log has not moved in an hour — into one `metadata()` call instead
   /// of a 32 KiB read.
   len?: number;
+  /// `tool_response.timedOutAfterMs`. Claude auto-backgrounds any Bash command past its
+  /// 120s timeout with `run_in_background` UNSET; such a command may never adopt a port.
+  timedOut?: number;
+  /// Why the last read found nothing, straight off `read_bg_log`. Never invented here.
+  reason?: BgMissReason;
+  /// Every candidate path the backend tried when it found none. The row's reveal/copy.
+  tried?: string[];
+  /// Rank of the root the log resolved under; -1 when found by directory scan.
+  rootRank?: number;
+  /// When the log went missing — stamped on the first `notYet` and cleared the moment a
+  /// read lands. Retirement is measured from THIS rather than from `startedAt`, because
+  /// a record whose log was read for eleven minutes and then deleted is eleven minutes
+  /// old the instant it goes missing, and would otherwise be retired four seconds later
+  /// as "log never appeared" — about a log that appeared and was read all afternoon.
+  missSince?: number;
+  /// Which of the four endings this was.
+  endReason?: BgEnd;
 }
 // A single item from a TodoWrite payload (the plan Claude keeps for itself).
 export interface Todo { content: string; status: string }

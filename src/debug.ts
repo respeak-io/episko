@@ -18,7 +18,7 @@ import { $ } from "./dom";
 import { esc } from "./format";
 import { rl } from "./rl";
 import {
-  activeId, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
+  activeId, bgLogHealth, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
   pastMirrorId, revivePrefs, sessions, telemetryUp, termEngine, vitalsPrefs,
 } from "./state";
 import { liveCount, orphanAgents, type Sess } from "./types";
@@ -147,6 +147,13 @@ export function dbgSnapshot() {
     // `telemetryUp` beside the counters: a snapshot full of idle sessions means two
     // completely different things depending on it.
     telemetry: { ...telem, up: telemetryUp },
+    // Which directory the backend last resolved an agent's background-shell logs under,
+    // and how it got there. Same argument as `telemetry` above, one subsystem down: a
+    // popover full of rows stuck at "starting…" reads as "they are still booting" and
+    // reads as "we are looking in the wrong place" — and only this tells the two apart.
+    // `null` until the first read of the run resolves anything, which is honest: nothing
+    // has asked yet.
+    bgRoot: bgLogHealth,
     sessions: [...sessions.values()].map((s) => ({
       id: s.id, project: s.project, phase: s.phase, attention: s.attention, model: s.model,
       ctxPct: s.ctxPct, cost: s.cost, durMs: s.durMs, subagents: liveCount(s),

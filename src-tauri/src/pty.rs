@@ -1839,6 +1839,23 @@ fn fold_io(
 }
 
 // ---------- the log of a background shell an agent started ----------
+//
+// The root under all of this is NOT ours and cannot be computed. Claude Code writes a
+// backgrounded shell's output under `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>/`,
+// while Episko asked `env::temp_dir()/claude/` for this feature's entire life — a
+// directory that has never existed on macOS, where `$TMPDIR` is a per-user
+// `/var/folders/…` box the CLI ignores outright (measured: launching `claude` with
+// `TMPDIR` pointed at a scratch dir creates nothing under it at all). So every read
+// missed. No row ever got a URL, a peek, or an exit sentinel; nothing ever set
+// `ended`; and every background shell sat at "starting…" until its session died.
+// Nothing anywhere said so, because a miss is a perfectly legitimate state one second
+// after a shell starts and the row draws either way.
+//
+// So the root is **probed and remembered**, never asserted, and the probe carries BOTH
+// directory shapes on EVERY platform — only their order differs, because the Windows
+// row is one nobody working on this has ever observed and pinning an unobserved guess
+// as the only possible answer is precisely what cost this feature its life. A wrong
+// extra candidate costs one `is_file()` per poll; a missing one costs the feature.
 
 /// How much of a background log to hand the frontend. A dev server left running all
 /// afternoon writes megabytes (a real one measured 300 KiB in three hours of HMR), and
@@ -1847,43 +1864,508 @@ fn fold_io(
 /// of the file at all.
 const BG_LOG_TAIL: u64 = 32 * 1024;
 
-/// Where Claude Code writes a backgrounded shell's output.
+/// How often the probe's last-resort directory scan may run, PROCESS-WIDE.
 ///
-/// It mirrors the transcript: a transcript at
-/// `~/.claude/projects/<slug>/<uuid>.jsonl` puts its background logs under
-/// `<tmp>/claude/<slug>/<uuid>/tasks/<task_id>.output`. The layout is undocumented and
-/// not ours, so this is written to fail by returning `None` rather than by guessing —
-/// a row with no log still shows its command, which is a better failure than a row
-/// pointing confidently at a file that was never there.
+/// `read_bg_log` is called every four seconds per live record. A fleet with ten blind
+/// shells would otherwise `read_dir` a busy `/tmp` a hundred and fifty times a minute
+/// to get the same answer a hundred and fifty times, and a permanently blind fleet is
+/// exactly the fleet that must not pay for its own blindness twenty times a tick.
+const BG_SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How many candidate roots one record will ever be tested against. Each is a single
+/// `is_file()`, but the list is a cross-product of bases and names, and a cross-product
+/// is how a cheap poll quietly becomes an expensive one. Four bases by two names is
+/// already the whole believable space.
+const BG_ROOT_MAX: usize = 8;
+
+/// Which layout Claude Code is using, as a VALUE rather than a `#[cfg]`.
 ///
-/// `tmp` is a parameter rather than `env::temp_dir()` so the test can pin a root
-/// instead of building one by hand (CLAUDE.md's fixture-path rule).
-fn bg_log_path(tmp: &std::path::Path, transcript: &str, task_id: &str) -> Option<std::path::PathBuf> {
-    // The id reaches us from a hook payload and lands in a path, so it is checked
-    // rather than trusted: anything but Claude's own alphabet is refused outright.
-    if task_id.is_empty() || !task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
-        return None;
+/// Same reasoning as `win_runs_directly` above, one feature along: half this file is
+/// invisible to any one machine, and a `#[cfg(windows)]` arm cannot be asserted from a
+/// Mac. The Windows root is precisely the row nobody here has ever seen, so it has to
+/// be the row a macOS test can pin — and it can only be that if the OS arrives as data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClaudeOs {
+    Mac,
+    Windows,
+    Unix,
+}
+
+impl ClaudeOs {
+    fn current() -> Self {
+        match std::env::consts::OS {
+            "macos" => Self::Mac,
+            "windows" => Self::Windows,
+            _ => Self::Unix,
+        }
     }
+}
+
+/// Everything the root table is a function of, gathered in one impure place so that
+/// nothing below it reads the environment at all.
+///
+/// `BgLogEnv::current()` is the ONLY caller of `env::var`, `env::temp_dir`,
+/// `env::consts::OS` or the uid in this half of the file; the table, the path builder
+/// and the probe all take it as an argument and are pure. That is what lets the macOS
+/// leg of CI assert the Windows candidate order — and it is also what makes CI's
+/// poisoned `CLAUDE_CODE_TMPDIR` a real guard rather than a decoration: anyone who
+/// reaches for `env::var` inside the table sends the pure tests, which pass
+/// `override_tmp: None`, somewhere else entirely and turns them red.
+struct BgLogEnv {
+    os: ClaudeOs,
+    /// `$CLAUDE_CODE_TMPDIR` — the one knob the CLI honours here. `$TMPDIR` is **not**
+    /// a fallback for it; the bundle reads this variable and otherwise hard-codes
+    /// `/tmp`, which is the whole reason `env::temp_dir()` was the wrong basis.
+    override_tmp: Option<std::path::PathBuf>,
+    /// `env::temp_dir()`. Wrong on macOS and kept anyway, because it is very likely
+    /// the right answer on Windows and a candidate list that drops a shape is how
+    /// this broke in the first place.
+    sys_tmp: std::path::PathBuf,
+    /// `$XDG_RUNTIME_DIR`, last: a Linux box that keeps per-user runtime state there
+    /// is the one place `/tmp` and `env::temp_dir()` can both be wrong at once.
+    xdg_runtime: Option<std::path::PathBuf>,
+    /// The uid the `claude-<uid>` directory is named for, or `None` where we have no
+    /// uid to name it with.
+    uid: Option<u32>,
+}
+
+impl BgLogEnv {
+    fn current() -> Self {
+        // An empty variable is not a base. `PathBuf::from("")` joins to a relative
+        // path, so an exported-but-blank `CLAUDE_CODE_TMPDIR` would otherwise put
+        // `claude-501/<slug>/…` — resolved against the app's cwd — at rank 0.
+        let dir = |k: &str| {
+            std::env::var_os(k).map(std::path::PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+        };
+        Self {
+            os: ClaudeOs::current(),
+            override_tmp: dir("CLAUDE_CODE_TMPDIR"),
+            sys_tmp: std::env::temp_dir(),
+            xdg_runtime: dir("XDG_RUNTIME_DIR"),
+            uid: current_uid(),
+        }
+    }
+}
+
+/// The uid Claude Code names its temp directory after. Read off the owner of `$HOME`
+/// rather than through a `libc` call, because this crate has no libc dependency and
+/// the two numbers are the same one.
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(crate::platform::home_dir()).ok().map(|m| m.uid())
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> Option<u32> {
+    None
+}
+
+/// The `claude*` directory names Claude Code may have used, most-believed first.
+///
+/// BOTH shapes are returned on every platform and only their ORDER changes: on macOS
+/// and Linux the suffixed name is what a real tree on disk is called, and on Windows
+/// the bare name is a belief and nothing more.
+///
+/// **A platform with no uid to read still gets a suffixed shape, spelled `claude-0`.**
+/// `current_uid()` reads the owner of `$HOME` through a Unix-only API, so it is `None`
+/// on every Windows build — and the bundle computes `claude-${process.getuid?.() ?? 0}`,
+/// which is `claude-0` exactly where `getuid` is undefined. That is a reading of
+/// minified source rather than a directory anybody has watched appear, which is why it
+/// is not FIRST on Windows; leaving it out altogether was the worse mistake, because it
+/// left that platform's table one entry long and that entry the name we have the least
+/// reason to believe. A wrong extra candidate costs one `is_file()`; a missing one cost
+/// this feature its entire life.
+/// `claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it` is what settles
+/// the Windows row, by running the binary on a Windows runner and looking; until it
+/// has, a wrong first row degrades to a working probe that announces `moved`, which is
+/// a whole different kind of wrong from the outage above.
+fn bg_log_dir_names(os: ClaudeOs, uid: Option<u32>) -> Vec<String> {
+    let owned = format!("claude-{}", uid.unwrap_or(0));
+    let bare = "claude".to_string();
+    match os {
+        ClaudeOs::Windows => vec![bare, owned],
+        ClaudeOs::Mac | ClaudeOs::Unix => vec![owned, bare],
+    }
+}
+
+/// The directories a `claude*` tree could sit in, most-believed first.
+///
+/// Separate from `bg_log_roots` because the last-resort scan walks these BASES looking
+/// for a `claude*` entry nobody predicted — the one way this probe can survive a
+/// directory name we have never seen without shipping a release first.
+fn bg_log_bases(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
+    // `/tmp` is first on macOS because the CLI hard-codes it and ignores `$TMPDIR`;
+    // `env::temp_dir()` is first everywhere else because on Windows it is the only
+    // base there is. Each keeps the other as a fallback: the point of this list is
+    // that neither platform's answer is asserted as the only one.
+    let hard_tmp = std::path::PathBuf::from("/tmp");
+    let (first, second) = match e.os {
+        ClaudeOs::Mac => (hard_tmp, e.sys_tmp.clone()),
+        ClaudeOs::Windows | ClaudeOs::Unix => (e.sys_tmp.clone(), hard_tmp),
+    };
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for b in e
+        .override_tmp
+        .iter()
+        .cloned()
+        .chain([first, second])
+        .chain(e.xdg_runtime.iter().cloned())
+    {
+        if !out.contains(&b) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// The candidate roots, most-believed first. **Pure**: no I/O, no env, no `cfg`. Every
+/// index into this list is a `rootRank` the frontend can read, so its order is part of
+/// the contract and not an implementation detail.
+fn bg_log_roots(e: &BgLogEnv) -> Vec<std::path::PathBuf> {
+    let names = bg_log_dir_names(e.os, e.uid);
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for base in bg_log_bases(e) {
+        for name in &names {
+            let cand = base.join(name);
+            if !out.contains(&cand) {
+                out.push(cand);
+            }
+            if out.len() == BG_ROOT_MAX {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// The two components of a background log's address that genuinely mirror the
+/// transcript: the project slug from its directory, the session uuid from its file
+/// stem. `~/.claude/projects/<slug>/<uuid>.jsonl` gives `(<slug>, <uuid>)`.
+fn bg_log_session(transcript: &str) -> Option<(String, String)> {
     let t = std::path::Path::new(transcript);
     let uuid = t.file_stem()?.to_str()?;
     let slug = t.parent()?.file_name()?.to_str()?;
     if uuid.is_empty() || slug.is_empty() {
         return None;
     }
-    Some(tmp.join("claude").join(slug).join(uuid).join("tasks").join(format!("{task_id}.output")))
+    Some((slug.to_string(), uuid.to_string()))
+}
+
+/// Where Claude Code writes a backgrounded shell's output, GIVEN a root.
+///
+/// `root` already includes the `claude*` directory, because that component is not
+/// computable from anything we hold — `bg_log_resolve` probes for it and remembers it.
+/// What is left is the half that genuinely mirrors the transcript: a transcript at
+/// `~/.claude/projects/<slug>/<uuid>.jsonl` puts its background logs under
+/// `<root>/<slug>/<uuid>/tasks/<task_id>.output`. The layout is undocumented and not
+/// ours, so this fails by returning `None` rather than by guessing, and the probe
+/// around it reports every path it LOOKED AT rather than asserting the one it
+/// computed — a row that can say where it looked is a row somebody can fix.
+fn bg_log_path(root: &std::path::Path, transcript: &str, task_id: &str) -> Option<std::path::PathBuf> {
+    // The id reaches us from a hook payload and lands in a path, so it is checked
+    // rather than trusted: anything but Claude's own alphabet is refused outright.
+    if task_id.is_empty() || !task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    let (slug, uuid) = bg_log_session(transcript)?;
+    Some(root.join(slug).join(uuid).join("tasks").join(format!("{task_id}.output")))
+}
+
+/// A log the probe actually found, and how far down it had to go to find it.
+struct BgResolved {
+    path: std::path::PathBuf,
+    /// Index into `bg_log_roots`, or `-1` when the directory scan found it.
+    rank: i32,
+    discovered: bool,
+    /// The memo answered — its root, or the session directory a scan taught it — so
+    /// there is nothing new to remember.
+    from_memo: bool,
+}
+
+/// Why the probe has no log, in the shape a row needs to say so out loud.
+///
+/// `NotYet` carries the file it is waiting for; the other two carry every path that
+/// was tested. A row that can only say "missing" is the silence this whole block
+/// exists to end — and the three states have three different answers, one of which
+/// (nothing found anywhere) must never be mistaken for a shell that has simply not
+/// written its first line yet.
+///
+/// `Debug` because a test that fails here should print the paths it looked at rather
+/// than the word "Err": the list is the whole diagnosis.
+#[derive(Debug)]
+enum BgResolveErr {
+    BadId,
+    NotYet(std::path::PathBuf, Vec<std::path::PathBuf>),
+    NoRoot(Vec<std::path::PathBuf>),
+    Ambiguous(Vec<std::path::PathBuf>),
+}
+
+/// The one thing the probe remembers between calls, held in `AppState`.
+///
+/// The ROOT is memoised and the FILE never is. A background log appears seconds
+/// *after* the record that names it does, so a memo on the resolved file would freeze
+/// the first miss in place forever — which is the bug being fixed, reintroduced by its
+/// own fix. And the memo is INVALIDATED rather than defended: `$CLAUDE_CODE_TMPDIR`
+/// can change under a running app and `/tmp` gets reaped, so a remembered root that
+/// stops holding is dropped on the spot and the ladder starts again from the top.
+pub(crate) struct BgRootState {
+    root: Option<std::path::PathBuf>,
+    rank: i32,
+    /// The `<root>/<slug>/<uuid>` directory a SCAN resolved, kept beside the root
+    /// because the root alone cannot re-find it: Claude splices a base-36 hash into a
+    /// slug that grows too long, so step (1) rebuilds the path from the slug we DERIVE
+    /// and misses a tree whose slug is not that one. Without this such a record is
+    /// re-found only by the scan, which runs once a minute — fourteen of every fifteen
+    /// polls would report `noRoot` about a log the probe has already held in its hand,
+    /// flapping the row's peek and its health state every four seconds. It answers only
+    /// for the uuid it was learned for, checked rather than assumed: one slot,
+    /// process-wide, and a wrong hit here puts this row's peek on another session's log.
+    sess: Option<std::path::PathBuf>,
+    /// The last `bglog-health` state announced FOR EACH record, so that event fires on
+    /// TRANSITION only. One slot for the whole process reads as transition-only right
+    /// up until two live records disagree — one resolving, one blind — after which
+    /// every read flips the slot the other one set and the event fires twice per poll
+    /// forever: 30 `dlog` lines a minute, which empties the debug console's 400-entry
+    /// ring in about a quarter of an hour. `bg_log_health_state` answers per RECORD, so
+    /// the guard on it has to be per record too. Keyed by transcript AND task id
+    /// because a task id is Claude's and is only unique within one session, exactly as
+    /// the frontend keys a `BgServer` inside one pane's list. It holds one small enum
+    /// per shell an agent has backgrounded, for the life of the process.
+    announced: std::collections::HashMap<(String, String), BgHealth>,
+    last_scan: Option<std::time::Instant>,
+}
+
+impl Default for BgRootState {
+    fn default() -> Self {
+        Self {
+            root: None,
+            rank: -1,
+            sess: None,
+            announced: std::collections::HashMap::new(),
+            last_scan: None,
+        }
+    }
+}
+
+/// Find the log, or say exactly where you looked. Five steps, cheapest and
+/// most-believed first, and every one of them ends in an answer a row can draw.
+fn bg_log_resolve(
+    e: &BgLogEnv,
+    memo: &mut BgRootState,
+    transcript: &str,
+    task_id: &str,
+    now: std::time::Instant,
+) -> Result<BgResolved, BgResolveErr> {
+    let Some((slug, uuid)) = bg_log_session(transcript) else {
+        return Err(BgResolveErr::BadId);
+    };
+    let roots = bg_log_roots(e);
+    // Root and candidate file together, so a rank is an index into one list rather
+    // than an assumption that two lists stayed the same length.
+    let cands: Vec<(std::path::PathBuf, std::path::PathBuf)> = roots
+        .iter()
+        .filter_map(|r| bg_log_path(r, transcript, task_id).map(|p| (r.clone(), p)))
+        .collect();
+    if cands.is_empty() {
+        // The transcript parsed, so this can only be a task id that is not one. There
+        // is no address to look for and no amount of disk I/O improves that.
+        return Err(BgResolveErr::BadId);
+    }
+    let tried = |c: &[(std::path::PathBuf, std::path::PathBuf)]| {
+        c.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>()
+    };
+
+    // (1) The remembered root: one `is_file()` where the table is up to eight, and
+    // the overwhelmingly common case once anything at all has resolved.
+    let mut won: Option<(BgResolved, std::path::PathBuf)> = None;
+    if let Some(root) = memo.root.clone() {
+        if let Some(p) = bg_log_path(&root, transcript, task_id) {
+            if p.is_file() {
+                won = Some((
+                    BgResolved { path: p, rank: memo.rank, discovered: memo.rank < 0, from_memo: true },
+                    root,
+                ));
+            }
+        }
+    }
+
+    // ...and the session directory a scan resolved, for the tree whose slug is not the
+    // one we derive. The uuid on the end of it is checked rather than assumed, because
+    // this is one slot shared by the whole fleet and answering with somebody else's
+    // tree would put this row's peek on another session's log. Joining the task id
+    // here adds no new trust: an id that is not one left as `BadId` above, before
+    // `cands` was built.
+    if won.is_none() {
+        if let Some(dir) = memo.sess.clone() {
+            if dir.file_name().and_then(|n| n.to_str()) == Some(uuid.as_str()) {
+                let p = dir.join("tasks").join(format!("{task_id}.output"));
+                if p.is_file() {
+                    let root = dir.ancestors().nth(2).unwrap_or(&dir).to_path_buf();
+                    won = Some((
+                        BgResolved { path: p, rank: -1, discovered: true, from_memo: true },
+                        root,
+                    ));
+                }
+            }
+        }
+    }
+
+    // (2) The table, in order. The first existing FILE, never the first existing
+    // ROOT: a stale `claude/` left behind by an older layout is a directory that
+    // exists and holds nothing, and a probe that stopped at it would pick the empty
+    // one every time while the real log sat one row further down.
+    if won.is_none() {
+        for (i, (root, cand)) in cands.iter().enumerate() {
+            if cand.is_file() {
+                won = Some((
+                    BgResolved { path: cand.clone(), rank: i as i32, discovered: false, from_memo: false },
+                    root.clone(),
+                ));
+                break;
+            }
+        }
+    }
+    if let Some((r, root)) = won {
+        // A hit that came out of the memo has nothing to teach it.
+        if !r.from_memo {
+            memo.root = Some(root);
+            memo.rank = r.rank;
+        }
+        return Ok(r);
+    }
+
+    // (3) A root that holds THIS SESSION but not (yet) this log. Claude mkdirs the
+    // session's `scratchpad` eagerly at start and only creates `tasks/` once a shell
+    // has actually been backgrounded, so a session directory with no log under it is
+    // the honest "starting…" state. Reporting it as a missing root would be a lie
+    // with teeth: `noRoot` is the state the frontend refuses to retire a row on, and
+    // `notYet` is the one it does.
+    for (root, cand) in &cands {
+        let sess = root.join(&slug).join(&uuid);
+        if sess.is_dir() || sess.join("scratchpad").exists() {
+            return Err(BgResolveErr::NotYet(cand.clone(), tried(&cands)));
+        }
+    }
+
+    // (4) Last resort: a `claude*` directory nobody predicted, and this session's uuid
+    // under a slug we did not derive. Throttled process-wide — see `BG_SCAN_EVERY`.
+    let due = match memo.last_scan {
+        Some(t) => now.duration_since(t) >= BG_SCAN_EVERY,
+        None => true,
+    };
+    if !due {
+        // The memo is left exactly as it was. "Come back later" is not "there is no
+        // root": this branch has established nothing about whether the remembered root
+        // still holds, and the memo is process-wide — dropping it here would make one
+        // record's throttled poll send every OTHER live record back through the full
+        // table on its next read. Only step (5), which actually looked, drops it.
+        return Err(BgResolveErr::NoRoot(tried(&cands)));
+    }
+    memo.last_scan = Some(now);
+    let mut hits: Vec<std::path::PathBuf> = Vec::new();
+    for base in bg_log_bases(e) {
+        let Ok(entries) = std::fs::read_dir(&base) else { continue };
+        for ent in entries.flatten() {
+            let raw = ent.file_name();
+            let name = raw.to_string_lossy();
+            if name != "claude" && !name.starts_with("claude-") {
+                continue;
+            }
+            let root = ent.path();
+            if let Some(p) = bg_log_path(&root, transcript, task_id) {
+                if p.is_file() && !hits.contains(&p) {
+                    hits.push(p);
+                }
+            }
+            // The same uuid under a slug we did not derive. Claude's slug is a
+            // sanitised cwd with a base-36 hash spliced in once it grows too long,
+            // and reproducing that hash would be one more piece of somebody else's
+            // build written down as ours. A v4 uuid one level down is collision-free
+            // enough to find the tree without it: ONE `read_dir`, no recursion.
+            let Ok(slugs) = std::fs::read_dir(&root) else { continue };
+            for s in slugs.flatten() {
+                let p = s.path().join(&uuid).join("tasks").join(format!("{task_id}.output"));
+                if p.is_file() && !hits.contains(&p) {
+                    hits.push(p);
+                }
+            }
+        }
+    }
+    match hits.len() {
+        1 => {
+            let path = hits.remove(0);
+            // `<root>/<slug>/<uuid>/tasks/<id>.output` — the root is four levels up,
+            // and the session directory two, which is the half the derived slug cannot
+            // rebuild when Claude spliced its hash into one.
+            memo.root = path.ancestors().nth(4).map(|p| p.to_path_buf());
+            memo.sess = path.ancestors().nth(2).map(|p| p.to_path_buf());
+            memo.rank = -1;
+            Ok(BgResolved { path, rank: -1, discovered: true, from_memo: false })
+        }
+        // (5) A total miss drops the memo rather than defending it. This is the branch
+        // that looked and found nothing, so it is the one entitled to.
+        0 => {
+            memo.root = None;
+            memo.sess = None;
+            Err(BgResolveErr::NoRoot(tried(&cands)))
+        }
+        // Two roots holding one session is not something we can pick between, and a
+        // guess would put this row's peek on somebody else's log. Say so instead.
+        _ => {
+            memo.root = None;
+            memo.sess = None;
+            Err(BgResolveErr::Ambiguous(hits))
+        }
+    }
+}
+
+/// Why a read came back with nothing. `missing` alone could never distinguish a log
+/// that has not appeared yet from a root that is not where we looked from a file that
+/// is there and unreadable — three states with three different answers, and the row
+/// had no way to say which of them it was in.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BgMiss {
+    None,
+    BadId,
+    NotYet,
+    NoRoot,
+    Ambiguous,
+    Unreadable,
+}
+
+/// What the app says out loud about its own probe. This is `serve_telemetry`'s
+/// re-bind announcement one level down: a fleet nobody can hear must never look like a
+/// quiet one. `Moved` is the state nobody would think to build — the probe still
+/// WORKS and the app says so anyway, which buys one release of warning before the
+/// fallback stops matching too.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BgHealth {
+    Ok,
+    Moved,
+    Blind,
 }
 
 #[derive(serde::Serialize)]
+// `root_rank` is the first multi-word field this struct has ever had, and a snake_case
+// key arriving at a camelCase interface is a silent `undefined`: every rule reading it
+// answers "no", and tsc, vitest and cargo all stay green. That is the original bug's
+// exact shape, so the rename is not cosmetic. `test/ipc.test.ts` holds the two sides
+// together from source.
+#[serde(rename_all = "camelCase")]
 pub(crate) struct BgLog {
-    /// The resolved path, so a row can name (and reveal) the file it is reading.
+    /// The resolved path, so a row can name (and reveal) the file it is reading — or,
+    /// when the log has not appeared yet, the file it is waiting for. Empty exactly
+    /// when there is no single path to name, in which case `tried` is the answer.
     path: String,
     /// The last `BG_LOG_TAIL` bytes, lossily decoded — a dev server's output is
     /// whatever the process emitted, and a truncated multi-byte character at the cut
     /// must not cost the whole read.
     text: String,
-    /// The file isn't there. Normal and temporary right after a shell starts, and
-    /// permanent when Claude Code's layout is not what `bg_log_path` expects — the
-    /// caller shows the row either way rather than dropping it.
+    /// The file isn't there. Normal and temporary right after a shell starts, and a
+    /// standing state when the layout has moved — `reason` is what tells those apart.
     missing: bool,
     /// The file's full length, which the caller keeps and passes back as `known_len`.
     len: u64,
@@ -1891,13 +2373,193 @@ pub(crate) struct BgLog {
     /// background log is append-only, which is what makes a length comparison an exact
     /// "has anything happened" test rather than a heuristic.
     unchanged: bool,
+    /// Why there is nothing, in the frontend's vocabulary. `None` whenever the file
+    /// was read, including the empty and unchanged cases.
+    reason: BgMiss,
+    /// Every candidate the probe tested when it found none. Exactly one of `path` and
+    /// `tried` is ever the answer, and the row can copy or reveal whichever it is —
+    /// which is the difference between "no output yet" and a bug report.
+    tried: Vec<String>,
+    /// Index into `bg_log_roots` of the root this resolved under, or `-1` when the
+    /// directory scan found it or nothing did. `0` is the believed layout; anything
+    /// else means the app is working on a fallback and should say so.
+    root_rank: i32,
+    /// Found by scanning rather than by the table — the fallback is load-bearing.
+    discovered: bool,
+}
+
+/// Announced on `bglog-health`, on TRANSITION only. `tried` is filled for `Blind`
+/// alone, because that is the only state where the interesting fact is the list of
+/// places that turned out to be wrong.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BgLogHealth {
+    state: BgHealth,
+    root: String,
+    rank: i32,
+    discovered: bool,
+    tried: Vec<String>,
+}
+
+/// A read that produced no text, with the reason it did not.
+fn bg_miss(path: String, len: u64, reason: BgMiss, tried: Vec<String>) -> BgLog {
+    BgLog {
+        path,
+        text: String::new(),
+        missing: true,
+        len,
+        unchanged: false,
+        reason,
+        tried,
+        root_rank: -1,
+        discovered: false,
+    }
+}
+
+/// The half of `read_bg_log` that has a path already, and one the probe has just seen
+/// as a file. Split out so the test can drive it against a real file: the command
+/// resolves through the environment, which a test must not go anywhere near
+/// (CLAUDE.md's fixture-path rule), and a test that asserts about a `BgLog` it built
+/// itself would prove nothing about either half.
+///
+/// Every failure here is `Unreadable` rather than a missing file, because the caller
+/// only gets this far having watched `is_file()` answer yes: a permission wall or a
+/// file that vanished mid-read is a different thing from a log that has not appeared.
+fn bg_log_at(path: &std::path::Path, known_len: u64) -> BgLog {
+    let disp = path.to_string_lossy().to_string();
+    let miss = |len: u64| bg_miss(disp.clone(), len, BgMiss::Unreadable, Vec::new());
+    let Ok(mut f) = std::fs::File::open(path) else { return miss(0) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    // Nothing has been appended since the caller last looked. Note this is checked
+    // BEFORE the zero-length shortcut would matter: a log that is still empty is also
+    // a log that has not moved, and both answers are "there is nothing to fold in".
+    if len == known_len {
+        return BgLog {
+            path: disp,
+            text: String::new(),
+            missing: false,
+            len,
+            unchanged: true,
+            reason: BgMiss::None,
+            tried: Vec::new(),
+            root_rank: -1,
+            discovered: false,
+        };
+    }
+    if len > BG_LOG_TAIL {
+        use std::io::Seek;
+        if f.seek(std::io::SeekFrom::Start(len - BG_LOG_TAIL)).is_err() {
+            return miss(len);
+        }
+    }
+    let mut buf = Vec::new();
+    use std::io::Read as _;
+    if f.read_to_end(&mut buf).is_err() {
+        return miss(len);
+    }
+    BgLog {
+        path: disp,
+        text: String::from_utf8_lossy(&buf).to_string(),
+        missing: false,
+        len,
+        unchanged: false,
+        reason: BgMiss::None,
+        tried: Vec::new(),
+        root_rank: -1,
+        discovered: false,
+    }
+}
+
+/// What this read says about the probe, or `None` when it says nothing.
+///
+/// Only the states that are *about the layout* speak. A log that has not appeared
+/// yet, a task id that is not one and a file we could not open are all facts about one
+/// record, and letting any of them move the announced state would make the badge
+/// flicker on a shell that started two seconds ago.
+fn bg_log_health_state(log: &BgLog) -> Option<BgHealth> {
+    match log.reason {
+        BgMiss::None => {
+            Some(if log.root_rank == 0 && !log.discovered { BgHealth::Ok } else { BgHealth::Moved })
+        }
+        BgMiss::NoRoot | BgMiss::Ambiguous => Some(BgHealth::Blind),
+        BgMiss::NotYet | BgMiss::BadId | BgMiss::Unreadable => None,
+    }
+}
+
+/// The whole read against an injected environment and memo, with no `AppHandle` in
+/// sight — so every test below drives the real ladder rather than a stand-in.
+fn read_bg_log_at_env(
+    e: &BgLogEnv,
+    memo: &mut BgRootState,
+    transcript: &str,
+    task_id: &str,
+    known_len: u64,
+) -> BgLog {
+    let strs = |v: Vec<std::path::PathBuf>| {
+        v.into_iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+    };
+    match bg_log_resolve(e, memo, transcript, task_id, std::time::Instant::now()) {
+        Ok(r) => {
+            let mut log = bg_log_at(&r.path, known_len);
+            log.root_rank = r.rank;
+            log.discovered = r.discovered;
+            log
+        }
+        // No address at all: there is nothing to name and nothing that was tried.
+        Err(BgResolveErr::BadId) => bg_miss(String::new(), 0, BgMiss::BadId, Vec::new()),
+        // The root is right and the log has not been written yet — so the path is the
+        // answer and the candidate list rides along for the row that wants to say
+        // which of eight places it settled on.
+        Err(BgResolveErr::NotYet(path, tried)) => {
+            bg_miss(path.to_string_lossy().to_string(), 0, BgMiss::NotYet, strs(tried))
+        }
+        Err(BgResolveErr::NoRoot(tried)) => bg_miss(String::new(), 0, BgMiss::NoRoot, strs(tried)),
+        Err(BgResolveErr::Ambiguous(hits)) => {
+            bg_miss(String::new(), 0, BgMiss::Ambiguous, strs(hits))
+        }
+    }
+}
+
+/// `read_bg_log_at_env` plus the one announcement it can make. Generic over the
+/// runtime so the mock app in the tests below emits through exactly this code.
+fn read_bg_log_announced<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    e: &BgLogEnv,
+    memo: &mut BgRootState,
+    transcript: &str,
+    task_id: &str,
+    known_len: u64,
+) -> BgLog {
+    let log = read_bg_log_at_env(e, memo, transcript, task_id, known_len);
+    if let Some(state) = bg_log_health_state(&log) {
+        // Per task id, because the state is a per-record answer. A single slot holds
+        // right up until one record resolves while another is blind, at which point
+        // each read "transitions" the slot the other one set and the event fires on
+        // every poll of every record — the flood this guard exists to prevent.
+        let who = (transcript.to_string(), task_id.to_string());
+        if memo.announced.get(&who) != Some(&state) {
+            memo.announced.insert(who, state);
+            let _ = app.emit(
+                "bglog-health",
+                BgLogHealth {
+                    state,
+                    root: memo.root.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                    rank: log.root_rank,
+                    discovered: log.discovered,
+                    tried: if state == BgHealth::Blind { log.tried.clone() } else { Vec::new() },
+                },
+            );
+        }
+    }
+    log
 }
 
 /// Read the tail of one background shell's log. `transcript` is the session's
 /// `transcript_path` **as it stood when the shell was spawned** — see the note on
 /// `BgServer` in types.ts for why it must not be re-derived from the session's current
-/// one. Errors are states, not failures: an unresolvable path or an unreadable file
-/// comes back as `missing`, because every one of them is a row that should still draw.
+/// one. Errors are states, not failures: an unresolvable address, a root that is not
+/// where we looked and an unreadable file each come back with a `reason` the row can
+/// print, because every one of them is a row that should still draw.
 ///
 /// **`known_len` is what keeps this poll cheap.** It runs every few seconds against
 /// every running server, and the overwhelmingly common case is a dev server nobody is
@@ -1906,50 +2568,15 @@ pub(crate) struct BgLog {
 /// read. Same trick, and the same reasoning, as the discovery stamp in `tasks.rs`:
 /// this is not a watcher, it is a cheap question asked often. Pass 0 to force a read.
 #[tauri::command]
-pub(crate) fn read_bg_log(transcript: String, task_id: String, known_len: u64) -> BgLog {
-    match bg_log_path(&std::env::temp_dir(), &transcript, &task_id) {
-        Some(path) => bg_log_at(&path, known_len),
-        // Nothing resolved, so there is no path to name either — an unresolvable
-        // address and an absent file are the same answer to the caller.
-        None => BgLog { path: String::new(), text: String::new(), missing: true, len: 0, unchanged: false },
-    }
-}
-
-/// The half of `read_bg_log` that has a path already. Split out so the test can drive
-/// it against a real file: the command resolves through `env::temp_dir()`, which a test
-/// must not go anywhere near (CLAUDE.md's fixture-path rule), and a test that asserts
-/// about a `BgLog` it built itself would prove nothing about either.
-fn bg_log_at(path: &std::path::Path, known_len: u64) -> BgLog {
-    let miss = |path: String, len: u64| BgLog {
-        path, text: String::new(), missing: true, len, unchanged: false,
-    };
-    let disp = path.to_string_lossy().to_string();
-    let Ok(mut f) = std::fs::File::open(path) else { return miss(disp, 0) };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    // Nothing has been appended since the caller last looked. Note this is checked
-    // BEFORE the zero-length shortcut would matter: a log that is still empty is also
-    // a log that has not moved, and both answers are "there is nothing to fold in".
-    if len == known_len {
-        return BgLog { path: disp, text: String::new(), missing: false, len, unchanged: true };
-    }
-    if len > BG_LOG_TAIL {
-        use std::io::Seek;
-        if f.seek(std::io::SeekFrom::Start(len - BG_LOG_TAIL)).is_err() {
-            return miss(disp, len);
-        }
-    }
-    let mut buf = Vec::new();
-    use std::io::Read as _;
-    if f.read_to_end(&mut buf).is_err() {
-        return miss(disp, len);
-    }
-    BgLog {
-        path: disp,
-        text: String::from_utf8_lossy(&buf).to_string(),
-        missing: false,
-        len,
-        unchanged: false,
-    }
+pub(crate) fn read_bg_log(
+    app: AppHandle,
+    state: State<crate::AppState>,
+    transcript: String,
+    task_id: String,
+    known_len: u64,
+) -> BgLog {
+    let mut memo = state.bg_root.lock().unwrap();
+    read_bg_log_announced(&app, &BgLogEnv::current(), &mut memo, &transcript, &task_id, known_len)
 }
 
 #[cfg(test)]
@@ -2687,30 +3314,608 @@ mod tests {
     }
 
     // ---------- where a background shell's log lives ----------
+    //
+    // The oracle for this half is a real filesystem, and where it can be, a filesystem
+    // somebody else wrote. The test that used to stand here spelled the layout out
+    // against a hand-written `/tmproot` and was green for this feature's entire life
+    // while every read in production missed — because it and the code it checked were
+    // written five minutes apart, from the same belief, by the same person. A table
+    // test can only ever agree with our intent, and the intent was the bug.
 
-    /// The layout `bg_log_path` mirrors, spelled out once. Both halves come off the
-    /// transcript path — the project slug from its directory, the session uuid from its
-    /// file stem — because those are the two components Claude Code repeats under the
-    /// temp root. Verified against a real backgrounded shell before it was written down.
+    /// A transcript, and the two halves the address is derived from. The uuid is
+    /// synthetic on purpose: three of the probe tests reach the directory scan, which
+    /// walks the real `/tmp`, and an id that could collide with a session actually on
+    /// this machine would make those tests pass or fail on what the developer did
+    /// yesterday.
+    const TR: &str =
+        "/home/u/.claude/projects/E--tmp-episko-probe/5f6a1c2e-0b3d-4e5f-8a9b-1c2d3e4f5a6b.jsonl";
+    const SLUG: &str = "E--tmp-episko-probe";
+    const UUID: &str = "5f6a1c2e-0b3d-4e5f-8a9b-1c2d3e4f5a6b";
+    const TASK: &str = "ep0kt3st9";
+
+    /// A `BgLogEnv` with nothing ambient in it: the override base is a fixture, and
+    /// `sys_tmp` points somewhere that does not exist so a test can only pass because
+    /// of the tree it planted. The OS arrives as an argument, which is the whole point
+    /// of `ClaudeOs` — the Windows row is assertable from a Mac.
+    fn fixture_env(os: ClaudeOs, base: &std::path::Path, uid: Option<u32>) -> BgLogEnv {
+        BgLogEnv {
+            os,
+            override_tmp: Some(base.to_path_buf()),
+            sys_tmp: base.join("no-such-sys-tmp"),
+            xdg_runtime: None,
+            uid,
+        }
+    }
+
+    /// Build a real `<root>/<slug>/<uuid>/tasks/<id>.output` and hand back its path.
+    /// `log: None` plants the session directory with the `scratchpad` Claude mkdirs at
+    /// start and no `tasks/` at all — the shape of a session whose first background
+    /// shell has not run yet — and hands back the session directory instead.
+    fn plant(
+        root: &std::path::Path,
+        slug: &str,
+        uuid: &str,
+        log: Option<(&str, &str)>,
+    ) -> std::path::PathBuf {
+        let sess = root.join(slug).join(uuid);
+        match log {
+            Some((id, body)) => {
+                let tasks = sess.join("tasks");
+                std::fs::create_dir_all(&tasks).unwrap();
+                let f = tasks.join(format!("{id}.output"));
+                std::fs::write(&f, body).unwrap();
+                f
+            }
+            None => {
+                std::fs::create_dir_all(sess.join("scratchpad")).unwrap();
+                sess
+            }
+        }
+    }
+
+    /// Two paths naming one file. `canonicalize` on both sides because a scratch dir
+    /// and a probed path can differ by a `/private` symlink on macOS and by an 8.3
+    /// short name on the Windows runner without differing by a single byte on disk.
+    fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => a == b,
+        }
+    }
+
+    /// The candidate table, all three rows, from whichever machine is running.
+    ///
+    /// The macOS row is the one that was wrong in production; the Windows row is the
+    /// one **nobody here has ever observed**, and it is asserted from a Mac only
+    /// because the OS is a value rather than a `#[cfg]`. Assertions go through
+    /// `file_name()`/`parent()` rather than a spelled-out literal: `C:\…\claude` would
+    /// fail on the macOS leg for the separator, which says nothing about the ordering
+    /// this test exists to hold.
     #[test]
-    fn bg_log_path_mirrors_the_transcript() {
-        let tmp = std::path::Path::new("/tmproot");
-        let got = bg_log_path(
-            tmp,
-            "/home/u/.claude/projects/E--tmp-episko-probe/819131de-4c0e-4a7e-a5c5-2d4a5550a104.jsonl",
-            "bczk8s47b",
-        )
-        .expect("a well-formed transcript path resolves");
-        let want: std::path::PathBuf = ["/tmproot", "claude", "E--tmp-episko-probe",
-            "819131de-4c0e-4a7e-a5c5-2d4a5550a104", "tasks", "bczk8s47b.output"]
-            .iter().collect::<std::path::PathBuf>();
-        // Compare component-wise: the separator differs by OS and the point here is the
-        // shape, not the spelling.
+    fn bg_log_roots_carry_every_platforms_shape_in_a_per_platform_order() {
+        let sys = std::path::PathBuf::from("/sys-tmp");
+        let mk = |os| BgLogEnv {
+            os,
+            override_tmp: None,
+            sys_tmp: sys.clone(),
+            xdg_runtime: None,
+            uid: Some(501),
+        };
+
+        let mac = bg_log_roots(&mk(ClaudeOs::Mac));
         assert_eq!(
-            got.components().skip(1).collect::<Vec<_>>(),
-            want.components().skip(1).collect::<Vec<_>>(),
-            "resolved {got:?}"
+            mac[0],
+            std::path::Path::new("/tmp").join("claude-501"),
+            "the macOS layout is measured, not believed: the CLI hard-codes /tmp and \
+             ignores $TMPDIR entirely"
         );
+
+        let win = bg_log_roots(&mk(ClaudeOs::Windows));
+        assert_eq!(win[0].file_name().unwrap(), std::ffi::OsStr::new("claude"));
+        assert_eq!(win[0].parent().unwrap(), sys, "Windows has no /tmp to hard-code");
+
+        let unix = bg_log_roots(&mk(ClaudeOs::Unix));
+        assert_eq!(unix[0], sys.join("claude-501"));
+
+        for (os, list) in [("mac", &mac), ("windows", &win), ("unix", &unix)] {
+            let names: Vec<String> = list
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == "claude"),
+                "the {os} table dropped the bare shape — a platform's row is a belief \
+                 about ORDER, never a claim that the other shape cannot happen"
+            );
+            assert!(
+                names.iter().any(|n| n == "claude-501"),
+                "the {os} table dropped the suffixed shape"
+            );
+            let mut uniq = list.to_vec();
+            uniq.sort();
+            uniq.dedup();
+            assert_eq!(uniq.len(), list.len(), "the {os} table probes a path twice a poll");
+            assert!(list.len() <= BG_ROOT_MAX, "the {os} table is {} candidates long", list.len());
+        }
+    }
+
+    /// `$CLAUDE_CODE_TMPDIR` is the one knob the CLI reads, and it moves the BASE.
+    /// Everything below it still holds: the shapes the platform believes in, and the
+    /// fallbacks under them, because an override that emptied the list would turn one
+    /// mis-set variable into the same silent outage.
+    #[test]
+    fn bg_log_roots_let_the_env_override_replace_only_the_base() {
+        let ovr = std::path::PathBuf::from("/ovr");
+        let sys = std::path::PathBuf::from("/sys-tmp");
+        for (os, want) in [
+            (ClaudeOs::Mac, "claude-501"),
+            (ClaudeOs::Unix, "claude-501"),
+            (ClaudeOs::Windows, "claude"),
+        ] {
+            let e = BgLogEnv {
+                os,
+                override_tmp: Some(ovr.clone()),
+                sys_tmp: sys.clone(),
+                xdg_runtime: None,
+                uid: Some(501),
+            };
+            let got = bg_log_roots(&e);
+            assert_eq!(got[0], ovr.join(want), "{os:?} put the wrong shape first under the override");
+            assert!(
+                got.iter().any(|p| p.parent() == Some(sys.as_path())),
+                "{os:?} lost its default base to the override"
+            );
+        }
+    }
+
+    /// Both shapes, every platform, with or without a uid to read. The Windows row
+    /// orders the bare name first and that is all it does — pinning it as the only
+    /// possibility is the mistake this whole block is a fix for, one layout along.
+    #[test]
+    fn bg_log_dir_names_never_drop_a_shape_we_cannot_observe() {
+        for os in [ClaudeOs::Mac, ClaudeOs::Windows, ClaudeOs::Unix] {
+            let both = bg_log_dir_names(os, Some(501));
+            assert_eq!(both.len(), 2, "{os:?} named {both:?}");
+            assert!(both.contains(&"claude".to_string()), "{os:?} dropped the bare shape");
+            assert!(both.contains(&"claude-501".to_string()), "{os:?} dropped the suffixed shape");
+            // No uid to read — every Windows build, since `current_uid()` goes through
+            // a Unix-only API — is `claude-0`, which is what the bundle's
+            // `claude-${process.getuid?.() ?? 0}` computes there. Dropping the shape
+            // instead left Windows probing ONE name, the one we believe least, with
+            // the throttled directory scan as the only thing behind it.
+            let nouid = bg_log_dir_names(os, None);
+            assert_eq!(nouid.len(), 2, "{os:?} named {nouid:?} with no uid to spell");
+            assert!(nouid.contains(&"claude-0".to_string()), "{os:?} dropped the suffixed shape");
+            assert_eq!(
+                nouid[0],
+                if os == ClaudeOs::Windows { "claude" } else { "claude-0" },
+                "{os:?} put the wrong shape first"
+            );
+        }
+    }
+
+    /// The first existing FILE wins, never the first existing ROOT. A stale root left
+    /// behind by an older layout — or by another session of ours that has since been
+    /// reaped — is a directory that exists and holds nothing for THIS shell, and a
+    /// probe that stopped at it would pick the empty one on every poll for the life of
+    /// the app: every row would report `notYet`, and `notYet` is the one reason the
+    /// frontend retires a row on, so "rows that never leave" would become "rows that
+    /// always leave" with every gate green.
+    ///
+    /// So the stale root is planted FIRST, at rank 0, and the real log one row down.
+    /// Planted the other way round the test passes whether or not the rule holds,
+    /// which is what it did until a mutation — stop at the first existing root — went
+    /// green through the whole suite.
+    #[test]
+    fn bg_log_probe_walks_past_a_stale_root_to_the_one_holding_this_session() {
+        let base = crate::testutil::scratch_dir();
+        // Rank 0 on a Mac, a real directory, and holding a session that is not ours.
+        plant(&base.join("claude-501"), SLUG, "11111111-2222-3333-4444-555555555555", None);
+        let real = plant(
+            &base.join("claude"),
+            SLUG,
+            UUID,
+            Some((TASK, "  Local:   http://localhost:5173/\n")),
+        );
+
+        let mut memo = BgRootState::default();
+        let got = bg_log_resolve(
+            &fixture_env(ClaudeOs::Mac, &base, Some(501)),
+            &mut memo,
+            TR,
+            TASK,
+            std::time::Instant::now(),
+        )
+        .expect("the planted log must resolve");
+        assert!(same_file(&got.path, &real), "resolved {:?}, not {real:?}", got.path);
+        assert_eq!(got.rank, 1, "the file is at rank 1 — rank 0 is the stale root it walked past");
+        assert!(!got.discovered, "the table answered, so the scan must not have run");
+    }
+
+    /// The state nobody would think to build: the probe won, one row down. The app
+    /// still works and says so anyway, which is the release of warning between "the
+    /// fallback is carrying us" and "the fallback stopped matching too".
+    #[test]
+    fn bg_log_probe_reports_moved_when_it_wins_below_the_first_candidate() {
+        let base = crate::testutil::scratch_dir();
+        let real = plant(&base.join("claude"), SLUG, UUID, Some((TASK, "listening\n")));
+
+        let mut memo = BgRootState::default();
+        let got = bg_log_resolve(
+            // A Mac believes the suffixed name; this tree carries the other shape.
+            &fixture_env(ClaudeOs::Mac, &base, Some(501)),
+            &mut memo,
+            TR,
+            TASK,
+            std::time::Instant::now(),
+        )
+        .expect("the shape we do not believe in must still resolve");
+        assert!(same_file(&got.path, &real), "resolved {:?}, not {real:?}", got.path);
+        assert!(got.rank > 0, "rank {} would have read as the believed layout", got.rank);
+        assert!(!got.discovered, "the table still answered — this is a fallback, not a scan");
+    }
+
+    /// A session directory with no log under it is a shell that is *starting*, not a
+    /// root that has moved. The two are one word apart on the wire and worlds apart in
+    /// effect: `notYet` is the state the frontend retires a row on after ten minutes,
+    /// and `noRoot` is the outage it must never retire on.
+    #[test]
+    fn bg_log_probe_says_not_yet_when_the_session_dir_exists_but_the_log_does_not() {
+        let base = crate::testutil::scratch_dir();
+        // `scratchpad` and nothing else: Claude mkdirs it at session start, while
+        // `tasks/` appears only once a shell has actually been backgrounded.
+        plant(&base.join("claude-501"), SLUG, UUID, None);
+
+        let mut memo = BgRootState::default();
+        let got = read_bg_log_at_env(&fixture_env(ClaudeOs::Mac, &base, Some(501)), &mut memo, TR, TASK, 0);
+        assert_eq!(got.reason, BgMiss::NotYet);
+        assert!(got.missing, "there is genuinely no file yet");
+        assert!(
+            got.path.ends_with(&format!("{TASK}.output")),
+            "not-yet must name the file it is waiting for, got {:?}",
+            got.path
+        );
+        assert!(!got.tried.is_empty(), "the candidate list rides along even when one root won");
+    }
+
+    /// Nothing anywhere. The row's whole value here is the LIST: "no log found —
+    /// looked in six places" is a bug report, and "no output yet" is the silence that
+    /// let this ship broken. So `path` is empty and `tried` is the answer; exactly one
+    /// of the two ever is.
+    #[test]
+    fn bg_log_probe_names_every_path_it_tried_when_nothing_anywhere_matches() {
+        let base = crate::testutil::scratch_dir();
+        let mut memo = BgRootState::default();
+        let got = read_bg_log_at_env(&fixture_env(ClaudeOs::Mac, &base, Some(501)), &mut memo, TR, TASK, 0);
+        assert_eq!(got.reason, BgMiss::NoRoot);
+        assert_eq!(got.path, "", "a total miss has no single path to name");
+        assert!(got.tried.len() >= 3, "only {} candidates were tested: {:?}", got.tried.len(), got.tried);
+        for t in &got.tried {
+            assert!(t.ends_with(&format!("{TASK}.output")), "{t:?} is not a candidate for this shell");
+        }
+    }
+
+    /// Two roots holding one session, and we refuse to choose. A guess here puts this
+    /// row's peek — and its URL, and its exit sentinel — on somebody else's log, which
+    /// is a confident lie where the honest answer costs one line of prose.
+    #[test]
+    fn bg_log_probe_refuses_to_choose_between_two_roots_holding_the_same_session() {
+        let base = crate::testutil::scratch_dir();
+        plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "one\n")));
+        plant(&base.join("claude-0"), SLUG, UUID, Some((TASK, "the other\n")));
+
+        // A uid that matches neither, so the table cannot settle it and the scan is
+        // what finds both — which is exactly the situation ambiguity is for.
+        let mut memo = BgRootState::default();
+        let got = read_bg_log_at_env(&fixture_env(ClaudeOs::Mac, &base, Some(4242)), &mut memo, TR, TASK, 0);
+        assert_eq!(got.reason, BgMiss::Ambiguous);
+        assert_eq!(got.path, "", "an ambiguous probe must not name one of them anyway");
+        assert_eq!(got.tried.len(), 2, "tried was {:?}", got.tried);
+    }
+
+    /// The slug is a sanitised cwd with a base-36 hash spliced in once it grows too
+    /// long, and we deliberately do not reproduce that hash — reproducing somebody
+    /// else's build is how the root component got written down wrong in the first
+    /// place. The uuid one level down is enough to find the tree without it.
+    #[test]
+    fn bg_log_probe_finds_a_log_whose_slug_is_not_the_one_we_derived() {
+        let base = crate::testutil::scratch_dir();
+        let real = plant(
+            &base.join("claude-501"),
+            "E--tmp-episko-probe-a1b2c3",
+            UUID,
+            Some((TASK, "  ➜  Local:   http://localhost:4321/\n")),
+        );
+
+        let mut memo = BgRootState::default();
+        let got = bg_log_resolve(
+            &fixture_env(ClaudeOs::Mac, &base, Some(501)),
+            &mut memo,
+            TR,
+            TASK,
+            std::time::Instant::now(),
+        )
+        .expect("a divergent slug must not cost us the log");
+        assert!(same_file(&got.path, &real), "resolved {:?}, not {real:?}", got.path);
+        assert!(got.discovered, "only the scan can find this one");
+        assert_eq!(got.rank, -1, "a scan hit has no rank in the table");
+    }
+
+    /// The memo is remembered and then INVALIDATED, never defended. It exists because
+    /// the alternative — one `is_file()` times eight roots times every live record
+    /// every four seconds — is the cost this feature would otherwise pay forever; it
+    /// is dropped the moment it stops holding because `$CLAUDE_CODE_TMPDIR` can change
+    /// under a running app and `/tmp` gets reaped, and a memo that outlives its root is
+    /// the same permanent silence in a new coat.
+    #[test]
+    fn bg_log_probe_remembers_the_root_it_won_on_and_drops_it_when_it_stops_holding() {
+        let base = crate::testutil::scratch_dir();
+        let won = base.join("claude-501");
+        plant(&won, SLUG, UUID, Some((TASK, "up\n")));
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+
+        let first = bg_log_resolve(&e, &mut memo, TR, TASK, std::time::Instant::now()).expect("resolves");
+        assert!(!first.from_memo, "nothing was remembered yet");
+        assert_eq!(memo.root.as_deref(), Some(won.as_path()));
+
+        let again = bg_log_resolve(&e, &mut memo, TR, TASK, std::time::Instant::now()).expect("resolves");
+        assert!(again.from_memo, "the second look must not walk the table again");
+
+        // The root moves out from under it — to the shape one row down, so there is
+        // still a right answer and "stopped resolving" cannot pass for correct.
+        std::fs::rename(&won, base.join("claude")).unwrap();
+        let after = bg_log_resolve(&e, &mut memo, TR, TASK, std::time::Instant::now())
+            .expect("the probe must re-walk the table rather than defend a stale memo");
+        assert!(!after.from_memo, "the memo answered for a root that no longer holds the log");
+        assert_eq!(after.rank, 1, "it should have landed on the other shape");
+        assert_eq!(memo.root.as_deref(), Some(base.join("claude").as_path()));
+    }
+
+    /// The scan is the expensive step and the blind fleet is the one that would run it
+    /// most: `read_bg_log` is called every four seconds per live record, so ten blind
+    /// shells is a `read_dir` of a busy `/tmp` a hundred and fifty times a minute for
+    /// a hundred and fifty identical answers. The throttle is process-wide for exactly
+    /// that reason — per record it would not throttle the case that needs it.
+    #[test]
+    fn bg_log_probe_scans_at_most_once_a_minute_however_many_records_are_blind() {
+        let base = crate::testutil::scratch_dir();
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+        let now = std::time::Instant::now();
+        let first = bg_log_resolve(&e, &mut memo, TR, TASK, now);
+        assert!(matches!(first, Err(BgResolveErr::NoRoot(_))), "the empty base is blind");
+        assert_eq!(memo.last_scan, Some(now), "the first read must scan");
+
+        // The log lands a moment later, under a root name no candidate in the table
+        // can spell — so ONLY the scan can see it. That is what makes the throttle
+        // observable: with it, the reads below cannot find this file; without it, the
+        // very next one does. Timestamping `last_scan` proves nothing on its own,
+        // since a skipped read and a re-run one leave the same instant in it.
+        let planted = plant(&base.join("claude-9999"), SLUG, UUID, Some((TASK, "up\n")));
+        for i in 0..5 {
+            let r = bg_log_resolve(&e, &mut memo, TR, TASK, now);
+            assert!(
+                matches!(r, Err(BgResolveErr::NoRoot(_))),
+                "read {i} scanned inside the window and found {planted:?}"
+            );
+            assert_eq!(memo.last_scan, Some(now), "read {i} restamped the window");
+        }
+        // ...and it does come back. A throttle that latched would be the memo bug
+        // again: a probe that stops looking is a probe that can never recover.
+        let later = now + BG_SCAN_EVERY;
+        let got = bg_log_resolve(&e, &mut memo, TR, TASK, later)
+            .expect("the scan must resume once its window is up");
+        assert!(same_file(&got.path, &planted), "resolved {:?}, not {planted:?}", got.path);
+        assert!(got.discovered, "only the scan can reach a root the table cannot spell");
+        assert_eq!(memo.last_scan, Some(later), "the scan never resumed after its window");
+    }
+
+    /// A log only the SCAN can find has to be cheap to find again, or the throttle
+    /// turns one hit into a flap: step (1) rebuilds the path from the slug we derive,
+    /// which is precisely the slug this tree does not use, so every poll inside the
+    /// scan's minute would report `noRoot` about a file the probe has already read.
+    /// The row's peek would flip to "no log found" for fourteen polls out of fifteen.
+    #[test]
+    fn bg_log_probe_re_finds_a_scanned_log_without_waiting_for_the_next_scan() {
+        let base = crate::testutil::scratch_dir();
+        let real = plant(
+            &base.join("claude-501"),
+            "E--tmp-episko-probe-a1b2c3",
+            UUID,
+            Some((TASK, "up\n")),
+        );
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+        let now = std::time::Instant::now();
+
+        let first = bg_log_resolve(&e, &mut memo, TR, TASK, now).expect("the scan finds it");
+        assert!(first.discovered, "the table cannot spell this slug");
+
+        // Four seconds later: the next poll, well inside the scan's window.
+        let again = bg_log_resolve(&e, &mut memo, TR, TASK, now + std::time::Duration::from_secs(4))
+            .expect("the memo must answer for a log only the scan could have found");
+        assert!(same_file(&again.path, &real), "resolved {:?}, not {real:?}", again.path);
+        assert!(again.from_memo, "the second look re-scanned instead of remembering");
+        assert_eq!(memo.last_scan, Some(now), "it scanned again inside the window");
+    }
+
+    /// Declining to scan is not evidence that the remembered root stopped holding —
+    /// and the memo is process-wide, so treating it as evidence takes the whole fleet
+    /// down with one blind record: every OTHER live server re-walks the eight-candidate
+    /// table on its next poll because somebody else's read hit the throttle.
+    #[test]
+    fn a_throttled_scan_leaves_the_root_the_rest_of_the_fleet_is_using_alone() {
+        const GONE: &str =
+            "/home/u/.claude/projects/E--tmp-episko-gone/7a8b9c0d-1e2f-4a5b-8c9d-0e1f2a3b4c5d.jsonl";
+        let base = crate::testutil::scratch_dir();
+        let won = base.join("claude-501");
+        plant(&won, SLUG, UUID, Some((TASK, "up\n")));
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+        let now = std::time::Instant::now();
+
+        // A record with nothing anywhere: it scans, finds nothing, and stamps the window.
+        let miss = bg_log_resolve(&e, &mut memo, GONE, TASK, now);
+        assert!(matches!(miss, Err(BgResolveErr::NoRoot(_))), "the gone session must be blind");
+        assert_eq!(memo.last_scan, Some(now));
+
+        // A healthy record resolves off the table, and now the fleet has a root.
+        let sec = std::time::Duration::from_secs(1);
+        bg_log_resolve(&e, &mut memo, TR, TASK, now + 4 * sec).expect("resolves");
+        assert_eq!(memo.root.as_deref(), Some(won.as_path()));
+
+        // The blind record polls again inside the window, so the scan declines to run.
+        let throttled = bg_log_resolve(&e, &mut memo, GONE, TASK, now + 8 * sec);
+        assert!(matches!(throttled, Err(BgResolveErr::NoRoot(_))), "still blind, still honest");
+        assert_eq!(
+            memo.root.as_deref(),
+            Some(won.as_path()),
+            "a scan the throttle refused to run dropped the root every other record resolves through"
+        );
+
+        let again = bg_log_resolve(&e, &mut memo, TR, TASK, now + 12 * sec).expect("resolves");
+        assert!(again.from_memo, "the healthy record paid for somebody else's throttled miss");
+    }
+
+    /// The wire shape, in the frontend's spelling. `root_rank` is the first multi-word
+    /// field this struct has ever had, and a snake_case key arriving at a camelCase
+    /// interface is a silent `undefined`: every rule reading it answers "no", and tsc,
+    /// vitest and cargo all stay green. That is the original bug's exact shape, which
+    /// is why the rename is checked here and joined to the TS side in ipc.test.ts.
+    #[test]
+    fn bg_log_serializes_the_keys_the_frontend_declares() {
+        let base = crate::testutil::scratch_dir();
+        let mut memo = BgRootState::default();
+        let got = read_bg_log_at_env(&fixture_env(ClaudeOs::Mac, &base, Some(501)), &mut memo, TR, TASK, 0);
+
+        let v = serde_json::to_value(&got).expect("BgLog serializes");
+        let obj = v.as_object().expect("BgLog is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["discovered", "len", "missing", "path", "reason", "rootRank", "text", "tried", "unchanged"]
+        );
+        assert!(keys.iter().all(|k| !k.contains('_')), "a snake_case key reaches the frontend as undefined");
+        // The enum is wire vocabulary, not a Rust identifier: `NoRoot` on the wire
+        // would match nothing in `BgMissReason` and every rule would answer "no".
+        assert_eq!(v["reason"], serde_json::json!("noRoot"));
+    }
+
+    /// A fleet nobody can hear must never look like a quiet one — and it must not
+    /// shout either. `bglog-health` fires on TRANSITION only, because one event per
+    /// poll per blind record would push the debug console's 400-entry ring clean out
+    /// inside a minute, emptying the panel that exists to show it.
+    #[test]
+    fn a_blind_probe_announces_itself_once_rather_than_every_poll() {
+        use tauri::Listener;
+        let app = tauri::test::mock_app();
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = heard.clone();
+        app.listen("bglog-health", move |e| sink.lock().unwrap().push(e.payload().to_string()));
+
+        let base = crate::testutil::scratch_dir();
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+        for i in 0..5 {
+            let got = read_bg_log_announced(app.handle(), &e, &mut memo, TR, TASK, 0);
+            assert_eq!(got.reason, BgMiss::NoRoot, "poll {i}");
+        }
+        let blind = heard.lock().unwrap().clone();
+        assert_eq!(blind.len(), 1, "five blind polls announced themselves {} times", blind.len());
+        let ev: serde_json::Value = serde_json::from_str(&blind[0]).expect("the event is JSON");
+        assert_eq!(ev["state"], "blind");
+        assert!(
+            ev["tried"].as_array().map(|a| a.len()).unwrap_or(0) >= 3,
+            "a blind announcement must carry where it looked: {ev}"
+        );
+
+        // ...and coming back is a transition too. Without this the app would go quiet
+        // about its own recovery and the badge would never clear.
+        plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "up\n")));
+        let got = read_bg_log_announced(app.handle(), &e, &mut memo, TR, TASK, 0);
+        assert!(!got.missing, "the planted log must read");
+        let all = heard.lock().unwrap().clone();
+        assert_eq!(all.len(), 2, "recovery was not announced");
+        let back: serde_json::Value = serde_json::from_str(&all[1]).expect("the event is JSON");
+        assert_eq!(back["state"], "ok");
+        assert_eq!(back["rank"], 0);
+    }
+
+    /// Two records, two different answers, and neither may re-announce the other. The
+    /// state is a per-RECORD fact, so a single announced slot holds only until one
+    /// record resolves while another is blind — after which each read "transitions" the
+    /// slot the other one set, and a fleet that is behaving exactly as designed emits
+    /// two events every four seconds forever. That is 30 `dlog` lines a minute into a
+    /// 400-entry ring: the debug console empties itself in about a quarter of an hour,
+    /// and it is the panel this event exists to reach.
+    #[test]
+    fn two_records_in_different_states_do_not_re_announce_each_other_every_poll() {
+        use tauri::Listener;
+        const GONE: &str =
+            "/home/u/.claude/projects/E--tmp-episko-gone/7a8b9c0d-1e2f-4a5b-8c9d-0e1f2a3b4c5d.jsonl";
+        let app = tauri::test::mock_app();
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = heard.clone();
+        app.listen("bglog-health", move |e| sink.lock().unwrap().push(e.payload().to_string()));
+
+        let base = crate::testutil::scratch_dir();
+        plant(&base.join("claude-501"), SLUG, UUID, Some((TASK, "up\n")));
+        let e = fixture_env(ClaudeOs::Mac, &base, Some(501));
+        let mut memo = BgRootState::default();
+        // The same task id under two sessions, which is the case the key is a PAIR for:
+        // an id is Claude's and unique only within the session that minted it.
+        for i in 0..4 {
+            let ok = read_bg_log_announced(app.handle(), &e, &mut memo, TR, TASK, 0);
+            assert!(!ok.missing, "poll {i}: the planted log must read");
+            let blind = read_bg_log_announced(app.handle(), &e, &mut memo, GONE, TASK, 0);
+            assert_eq!(blind.reason, BgMiss::NoRoot, "poll {i}");
+        }
+
+        let all = heard.lock().unwrap().clone();
+        assert_eq!(
+            all.len(),
+            2,
+            "eight reads of two steady records announced themselves {} times: {all:?}",
+            all.len()
+        );
+        let states: Vec<String> =
+            all.iter().map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap()["state"].to_string()).collect();
+        assert_eq!(states, vec!["\"ok\"".to_string(), "\"blind\"".to_string()]);
+    }
+
+    /// `moved` is the announcement for a probe that is WORKING. Nobody would think to
+    /// build it, which is why it is the one worth a test: it is the only warning
+    /// anyone gets between the believed layout going stale and the fallback going
+    /// stale too, and by then every row is blind again.
+    #[test]
+    fn bg_log_health_says_moved_while_it_is_still_working() {
+        use tauri::Listener;
+        let app = tauri::test::mock_app();
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = heard.clone();
+        app.listen("bglog-health", move |e| sink.lock().unwrap().push(e.payload().to_string()));
+
+        let base = crate::testutil::scratch_dir();
+        plant(&base.join("claude"), SLUG, UUID, Some((TASK, "up\n")));
+        let mut memo = BgRootState::default();
+        let got = read_bg_log_announced(
+            app.handle(),
+            &fixture_env(ClaudeOs::Mac, &base, Some(501)),
+            &mut memo,
+            TR,
+            TASK,
+            0,
+        );
+        assert!(!got.missing, "the log resolved — this is a working state");
+
+        let all = heard.lock().unwrap().clone();
+        assert_eq!(all.len(), 1, "a working fallback said nothing");
+        let ev: serde_json::Value = serde_json::from_str(&all[0]).expect("the event is JSON");
+        assert_eq!(ev["state"], "moved");
+        assert_eq!(ev["rank"], 1);
+        assert_eq!(ev["discovered"], false);
     }
 
     /// The id lands in a path, so it is validated rather than trusted. It arrives in a
@@ -2718,15 +3923,15 @@ mod tests {
     /// checked by anything upstream of us.
     #[test]
     fn bg_log_path_refuses_a_task_id_that_is_not_one() {
-        let tmp = std::path::Path::new("/tmproot");
+        let root = std::path::Path::new("/tmproot/claude-501");
         let tr = "/home/u/.claude/projects/slug/uuid.jsonl";
         for bad in ["", "..", "../../etc/passwd", "a/b", r"a\b", "a.output", "a b"] {
             assert!(
-                bg_log_path(tmp, tr, bad).is_none(),
+                bg_log_path(root, tr, bad).is_none(),
                 "{bad:?} was accepted as a task id and would have escaped the tasks dir"
             );
         }
-        assert!(bg_log_path(tmp, tr, "bs0hhu7b4").is_some(), "a real id must still resolve");
+        assert!(bg_log_path(root, tr, "bs0hhu7b4").is_some(), "a real id must still resolve");
     }
 
     /// A transcript path that isn't one resolves to nothing rather than to a plausible
@@ -2734,9 +3939,9 @@ mod tests {
     /// to reveal a path we invented.
     #[test]
     fn bg_log_path_refuses_a_transcript_without_both_halves() {
-        let tmp = std::path::Path::new("/tmproot");
+        let root = std::path::Path::new("/tmproot/claude-501");
         for bad in ["", "uuid.jsonl", "/"] {
-            assert!(bg_log_path(tmp, bad, "bs0hhu7b4").is_none(), "{bad:?} resolved");
+            assert!(bg_log_path(root, bad, "bs0hhu7b4").is_none(), "{bad:?} resolved");
         }
     }
 
@@ -2749,14 +3954,12 @@ mod tests {
         let dir = crate::testutil::scratch_dir();
         let f = dir.join("long.output");
         let mut body = "x".repeat(BG_LOG_TAIL as usize + 4096);
-        body.push_str("
-Local:   http://localhost:5555/
-[exited with code 0]
-");
+        body.push_str("\nLocal:   http://localhost:5555/\n[exited with code 0]\n");
         std::fs::write(&f, &body).unwrap();
 
         let got = bg_log_at(&f, 0);
         assert!(!got.missing && !got.unchanged);
+        assert_eq!(got.reason, BgMiss::None, "a file that read has no reason to give");
         assert!(got.text.len() as u64 <= BG_LOG_TAIL, "the whole file came back, not its tail");
         assert_eq!(got.len, body.len() as u64, "the caller needs the FULL length to gate on");
         assert!(got.text.contains("[exited with code 0]"), "the sentinel must survive the cut");
@@ -2772,8 +3975,7 @@ Local:   http://localhost:5555/
     fn read_bg_log_skips_the_read_only_until_something_is_appended() {
         let dir = crate::testutil::scratch_dir();
         let f = dir.join("dev.output");
-        std::fs::write(&f, "  Local:   http://localhost:5555/
-").unwrap();
+        std::fs::write(&f, "  Local:   http://localhost:5555/\n").unwrap();
 
         let first = bg_log_at(&f, 0);
         assert!(!first.unchanged, "a first look must read");
@@ -2786,9 +3988,7 @@ Local:   http://localhost:5555/
         assert_eq!(again.len, first.len);
 
         // ...and the moment it does move, the gate opens.
-        std::fs::write(&f, "  Local:   http://localhost:5555/
-[exited with code 1]
-").unwrap();
+        std::fs::write(&f, "  Local:   http://localhost:5555/\n[exited with code 1]\n").unwrap();
         let after = bg_log_at(&f, first.len);
         assert!(!after.unchanged, "an appended log must be read again");
         assert!(after.text.contains("[exited with code 1]"), "the sentinel must reach the caller");
@@ -2805,19 +4005,250 @@ Local:   http://localhost:5555/
         let got = bg_log_at(&f, 0);
         assert!(!got.missing, "the file is there");
         assert!(got.unchanged && got.len == 0);
+        assert_eq!(got.reason, BgMiss::None, "an empty log is not a missing one");
     }
 
-    /// A log that is not there is a *state*, not an error: a shell that started a
-    /// moment ago has not written one yet, and the row still has to draw.
+    /// **The oracle here is a tree Anthropic wrote**, which is the one thing a table
+    /// test could never be: it cannot agree with our intent, because our intent had no
+    /// hand in it. It searches this machine for a log Claude Code actually produced —
+    /// through bases written out independently, NEVER through `bg_log_roots`, since
+    /// deriving the search from the table it checks is precisely how the test this
+    /// replaced stayed green while every read in production missed — and asks the real
+    /// resolver to find it.
+    ///
+    /// In the DEFAULT suite on purpose. A developer runs this twenty times a day and
+    /// `--ignored` runs about monthly, so this is the difference between finding out
+    /// the layout moved on the day it moves and finding out a release later. A machine
+    /// with no witness skips out loud rather than passing quietly.
     #[test]
-    fn read_bg_log_reports_a_missing_file_rather_than_failing() {
-        let got = read_bg_log("/w/.claude/projects/slug/uuid.jsonl".into(), "nosuchtask".into(), 0);
-        assert!(got.missing, "a missing log must come back as `missing`");
-        assert!(got.text.is_empty());
-        // The path is still reported, because it is what the row would reveal.
-        assert!(got.path.contains("nosuchtask.output"), "path was {:?}", got.path);
+    fn read_bg_log_finds_a_log_claude_code_actually_wrote() {
+        struct Witness {
+            slug: String,
+            uuid: String,
+            id: String,
+            log: std::path::PathBuf,
+            when: std::time::SystemTime,
+        }
+
+        let mut bases: Vec<std::path::PathBuf> =
+            vec![std::path::PathBuf::from("/tmp"), std::env::temp_dir()];
+        for k in ["CLAUDE_CODE_TMPDIR", "XDG_RUNTIME_DIR"] {
+            if let Some(v) = std::env::var_os(k).filter(|v| !v.is_empty()) {
+                bases.push(std::path::PathBuf::from(v));
+            }
+        }
+        let projects = std::path::PathBuf::from(crate::platform::home_dir()).join(".claude").join("projects");
+
+        let mut found: Vec<Witness> = Vec::new();
+        for base in &bases {
+            let Ok(entries) = std::fs::read_dir(base) else { continue };
+            for ent in entries.flatten() {
+                let raw = ent.file_name();
+                let name = raw.to_string_lossy();
+                if name != "claude" && !name.starts_with("claude-") {
+                    continue;
+                }
+                let Ok(slugs) = std::fs::read_dir(ent.path()) else { continue };
+                for sd in slugs.flatten() {
+                    let Some(slug) = sd.file_name().to_str().map(str::to_string) else { continue };
+                    let Ok(sessions) = std::fs::read_dir(sd.path()) else { continue };
+                    for ud in sessions.flatten() {
+                        let Some(uuid) = ud.file_name().to_str().map(str::to_string) else { continue };
+                        // A log with its transcript beside it. The pair is what the app
+                        // resolves; half of one would prove nothing about the join.
+                        if !projects.join(&slug).join(format!("{uuid}.jsonl")).is_file() {
+                            continue;
+                        }
+                        let Ok(logs) = std::fs::read_dir(ud.path().join("tasks")) else { continue };
+                        for l in logs.flatten() {
+                            let log = l.path();
+                            if log.extension().and_then(|e| e.to_str()) != Some("output") {
+                                continue;
+                            }
+                            let Some(id) = log.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+                                continue;
+                            };
+                            let when = l
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::UNIX_EPOCH);
+                            found.push(Witness { slug: slug.clone(), uuid: uuid.clone(), id, log, when });
+                        }
+                    }
+                }
+            }
+        }
+        if found.is_empty() {
+            eprintln!(
+                "skipping: no <root>/<slug>/<uuid>/tasks/*.output with a matching transcript under \
+                 {bases:?} — this machine has no evidence to check"
+            );
+            return;
+        }
+        found.sort_by_key(|w| std::cmp::Reverse(w.when));
+
+        // The rank-0 claim is about the AMBIENT layout, so it is made once, about the
+        // newest log, and only when nothing has moved the base out from under us. An
+        // old log under a root that has since been re-pointed is not a layout failure.
+        let pinned = std::env::var_os("CLAUDE_CODE_TMPDIR").is_some();
+        let mut matched = 0usize;
+        for (i, w) in found.iter().enumerate() {
+            let transcript = projects.join(&w.slug).join(format!("{}.jsonl", w.uuid));
+            let mut memo = BgRootState::default();
+            let got = read_bg_log_at_env(
+                &BgLogEnv::current(),
+                &mut memo,
+                &transcript.to_string_lossy(),
+                &w.id,
+                0,
+            );
+            match got.reason {
+                BgMiss::NoRoot => panic!(
+                    "Claude Code wrote {:?} and the probe looked in {:?}. The layout has moved and \
+                     every background-shell row on this platform is blind.",
+                    w.log, got.tried
+                ),
+                // Refusing to choose between two roots holding one session is the
+                // designed answer, not a layout failure — what matters is that the
+                // real file was among the ones it saw.
+                BgMiss::Ambiguous => {
+                    assert!(
+                        got.tried.iter().any(|t| same_file(std::path::Path::new(t), &w.log)),
+                        "the probe found {:?} ambiguous and {:?} was not among them",
+                        got.tried,
+                        w.log
+                    );
+                    eprintln!("note: {:?} resolved ambiguously across {} roots", w.log, got.tried.len());
+                    matched += 1;
+                }
+                _ => {
+                    assert!(
+                        same_file(std::path::Path::new(&got.path), &w.log),
+                        "the probe resolved {:?}, but Claude Code wrote {:?}",
+                        got.path,
+                        w.log
+                    );
+                    if i == 0 {
+                        if pinned {
+                            eprintln!(
+                                "note: $CLAUDE_CODE_TMPDIR is set, so rank {} is not the ambient layout",
+                                got.root_rank
+                            );
+                        } else {
+                            assert_eq!(
+                                got.root_rank, 0,
+                                "the newest log Claude Code wrote resolved at rank {} — the believed \
+                                 layout is no longer the real one, and only the fallback is carrying it",
+                                got.root_rank
+                            );
+                        }
+                    }
+                    matched += 1;
+                }
+            }
+        }
+        eprintln!("bg log round-trip: matched {matched} log(s) Claude Code wrote");
     }
 
+    /// The other oracle that is not ours, and the only way the WINDOWS row of
+    /// `bg_log_dir_names` ever stops being a belief: run the real binary and look at
+    /// what it created.
+    ///
+    /// It costs **no tokens and needs no auth** — the request is pointed at a dead
+    /// loopback port with a bogus key, and the temp root is made within a second of
+    /// the session starting (measured). Its exit status is deliberately not asserted;
+    /// the filesystem is the answer, so it is **spawned, polled for and killed** rather
+    /// than waited on. Blocking on the process instead would leave the only bound on
+    /// this test an env var nobody documents: `CLAUDE_CODE_MAX_RETRIES=0` is what stops
+    /// `claude -p` retrying the dead endpoint with backoff, and a release that renames
+    /// it — precisely the class of upstream change this test exists to catch — would
+    /// hang a developer's `--ignored` pass with no timeout at all.
+    ///
+    /// **A skip is a lie on a machine that just installed the CLI**, so
+    /// `EPISKO_REQUIRE_CLAUDE` turns the not-installed case into a failure. The weekly
+    /// workflow sets it: a green leg that observed nothing is indistinguishable from a
+    /// green leg that confirmed the layout, and the Windows row is the whole reason
+    /// that job exists.
+    ///
+    /// The `claude_layout_` name prefix is load-bearing. A `claude_cli_still_` one
+    /// would be swept up by the same filter that selects
+    /// `claude_cli_still_honours_our_instrumentation`, which needs real auth and spends
+    /// tokens — and the obvious fix for the resulting red would be an API key billing
+    /// tokens on a schedule, on two runners.
+    #[test]
+    #[ignore = "runs the real `claude` binary (no tokens, no auth) — `cargo test -- --ignored`"]
+    fn claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it() {
+        let root = crate::testutil::scratch_dir();
+        let cwd = crate::testutil::scratch_dir();
+        let claude = resolve_claude();
+        let required = std::env::var_os("EPISKO_REQUIRE_CLAUDE").is_some_and(|v| !v.is_empty());
+        let spawned = std::process::Command::new(&claude)
+            .current_dir(&cwd)
+            .args(["-p", "noop", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#])
+            .env("PATH", augmented_path())
+            .env("CLAUDE_CODE_TMPDIR", &root)
+            .env("CLAUDE_CODE_MAX_RETRIES", "0")
+            .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+            .env("ANTHROPIC_API_KEY", "not-a-real-key")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            // A box without Claude Code installed is one this can say nothing about —
+            // unless the runner has just installed it, in which case the silence is the
+            // failure. `claude` at {claude:?} is printed either way: on Windows an npm
+            // global install leaves an extensionless sh shim that `CreateProcessW`
+            // cannot start, and "could not be launched" is a different bug report from
+            // "the layout moved".
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
+                eprintln!("skipping: `claude` is not installed (looked at {claude:?})");
+                return;
+            }
+            Err(e) => panic!(
+                "could not launch `claude` at {claude:?}: {e}. This machine was told it has the \
+                 CLI, so the layout stayed unobserved — which is not the same thing as unchanged."
+            ),
+        };
+
+        // Poll for the tree rather than waiting for the process: the root appears at
+        // session start and the CLI goes on failing its way to an exit long afterwards.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let appeared = || {
+            std::fs::read_dir(&root).map(|d| d.flatten().any(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n == "claude" || n.starts_with("claude-")
+            }))
+        };
+        while std::time::Instant::now() < deadline && !appeared().unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let mut made: Vec<String> = std::fs::read_dir(&root)
+            .expect("the pinned CLAUDE_CODE_TMPDIR must still be there")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n == "claude" || n.starts_with("claude-"))
+            .collect();
+        made.sort();
+        assert_eq!(
+            made.len(),
+            1,
+            "expected exactly one `claude*` directory under the pinned root {root:?} within 30s, \
+             got {made:?} — an empty list means the session never got as far as making one"
+        );
+        eprintln!("claude layout: {} created {:?}", std::env::consts::OS, made[0]);
+        let names = bg_log_dir_names(ClaudeOs::current(), current_uid());
+        assert!(
+            names.contains(&made[0]),
+            "Claude Code created {:?} under its temp root and the probe only knows {names:?}. Every \
+             background-shell row on this platform is blind, and this is the machine that can say so.",
+            made[0]
+        );
+    }
     // ---------- the agent table ----------
     //
     // Nothing else can check this half. A wrong `bin` compiles, passes clippy and

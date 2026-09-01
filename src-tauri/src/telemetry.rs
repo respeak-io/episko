@@ -473,6 +473,7 @@ mod tests {
             owned_pids: Mutex::new(HashSet::new()),
             io_samples: Mutex::new(HashMap::new()),
             io_retired: Mutex::new((0, 0)),
+            bg_root: Mutex::new(crate::pty::BgRootState::default()),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             caffeinate: Mutex::new(None),

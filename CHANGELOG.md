@@ -13,12 +13,21 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+The header's running-server list finally reads the log Claude Code actually writes.
+
++ A row says **where it looked** for its log, and offers Reveal and Copy for that path.
+~ The popover splits **Running servers** from **Background jobs**; only something with an
+  address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
+! Background shell logs were never found at all — the path was built from the wrong temp
+  root, so every row sat at "starting…" for the life of the session.
+! A shell whose log never appears now retires instead of staying on the list forever, and
+  a session's rows leave when its pane ends.
+! `[exited with code unknown]` is read as an ending; a truncation notice no longer is.
 ! A session no longer sits on a green tick while it works. Typing your next message
   before the agent has finished submits it right away — Claude answers the queued one
   next, but its `Stop` arrives after your prompt, and Episko took that as the turn
   ending. Worse, `done` then swallowed every tool call that followed, so the row claimed
   *your turn* for the whole of the next turn, however long it ran.
-
 ! Day spend: resuming a session whose original pane was still running re-booked the
   whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
   kept per pane within a conversation.
