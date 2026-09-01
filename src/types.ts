@@ -692,6 +692,10 @@ export interface Sess {
   // after App Server starts. Restoring always targets this provider-owned identity.
   resumeId: string;
   branch: string; worktree: string | null; title: string;
+  /// The OSC title as the terminal sent it, before `cleanTitle`. `title` is lossy, so
+  /// this is what lets the scrub setting re-clean panes already on screen rather than
+  /// only the next one to speak. Optional: only an agent pane has an OSC to record.
+  rawTitle?: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
   pendingPermissions: PendingPermission[];
   /// When this pane entered the "needs you" set, and **0 when it is not in it** —

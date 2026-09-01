@@ -80,7 +80,90 @@ export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").spl
 /// `background` glyph, so the leak read as "this session has background agents up".
 /// The quadrant ranges below are covered whole (U+25D0–U+25D7, U+25F4–U+25F7) rather
 /// than frame by frame, so the next rotation through that family costs nothing.
-const TITLE_DECOR = /^(?:[\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿◐-◗◴-◷\uFE0F\u200D]|\u{1F31F})+/u;
+/// A class *source* rather than a regex literal, because `titleDecor` concatenates the
+/// user's additions onto it. One spelling — a literal kept alongside it for the empty
+/// case would be a second copy of this list to update.
+const TITLE_DECOR_CLASS = "\\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿◐-◗◴-◷\\uFE0F\\u200D";
+
+/// What the user added to the table above, and whether it is applied at all.
+///
+/// The built-in list is the baseline and is **not** editable: `extra` only ever adds,
+/// so the worst a bad value does is strip one character too many. A field that could
+/// remove from it would give "my titles went strange" two possible causes.
+export interface TitlePrefs {
+  /// Off shows the OSC title as the terminal sent it. The folder-echo rule below is
+  /// unaffected — that is a different question and not about somebody's animation.
+  scrub: boolean;
+  /// `◐-◗ ◴-◷ ✦✧` — characters and `a-b` ranges, whitespace ignored. Parsed by
+  /// `titleExtra`; malformed input is dropped rather than throwing, since this is a
+  /// field somebody is mid-typing in.
+  extra: string;
+}
+
+export const TITLE_DEFAULTS: TitlePrefs = { scrub: true, extra: "" };
+/// Room for ~30 ranges. It exists because the value is compiled into a RegExp and this
+/// is a field somebody can paste a whole file into.
+export const TITLE_EXTRA_MAX = 120;
+
+export function clampTitlePrefs(p: Partial<TitlePrefs> | null | undefined): TitlePrefs {
+  return {
+    // `!== false`, like every shipped-on preference: an absent key lands on the default.
+    scrub: p?.scrub !== false,
+    extra: typeof p?.extra === "string" ? p.extra.slice(0, TITLE_EXTRA_MAX) : "",
+  };
+}
+
+/// Parse `extra` into codepoint pairs — `[from, to]`, a single character being `[c, c]`.
+/// Exported because the settings preview shows **what it understood**, not what was
+/// typed: `◐-◗` is three characters and eight codepoints of meaning.
+export function titleExtra(extra: string): [number, number][] {
+  const cps = [...(extra || "")].map((c) => c.codePointAt(0)!);
+  const out: [number, number][] = [];
+  for (let i = 0; i < cps.length;) {
+    // A separator, never a member: the built-in class already covers `\s`.
+    if (/\s/u.test(String.fromCodePoint(cps[i]))) { i++; continue; }
+    const dash = cps[i + 1] === 0x2d || cps[i + 1] === 0x2013 || cps[i + 1] === 0x2014;
+    const end = cps[i + 2];
+    if (dash && end !== undefined && !/\s/u.test(String.fromCodePoint(end))) {
+      // Swap an inverted range rather than dropping it: `◗-◐` can only have meant the
+      // same eight codepoints, and an empty result for a value that looks right is the
+      // least diagnosable outcome available.
+      out.push(cps[i] <= end ? [cps[i], end] : [end, cps[i]]);
+      i += 3;
+      continue;
+    }
+    out.push([cps[i], cps[i]]);
+    i++;
+  }
+  return out;
+}
+
+/// The compiled prefix matcher: the built-in class plus whatever `extra` parsed to.
+///
+/// Every added codepoint is emitted as a `\u{…}` escape rather than as itself, which is
+/// what makes a raw text field safe to concatenate into a character class — `]`, `^`,
+/// `\` and `-` would otherwise change the *shape* of the class rather than joining it,
+/// and one of them is the range syntax this field invites people to type.
+const decorRe = (added: string) => new RegExp(`^(?:[${TITLE_DECOR_CLASS}${added}]|\\u{1F31F})+`, "u");
+/// The built-in table alone, and the fallback when an addition will not compile.
+const TITLE_DECOR = decorRe("");
+const decorCache = new Map<string, RegExp>();
+export function titleDecor(extra: string): RegExp {
+  const hit = decorCache.get(extra);
+  if (hit) return hit;
+  const u = (c: number) => `\\u{${c.toString(16)}}`;
+  const added = titleExtra(extra).map(([a, b]) => (a === b ? u(a) : `${u(a)}-${u(b)}`)).join("");
+  let re = TITLE_DECOR;
+  if (added) {
+    // The escaping makes a failure unlikely, but this runs on a title change and the
+    // alternative to a fallback is a pane that stops updating.
+    try { re = decorRe(added); } catch { re = TITLE_DECOR; }
+  }
+  // Bounded: the key is a text field, so Settings recompiles on every keystroke.
+  if (decorCache.size > 32) decorCache.clear();
+  decorCache.set(extra, re);
+  return re;
+}
 
 /// Claude Code sets the terminal title (OSC) to an auto-summary; keep it unless it's
 /// just the folder path/name (which we already show).
@@ -88,8 +171,13 @@ const TITLE_DECOR = /^(?:[\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-
 /// Takes the three fields it reads rather than a whole `Sess`, which keeps ./format
 /// free of a types.ts import — a `Sess` satisfies it structurally, so the call sites
 /// still pass one.
-export function cleanTitle(t: string, s: { title: string; workdir: string; project: string }): string {
-  const x = (t || "").replace(TITLE_DECOR, "").trim();
+export function cleanTitle(
+  t: string,
+  s: { title: string; workdir: string; project: string },
+  prefs: TitlePrefs = TITLE_DEFAULTS,
+): string {
+  const raw = t || "";
+  const x = (prefs.scrub ? raw.replace(titleDecor(prefs.extra), "") : raw).trim();
   if (!x) return s.title;
   if (x === s.workdir || x === tilde(s.workdir) || x === s.project || x === basename(s.workdir)) return "";
   return x;

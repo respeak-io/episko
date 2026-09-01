@@ -20,7 +20,7 @@
 // Note for tests: the preferences below are read from localStorage at *module
 // scope*, so `import { store } from "./localstorage"` must sit on the line above
 // this module's import (see test/localstorage.ts).
-import { basename, hslToHex } from "./format";
+import { basename, clampTitlePrefs, hslToHex, type TitlePrefs } from "./format";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
@@ -109,6 +109,14 @@ export function setCmpBase(repoDir: string, ref: string) {
   if (ref) next[repoDir] = ref; else delete next[repoDir];
   cmpBase = next;
 }
+
+// --- the OSC title a pane shows ---------------------------------------------------
+// Whether Claude's spinner frames are stripped off the terminal title, and what counts
+// as a frame on top of the built-in table. One JSON blob under cc-title for the same
+// reason as cc-peek below. The table, the parsing and the clamping live in ./format,
+// which is pure and tested; this only holds the value.
+export let titlePrefs: TitlePrefs = clampTitlePrefs(safeParse(localStorage.getItem("cc-title")));
+export function setTitlePrefs(p: TitlePrefs) { titlePrefs = clampTitlePrefs(p); }
 
 // --- sidebar peek ---------------------------------------------------------------
 // Whether resting on a project reveals the checkouts nothing is running in, and for

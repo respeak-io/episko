@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Settings › Appearance › Clean up session names: the characters Episko strips off a
+  session's name are now yours to add to, so a spinner frame Claude Code ships next no
+  longer waits for an Episko release. Characters or `a-b` ranges, only ever added to the
+  built-in table, with a live before/after and a switch to turn the whole thing off.
+
 ## 0.24.0 — 2026-08-28
 
 Put the fleet down for the night and pick it up in the morning. The hook server

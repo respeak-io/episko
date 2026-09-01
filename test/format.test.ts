@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  ageBucket, basename, cleanTitle, dialogBody, elidePath, esc, fmtClock, fmtDur, fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, uDelta,
+  ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, esc, fmtClock, fmtDur,
+  fmtDwell, fmtLatency, fmtMb, fmtRate,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, titleExtra,
+  TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
 
@@ -270,6 +272,129 @@ describe("cleanTitle — the OSC title, minus Claude's spinner", () => {
     expect(cleanTitle("~/proj/app", sess)).toBe("");
     expect(cleanTitle("app", sess)).toBe("");
     expect(cleanTitle("app-proj", sess)).toBe("");
+  });
+});
+
+describe("the title scrub as a setting", () => {
+  const sess = { title: "kept", workdir: "/Users/t/proj/app", project: "app-proj" };
+  const prefs = (extra: string, scrub = true) => ({ scrub, extra });
+
+  describe("clampTitlePrefs — what a hand-edited cc-title may say", () => {
+    it("lands on the shipped default for anything missing", () => {
+      // Scrubbing is what every install had before this was a setting, so an absent
+      // key must read as ON. `!== false`, not `=== true`.
+      expect(clampTitlePrefs(null)).toEqual(TITLE_DEFAULTS);
+      expect(clampTitlePrefs({})).toEqual({ scrub: true, extra: "" });
+      expect(clampTitlePrefs({ scrub: false })).toEqual({ scrub: false, extra: "" });
+    });
+
+    it("refuses an extra that is not a string, rather than passing it on", () => {
+      // The value is spread into a RegExp character class; `.slice` on a number throws
+      // at the first title change, a long way from here.
+      for (const bad of [null, undefined, 7, [], {}, true] as unknown[]) {
+        expect(clampTitlePrefs({ extra: bad as string }).extra).toBe("");
+      }
+    });
+
+    it("caps a paste rather than compiling it", () => {
+      expect(clampTitlePrefs({ extra: "x".repeat(999) }).extra).toHaveLength(TITLE_EXTRA_MAX);
+    });
+  });
+
+  describe("titleExtra — what the field was understood to mean", () => {
+    const cps = (s: string) => titleExtra(s).map(([a, b]) => [String.fromCodePoint(a), String.fromCodePoint(b)]);
+
+    it("reads single characters and ranges, and ignores the whitespace between them", () => {
+      expect(cps("✦✧")).toEqual([["✦", "✦"], ["✧", "✧"]]);
+      expect(cps("◐-◗")).toEqual([["◐", "◗"]]);
+      expect(cps("  ◐-◗   ✦ ")).toEqual([["◐", "◗"], ["✦", "✦"]]);
+    });
+
+    it("counts a range in codepoints, which is the number nothing else on screen says", () => {
+      expect(titleExtra("⠀-⣿")).toEqual([[0x2800, 0x28ff]]);
+    });
+
+    it("swaps an inverted range instead of dropping it", () => {
+      // `◗-◐` can only have meant the same eight codepoints, and an empty result for a
+      // value that LOOKS right is the least diagnosable outcome available.
+      expect(cps("◗-◐")).toEqual([["◐", "◗"]]);
+    });
+
+    it("takes an en or em dash as the range separator too", () => {
+      // The field is a place people paste from a chat message, and macOS substitutes
+      // both of these for a hyphen as you type.
+      expect(cps("◐–◗")).toEqual([["◐", "◗"]]);
+      expect(cps("◐—◗")).toEqual([["◐", "◗"]]);
+    });
+
+    it("keeps a dangling dash as a literal rather than eating the character before it", () => {
+      expect(cps("✦-")).toEqual([["✦", "✦"], ["-", "-"]]);
+      expect(cps("-")).toEqual([["-", "-"]]);
+    });
+  });
+
+  describe("cleanTitle under a preference", () => {
+    it("strips a character the built-in table does not know", () => {
+      // The whole point of the setting: Claude ships a new spinner family, and this is
+      // the answer that does not need an Episko release.
+      expect(cleanTitle("✻ Fixing the bug", sess, prefs(""))).toBe("Fixing the bug");
+      expect(cleanTitle("§ Fixing the bug", sess, prefs(""))).toBe("§ Fixing the bug");
+      expect(cleanTitle("§ Fixing the bug", sess, prefs("§"))).toBe("Fixing the bug");
+    });
+
+    it("strips a whole added range", () => {
+      for (const c of ["\u2460", "\u2465", "\u2469"]) {
+        expect(cleanTitle(`${c} Fixing the bug`, sess, prefs("\u2460-\u2469"))).toBe("Fixing the bug");
+      }
+      expect(cleanTitle("\u246a Fixing the bug", sess, prefs("\u2460-\u2469"))).toBe("\u246a Fixing the bug");
+    });
+
+    it("only ever adds — an addition cannot take a character out of the built-in table", () => {
+      // The built-in list is five releases of accumulated answer, and a field that
+      // could subtract from it would give "my titles went strange" two possible causes.
+      expect(cleanTitle("◐ Fixing the bug", sess, prefs("§"))).toBe("Fixing the bug");
+    });
+
+    it("still only strips a LEADING run", () => {
+      expect(cleanTitle("Rendering the § glyph", sess, prefs("§"))).toBe("Rendering the § glyph");
+    });
+
+    it("adds exactly the codepoints titleExtra named, whatever was typed", () => {
+      // The escaping test, and it has to be written this way round to be worth
+      // anything. "does a hostile value crash it?" passes trivially — `titleDecor`
+      // falls back to the built-in table on a compile failure, so a broken class and a
+      // correct one both leave an ordinary title alone. What separates them is whether
+      // the characters that carry the class's OWN syntax (`]`, `^`, `\`, `-`) end up
+      // as members or as structure. Concatenated raw, `]` closes the class early and
+      // `\` swallows the bracket; escaped as \u{…}, both simply join it.
+      const probes = ["]", "^", "\\", "-", "z", "Z", "5", "a", "`"];
+      for (const extra of ["]", "^", "\\", "[", "-z", "]^\\-", "a-\\", ".*"]) {
+        const named = new Set<number>();
+        for (const [a, b] of titleExtra(extra)) for (let c = a; c <= b; c++) named.add(c);
+        for (const probe of probes) {
+          const want = named.has(probe.codePointAt(0)!) ? "T" : `${probe} T`;
+          expect(cleanTitle(`${probe} T`, sess, prefs(extra)),
+            `extra=${JSON.stringify(extra)} probe=${JSON.stringify(probe)}`).toBe(want);
+        }
+      }
+    });
+
+    it("switched off, hands back exactly what the terminal sent", () => {
+      expect(cleanTitle("◐ ✳ Fixing the bug", sess, prefs("", false))).toBe("◐ ✳ Fixing the bug");
+    });
+
+    it("switched off, still drops a title that only repeats the folder", () => {
+      // A different question — "is this telling me anything the row doesn't already
+      // say?" — and nothing to do with somebody else's animation.
+      setHome("/Users/t");
+      expect(cleanTitle("~/proj/app", sess, prefs("", false))).toBe("");
+      expect(cleanTitle("app-proj", sess, prefs("", false))).toBe("");
+    });
+
+    it("defaults to the built-in table when no preference is passed", () => {
+      // The two-argument call is what every existing call site and test uses.
+      expect(cleanTitle("◐ Fixing the bug", sess)).toBe("Fixing the bug");
+    });
   });
 });
 
