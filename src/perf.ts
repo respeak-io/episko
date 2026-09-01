@@ -96,7 +96,7 @@ export const VITALS: readonly VitalDef[] = [
   },
   {
     id: "servers", key: "srv", label: "Background shells", kind: "growth", climb: 5,
-    hint: "Dev servers and watchers the agents left running. A handful is normal; a count that only ever rises means records are being kept for shells that ended.",
+    hint: "Every shell the agents have backgrounded in this pane, running or not: an ended record is kept on purpose — a crashed server must not vanish off the count — and only a dismissed row leaves. So this rises with the number of shells started, never with how many are still up, and it is a leak only if it climbs while nothing is being backgrounded.",
   },
   {
     id: "termLines", key: "term", label: "Scrollback lines", kind: "level",

@@ -88,11 +88,29 @@ jobs:
         working-directory: ./src-tauri
         run: cargo check --locked
 
-      # Plain `cargo test` skips `#[ignore]`d tests, which is what we want: those
-      # are reserved for checks that need `claude` on PATH plus auth and tokens, so
-      # they belong to the release checklist (`cargo test -- --ignored`), not a PR gate.
+      # Plain `cargo test` skips `#[ignore]`d tests, which is what we want: those are
+      # reserved for checks that invoke `claude` (on PATH, and sometimes with auth and
+      # tokens), so they belong to the release checklist, not a PR gate.
+      #
+      # `read_bg_log_finds_a_log_claude_code_actually_wrote` is deliberately NOT in that
+      # tier. It invokes nothing and costs a handful of `read_dir`s; it just needs a
+      # machine that has USED Claude Code, so it skips here and fires on a developer's
+      # laptop. `--ignored` runs monthly; this runs twenty times a day, and it is the
+      # only place this feature's one real oracle exists.
+      #
+      # CLAUDE_CODE_TMPDIR is poisoned on purpose. Every input to `bg_log_roots` — the
+      # OS, the temp root, this variable, the uid — is a parameter, which is what lets
+      # the macOS leg assert the Windows row of the table and vice versa. If this ever
+      # goes red, somebody has reached for `std::env::var` inside the resolver and half
+      # the table has quietly stopped being testable from the other machine, which is
+      # precisely how the background-shell log went unresolvable for months with every
+      # gate green. TMPDIR itself is deliberately NOT poisoned: rustc, the linker and
+      # cargo's own tempfile use it for real work, and a gate must fail because of the
+      # diff.
       - name: Cargo test
         working-directory: ./src-tauri
+        env:
+          CLAUDE_CODE_TMPDIR: ${{ runner.temp }}/episko-no-such-root
         run: cargo test --locked
 
       # A real gate as of Phase 3 — a linter that can't fail is decoration. Note

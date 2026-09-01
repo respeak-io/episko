@@ -33,14 +33,28 @@
 // Stopping differs with the source too, and honestly so: Episko owns a task's PTY, so ✕
 // there really does stop it (`closeSession`, exactly what the pane's own ✕ does). There
 // is no agent holding a stale belief to keep true.
+//
+// **The list splits on evidence, never on the command string.** Claude auto-backgrounds
+// *any* Bash command that runs past its own 120s timeout, so a one-shot `python3 -c …`
+// arrives here looking exactly like a dev server and, before this split, sat in a list
+// headed "Running servers" claiming to be one. What separates the two is a URL — either
+// announced in the log or adopted off a port the kernel reports — and nothing else:
+// `bgKind` reads that one fact, and a row without it goes under **Background jobs**
+// instead. Guessing from `pnpm`/`dev`/`serve` in the command was the obvious rule and is
+// deliberately absent, for ./health's reason — a rule that fires on ordinary work is
+// worse than no rule, and here it would fire on `npm ci`, `pytest` and `gh run watch`.
+// The jobs still get rows, because an invisible process is what this whole surface is
+// for; what they no longer get is a heading that lies about them.
 
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { $, toast } from "./dom";
+import { $, FILE_MANAGER, toast } from "./dom";
 import { esc, escAttr } from "./format";
 import { sessions, activeId } from "./state";
 import {
-  applyBgLog, bgOutcome, cmdLabel, failedServers, forgetServer, liveServers,
+  applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
+  failedServers, forgetServer, liveServers,
   reconcilePorts, servingUrls, shownServers, type BgRead, type SessionPort,
 } from "./servers";
 import { isClaude, type BgServer, type Sess } from "./types";
@@ -124,12 +138,21 @@ function livePolled(): BgServer[] {
 
 let lastPop = "";
 
+/// Which of the popover's two sections a row belongs in. A task and a loose port are
+/// *always* servers — a task is listed only once it has announced a URL, and a port is
+/// the kernel saying the socket is open — so the only row this actually decides is an
+/// agent's background shell, and `bgKind` decides that on the URL alone.
+const isServerRow = (r: Row) => r.kind !== "bg" || bgKind(r.b) === "server";
+
 /// The header indicator. Hidden entirely when nothing is running — an always-visible
 /// zero would be one more thing to read past, and the whole point is that a server you
 /// forgot about should be the thing that catches your eye.
 export function renderServers() {
   const shown = rows();
   const el = $("svrBadge");
+  // The TOTAL, deliberately, and not the server count below: a fleet with no servers and
+  // four background jobs still has four rows, and keying this on the servers would hide
+  // the pill and *force the popover shut* underneath somebody reading those rows.
   if (!shown.length) { el.className = "svr-badge"; closeServersPop(); return; }
   // Through the tested helpers rather than a second `.url`/`.exit` test here: "a server
   // worth pointing at is one that has announced a URL", and "a failure is a non-zero
@@ -144,11 +167,22 @@ export function renderServers() {
   // task that is the whole condition for being listed at all; for the port it is the
   // strongest evidence in the feature.
   serving += shown.filter((r) => r.kind !== "bg").length;
+  const servers = shown.filter(isServerRow).length;
+  const jobs = shown.length - servers;
   el.className = "svr-badge show";
-  $("svrBadgeTxt").textContent = String(shown.length);
-  // The title carries what the pill cannot: one line per server, so hovering answers
-  // "which ones?" without a click.
-  el.title = shown.map((r) => `${r.s.project} · ${rowTitle(r)}`).join("\n");
+  // The number is the SERVERS, because that is what the pill has always claimed to
+  // count and what its glyph and its green mean. With none up it falls back to the jobs
+  // rather than reading `0` — a bare zero on a visible pill is a puzzle, and hiding the
+  // pill outright would take the only route to rows nothing else in the app shows. The
+  // `jobs-only` class is what stops the fallback reading as "4 servers running": it
+  // drops the pill to the flattest treatment the header has, and every line of the
+  // hover list below says which kind it is.
+  $("svrBadgeTxt").textContent = String(servers || jobs);
+  el.classList.toggle("jobs-only", servers === 0);
+  // The title carries what the pill cannot: one line per row — jobs included, and
+  // prefixed, so the hover and the number visibly agree instead of leaving you counting
+  // four lines under a pill that says one.
+  el.title = shown.map((r) => `${isServerRow(r) ? "" : "job · "}${r.s.project} · ${rowTitle(r)}`).join("\n");
   // Failure wins the colour. A fleet with two servers up and one crashed is, right then,
   // a thing that needs looking at — and green over the top of that reads as "all fine".
   el.classList.toggle("serving", serving > 0 && !failed);
@@ -193,8 +227,10 @@ function rowFacts(r: Row) {
     return {
       url: `http://localhost:${r.port}`, dead: false, outcome: "", tail: undefined,
       label: `<span class="sv-src sv-obs" title="Seen listening under this pane — nothing announced it">◎</span>${esc(r.name || "port " + r.port)}`,
-      // No ✕, but the cell stays: the row is a four-column grid, and dropping one
-      // column would pull this row's ◨ out of line with every other row's. We know
+      // No ✕, but the cell stays: the row is a six-column grid — head / url / ⌂ / ⧉ /
+      // ◨ / ✕ — and dropping one would pull this row's ◨ out of line with every other
+      // row's, all the way down the popover. (The two log buttons are the same story,
+      // filled in below.) We know
       // which pid holds the socket; what we do not know is that killing it is what you
       // meant — it sits several hops below a pane that has its own ✕, and this row
       // exists to *tell* you the port is open, not to take responsibility for it.
@@ -230,9 +266,32 @@ function rowFacts(r: Row) {
 function rowHtml(r: Row, open: boolean): string {
   const s = r.s;
   const { url, dead, outcome, tail, label, x, go } = rowFacts(r);
+  // An empty peek must say WHICH silence this is. "no output yet" describes exactly one
+  // of them — the file is open and the process has printed nothing — and it was the line
+  // shown for every other one too, including the whole outage where the peek was
+  // reporting on a path that has never existed on any machine. `bgPeekEmpty` says the
+  // reason the backend gave instead; a task or a port has no log file to have an opinion
+  // about, so those keep the literal.
   const peek = open && tail?.length
     ? `<pre class="sv-log">${esc(tail.join("\n"))}</pre>`
-    : open ? `<pre class="sv-log sv-log-empty">no output yet</pre>` : "";
+    : open
+      ? `<pre class="sv-log sv-log-empty">${esc(r.kind === "bg" ? bgPeekEmpty(r.b) : "no output yet")}</pre>`
+      : "";
+  // The log's address, and the other half of "I can't even take a look at it". `bgLogPath`
+  // falls back to the FIRST candidate the backend tried, so a row that resolved nothing
+  // still hands over somewhere to go and look — and ⧉ puts it where a shell can use it.
+  //
+  // Both are direct children of `.sv-row`, never inside `.sv-head`: the head is itself a
+  // <button> spanning the whole row, a button nested in a button is invalid markup, and
+  // the expander's probe — which runs last precisely because it matches everything —
+  // would swallow the click before either of these was ever asked about it.
+  const p = r.kind === "bg" ? bgLogPath(r.b) : "";
+  const logs = p
+    ? `<button class="sv-path" data-svreveal="${escAttr(p)}" title="Reveal in ${FILE_MANAGER}">⌂</button>`
+      + `<button class="sv-path" data-svcopy="${escAttr(p)}" title="Copy the log path">⧉</button>`
+    // Empty cells rather than missing ones, the same `.sv-none` trick the ✕ column uses:
+    // the row is a grid, and a row two columns short pulls its ◨ out of line with the rest.
+    : `<span class="sv-path sv-none"></span><span class="sv-path sv-none"></span>`;
   // A dead row keeps its outcome where the URL was, as plain text: the port is gone, and
   // a chip that opens a dead tab is worse than one that does not invite the click.
   const mid = dead
@@ -249,6 +308,7 @@ function rowHtml(r: Row, open: boolean): string {
       </span>
     </button>
     ${mid}
+    ${logs}
     <button class="sv-go" data-svgo="${s.id}" title="${go}">◨</button>
     ${x}
     ${peek}
@@ -258,17 +318,36 @@ function rowHtml(r: Row, open: boolean): string {
 function renderServersPop() {
   const shown = rows();
   const pop = $("svrPop");
+  // Partitioned here rather than inside `rows()`, which stays pure and stays the single
+  // ordering: oldest first, and it holds WITHIN each section, so a server does not
+  // change its place in the list the moment a job above it announces a URL.
+  const servers = shown.filter(isServerRow);
+  const jobs = shown.filter((r) => !isServerRow(r));
+  // The servers heading stands even at zero, and that is not an oversight: with four
+  // jobs listed below it, "Running servers 0" is the sentence that answers the question
+  // the pill just raised. Dropping it would leave a popover of background jobs looking
+  // like the server list it used to be mistaken for.
   const html = shown.length
-    ? `<div class="sv-h">Running servers<span class="sv-hn">${shown.length}</span></div>`
-      + shown.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
-      + `<div class="sv-foot">▶ is a task Episko ran and can stop. The rest were backgrounded by an agent, and Stop asks that session to run <code>TaskStop</code>.</div>`
+    ? `<div class="sv-h">Running servers<span class="sv-hn">${servers.length}</span></div>`
+      + servers.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
+      + (jobs.length
+        ? `<div class="sv-h sv-h2">Background jobs<span class="sv-hn">${jobs.length}</span></div>`
+          + jobs.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
+        : "")
+      + `<div class="sv-foot">▶ is a task Episko ran and can stop. The rest were backgrounded by an agent, and Stop asks that session to run <code>TaskStop</code>. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
     : "";
   // Same guard, and the same reason, as the attention popover: this repaints on every
   // telemetry event, and an innerHTML assignment between mousedown and mouseup drops
   // the click on the button underneath (docs/architecture.md).
   if (html === lastPop) return;
   lastPop = html;
+  // The popover scrolls now (`max-height: min(70vh, 560px)`), and an innerHTML write
+  // resets `scrollTop` to 0. This repaints every time a poll folds one new log line, so
+  // without this a reader watching a peek near the bottom of a long list is yanked back
+  // to the top every four seconds — while doing exactly what the expanded row is for.
+  const at = pop.scrollTop;
   pop.innerHTML = html;
+  pop.scrollTop = at;
 }
 
 export function openServersPop() {
@@ -375,10 +454,20 @@ export async function pollServers() {
       const got = await invoke<BgRead & { missing: boolean }>(
         "read_bg_log", { transcript: b.transcript, taskId: b.taskId, knownLen: b.len ?? 0 },
       );
-      // A missing file is normal for a second or two after a shell starts, and
-      // permanent if Claude Code's layout ever changes. Either way there is nothing to
-      // fold in, and the record keeps whatever it already knew.
-      if (got.missing) { if (!b.log && got.path) { b.log = got.path; changed = true; } continue; }
+      // A missing file is normal for a second or two after a shell starts, and permanent
+      // if Claude Code's layout moves under us — which it did, and for the whole life of
+      // that outage this branch folded in nothing at all, so every row said "starting…"
+      // forever and the peek said "no output yet" about a path that had never existed.
+      // So a miss now carries its own answer: `applyBgMiss` keeps the reason and the
+      // candidates the backend tried (the row's peek and its ⌂/⧉), and `bgRetire` ends a
+      // record whose log genuinely never appeared — and ONLY that one. A `noRoot` or an
+      // `ambiguous` is an outage on our side, and retiring on it would turn "rows that
+      // never leave" into "rows that always leave", which is the quieter failure.
+      if (got.missing) {
+        if (applyBgMiss(b, got, Date.now())) changed = true;
+        if (bgRetire(b, Date.now())) changed = true;
+        continue;
+      }
       if (applyBgLog(b, got, Date.now())) changed = true;
     } catch { /* the row survives a failed read; the next poll tries again */ }
   }
@@ -395,7 +484,9 @@ $("svrBadge").addEventListener("click", (e) => {
 $("svrPop").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   // Buttons first, expander last — the expander is the row's whole background, so
-  // `closest()` would hand it back for a click that landed on any of the three.
+  // `closest()` would hand it back for a click that landed on any of the others. This
+  // module's own `test/dispatch.test.ts` describe holds both halves together in both
+  // directions and asserts that `svtoggle` stays at the bottom of this chain.
   const url = t.closest<HTMLElement>("[data-svopen]");
   if (url) { e.stopPropagation(); void openUrl(url.dataset.svopen!).catch((err) => toast("open failed: " + err)); return; }
   const go = t.closest<HTMLElement>("[data-svgo]");
@@ -406,6 +497,20 @@ $("svrPop").addEventListener("click", (e) => {
   if (forget) { e.stopPropagation(); dismiss(forget.dataset.svsid!, forget.dataset.svforget!); return; }
   const kill = t.closest<HTMLElement>("[data-svkill]");
   if (kill) { e.stopPropagation(); stopTask(kill.dataset.svkill!); return; }
+  // The log itself, which is the whole point of the row saying where it is. Neither
+  // closes the popover: you are still reading the row you just asked about, and both are
+  // the sort of thing you do twice.
+  //
+  // A path that no longer resolves surfaces the backend's own error rather than doing
+  // nothing — "no such file" reads as the truth, a silent no-op reads as a dead button
+  // (./actions' `revealTouchedFile`, same argument).
+  const rev = t.closest<HTMLElement>("[data-svreveal]");
+  if (rev) { e.stopPropagation(); void invoke("reveal_file", { path: rev.dataset.svreveal! }).catch((err) => toast(String(err))); return; }
+  // `tauri-plugin-clipboard-manager`, never `navigator.clipboard` — the web API raises an
+  // OS permission prompt in a webview, which is a strange answer to "copy this path".
+  // A denied clipboard falls back to showing the path, so it is at least selectable.
+  const cp = t.closest<HTMLElement>("[data-svcopy]");
+  if (cp) { e.stopPropagation(); void writeText(cp.dataset.svcopy!).then(() => toast("Path copied")).catch(() => toast(cp.dataset.svcopy!)); return; }
   const tog = t.closest<HTMLElement>("[data-svtoggle]");
   if (tog) {
     e.stopPropagation();

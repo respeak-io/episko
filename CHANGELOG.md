@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+The header's running-server list finally reads the log Claude Code actually writes.
+
++ A row says **where it looked** for its log, and offers Reveal and Copy for that path.
+~ The popover splits **Running servers** from **Background jobs**; only something with an
+  address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
+! Background shell logs were never found at all — the path was built from the wrong temp
+  root, so every row sat at "starting…" for the life of the session.
+! A shell whose log never appears now retires instead of staying on the list forever, and
+  a session's rows leave when its pane ends.
+! `[exited with code unknown]` is read as an ending; a truncation notice no longer is.
+
 ## 0.24.0 — 2026-08-28
 
 Put the fleet down for the night and pick it up in the morning. The hook server

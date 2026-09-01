@@ -15,13 +15,32 @@ different lifetime — it changes when the OS edge changes, not when the app doe
 Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`):
 
 - `pnpm build` — `tsc --noEmit` (strict) plus the vite build
-- `pnpm test` — 744 vitest tests over the logic modules
-- `cargo check --locked` and `cargo test --locked` — 160 tests on macOS, 156 on
-  Windows (the platform tests are `cfg`-gated, so the count differs by leg)
+- `pnpm test` — the vitest suites over the logic modules, ~1,535 `it(` blocks
+- `cargo check --locked` and `cargo test --locked` — ~270 `#[test]` functions, of which
+  each leg runs the half that compiles for it (the platform tests are `cfg`-gated, so
+  the two counts differ and neither equals the total)
 - `cargo clippy --all-targets --locked -- -D warnings`
 
 Both legs matter and neither is redundant: the platform code is `cfg`-gated, so each
 OS compiles and lints only its own half.
+
+**Two limits on that list, and both are yours.** A section whose whole value is being
+trusted has to say where it stops:
+
+- `cargo test` must print `bg log round-trip: matched N log(s) Claude Code wrote` with
+  N ≥ 1. It is in the default suite, but libtest swallows a passing test's output, so
+  read it deliberately:
+
+  ```sh
+  cd src-tauri && cargo test --locked -- --show-output read_bg_log_finds_a_log
+  ```
+
+  If it printed `skipping:` instead, the one test that can catch Claude Code moving its
+  background-shell logs did not run — it needs a machine that has *used* Claude Code,
+  and a CI runner never has. Run it on one that has before tagging.
+- The `upstream-contract` workflow ran green within the last month (Actions →
+  upstream-contract). It warns rather than failing when the install endpoint moves, so
+  it can also die quietly; the release is the cadence at which a human looks.
 
 **What CI cannot see** is everything below — the PTY, the tray, real windows, the
 permission round trip, and whether Claude Code's own interfaces still match ours.
@@ -37,7 +56,7 @@ cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Two tests, both against the real binary, in one pass:
+Three checks against Claude Code's real state, in one pass:
 
 - `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
   throwaway session in a temp dir and asserts our hooks reach our server, that routing
@@ -50,6 +69,17 @@ Two tests, both against the real binary, in one pass:
   the flag against its own choice list, so a mode renamed or dropped upstream turns
   every launch in that mode into a pane that dies before it starts. This one costs **no
   tokens and needs no auth** — it is `#[ignore]`d only because CI has no `claude`.
+- `claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it` starts one real
+  session, waits for the temp root that session creates, and asserts the directory that
+  appeared is one `bg_log_roots` would have probed. That root is what every background
+  shell's log hangs off, and it is Anthropic's to rename — it already moved once, and
+  the header's server pill went dark for the life of the feature with every gate green.
+  This one also costs **no tokens and no auth**: it points the CLI at a dead loopback
+  port with a bogus key, so the request never leaves the machine, and it kills the
+  process the moment the directory exists (~1s). Run it on **both** OSes if you have
+  them. The macOS row has a developer's laptop for a witness; the Windows row has
+  nothing but the weekly `upstream-contract` job, and a release is the one moment
+  somebody is actually looking at it.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
@@ -201,19 +231,26 @@ a broken alert is indistinguishable from a switched-off one.
 
 The whole feature reads a payload field and a file layout that are **not ours** —
 `tool_response.backgroundTaskId`, and the log Claude Code writes beside the transcript.
-The rules are unit-tested against captured fixtures, but a release of Claude Code that
-renames either would leave every test green and the pill permanently dark, so this is
-the one section here that is checking somebody else's contract.
+The *directory* half now has two automated witnesses (the round-trip test above and the
+weekly `upstream-contract` job), but nothing headless can see the payload field, the
+sentinel vocabulary or the live slug join: each of those needs a real model turn. So
+this is still the one section here that is checking somebody else's contract.
 
 - [ ] **A dev server appears.** In a session, prompt: *"start the dev server in the
       background"* (any project with one). Within a few seconds the header grows a
       `◉ 1` pill, left of the reactor, and it turns **green** once the server prints its
-      URL. Grey-and-never-green is the failure that matters: it means the shell was seen
-      but its log was not, so check `bg_log_path` against the real
-      `<tmp>/claude/<slug>/<uuid>/tasks/` layout before shipping.
+      URL. Grey-and-never-green means the shell was seen but its log was not. Open the
+      row and use ⌂/⧉ — the probe reports every path it tried. If it says **no log
+      found**, the layout moved and `upstream-contract` should already have opened an
+      issue; check that job's last run before shipping.
 - [ ] **The URL opens.** Click the pill, click the URL chip — your browser opens the
       running site. The row names the project and the command with the `cd …&&` prefix
       stripped.
+- [ ] **A job an agent did not choose to background stays out of the count.** Ask for
+      something slow and foreground — a `pytest` run, a `gh run watch` poll. Claude Code
+      auto-backgrounds anything past its 120s timeout, so a row appears; it must appear
+      under **Background jobs**, and the `◉` count must not move. Only something with an
+      address is a server.
 - [ ] **The peek is live.** Click the row to expand it, then hit the site in the
       browser. New lines appear in the log peek within ~4s (a request log, an HMR line).
 - [ ] **`◨` jumps** to the session that started it, and closes the popover.
@@ -225,6 +262,22 @@ the one section here that is checking somebody else's contract.
       (start two). The second exits within seconds: its row must **stay**, dimmed, with
       `exited 1` where the URL was, and the pill must go **red** rather than dropping
       the count. `✕` on that row dismisses it and asks nobody.
+- [ ] **A shell whose log never arrives leaves by itself.** The slowest check here. Have
+      an agent background something that announces no address — a `sleep 900` will do —
+      then delete its `.output` file out from under it (⧉ on the row gives you the
+      path). The row goes on saying `no log file yet` for ten minutes from the moment
+      the file went, and then **leaves the list**, dropping the count by one. It does
+      not go red and it does not linger dimmed: nothing failed, so the record carries no
+      exit code and `failedServers` never sees it. The two failures to watch for are a
+      row that vanishes within seconds of the delete (retirement measuring the record's
+      AGE rather than how long its log has been missing — it is an hour old by then) and
+      one still sitting there at twenty minutes. And if the peek says **no log found**
+      rather than `no log file yet`, stop: that is an outage in our own probe, it must
+      never retire anything, and the row is right to stay.
+- [ ] **⌂ opens the log, ⧉ copies its path.** Both on the row itself, both working on a
+      row that never found a log — there they act on the first path the probe tried,
+      which is the whole point of showing them. A path that no longer resolves must
+      raise a toast saying so rather than doing nothing at all.
 - [ ] **`/clear` does not lose a running server.** With a server up, `/clear` the
       session. Claude mints a new session directory; the row must keep its URL and its
       peek, because the log path was captured at start. A row that goes grey here is

@@ -2396,18 +2396,36 @@ select.in-ctl { cursor: pointer; }
 .svr-badge.show { display: flex; }
 .svr-badge:hover { background: color-mix(in srgb, var(--muted) 16%, transparent); }
 .svr-badge .svr-ic { font-size: 8px; line-height: 1; }
+/* No servers up, N background jobs still running. The number is worth showing — they are
+   invisible processes, which is what this pill is for — but it must not read as "N servers
+   running", so the pill drops to the flattest treatment the header has and every line of
+   its hover list says `job ·`. Before .serving/.failed on purpose: equal specificity, so
+   source order is what lets a crashed job still win the colour. */
+.svr-badge.jobs-only { color: var(--muted-2); background: transparent; border-color: var(--hair-strong); }
+.svr-badge.jobs-only .svr-ic { opacity: .65; }
 .svr-badge.serving { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 13%, transparent); border-color: color-mix(in srgb, var(--st-done) 32%, transparent); }
 /* A crashed server outranks a healthy one for the pill's colour: green over the top of a
    failure reads as "all fine", which is the one thing it must never say. */
 .svr-badge.failed { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
 @media (prefers-reduced-motion: no-preference) { .svr-badge.serving .svr-ic { animation: pulse 2.4s ease-in-out infinite; } }
 
-.svrpop { min-width: 330px; max-width: 460px; padding: 7px; }
+/* The clamp is not cosmetic: `openServersPop` pins `top` to the pill's bottom edge with
+   no viewport check, and one Claude session that has auto-backgrounded a dozen commands
+   past their 120s timeout now fills two sections that would run off the bottom of the
+   screen with no way to reach the end. The extra 60px of width pays for the two log
+   buttons the row grew: at 460 they came straight out of the command's column, which is
+   the half of the row you are actually reading. */
+.svrpop { min-width: 330px; max-width: 520px; padding: 7px; max-height: min(70vh, 560px); overflow-y: auto; }
 .svrpop .sv-h { display: flex; align-items: center; gap: 6px; font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 2px 4px 5px; }
+/* The second heading needs a rule above it. Mid-list and unseparated, "BACKGROUND JOBS"
+   reads as one more row rather than as the line where the list stops being servers. */
+.svrpop .sv-h.sv-h2 { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--hair); }
 .svrpop .sv-hn { margin-left: auto; font-family: var(--font-mono); color: var(--muted); }
-/* The row is a grid so the three buttons keep their columns however long the command
-   is — a flex row lets a long `pnpm --filter web dev` shove the URL off the edge. */
-.svrpop .sv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 4px; padding: 2px; border-radius: 9px; }
+/* The row is a grid so the buttons keep their columns however long the command is — a
+   flex row lets a long `pnpm --filter web dev` shove the URL off the edge. Six columns:
+   head / url / ⌂ / ⧉ / ◨ / ✕, and every row draws all six even when it has nothing to
+   put in one (see .sv-none), or one short row pulls the whole column out of line. */
+.svrpop .sv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto auto; align-items: center; gap: 4px; padding: 2px; border-radius: 9px; }
 .svrpop .sv-row:hover { background: var(--surface); }
 .svrpop .sv-row.open { background: var(--surface); }
 .svrpop .sv-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
@@ -2426,15 +2444,21 @@ select.in-ctl { cursor: pointer; }
 /* ◎ — nobody announced this one; the kernel says the socket is open under this pane.
    Muted, because the row carries a process name rather than anything a human named. */
 .svrpop .sv-obs { color: var(--muted-2); }
-/* The ✕ column, kept empty on a row that has no stop, so ◨ stays in line down the list. */
+/* A column kept empty rather than dropped — the ✕ on a row with nothing to stop, and the
+   ⌂/⧉ pair on a row that has no log file of its own (a task, a bare port) — so ◨ stays in
+   line the whole way down the list. */
 .svrpop .sv-none { display: inline-block; }
 .svrpop .sv-url { flex: none; max-width: 170px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); font: 600 10px var(--font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svrpop .sv-url:hover { border-color: var(--accent-ink); }
 .svrpop .sv-pending { border-style: dashed; border-color: var(--hair-strong); background: transparent; color: var(--muted-2); cursor: default; }
-.svrpop .sv-go, .svrpop .sv-stop { flex: none; width: 24px; height: 24px; border-radius: 7px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
-.svrpop .sv-go:hover { background: var(--bg-2); color: var(--text); }
+.svrpop .sv-go, .svrpop .sv-stop, .svrpop .sv-path { flex: none; width: 24px; height: 24px; border-radius: 7px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+/* ⌂ and ⧉ — the log file itself. Dimmer at rest than ◨: the row is read far more often
+   than its log is opened, and two more lit glyphs per row would crowd the thing you came
+   for, which is the project, the command and the address. */
+.svrpop .sv-path { color: var(--muted-2); font-size: 10px; }
+.svrpop .sv-go:hover, .svrpop .sv-path:hover { background: var(--bg-2); color: var(--text); }
 .svrpop .sv-stop:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); color: var(--st-error); }
-/* The peek spans the whole row, below the four columns above it. */
+/* The peek spans the whole row, below the six columns above it. */
 .svrpop .sv-log { grid-column: 1 / -1; margin: 2px 4px 5px; padding: 7px 8px; max-height: 148px; overflow: auto; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted); font: 500 10px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 .svrpop .sv-log-empty { color: var(--muted-2); font-style: italic; }
 .svrpop .sv-foot { padding: 6px 5px 2px; margin-top: 3px; border-top: 1px solid var(--hair); font-size: 9.5px; color: var(--muted-2); }

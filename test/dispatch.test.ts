@@ -161,3 +161,57 @@ describe("the project dashboard's verbs", () => {
     expect(railOnly, `on the rail but not in the panel: ${railOnly.join(", ")}`).toEqual([]);
   });
 });
+
+// The same failure class again, in the one popover that does NOT route through main.ts.
+//
+// `serversui.ts` owns its own `#svrPop` listener — a chain of `closest()` probes rather
+// than main.ts's single selector plus if-chain — so neither describe above reads it, and
+// the header's running-server rows have been unguarded since they shipped. The join is
+// identical in shape and so is the way it breaks: emit `data-svcopy` and forget the
+// probe, and the button is dead with `tsc`, vitest and cargo all green; keep a probe for
+// an attribute nothing emits any more and it sits in the chain swallowing the clicks
+// meant for whatever is underneath it.
+//
+// The ordering assertion is the part that has no analogue upstairs. `.sv-head` is the
+// row's whole background and is itself a `<button>`, so `closest("[data-svtoggle]")`
+// matches for a click that landed on ANY control in the row. It is only harmless because
+// it is asked last. Move it up the chain — the natural thing to do when adding a probe
+// beneath it — and every button in the popover silently becomes the expander.
+
+const SV = readFileSync(new URL("../src/serversui.ts", import.meta.url), "utf8");
+
+describe("the servers popover's own dispatcher", () => {
+  /// Read off an element that has ALREADY matched on another attribute (the ✕ carries
+  /// both `data-svstop` and `data-svsid`), never a match target of its own. Requiring a
+  /// probe for it would make the session id a click target; requiring an emitter for a
+  /// probe it never gets is the mirror image. Same carve-out as `data-proj`/`data-root`
+  /// upstairs, and the same reason.
+  const PAYLOAD = new Set(["sid"]);
+  const emitted = [...SV.matchAll(/data-sv([a-z]+)="/g)].map((m) => m[1]);
+  const probed = [...SV.matchAll(/closest<HTMLElement>\("\[data-sv([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves", () => {
+    // A regex that has stopped matching passes every assertion below vacuously, which is
+    // the one way a contract test written from source dies without saying so.
+    expect(emitted.length).toBeGreaterThan(5);
+    expect(probed.length).toBeGreaterThan(5);
+  });
+
+  it("emits no attribute it never probes for — that is a button that does nothing", () => {
+    const dead = [...new Set(emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k)))];
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-sv${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-sv${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes the row expander LAST, because it is the row's whole background", () => {
+    expect(probed).toContain("toggle");
+    expect(
+      probed.indexOf("toggle"),
+      `[data-svtoggle] is probed at position ${probed.indexOf("toggle")} of ${probed.length}; everything after it (${probed.slice(probed.indexOf("toggle") + 1).join(", ")}) is unreachable`,
+    ).toBe(probed.length - 1);
+  });
+});
