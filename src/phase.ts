@@ -44,6 +44,24 @@ export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
 let onSessionTouched: (s: Sess, tool: string, data: any) => void = () => {};
 export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
 
+/// How long after a turn ended a tool hook is still read as that turn's straggler
+/// rather than as the next turn starting.
+///
+/// The hooks are fire-and-forget `curl` processes spawned concurrently and never
+/// waited on, so the last `PostToolUse` of a turn genuinely can land after the `Stop`
+/// that followed it, and letting it repaint the pane `working` would drop the
+/// you-are-needed signal a moment after it was earned. But it can only be that late
+/// by the width of a process spawn: for the hook to arrive after `Stop`, its curl has
+/// to lose a race against a `Stop` curl spawned a whole model round-trip later. Two
+/// seconds is generous for that and still nowhere near the gaps a real continuation
+/// leaves (seconds to minutes — see `bg` in applyHook).
+///
+/// Both ways of being wrong here are self-correcting, which is the point: too wide and
+/// a resumed turn reads `done` until its next tool call, too narrow and a finished one
+/// flickers `working` until the 60s idle Notification ends it. Unbounded was the only
+/// version with no correction at all.
+export const STRAGGLER_MS = 2_000;
+
 // Set the phase and, when it actually changes, stamp phaseSince — the anchor for
 // the inspector's dwell timer ("0:42 in state") and the "your turn" wait clock.
 export function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
@@ -277,6 +295,14 @@ export function clearPending(s: Sess) {
 function endTurn(s: Sess) {
   if (s.apiErr) { setPhase(s, "error"); return; }
   s.revive = null;
+  // …and the third answer, which is neither: the turn ended, but a prompt typed while
+  // it was running is queued behind it, so the session is about to start working again
+  // without a `UserPromptSubmit` of its own to say so (Claude Code fires that one at
+  // submit time, several seconds or several minutes before this `Stop`). Calling that
+  // "your turn" hands the human a green tick, a chime and a badge over a pane that is
+  // already back at work. Consumed here and only here, so one queued prompt can excuse
+  // exactly one `Stop` — see `Sess.queuedPrompt` for why it is not a count.
+  if (s.queuedPrompt) { s.queuedPrompt = false; setPhase(s, "thinking"); return; }
   setPhase(s, "done");
 }
 // A new turn is under way, so whatever killed the last one is history. Both signals
@@ -317,7 +343,25 @@ export function applyHook(s: Sess, data: any) {
   const nowMs = Date.now();
   for (const [id, a] of s.agents) if (a.orphanedAt && nowMs - a.orphanedAt >= ORPHAN_DEAD_MS) s.agents.delete(id);
   if (s.agents.size && !liveFanout(s)) s.agents.clear();
-  const bg = () => liveCount(s) > 0 || s.phase === "done";
+  // Two reasons a tool hook must not drive the phase, and they are not the same reason.
+  //
+  // A fan-out owns the row: an agent a fleet spawned runs under the parent's instrument
+  // file, so its own `PreToolUse`/`PostToolUse` arrive tagged with the PARENT's session
+  // id, and painting the parent `working` off them hides the background reading behind
+  // somebody else's tool calls. That one holds for as long as the fleet is up.
+  //
+  // Or the call is a STRAGGLER from the turn that just ended, which must not take a
+  // pane back to `working` and lose the you-are-needed signal a second after it earned
+  // it. That one is bounded, and the bound is the fix: this used to be a bare
+  // `s.phase === "done"`, which made `done` an absorbing state — once a turn ended, NO
+  // tool hook could move the session again and the row claimed "your turn" for the
+  // whole of the next turn. `UserPromptSubmit` was the only way out, and the two
+  // commonest cases have none: a prompt typed while the previous turn was still running
+  // submits *before* that turn's `Stop` (see `Sess.queuedPrompt`), and a turn the model
+  // carries on by itself never submits one at all. In six days of this machine's logs,
+  // 31 of 36 such turns were the second kind — one of them opening a tool call a full
+  // 996 seconds after the `Stop` it was still being suppressed by.
+  const bg = () => liveCount(s) > 0 || (s.phase === "done" && nowMs - s.phaseSince < STRAGGLER_MS);
   switch (ev) {
     // Lifecycle events past the permission point → the ask was answered (button
     // OR directly in the CLI), so reset the pending/attention state either way.
@@ -325,8 +369,13 @@ export function applyHook(s: Sess, data: any) {
     // in flight survives it, and a `SubagentStop` we will now never see would otherwise
     // leave the count stuck above zero forever, which reads as a fleet that never
     // finishes. The one place either field is reset without a matching event.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; break;
-    case "UserPromptSubmit": setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
+    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false; break;
+    // A prompt typed with a tool call in flight is queued behind a turn that has yet to
+    // report its end, so the `Stop` that follows is that turn's and not this one's. Read
+    // before `setPhase` for the obvious reason: `thinking` is where this line goes next.
+    case "UserPromptSubmit":
+      if (s.phase === "working") s.queuedPrompt = true;
+      setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";
       const arg = toolArg(tool, data.tool_input);
@@ -376,14 +425,19 @@ export function applyHook(s: Sess, data: any) {
     }
     // The turn is over — which is exactly when a project's run-on-stop rule, if it
     // has one, gets to check the agent's work.
-    case "Stop": endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
+    case "Stop": {
+      const queued = s.queuedPrompt;   // endTurn consumes it; run-on-stop still needs it
+      endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
       // Reconcile the working set even if the last tool looked read-only, so the state
       // you come back to read is the state after the whole turn.
       onSessionTouched(s, "Stop", data);
-      // Only a turn that really ended gets its work checked: an unattended run
-      // against a turn the API cut short would be verifying half-written files.
-      if (!s.apiErr) onTurnEnd(s);
+      // Only a turn that really ended gets its work checked, and only when it was the
+      // last turn asked for: an unattended run against a turn the API cut short would
+      // be verifying half-written files, and one against a turn with a prompt still
+      // queued behind it would be verifying work that is about to change under it.
+      if (!s.apiErr && !queued) onTurnEnd(s);
       break;
+    }
     // "The turn ended because the API failed" — the only hook that says so, and the
     // only place the reason exists. `error` is an enum (overloaded, rate_limit,
     // authentication_failed, max_output_tokens…), `error_details` the message the
@@ -391,16 +445,23 @@ export function applyHook(s: Sess, data: any) {
     // difference between "retry in a minute" and "go re-authenticate".
     case "StopFailure":
       s.apiErr = { kind: String(data.error ?? "unknown"), detail: abbr(String(data.error_details ?? data.message ?? "")), at: Date.now() };
+      // This turn is over too, so the flag has done its job — and a queued prompt left
+      // set here would spend itself excusing the NEXT turn's honest `Stop`. The phase
+      // stays `error` regardless: a queue behind a dead turn is not news beside the
+      // reason it died, and ./revive is watching this state, not that one.
+      s.queuedPrompt = false;
       setPhase(s, "error"); clearPending(s); s.curTool = ""; s.curArg = "";
       break;
-    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; s.agents.clear(); s.fanout = null; break;
+    case "SessionEnd": setPhase(s, "ended"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; s.agents.clear(); s.fanout = null; s.queuedPrompt = false; break;
     case "Notification": {
       const nt: string = data.notification_type ?? "";
       const msg: string = typeof data.message === "string" ? data.message : "";
       if (nt.includes("permission") || /permission/i.test(msg)) { s.attention = "permission needed"; if (msg) s.pendingCmd = abbr(msg); }
       // The REPL has been sitting at the prompt for a minute. That is the turn being
-      // over, not the turn having succeeded — endTurn is what knows the difference.
-      else if (nt === "idle_prompt") { endTurn(s); clearPending(s); }
+      // over, not the turn having succeeded — endTurn is what knows the difference. It
+      // is also proof that nothing is queued, which makes it the repair for the one case
+      // that strands the flag: a queued prompt cancelled with Esc fires no `Stop`.
+      else if (nt === "idle_prompt") { s.queuedPrompt = false; endTurn(s); clearPending(s); }
       else { s.attention = nt || msg || "notification"; if (msg) s.pendingCmd = abbr(msg); }
       break;
     }
