@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! Day spend: resuming a session whose original pane was still running re-booked the
+  whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
+  kept per pane within a conversation.
+
 ## 0.24.0 — 2026-08-28
 
 Put the fleet down for the night and pick it up in the morning. The hook server

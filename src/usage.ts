@@ -574,13 +574,28 @@ const COST_BASE_KEY = "cc-cost-base";
 /// Enough that no realistic history evicts a conversation still being resumed, small
 /// enough that the key stays a few tens of KB on a machine that never clears it.
 const COST_BASE_MAX = 500;
-interface CostBase { t: number; at: number }
+/// `t` is the conversation's tip — the last total anyone reported — and `o` holds the
+/// last total PER PANE, because one conversation can have two live panes at once (resume
+/// a session whose original pane is still running; a dev build's reload made this easy).
+/// Each pane's Claude process keeps its own cumulative counter, so with a single shared
+/// baseline the two readings interleave as endless "drops", and the drop branch books
+/// the entire total as fresh spend every ~10s — a $12 session once booked $1,820 in 26
+/// minutes exactly this way. A pane measures against its own entry in `o`; the tip is
+/// only the seed for a pane this map has never met, which is the restore handoff.
+interface CostBase { t: number; at: number; o?: Record<string, number> }
 const costBaseline = ((): Map<string, CostBase> => {
   const m = new Map<string, CostBase>();
   try {
     const raw = JSON.parse(localStorage.getItem(COST_BASE_KEY) || "{}") as Record<string, CostBase>;
     for (const [k, v] of Object.entries(raw)) {
-      if (v && typeof v.t === "number" && typeof v.at === "number") m.set(k, v);
+      if (v && typeof v.t === "number" && typeof v.at === "number") {
+        // Narrow `o` a value at a time: a hand-edited or truncated entry loses its
+        // per-pane split (the tip still seeds correctly), never the boot.
+        const o = v.o && typeof v.o === "object"
+          ? Object.fromEntries(Object.entries(v.o).filter(([, n]) => typeof n === "number"))
+          : undefined;
+        m.set(k, o && Object.keys(o).length ? { t: v.t, at: v.at, o } : { t: v.t, at: v.at });
+      }
     }
   } catch { /* a corrupt key costs one over-counted session, not a boot */ }
   return m;
@@ -595,14 +610,22 @@ function saveBaselines() {
   }
   localStorage.setItem(COST_BASE_KEY, JSON.stringify(Object.fromEntries(costBaseline)));
 }
-export function costDelta(conv: string, total: number, dropsAreReset = true): number {
-  const prev = costBaseline.get(conv)?.t;
+export function costDelta(conv: string, total: number, dropsAreReset = true, owner = conv): number {
+  const e = costBaseline.get(conv);
+  // This pane's own last reading if it has one; else the conversation's tip, which is
+  // what a restored pane inherits so a carried-over total is not booked twice. An entry
+  // written before `o` existed is a tip and nothing else, and seeds the same way.
+  const prev = e ? e.o?.[owner] ?? e.t : undefined;
   // Claude owns its running total and a drop means that counter restarted. Provider
   // API-equivalent estimates are derived, however: a pricing-table update can revise
   // an old thread down without one new token being spent. Those callers retain the
   // high-water mark so a later rebound cannot be booked a second time.
   const baseline = !dropsAreReset && prev !== undefined ? Math.max(prev, total) : total;
-  costBaseline.set(conv, { t: baseline, at: Date.now() });
+  let o = { ...e?.o, [owner]: baseline };
+  // A conversation collects panes one restore at a time; a set this size is churn from
+  // something malfunctioning, not history, and the current pane is the one that matters.
+  if (Object.keys(o).length > 8) o = { [owner]: baseline };
+  costBaseline.set(conv, { t: baseline, at: Date.now(), o });
   // **Only when the figure moved.** A statusLine fires every `refreshInterval` (10s) per
   // session whether or not anything was spent, and this used to serialise and write the
   // whole map every time — so an idle fleet wrote the same bytes to disk once a second,
