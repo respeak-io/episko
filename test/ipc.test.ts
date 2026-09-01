@@ -204,3 +204,147 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
     expect(opaque.length).toBeLessThan(5);
   });
 });
+
+// ---------- what a command RETURNS ----------
+//
+// The argument object is only half of an invoke. A command's RETURN shape has the same
+// two authors and nothing between them either: `#[derive(serde::Serialize)] struct BgLog`
+// decides the keys that go on the wire, `interface BgRead` in servers.ts decides the keys
+// the frontend reads back, and serde spells a `snake_case` field camelCase only if
+// somebody remembered `rename_all`. Every `BgLog` field was a single word until
+// `root_rank` — that, and nothing else, is why this has never bitten.
+//
+// It fails the way the argument contract does: silently and completely. A `root_rank`
+// that arrives under its Rust name leaves `read.rootRank` `undefined`, every rule reading
+// it answers "no", the row draws its empty state for the life of the session — and `tsc`
+// is happy (the interface promises `number`, and the invoke boundary is a cast), vitest
+// is happy (the pure modules underneath are fine) and cargo is happy (the struct
+// compiles). That is the exact shape of the bug the background-log probe exists to fix,
+// reintroduced by its own fix.
+//
+// So both halves are read out of the source and compared in both directions, and once
+// more against a written-down list, so that a rename on BOTH sides is still a decision
+// somebody has to make on purpose.
+
+/** Tauri v2 hands a snake_case field to the frontend camelCased — but only via serde. */
+const camel = (s: string) => s.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
+
+/** Sorted for comparison, ignoring case. A plain `.sort()` is by UTF-16 code unit, which
+ *  puts `noRoot` before `none` — true, and useless: the written-down lists below are read
+ *  by people, and a list nobody can check by eye is a list nobody checks. */
+const sorted = (xs: string[]) => [...xs].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+/**
+ * Read from `from` (an index of `{`) to its matching `}`, dropping comments and the
+ * insides of string literals as it goes. Both declarations below are documented in
+ * prose, and prose is exactly what breaks a naive scan: one apostrophe in "Claude's"
+ * or one `{` in an example would end the body somewhere in the middle of it. Rust and
+ * TypeScript spell comments and strings the same way, so one scanner does both.
+ */
+function declBody(s: string, from: number): string {
+  let depth = 0, out = "";
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); if (nl < 0) break; i = nl; out += "\n"; continue; }
+    if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); if (end < 0) break; i = end + 1; continue; }
+    if (s[i] === '"') { const end = s.indexOf('"', i + 1); if (end < 0) break; i = end; continue; }
+    if (s[i] === "{") { depth++; if (depth === 1) continue; }
+    else if (s[i] === "}" && --depth === 0) return out;
+    out += s[i];
+  }
+  throw new Error("unbalanced braces in a declaration test/ipc.test.ts reads");
+}
+
+/** The comment-free body of the declaration `head` matches, or "" when it is gone. */
+function bodyOf(src: string, head: RegExp): string {
+  const m = head.exec(src);
+  return m ? declBody(src, m.index + m[0].length - 1) : "";
+}
+
+/** `name: Type,` — the field names of a plain Rust struct, attributes and all skipped. */
+const rustFields = (body: string): string[] =>
+  [...body.matchAll(/^[ \t]*(?:pub(?:\([a-z]+\))?[ \t]+)?([a-z_][A-Za-z0-9_]*)[ \t]*:/gm)].map((m) => m[1]);
+
+/** `name: Type;` — the property names of a TS interface, one per line or all on one. */
+const tsFields = (body: string): string[] =>
+  [...body.matchAll(/(?:^|[;,])[ \t]*(?:readonly[ \t]+)?([A-Za-z_$][\w$]*)[ \t]*\??[ \t]*:/gm)].map((m) => m[1]);
+
+/** The members of a `export type X = "a" | "b";` union, in declaration order. */
+const tsUnion = (src: string, name: string): string[] => {
+  const m = new RegExp(`export\\s+type\\s+${name}\\s*=([^;]*);`).exec(src);
+  return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
+};
+
+/** A fieldless Rust enum, wherever in the backend it was declared, plus whether the
+ *  attributes immediately above it rename its variants for the wire. */
+function rustEnum(name: string): { variants: string[]; renamed: boolean } {
+  for (const f of rsFiles) {
+    const src = read(RS, f);
+    const head = new RegExp(`\\benum\\s+${name}\\s*\\{`).exec(src);
+    if (!head) continue;
+    const body = declBody(src, head.index + head[0].length - 1);
+    return {
+      variants: body.split(",").map((p) => p.trim()).filter((p) => /^[A-Z][A-Za-z0-9]*$/.test(p)),
+      renamed: /rename_all\s*=\s*"camelCase"/.test(src.slice(Math.max(0, head.index - 120), head.index)),
+    };
+  }
+  return { variants: [], renamed: false };
+}
+
+const PTY = read(RS, "pty.rs");
+const SERVERS = read(SRC, "servers.ts");
+const TYPES = read(SRC, "types.ts");
+
+const bgLogHead = /pub\(crate\)\s+struct\s+BgLog\s*\{/.exec(PTY);
+const bgLogFields = bgLogHead ? rustFields(declBody(PTY, bgLogHead.index + bgLogHead[0].length - 1)) : [];
+/// The derives and `#[serde(…)]` attributes sitting above the struct, and nothing else.
+const bgLogAttrs = bgLogHead ? PTY.slice(Math.max(0, bgLogHead.index - 120), bgLogHead.index) : "";
+const bgReadFields = tsFields(bodyOf(SERVERS, /export\s+interface\s+BgRead\s*\{/));
+const bgMiss = rustEnum("BgMiss");
+
+describe("what a command returns", () => {
+  it("finds both halves to compare", () => {
+    // A regex that quietly stops matching must not read as agreement. Both counts are
+    // floors rather than equalities: this test is here to police the JOIN, and a field
+    // added to both sides at once is the one change it should let through.
+    expect(bgLogFields.length).toBeGreaterThanOrEqual(9);
+    expect(bgReadFields.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("renames its multi-word fields on the way out", () => {
+    // Without `rename_all`, `root_rank` reaches the frontend under that name and every
+    // `read.rootRank` in the app is `undefined` — with all three gates still green.
+    const unrenamed = /rename_all\s*=\s*"camelCase"/.test(bgLogAttrs)
+      ? []
+      : bgLogFields.filter((f) => f.includes("_"));
+    expect(unrenamed).toEqual([]);
+  });
+
+  it("names in BgRead exactly what BgLog serializes, bar `missing`", () => {
+    // `missing` is deliberately OUTSIDE `BgRead` and intersected at the invoke site, so
+    // that `applyBgLog` cannot reach it and decide for itself what a miss means — that
+    // is `applyBgMiss`'s question. Every other key is the same key on both sides.
+    expect(sorted(bgLogFields.map(camel).filter((f) => f !== "missing"))).toEqual(sorted(bgReadFields));
+  });
+
+  it("keeps the wire keys written down, so a rename on both sides is still a change", () => {
+    // The comparison above passes happily if the two halves are renamed together in one
+    // commit — which is the moment every OTHER reader of this shape (the debug snapshot,
+    // the `bglog-health` payload, a hand-written fixture) silently stops matching.
+    expect(sorted(bgLogFields.map(camel))).toEqual(
+      ["discovered", "len", "missing", "path", "reason", "rootRank", "text", "tried", "unchanged"],
+    );
+  });
+
+  it("gives BgMissReason exactly BgMiss's variants", () => {
+    // `reason` is the one field whose VALUES are a contract as well as its name, and it
+    // is the field the whole feature turns on: `bgRetire` fires on `notYet` and must
+    // never fire on `noRoot`. A variant Rust can emit and TypeScript has never heard of
+    // lands as a `reason` that matches nothing, and the record neither retires nor
+    // reports itself blind. The enum needs its own `rename_all` for the same reason the
+    // struct does — plain serde would put `BadId` on a wire that says `badId`.
+    expect(bgMiss.renamed).toBe(true);
+    const wire = sorted(bgMiss.variants.map((v) => v[0].toLowerCase() + v.slice(1)));
+    expect(wire).toEqual(sorted(tsUnion(TYPES, "BgMissReason")));
+    expect(wire).toEqual(["ambiguous", "badId", "none", "noRoot", "notYet", "unreadable"]);
+  });
+});

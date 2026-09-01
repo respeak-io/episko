@@ -8,7 +8,7 @@ import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
-  permCmd, pushHist, riskLevel, setOnTurnEnd, setPhase, toolArg,
+  permCmd, pushHist, riskLevel, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg,
 } from "../src/phase";
 import { DETAIL_CAP } from "../src/toolio";
 
@@ -31,10 +31,10 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
-    git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
+    git: null, res: null, lastEvent: "", activity: [], files: [], tally: {}, servers: [],
     kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
   } as Sess;
 }
@@ -410,10 +410,32 @@ describe("applyHook — the lifecycle state machine", () => {
       hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
       expect(s).toMatchObject({ phase: "working", curArg: "x.ts" });
     });
-    it("applies the same guard to a finished turn", () => {
-      // Once "done" — your turn — a late tool call must not silently take the pane
-      // back to "working" and lose the you-are-needed signal.
+    it("applies the same guard to a turn that just finished", () => {
+      // Once "done" — your turn — a STRAGGLER must not silently take the pane back to
+      // "working" and lose the you-are-needed signal. The hooks are concurrent curls,
+      // so the last PostToolUse of a turn can land just after its Stop.
       const s = sess({ phase: "done" });
+      hook(s, "PostToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s.phase).toBe("done");
+    });
+    it("but lets a tool call past that window drive the phase again", () => {
+      // The bug this bounds. `done` used to suppress every tool hook FOREVER, so a
+      // turn that started without a UserPromptSubmit of its own — the model carrying
+      // on, or a prompt queued while the last turn was still running — ran to
+      // completion behind a green tick and a "your turn" badge. Nothing could clear it:
+      // the row lied for the whole turn, and the reactor counted a session that was
+      // busy. Seen on this machine as a PreToolUse 996 seconds after the Stop.
+      const s = sess({ phase: "done" });
+      vi.setSystemTime(NOW_MS + STRAGGLER_MS);
+      hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
+      expect(s).toMatchObject({ phase: "working", curArg: "x.ts" });
+    });
+    it("keeps suppressing a fan-out's calls however long it runs", () => {
+      // The window is the straggler's, not the fleet's: an agent still up owns the row
+      // for as long as it is up, which is the case FANOUT_GRACE_MS is generous about.
+      const s = sess({ phase: "done" });
+      hook(s, "SubagentStart");
+      vi.setSystemTime(NOW_MS + FANOUT_GRACE_MS);
       hook(s, "PreToolUse", { tool_name: "Read", tool_input: { file_path: "x.ts" } });
       expect(s.phase).toBe("done");
     });
@@ -790,6 +812,94 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
     });
     it("is a no-op by default, so the module stands alone", () => {
       expect(() => hook(sess(), "Stop")).not.toThrow();
+    });
+  });
+
+  // Claude Code fires UserPromptSubmit the instant you press Enter, including while the
+  // previous turn is still running — a message typed then is queued, not refused. So the
+  // outstanding turn's Stop lands AFTER the new prompt, and taking it at face value
+  // marked the session "your turn" a moment before it began the work just asked for.
+  // Observed: UserPromptSubmit 11:08:10, the previous turn's Stop 11:08:17, and a pane
+  // that then showed a green tick for the whole of a turn it spent working.
+  describe("a prompt queued behind a running turn", () => {
+    it("does not let the outstanding turn's Stop call it your turn", () => {
+      const s = sess();
+      hook(s, "UserPromptSubmit");                                  // turn 1 starts
+      hook(s, "PreToolUse", { tool_name: "Read" });                  // …and is working
+      hook(s, "UserPromptSubmit");                                  // typed ahead; queued
+      expect(s.queuedPrompt).toBe(true);
+      hook(s, "Stop");                                              // …turn 1 ends here
+      expect(s).toMatchObject({ phase: "thinking", queuedPrompt: false });
+      hook(s, "Stop");                                              // turn 2 really ends
+      expect(s.phase).toBe("done");
+    });
+    it("excuses exactly one Stop, however many prompts were queued", () => {
+      // Queued messages do not get a Stop each: 23 of the 25 queued runs in this
+      // machine's logs answered two or more in a single turn. A counter would have been
+      // left holding a phantom prompt and would have withheld the badge for a minute.
+      const s = sess();
+      hook(s, "UserPromptSubmit");
+      hook(s, "PreToolUse", { tool_name: "Read" });
+      for (let i = 0; i < 4; i++) hook(s, "UserPromptSubmit");      // all four queued
+      hook(s, "Stop");
+      expect(s.phase).toBe("thinking");
+      hook(s, "Stop");                                              // one turn answers them
+      expect(s.phase).toBe("done");
+    });
+    it("ignores a prompt typed at a REPL that is not mid-tool-call", () => {
+      // Two prompts sent back to back at an idle prompt are not a queue behind a
+      // running turn, and treating them as one would hold the badge back a whole turn.
+      const s = sess({ phase: "done" });
+      hook(s, "UserPromptSubmit"); hook(s, "UserPromptSubmit");
+      expect(s.queuedPrompt).toBe(false);
+      hook(s, "Stop");
+      expect(s.phase).toBe("done");
+    });
+    it("holds the run-on-stop rule back until the last one is answered", () => {
+      // A run started at the first Stop would be verifying work the agent is about to
+      // change under it, and competing with the session for the same tree.
+      const seen: string[] = [];
+      setOnTurnEnd((x) => seen.push(x.phase));
+      const s = sess();
+      hook(s, "UserPromptSubmit");
+      hook(s, "PreToolUse", { tool_name: "Read" });
+      hook(s, "UserPromptSubmit");
+      hook(s, "Stop");
+      expect(seen).toEqual([]);
+      hook(s, "Stop");
+      expect(seen).toEqual(["done"]);
+    });
+    it("clears the flag on a failed turn, so it cannot excuse the next one", () => {
+      // The phase stays `error` — ./revive is watching that, and a queue behind a dead
+      // turn is not news beside the reason it died — but the flag has done its job.
+      const s = sess({ phase: "working", queuedPrompt: true });
+      hook(s, "StopFailure", { error: "overloaded" });
+      expect(s).toMatchObject({ phase: "error", queuedPrompt: false });
+    });
+    it("lets the 60s idle nudge repair a flag that was never spent", () => {
+      // The one way it strands: a queued prompt cancelled with Esc fires no Stop. A REPL
+      // sitting at its prompt for a minute is proof nothing is queued, so that
+      // notification is the repair — without it one later turn would read `thinking`
+      // where it should have read `done`.
+      const s = sess({ phase: "working", queuedPrompt: true });
+      hook(s, "Notification", { notification_type: "idle_prompt" });
+      expect(s).toMatchObject({ phase: "done", queuedPrompt: false });
+    });
+    it("drops the queue with the REPL that held it", () => {
+      // /clear, /compact and a resume each mint a fresh conversation; nothing the old
+      // one had queued survives it.
+      for (const ev of ["SessionStart", "SessionEnd"]) {
+        const s = sess({ phase: "working", queuedPrompt: true });
+        hook(s, ev);
+        expect(s.queuedPrompt, ev).toBe(false);
+      }
+    });
+    it("ends a turn green when nothing was queued behind it", () => {
+      // The unremarkable path, kept honest: a pane adopted mid-turn, or one whose
+      // UserPromptSubmit was lost, must still earn its tick.
+      const s = sess({ phase: "working" });
+      hook(s, "Stop");
+      expect(s).toMatchObject({ phase: "done", queuedPrompt: false });
     });
   });
 });

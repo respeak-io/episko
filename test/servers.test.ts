@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyBg, applyBgLog, bgOutcome, bgSentinel, bgStopId, bgTaskId, cmdLabel,
-  failedServers, forgetServer, liveServers, logLines, logTail, serverUrl,
+  applyBg, applyBgLog, applyBgMiss, BG_RETIRE_MS, bgBlind, bgKind, bgLogPath, bgOutcome,
+  bgPeekEmpty, bgRetire, bgSentinel, bgStopId, bgTaskId, bgTimedOut, cmdLabel, endBg,
+  failedServers, forgetServer, isJob, liveServers, logLines, logTail, serverUrl,
   portOf, reconcilePorts, servingUrls, shownServers, taskServerUrl, usefulPort,
+  type BgRead,
 } from "../src/servers";
-import type { BgServer } from "../src/types";
+import type { BgMissReason, BgServer } from "../src/types";
 
 // The payload shapes below are not invented. They were captured off the real CLI by
 // running a session with a stdin-dumping PostToolUse hook and backgrounding a shell,
@@ -12,6 +14,15 @@ import type { BgServer } from "../src/types";
 // matters more here than in most suites: every field this module reads belongs to a
 // format nobody in this repo controls, so a fixture written from memory would only
 // prove that the code agrees with the guess it was written from.
+//
+// `timedOutAfterMs` was added to that rule the same way, and it is worth saying where
+// from: **143** real background payloads were read out of `~/.claude/projects` on this
+// machine. 131 were shells the model asked for (`run_in_background: true`); the other
+// **12** carry `timedOutAfterMs: 120000` and no `run_in_background` at all — Claude Code
+// backgrounding a foreground command that outlived its own timeout. The servers among
+// the 131 are `pnpm dev`, `pnpm tauri dev` and `just saas-start`; the rest are `npm ci`,
+// `pytest`, `vue-tsc`, `gh run watch` polls and `until …; do sleep …; done` waits, which
+// is why no rule below reads the command string.
 
 /** A PostToolUse payload for a shell the agent backgrounded, as the hook delivers it. */
 const started = (id: string, cmd = "pnpm dev") => ({
@@ -19,6 +30,30 @@ const started = (id: string, cmd = "pnpm dev") => ({
   input: { command: cmd, description: "Start the dev server", run_in_background: true },
   response: { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: id },
 });
+
+/** The same payload for a command Claude backgrounded itself, at the 120s timeout. Note
+ *  what is NOT in the input: the model never asked for this. */
+const autoBg = (id: string, cmd: string) => ({
+  tool: "Bash",
+  input: { command: cmd, description: "Run the check" },
+  response: {
+    stdout: "", stderr: "", interrupted: false, isImage: false,
+    timedOutAfterMs: 120000, backgroundTaskId: id,
+  },
+});
+
+/** A record as `applyBg` builds one. */
+const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
+  ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
+
+/** A `read_bg_log` answer that RESOLVED, as the command shapes it. `missing` is
+ *  intersected in at the invoke site and never reaches these rules. */
+const read = (text: string, unchanged = false): BgRead =>
+  ({ path: "/tmp/x.output", text, len: text.length, unchanged, reason: "none", tried: [], rootRank: 0, discovered: false });
+
+/** One that found nothing. Exactly one of `path` and `tried` is ever the answer. */
+const miss = (reason: BgMissReason, over: Partial<BgRead> = {}): BgRead =>
+  ({ path: "", text: "", len: 0, unchanged: false, reason, tried: [], rootRank: -1, discovered: false, ...over });
 
 describe("recognising a backgrounded shell", () => {
   it("reads the id off the RESPONSE, which is the only place it exists", () => {
@@ -44,6 +79,39 @@ describe("recognising a backgrounded shell", () => {
     expect(bgStopId("TaskStop", { task_id: "bc1sxie6v" })).toBe("bc1sxie6v");
     expect(bgStopId("Bash", { task_id: "bc1sxie6v" })).toBe("");
     expect(bgStopId("TaskStop", {})).toBe("");
+  });
+
+  it("reads the timeout Claude Code stamps on a command it auto-backgrounded", () => {
+    // Twelve of the 143 captured payloads are this: a command that crossed 120s in the
+    // foreground and was backgrounded out from under the model. One of them was a
+    // one-shot `python3 -c …` that had already done its work, and it reached the header
+    // pill as a "running server" — the false positive that started this.
+    const p = autoBg("bc4t2mzq1", "python3 -c 'import time; time.sleep(600)'");
+    expect(p.input).not.toHaveProperty("run_in_background");
+    expect(bgTimedOut(p.response)).toBe(120000);
+
+    const list: BgServer[] = [];
+    applyBg(list, p.tool, p.input, p.response, "t.jsonl", 1_000);
+    expect(list[0].timedOut).toBe(120000);
+    expect(isJob(list[0])).toBe(true);
+  });
+
+  it("leaves the timeout unset on a background the agent actually asked for", () => {
+    // The ABSENCE case, and the pair above is worth nothing without it. A rule that
+    // answers "timed out" for everything — a bad default, a `Number()` of a missing
+    // field, reading `run_in_background` instead — passes the test above unchanged.
+    // Every record then becomes a job: no silent one may ever adopt a loose port again
+    // and the popover files every dev server under the wrong heading, with tsc, vitest
+    // and the rest of this suite all green.
+    const p = started("bs0hhu7b4");
+    expect(bgTimedOut(p.response)).toBe(0);
+    expect(bgTimedOut({})).toBe(0);
+    expect(bgTimedOut(null)).toBe(0);
+
+    const list: BgServer[] = [];
+    applyBg(list, p.tool, p.input, p.response, "t.jsonl", 1_000);
+    expect(list[0].timedOut).toBeUndefined();
+    expect(isJob(list[0])).toBe(false);
   });
 });
 
@@ -75,8 +143,11 @@ describe("applyBg", () => {
     expect(applyBg(list, "TaskStop", { task_id: "bs0hhu7b4" }, {}, "t.jsonl", now + 90)).toBe(true);
     expect(list[0].ended).toBe(now + 90);
     // A stop is a kill, not an exit: there is no code, and `null` is what the log's own
-    // `[killed]` sentinel means too.
+    // `[killed]` sentinel means too. It carries no `endReason` either, deliberately —
+    // unqualified `exit: null` has always meant "somebody asked for this".
     expect(list[0].exit).toBeNull();
+    expect(list[0].endReason).toBeUndefined();
+    expect(bgOutcome(list[0])).toBe("stopped");
   });
 
   it("ignores a TaskStop for a shell it never saw, and a second stop", () => {
@@ -145,12 +216,38 @@ describe("reading the log", () => {
   });
 
   it("reads the closing sentinel, and distinguishes an exit from a kill", () => {
-    expect(bgSentinel("done\n[exited with code 0]\n")).toBe(0);
-    expect(bgSentinel("boom\n[exited with code 1]\n")).toBe(1);
-    expect(bgSentinel("\n[killed]")).toBeNull();
-    // Still running is `undefined` — distinct from a kill's null, because one of them
-    // must never end a record and the other must.
+    expect(bgSentinel("done\n[exited with code 0]\n")).toEqual({ kind: "exit", code: 0 });
+    expect(bgSentinel("boom\n[exited with code 1]\n")).toEqual({ kind: "exit", code: 1 });
+    expect(bgSentinel("\n[killed]")).toEqual({ kind: "killed" });
+    // Still running is `undefined` — distinct from a kill, because one of them must
+    // never end a record and the other must.
     expect(bgSentinel(VITE)).toBeUndefined();
+  });
+
+  it("reads [exited with code unknown] as an ending, without calling it a failure", () => {
+    // Claude Code's reaper writes this whenever it has no status for the shell it just
+    // reaped. The old `number | null | undefined` had nowhere to put it: `null` already
+    // means "killed, somebody asked for this", so folding an unknown exit into it would
+    // report back a request nobody ever made.
+    expect(bgSentinel("gone\n[exited with code unknown]\n")).toEqual({ kind: "unknown" });
+
+    const b = mk("b1");
+    expect(applyBgLog(b, read("gone\n[exited with code unknown]\n"), 20)).toBe(true);
+    expect(b.ended).toBe(20);
+    expect(b.exit).toBeNull();
+    expect(b.endReason).toBe("unknown");
+    expect(bgOutcome(b)).toBe("ended");
+    // `exit: null` is what keeps the header pill from going red for a shell that never
+    // failed — nobody can act on "it ended and we do not know how".
+    expect(failedServers([b])).toEqual([]);
+  });
+
+  it("is not fooled by the two bracket lines that are NOT endings", () => {
+    // Both are written into a log that is still being appended to. Ending on either
+    // would take a live dev server off the count while it is still serving, and the
+    // 5GB one lands on exactly the long-running processes this feature is about.
+    expect(bgSentinel("...\n[output truncated: exceeded 5GB disk cap]\n")).toBeUndefined();
+    expect(bgSentinel("[output omitted: it could not be written to disk]\n")).toBeUndefined();
   });
 
   it("collapses a redrawn line to what a terminal would have shown", () => {
@@ -168,49 +265,186 @@ describe("reading the log", () => {
 });
 
 describe("applyBgLog", () => {
-  const rec = (): BgServer => ({ taskId: "b1", cmd: "pnpm dev", transcript: "t.jsonl", startedAt: 0 });
-  /** A `read_bg_log` answer, as the command shapes it. */
-  const read = (text: string, unchanged = false) =>
-    ({ path: "/tmp/x.output", text, len: text.length, unchanged });
-
   it("folds in the path, the URL and the peek, and says something changed", () => {
-    const b = rec();
+    const b = mk("b1");
     expect(applyBgLog(b, read("  ➜  Local:   http://localhost:5555/\n"), 10)).toBe(true);
     expect(b.log).toBe("/tmp/x.output");
     expect(b.url).toBe("http://localhost:5555");
     // Leading indentation is kept: a peek that reflows its own output reads as a
     // different program's. Only the trailing edge (and \r redraws) are tidied.
     expect(b.tail).toEqual(["  ➜  Local:   http://localhost:5555/"]);
+    // …and the rank the root resolved under, which is what says "moved" out loud one
+    // release before the fallback stops matching too.
+    expect(b.rootRank).toBe(0);
   });
 
   it("reports NO change on an identical re-read", () => {
     // The poll re-reads every live server every few seconds, and a dev server nobody is
     // hitting writes nothing for hours. If this returned true the app would repaint
     // itself forever over a file that never moved.
-    const b = rec();
+    const b = mk("b1");
     const text = "  ➜  Local:   http://localhost:5555/\n";
     applyBgLog(b, read(text), 10);
     expect(applyBgLog(b, read(text), 20)).toBe(false);
   });
 
   it("ends a record when the sentinel appears, and keeps the exit code", () => {
-    const b = rec();
+    const b = mk("b1");
     applyBgLog(b, read("starting\n"), 10);
     expect(b.ended).toBeUndefined();
     expect(applyBgLog(b, read("starting\nboom\n[exited with code 1]\n"), 20)).toBe(true);
     expect(b.ended).toBe(20);
     expect(b.exit).toBe(1);
+    expect(b.endReason).toBe("sentinel");
+    expect(bgOutcome(b)).toBe("exited 1");
   });
 
   it("never un-ends a record the agent's TaskStop already ended", () => {
     // TaskStop ends the record at the click; the process writes its `[killed]` line a
     // moment later, and until it does the file still reads as running. A poll landing in
     // that window must not resurrect the row — it would flicker back into the count.
-    const b = rec();
-    b.ended = 50; b.exit = null; b.log = "/tmp/x.output"; b.tail = ["still going"];
+    const b = mk("b1", { ended: 50, exit: null, log: "/tmp/x.output", tail: ["still going"] });
     expect(applyBgLog(b, read("still going\n"), 60)).toBe(false);
     expect(b.ended).toBe(50);
     expect(b.exit).toBeNull();
+  });
+});
+
+describe("a read that found nothing", () => {
+  it("folds a missing read's reason and tried list without touching the peek", () => {
+    // The row has to be able to say WHERE it looked. Before this a total miss came back
+    // with an empty path and was dropped on the floor, so every one of them read "no
+    // output yet" for the life of the session with nothing to reveal and nothing to copy.
+    const b = mk("a", { url: "http://localhost:5173", tail: ["serving"] });
+    const tried = ["/tmp/claude-501/-p-proj/8191/tasks/a.output", "/tmp/claude/-p-proj/8191/tasks/a.output"];
+    expect(applyBgMiss(b, miss("noRoot", { tried }), 10)).toBe(true);
+    expect(b.reason).toBe("noRoot");
+    expect(b.tried).toEqual(tried);
+    expect(b.rootRank).toBe(-1);
+    // What the row already knows is left alone. A probe that lost the log is not
+    // evidence that the server stopped serving.
+    expect(b.url).toBe("http://localhost:5173");
+    expect(b.tail).toEqual(["serving"]);
+    expect(b.ended).toBeUndefined();
+    // The reveal falls back to the first place we looked: "I looked here and it is not
+    // there" is a sentence somebody can act on, and a dead button is not.
+    expect(bgLogPath(b)).toBe(tried[0]);
+    // The poll asks again every four seconds, and the backend builds a fresh array each
+    // time — an identical answer must move nothing, or a blind fleet repaints forever.
+    expect(applyBgMiss(b, miss("noRoot", { tried: [...tried] }), 14)).toBe(false);
+  });
+
+  it("keeps the file a notYet is waiting for, and forgets the search once it lands", () => {
+    // `notYet` is the one miss that has a path: the root was found and the log simply is
+    // not in it yet, which is every background shell for its first second or two.
+    const b = mk("a");
+    const path = "/tmp/claude-501/-p-proj/8191/tasks/a.output";
+    expect(applyBgMiss(b, miss("notYet", { path, tried: [path], rootRank: 0 }), 10)).toBe(true);
+    expect(b.log).toBe(path);
+    expect(b.reason).toBe("notYet");
+
+    // …and the moment a read resolves, the stale search goes with it. A row still
+    // offering to reveal the places the log turned out not to be is a row that lies.
+    applyBgLog(b, read("  ➜  Local:   http://localhost:5555/\n"), 20);
+    expect(b.reason).toBe("none");
+    expect(b.tried).toEqual([]);
+    expect(bgLogPath(b)).toBe("/tmp/x.output");
+  });
+
+  it("says which silence a row is in", () => {
+    // Six silences that used to read as one, and "no output yet" is true for exactly one
+    // of them. For the whole life of this feature it was also what a log the app was
+    // hunting for in a directory Claude Code has never written to said, every four
+    // seconds, for as long as the session lasted.
+    expect(bgPeekEmpty(mk("a", { reason: "noRoot", tried: ["/a", "/b", "/c"] })))
+      .toBe("no log found — looked in 3 places");
+    expect(bgPeekEmpty(mk("a", { reason: "ambiguous" }))).toBe("two logs match — refusing to guess");
+    expect(bgPeekEmpty(mk("a", { reason: "notYet" }))).toBe("no log file yet");
+    expect(bgPeekEmpty(mk("a", { reason: "unreadable" }))).toBe("the log could not be read");
+    expect(bgPeekEmpty(mk("a", { reason: "badId" }))).toBe("no log address for this shell");
+    // The file is there and is genuinely empty, which is the one case the old wording
+    // was right about — and a record nothing has read yet says the same thing.
+    expect(bgPeekEmpty(mk("a", { reason: "none" }))).toBe("no output yet");
+    expect(bgPeekEmpty(mk("a"))).toBe("no output yet");
+
+    // Blind is the pair the header says out loud: a fleet nobody can hear must never
+    // look like a quiet one. Waiting is not blind.
+    expect(bgBlind(mk("a", { reason: "noRoot" }))).toBe(true);
+    expect(bgBlind(mk("a", { reason: "ambiguous" }))).toBe(true);
+    expect(bgBlind(mk("a", { reason: "notYet" }))).toBe(false);
+    expect(bgBlind(mk("a"))).toBe(false);
+  });
+});
+
+describe("a shell whose log never appears", () => {
+  it("retires a record whose root was found and whose log never appeared", () => {
+    // No URL, no peek, and — measured over eleven real logs, of which exactly one had a
+    // sentinel — nothing coming to end it either. Before this the row sat at "starting…"
+    // for the life of the session.
+    const b = mk("a", { reason: "notYet" });
+    expect(bgRetire(b, BG_RETIRE_MS)).toBe(false); // at the deadline is not past it
+    expect(bgRetire(b, BG_RETIRE_MS + 1)).toBe(true);
+    expect(b.ended).toBe(BG_RETIRE_MS + 1);
+    expect(b.endReason).toBe("stale");
+    // `exit: null`, so nothing downstream reads a record that never failed as a failure.
+    expect(b.exit).toBeNull();
+    expect(bgOutcome(b)).toBe("log never appeared");
+    expect(shownServers([b])).toEqual([]);
+    expect(failedServers([b])).toEqual([]);
+
+    // A record that has an address is never retired, whatever its log is doing:
+    // something answered, and that is better evidence than a file we cannot find.
+    const serving = mk("b", { reason: "notYet", url: "http://localhost:5173" });
+    expect(bgRetire(serving, BG_RETIRE_MS + 1)).toBe(false);
+  });
+
+  it("never retires a record the probe could not find a root for — that is an outage, not an ending", () => {
+    // The ordering trap this rule exists for. Arm retirement on every miss and the
+    // feature goes from "rows that never leave" to "rows that always leave" the moment
+    // the probe breaks — the same silence one layer along, and much harder to notice.
+    for (const reason of ["noRoot", "ambiguous"] as const) {
+      const b = mk("a", { reason });
+      expect(bgRetire(b, BG_RETIRE_MS * 100)).toBe(false);
+      expect(b.ended).toBeUndefined();
+    }
+  });
+
+  it("counts the ten minutes from when the log went missing, not from when the shell started", () => {
+    // The `sleep 900` case, and the one an age test gets exactly backwards. This record
+    // has been read all afternoon; then a /tmp reaper — or an agent tidying up after
+    // itself — takes the file. It is already an hour old at that moment, so retiring on
+    // AGE ends it on the very next poll and labels it "log never appeared" about a log
+    // that appeared and was read for an hour.
+    const hour = 60 * 60_000;
+    const b = mk("a", { startedAt: 0 });
+    applyBgLog(b, read("still going\n"), 1_000);
+    expect(b.missSince).toBeUndefined();
+
+    applyBgMiss(b, miss("notYet", { path: "/tmp/x.output", tried: ["/tmp/x.output"], rootRank: 0 }), hour);
+    expect(b.missSince).toBe(hour);
+    expect(bgRetire(b, hour + 4_000)).toBe(false);
+    expect(bgRetire(b, hour + BG_RETIRE_MS)).toBe(false);
+    expect(bgRetire(b, hour + BG_RETIRE_MS + 1)).toBe(true);
+    expect(b.endReason).toBe("stale");
+
+    // ...and a log that comes back resets the clock, so the next absence gets its own
+    // ten minutes rather than inheriting the last one's.
+    const c = mk("c", { startedAt: 0 });
+    applyBgMiss(c, miss("notYet", { path: "/tmp/x.output", tried: ["/tmp/x.output"] }), 1_000);
+    applyBgLog(c, read("back\n"), 2_000);
+    expect(c.missSince).toBeUndefined();
+    applyBgMiss(c, miss("notYet", { path: "/tmp/x.output", tried: ["/tmp/x.output"] }), 3_000);
+    expect(bgRetire(c, 3_000 + BG_RETIRE_MS)).toBe(false);
+    expect(bgRetire(c, 3_000 + BG_RETIRE_MS + 1)).toBe(true);
+  });
+
+  it("says nothing about a record whose log has not appeared in four seconds", () => {
+    // The log lands seconds AFTER the record does. A rule that fires on ordinary
+    // behaviour is worse than no rule.
+    const b = mk("a", { reason: "notYet" });
+    expect(bgRetire(b, 4_000)).toBe(false);
+    expect(b.ended).toBeUndefined();
+    expect(liveServers([b])).toHaveLength(1);
   });
 });
 
@@ -264,9 +498,6 @@ describe("a server Episko itself ran (just / VS Code task / npm script)", () => 
 });
 
 describe("reconciling what a pane SAID against what it is listening on", () => {
-  const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
-    ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
-
   it("reads a port off a URL, defaults included", () => {
     expect(portOf("http://localhost:5555")).toBe(5555);
     expect(portOf("http://localhost")).toBe(80);
@@ -311,6 +542,32 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
     expect(one[0].url).toBeUndefined();
     // …and both ports are then reported as unexplained, so neither is lost.
     expect(reconcilePorts(one, undefined, [5555, 8787]).loose).toEqual([5555, 8787]);
+  });
+
+  it("never lets an auto-backgrounded command adopt a loose port", () => {
+    // The false positive that started this: a `python3 -c …` Claude backgrounded when it
+    // crossed 120s, sitting silent under a pane that also had a dev server on 5173. The
+    // one-and-one rule would hand it that port and put a live address on a row whose
+    // process serves nothing at all.
+    const job = mk("a", { cmd: "python3 -c 'import time; time.sleep(600)'", timedOut: 120000 });
+    const got = reconcilePorts([job], undefined, [5173]);
+    expect(got.changed).toBe(false);
+    expect(job.url).toBeUndefined();
+    // The port is still reported unexplained, so whatever is really on it gets a row.
+    expect(got.loose).toEqual([5173]);
+  });
+
+  it("adopts once the only other silent record turns out to be a job", () => {
+    // The WIN direction, and it needs a test of its own: two silent records against one
+    // port is a fail-closed no-op, so cutting the job out is what leaves a 1-and-1 pair
+    // that can adopt. "Refuses to guess when either side is ambiguous" above passes with
+    // or without the exclusion and therefore guards neither half of this.
+    const server = mk("a"), job = mk("b", { cmd: "pytest -q", timedOut: 120000 });
+    const got = reconcilePorts([server, job], undefined, [5173]);
+    expect(got.changed).toBe(true);
+    expect(server.url).toBe("http://localhost:5173");
+    expect(job.url).toBeUndefined();
+    expect(got.loose).toEqual([]);
   });
 
   it("ignores a record that has already ended", () => {
@@ -359,11 +616,9 @@ describe("reconciling what a pane SAID against what it is listening on", () => {
 });
 
 describe("the poll's cheap path", () => {
-  const rec = (): BgServer => ({ taskId: "b1", cmd: "pnpm dev", transcript: "t.jsonl", startedAt: 0 });
-
   it("keeps the length the backend reports, so the next read can be skipped", () => {
-    const b = rec();
-    applyBgLog(b, { path: "/tmp/x.output", text: "hello\n", len: 6, unchanged: false }, 10);
+    const b = mk("b1");
+    applyBgLog(b, read("hello\n"), 10);
     expect(b.len).toBe(6);
   });
 
@@ -371,11 +626,11 @@ describe("the poll's cheap path", () => {
     // The backend never opened the file, so `text: ""` means "I didn't look", not "the
     // log is empty". Treating it as content would blank the URL and the peek on every
     // poll — the row would flicker between knowing its port and not.
-    const b = rec();
-    applyBgLog(b, { path: "/tmp/x.output", text: "  Local: http://localhost:5555/\n", len: 33, unchanged: false }, 10);
+    const b = mk("b1");
+    applyBgLog(b, read("  Local: http://localhost:5555/\n"), 10);
     expect(b.url).toBe("http://localhost:5555");
 
-    expect(applyBgLog(b, { path: "/tmp/x.output", text: "", len: 33, unchanged: true }, 20)).toBe(false);
+    expect(applyBgLog(b, { ...read("", true), len: 33 }, 20)).toBe(false);
     expect(b.url).toBe("http://localhost:5555");
     expect(b.tail).toEqual(["  Local: http://localhost:5555/"]);
     expect(b.ended).toBeUndefined(); // and an unchanged read must not read as a death
@@ -383,9 +638,6 @@ describe("the poll's cheap path", () => {
 });
 
 describe("a server that died on its own", () => {
-  const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
-    ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
-
   it("stays on the list, because vanishing is the silence the feature exists to end", () => {
     // The commonest real failure: a dev server exits on EADDRINUSE two seconds after
     // starting. If it dropped off the list the count would go 1 → 0 and say nothing.
@@ -411,6 +663,24 @@ describe("a server that died on its own", () => {
     expect(bgOutcome(mk("a"))).toBe(""); // still running says nothing
   });
 
+  it("names an ending the process never announced, without claiming somebody asked for it", () => {
+    // Three of the four endings carry `exit: null`, and each would otherwise read as
+    // "stopped" — which claims a request. Only the unnamed one means that.
+    const gone = mk("a");
+    expect(endBg(gone, 5, "session", null)).toBe(true);
+    expect(bgOutcome(gone)).toBe("session ended");
+    expect(failedServers([gone])).toEqual([]);
+    expect(shownServers([gone])).toEqual([]);
+
+    // An ending never moves once it has landed. The log's `[killed]` arrives a poll
+    // after the TaskStop that caused it, and re-ending would restamp the time and
+    // relabel the ending on every read from then on.
+    expect(endBg(gone, 99, "sentinel", 1)).toBe(false);
+    expect(gone.ended).toBe(5);
+    expect(gone.exit).toBeNull();
+    expect(gone.endReason).toBe("session");
+  });
+
   it("is dismissable, and a LIVE one is not", () => {
     // The guard is the point: forgetting a running server would put the app straight
     // back to saying nothing about a port that is still held.
@@ -424,9 +694,6 @@ describe("a server that died on its own", () => {
 });
 
 describe("what the header counts", () => {
-  const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
-    ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
-
   it("counts the running ones and drops the finished", () => {
     const list = [mk("a"), mk("b", { ended: 5, exit: 0 }), mk("c", { url: "http://localhost:3000" })];
     expect(liveServers(list).map((b) => b.taskId)).toEqual(["a", "c"]);
@@ -438,6 +705,26 @@ describe("what the header counts", () => {
     // busy", which the phase glyphs already say better.
     const list = [mk("a"), mk("c", { url: "http://localhost:3000" }), mk("d", { url: "http://localhost:4000", ended: 9 })];
     expect(servingUrls(list).map((b) => b.taskId)).toEqual(["c"]);
+  });
+
+  it("splits the list on evidence: a URL is a server, everything else is a job", () => {
+    // Never on the command string. `pnpm dev` and `npm ci` are the same text to a rule,
+    // and of the 143 captured payloads most are the second kind — a heading that guessed
+    // from the command would be wrong about them out loud.
+    expect(bgKind(mk("a", { url: "http://localhost:5173" }))).toBe("server");
+    expect(bgKind(mk("a", { cmd: "pnpm dev" }))).toBe("job"); // …until it says otherwise
+
+    // An adopted port counts, which is the point of adopting one: the record said
+    // nothing, the kernel did, and the row is a server either way.
+    const adopted = mk("a");
+    reconcilePorts([adopted], undefined, [5173]);
+    expect(bgKind(adopted)).toBe("server");
+
+    // And a command Claude backgrounded on its own timeout is still a server the moment
+    // it announces one. `timedOutAfterMs` decides who may adopt a port, never the
+    // heading — the two questions are different and must not collapse into each other.
+    expect(bgKind(mk("a", { timedOut: 120000, url: "http://localhost:5173" }))).toBe("server");
+    expect(isJob(mk("a", { timedOut: 120000, url: "http://localhost:5173" }))).toBe(true);
   });
 });
 

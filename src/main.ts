@@ -39,7 +39,7 @@ import {
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
-import { taskServerUrl } from "./servers";
+import { endBg, liveServers, taskServerUrl } from "./servers";
 import {
   closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
@@ -112,7 +112,8 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine, vitalsPrefs,
+  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
+  vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
@@ -623,6 +624,16 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
     // that costs a real minute when the pane is one of six on the stage.
     const what = s.kind === "shell" ? "shell" : isAgent(s) ? (s.provider ?? "agent") : "task";
     s.term?.writeln(`\r\n\x1b[90m[${what} exited: code ${code}]\x1b[0m`);
+    // Everything this agent had backgrounded is gone with it, and only a handful of them
+    // ever write the `[exited with code N]` sentinel the poll normally ends a record on —
+    // a shell abandoned when its session dies writes nothing at all. Ending them HERE is
+    // the honest place: the process is actually gone, which is more than any log can say.
+    //
+    // Ended, never cleared. Clearing would delete the very rows this feature exists to
+    // keep — a dev server that died on EADDRINUSE two seconds in must not silently drop
+    // the count back to zero. `exit: null` takes them out of `liveServers`/`shownServers`
+    // while `failedServers` (`exit != null`) still holds the ones that actually failed.
+    for (const b of liveServers(s.servers)) endBg(b, Date.now(), "session", null);
     // Reclaim an ended resumable agent pane's scrollback the moment nobody is looking at it;
     // the pane you watched end keeps its buffer until it leaves the stage (setActive
     // trims on the way off). See trimScrollback for why provider-backed panes only.
@@ -665,6 +676,33 @@ listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) =
     if (moved) toast("Telemetry moved port — relaunch running sessions to restore their readings");
     else if (downMs >= 3000) toast(`Telemetry server back after ${Math.round(downMs / 1000)}s`);
   }
+  renderAll();
+});
+
+// Where the backend is finding an agent's backgrounded shell logs, announced on
+// TRANSITION only (./telemetry.rs's `serve_telemetry` rebind, one subsystem down). Claude
+// Code's temp root has moved once already and nothing said so for the whole outage: every
+// row sat at "starting…" with no URL, no peek and no ending, and the pill went quietly
+// wrong rather than red. The three states are worth different volumes — `ok` is the table's
+// first candidate, `blind` is nowhere left to look, and `moved` is the one nobody would
+// think to build: the probe fell through to a later candidate, so the feature still WORKS
+// and the app says so anyway, which is the release of warning before the fallback stops
+// matching too.
+//
+// No toast, deliberately. `telemetry-health`'s precedent is a badge rather than an
+// interruption, and a user with one `sleep 300` backgrounded would otherwise be
+// interrupted about a non-event. `dlog` tees into the rolling `episko.log` through
+// `log_frontend`, which is what turns "the pill went dark six weeks ago" into one command.
+// The payload goes into the LINE rather than beside it: `dlog` takes a level and a
+// string, and the whole value of this reaching `episko.log` is that the line names the
+// directory and how we got to it. The standing state is in `dbgSnapshot`'s `bgRoot`.
+listen<BgLogHealthEvent>("bglog-health", (e) => {
+  const h = e.payload;
+  setBgLogHealth(h);
+  dlog(h.state === "blind" ? "error" : h.state === "moved" ? "warn" : "info",
+    h.state === "blind"
+      ? `bg-log: blind — no background-shell log root under any of ${h.tried.length} candidate(s): ${h.tried.join(", ")}`
+      : `bg-log: ${h.state} — logs under ${h.root} (${h.discovered ? "found by scanning" : `candidate ${h.rank}`})`);
   renderAll();
 });
 

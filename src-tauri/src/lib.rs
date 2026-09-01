@@ -100,6 +100,14 @@ pub(crate) struct AppState {
     /// leave the app-wide total with them — so closing a pane would walk the run's churn
     /// backwards.
     io_retired: Mutex<(u64, u64)>,
+    /// Where the last background-shell log actually resolved, plus the health state
+    /// already announced for it. The root under `<slug>/<uuid>/tasks/…` is Claude
+    /// Code's, not ours, so `pty::read_bg_log` probes for it — and this is what stops
+    /// every poll of every live record re-walking the same ladder. It lives here
+    /// rather than in a module static because it is app-wide mutable state and this is
+    /// where app-wide mutable state lives; see `pty::BgRootState` for why the ROOT is
+    /// remembered and the resolved FILE never is.
+    bg_root: Mutex<pty::BgRootState>,
     /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
     /// Answered later by the `resolve_permission` command.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
@@ -365,6 +373,7 @@ pub fn run() {
                 owned_pids: Mutex::new(HashSet::new()),
                 io_samples: Mutex::new(HashMap::new()),
                 io_retired: Mutex::new((0, 0)),
+                bg_root: Mutex::new(pty::BgRootState::default()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),

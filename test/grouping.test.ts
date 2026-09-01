@@ -32,7 +32,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},

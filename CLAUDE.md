@@ -73,7 +73,7 @@ Three hard constraints shape this code:
 | `git.rs` | worktrees, branches (local **and** remote-only, each with its standing and author), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info, the branch sweeps (`sweep_branches`, `delete_remote_branches`) |
 | `tasks.rs` | runnable discovery; see docs/tasks.md |
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger; everything read out of `~/.claude` |
-| `pty.rs` | the four launch engines, Claude's permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output), `stream_pty_session`, the PTY lifecycle |
+| `pty.rs` | the four launch engines, Claude's permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output, and `bg_log_roots`/`bg_log_path`, where to find it), `stream_pty_session`, the PTY lifecycle |
 | `agent.rs` | provider control planes beside a PTY: Codex App Server observer, launch-policy/approval routing and public history calls |
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server` + the `serve_telemetry` supervisor that re-binds it, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
@@ -129,7 +129,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
+| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died, and what the row says when the log was never found), telling a *server* from a *job* Claude auto-backgrounded at its 120s timeout (`timedOut`, `isJob`, `bgKind`), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
@@ -277,6 +277,14 @@ And the things that hold however the files are arranged:
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
+- **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
+  Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
+  the running turn's `Stop` arrives *after* it — `Sess.queuedPrompt` (set from `working`,
+  consumed by one `Stop`) is what stops that `Stop` being read as "your turn". And the
+  tool guard in `applyHook` is bounded by `STRAGGLER_MS` rather than by `s.phase ===
+  "done"`: unbounded, one `Stop` silenced every later `PreToolUse`/`PostToolUse` and the
+  row claimed your turn for the whole of the next turn. Both shipped; see
+  `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
@@ -332,16 +340,27 @@ And the things that hold however the files are arranged:
   not beside it (docs/explorer.md).
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 - **Three orthogonal facts decide a launch**: `defaultAgent` (**what** runs — Claude Code by default, overridable per project via `agentByProject`; resolved by `pickAgent` in ./types), `termEngine` (**where** its terminal lives), and the selected provider's entry in `permissionModes` (**how** it starts). Provider adapters own the choices; backend whitelists own their CLI mapping. `launch()` forks on the provider before it builds anything; a resume carries its original provider, while new sessions and dashboard issue dispatch follow the project preference (`docs/sessions.md`).
-- **A background shell's log is addressed by the transcript path it had AT START.**
-  An agent's `Bash{run_in_background:true}` is how every dev server in this app gets
-  started, and Episko sees it for free: `tool_response.backgroundTaskId` on a
-  PostToolUse it already receives, with the output at
-  `<tmp>/claude/<slug>/<uuid>/tasks/<id>.output` — the last two components of
-  `transcript_path`. But Claude mints a **new** session dir on `/clear`, `/compact` and
-  `/resume`, so re-deriving that path later points at a directory that has never held
-  the log. `BgServer.transcript` is captured when the shell is recorded and never
-  recomputed (./servers, ./types); `read_bg_log` resolves it. Same trap as the
-  `X-CC-Session` rule above, one level down.
+- **A background shell's log is addressed by the transcript path it had AT START, under
+  a root we have to go and find.** An agent's `Bash{run_in_background:true}` is how every
+  dev server in this app gets started, and Episko sees it for free:
+  `tool_response.backgroundTaskId` on a PostToolUse it already receives, with the output
+  at `<root>/<slug>/<uuid>/tasks/<id>.output`. Only the `<slug>/<uuid>` half genuinely
+  mirrors `transcript_path`. **The root is not ours and cannot be derived** — it is
+  `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>`, and the `env::temp_dir()/claude` we
+  used to build has never once existed on a Mac (macOS ignores `TMPDIR` here — measured,
+  not inferred), so every row sat at "starting…" for the life of the feature with `tsc`,
+  vitest and cargo all green. So `bg_log_roots` probes a **ranked candidate
+  list** (both directory shapes on every OS; only the order differs per OS, and no
+  platform's row is asserted as the only possible answer), the winner is remembered in
+  `AppState.bg_root` and invalidated rather than defended, and anything resolving below
+  the first candidate raises `bglog-health` the way a re-bound telemetry port does — the
+  feature still works and the app says so anyway, which buys one release of warning
+  before the fallback stops matching too. But Claude mints a **new** session dir on
+  `/clear`, `/compact` and `/resume`, so re-deriving the `<slug>/<uuid>` half later
+  points at a directory that has never held the log. `BgServer.transcript` is captured
+  when the shell is recorded and never recomputed (./servers, ./types); widening the
+  ROOT must never re-derive it. Same trap as the `X-CC-Session` rule above, one level
+  down.
 - **Stopping a server is asked of the agent, never done behind its back.** The process
   is a descendant of Episko's own tree and could be killed — but the agent holds
   `TaskStop`, believes the server is up, and goes on saying so after a kill it never
@@ -357,15 +376,18 @@ And the things that hold however the files are arranged:
   `is_descendant_of`'s cap — and that is the only signal that can see a server nobody
   announced: one typed by hand into a shell pane, or one whose banner nothing parses.
   `reconcilePorts` joins the two in a three-step ladder (a port a record already names
-  is that record's → **one** silent record and **one** loose port are each other → the
-  rest get rows of their own), failing closed the moment either side is ambiguous.
+  is that record's → **one** silent record *that could be a server* and **one** loose
+  port are each other → the rest get rows of their own), failing closed the moment
+  either side is ambiguous.
   **`usefulPort` runs first and matters**: one real `wrangler dev` holds five listening
   sockets, of which four are Node's inspector and kernel-assigned control channels, so
   an unfiltered scan puts four pieces of noise in front of one useful row. And
   **`reconcilePorts` mutates**, so it belongs to the poll and never to a render pass.
 - **The header lists three sources on different rules, because it is for what is
   otherwise invisible.** An agent's background shell has no pane, no row, nothing on screen, so
-  **every** one is listed — URL or not. An Episko **task** (`just dev`, a VS Code task,
+  **every** one is listed, but only one with an address is called a *server*: `bgKind`
+  splits the popover into **Running servers** and **Background jobs**, and only the first
+  heading counts toward the pill. An Episko **task** (`just dev`, a VS Code task,
   an npm script) already has a pane, a sidebar row, a glyph and a phase, so it appears
   **only once it has announced a URL** — the one thing its pane cannot give you. Same
   reason a failed *task* never appears here and a failed *shell* does: the sidebar has
@@ -377,6 +399,17 @@ And the things that hold however the files are arranged:
   it sits several hops below a pane that has its own ✕, and the row exists to tell you the
   port is open rather than to take responsibility for it. Its empty cell is kept so ◨
   stays in line down the list.
+- **Claude Code backgrounds things nobody chose to background.** Any Bash command still
+  running at its **120s timeout** is auto-backgrounded with `run_in_background` UNSET —
+  12 of 143 real payloads, and they are `npm ci`, `pytest`, `vue-tsc`, `gh run watch`
+  polls and `until …; do sleep …; done` waits, which is how a one-shot `python3 -c` once
+  reached the header calling itself a running server. `tool_response.timedOutAfterMs` is
+  how we know, `isJob` is the only thing that reads it, and what it decides is narrow:
+  such a record may **never silently adopt a loose kernel port**, because nothing about
+  it says it opened one. It does **not** decide the heading — that is `bgKind`, and it
+  splits on *evidence* (an address, announced or adopted) rather than on the command
+  string, for the same reason ./health has no `.unwrap()` rule: a rule that fires on
+  ordinary commands teaches you to ignore the row that matters.
 - **A task's server URL is latched as its output streams, never rescanned from `tail`.**
   `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
   after the first HMR line — a URL read back off the tail would appear and then silently
@@ -391,7 +424,19 @@ And the things that hold however the files are arranged:
   already follow. `exit === 0` (a background one-shot finishing) and `exit === null` (a
   kill somebody requested) are not news and leave. `liveServers` is what the poll
   re-reads, `shownServers` what the popover draws; keep those two questions apart, or a
-  dead log is re-read every four seconds forever.
+  dead log is re-read every four seconds forever. **Two further endings carry no exit
+  code at all**, and that is the point: a record whose root was found and whose log never
+  appeared **retires** ten minutes after the log went MISSING (`endReason: "stale"`;
+  measured from `missSince` rather than from `startedAt`, or a log read all afternoon and
+  then deleted would be given up on four seconds later as *log never appeared*), and a
+  pane's own `pty-exit` **ends** every live record it started
+  (`"session"`) rather than clearing the array, which would delete the crashed-server
+  rows this whole rule exists to keep. Both are `exit: null`, so `failedServers` never
+  sees them and the pill never goes red for something that did not fail — and `endReason`
+  is what stops "nobody could find it", "somebody asked for this" and "it exited" from
+  collapsing into one word. Retirement fires on `reason === "notYet"` alone: `noRoot` and
+  `ambiguous` are an outage in our own probe, and a probe outage that quietly retires the
+  fleet is a worse silence than the one being fixed.
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
   you have been to since it finished leaves the badge, the tray title, the palette's
   "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);

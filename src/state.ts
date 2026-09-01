@@ -280,6 +280,20 @@ export function setBackendLive(s: ReadonlySet<string>) { backendLive = s; }
 // is a perfectly confident `○ idle`, and nothing else on screen contradicts it.
 export let telemetryUp = true;
 export function setTelemetryUp(v: boolean) { telemetryUp = v; }
+// Where the backend last resolved an agent's background-shell logs — `serve_telemetry`'s
+// re-bind announcement one level down, and here for the same reason `telemetryUp` is.
+// Claude Code writes those logs under `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>/…`,
+// a path that has moved once already and took the whole running-servers feature with it
+// silently: every row sat at "starting…" for the life of the session and nothing said
+// why. `moved` is the state nobody would think to build — the probe fell back to a
+// candidate below the first, so the feature still WORKS and the app says so anyway,
+// which buys one release of warning before the fallback stops matching too.
+export interface BgLogHealthEvent {
+  state: "ok" | "moved" | "blind";
+  root: string; rank: number; discovered: boolean; tried: string[];
+}
+export let bgLogHealth: BgLogHealthEvent | null = null;
+export function setBgLogHealth(v: BgLogHealthEvent | null) { bgLogHealth = v; }
 // Which terminal a new launch opens in. A persisted preference like the sort and
 // grouping above; the table of what's installed and how to label it stays in the UI.
 export interface EngineDef { id: Engine; label: string; sub: string }

@@ -85,7 +85,7 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       // survive a pane move/resume. Key the persistent baseline by provider + thread
       // so reopening one conversation never books its whole estimate a second time.
       const id = `${s.provider || "agent"}:${s.resumeId || s.id}`;
-      addUsage(costDelta(id, event.totalUsd, false), s);
+      addUsage(costDelta(id, event.totalUsd, false, `${s.provider || "agent"}:${s.id}`), s);
       s.cost = event.totalUsd;
       pushHist(s.costHist, event.totalUsd);
       break;

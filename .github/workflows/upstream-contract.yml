@@ -1,0 +1,125 @@
+name: upstream-contract
+
+# Claude Code's background-shell log layout is not ours, and the app reads it by path.
+# When it moved, every gate in this repo stayed green and the header pill went
+# permanently dark for the life of the feature — a test can only agree with the belief
+# that wrote it, so this job asks the real binary instead of asking us. It is the only
+# check anywhere that can see the WINDOWS root, which lives in a build nobody on this
+# team runs.
+#
+# Deliberately NOT on the PR gate. It fails because of somebody else's release, not
+# because of the diff, and a gate that fails on a Tuesday teaches people to merge
+# through red. Zero tokens and zero auth: the CLI is pointed at a dead loopback port
+# with a bogus key, so the request never leaves the runner. Measured at ~0.8s, and it
+# has already created its temp root by the time it dies — which is the only thing we
+# need from it.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday morning; Claude Code ships far more often than we do
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # the only permission it needs; no repository secret at all
+
+jobs:
+  claude-layout:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc # never duplicate the pin
+          package-manager-cache: false # no deps, same reason as the changelog job
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      # Always latest, on purpose: this job exists to find out what the newest release
+      # does, and pinning would make it assert history.
+      - name: Install the real Claude Code CLI
+        id: install
+        shell: bash
+        run: |
+          npm i -g @anthropic-ai/claude-code
+          claude --version | tee "$RUNNER_TEMP/cli-version.txt"
+
+      # The probe lives in the Rust test, not here, so a developer gets the same check
+      # locally with no env plumbing.
+      #
+      # The name filter is NOT optional and NOT a prefix guess: a bare `--ignored` also
+      # selects `claude_cli_still_honours_our_instrumentation`, which needs auth and
+      # SPENDS TOKENS. Only `claude_layout_*` is safe to run unattended.
+      #
+      # CLAUDE_CODE_TMPDIR is deliberately NOT set here — the opposite of ci.yml, which
+      # poisons it. Unset is the whole point on the Windows leg: nobody on this team has
+      # ever observed what the Windows build names its temp root, so the runner has to
+      # let the binary pick its own and then say which one appeared. `--nocapture` is
+      # what makes that answer reach the log, so read the step output even when green.
+      #
+      # Two ways this job could go VACUOUSLY green, and both are closed here. A name
+      # filter that selects nothing exits 0 (`0 passed; N filtered out`), so an ordinary
+      # rename would leave the layout unwatched forever with a green badge every Monday
+      # — hence `--exact` and the grep for the run actually happening. And the test
+      # skips itself where `claude` cannot be launched, which on a runner that has just
+      # installed it is a lie: `EPISKO_REQUIRE_CLAUDE` turns that skip into a failure.
+      # A green leg that observed nothing must never be indistinguishable from a green
+      # leg that confirmed the layout.
+      - name: Claude Code still puts its background logs where we look
+        shell: bash
+        working-directory: ./src-tauri
+        timeout-minutes: 10 # a hang here must be a red step, not a cancelled job: the reporting step below is `if: failure()`, and a cancellation runs nothing
+        env:
+          EPISKO_REQUIRE_CLAUDE: "1"
+        run: |
+          set -o pipefail
+          cargo test --locked -- --ignored --nocapture --exact \
+            pty::tests::claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it \
+            | tee "$RUNNER_TEMP/layout.txt"
+          grep -q '1 passed' "$RUNNER_TEMP/layout.txt"
+
+      - name: Report a moved layout as an issue, not as a red badge
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="$(cat "$RUNNER_TEMP/cli-version.txt" 2>/dev/null || echo unknown)"
+          # Three different failures, and naming the wrong one sends somebody to edit a
+          # candidate table that is fine. A CLI the runner installed but Rust cannot
+          # launch is the Windows case in particular: `npm i -g` leaves an
+          # extensionless sh shim that CreateProcessW refuses, which is a launcher bug
+          # and not a moved directory.
+          if [ "${{ steps.install.outcome }}" = "failure" ]; then
+            why="could not install the CLI (npm or downloads.claude.ai)"
+          elif grep -q "could not launch \`claude\`" "$RUNNER_TEMP/layout.txt" 2>/dev/null; then
+            why="the CLI installed but could not be started, so the layout went unobserved"
+          else
+            why="the temp layout moved"
+          fi
+          title="upstream-contract (${{ runner.os }}): $why — Claude Code $v"
+          # `gh issue create --label` REFUSES an unknown label and creates nothing, so a
+          # repo that has never seen this job would report a moved layout by opening
+          # exactly zero issues — the quiet failure this whole workflow exists to end.
+          gh label create upstream-contract --color BFD4F2 \
+            --description "Claude Code changed something Episko reads by path" || true
+          gh issue list --state open --label upstream-contract --json title -q '.[].title' > open.txt || true
+          if grep -Fxq "$title" open.txt; then echo "already open"; exit 0; fi
+          gh issue create --label upstream-contract --title "$title" --body \
+            "\`claude_layout_*\` failed on ${{ runner.os }} against Claude Code $v.
+
+          If the layout moved: \`bg_log_dir_names\` / \`bg_log_roots\` in src-tauri/src/pty.rs
+          need the new candidate ADDED, not swapped — an extra candidate costs one
+          is_file(); a missing one costs the whole feature. Then update the shapes named
+          in their doc comments, and RELEASE.md's Running servers section.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
