@@ -30,6 +30,48 @@ export interface GhResult {
 /// An issue the project has decided to keep, from `.episko/episko.toml`.
 export interface KeptIssue { number: number; who: string; at: string }
 
+// ---------- which of your GitHub accounts ----------
+
+/// One github.com account `gh` is logged in to, as `gh_accounts` returns it.
+export interface GhAccount { login: string; active: boolean }
+
+/**
+ * Which account a project's `gh` calls run as, and where that answer came from.
+ *
+ * **Two accounts at once is the case this exists for.** `gh` has one *active* account
+ * per host, switched globally, so a machine holding a work identity and a personal one
+ * reads every repo as whichever was switched to last — and GitHub answers a private repo
+ * the other account owns exactly as it answers a repo that does not exist. Nothing in
+ * that failure mentions an identity, which is why the setting is per project and why
+ * this returns the *source* rather than just a login: "Blaxzter, because that is gh's
+ * default" and "Blaxzter, because I chose it here" look identical on screen and mean
+ * opposite things when the reads are failing.
+ *
+ * `known` is the third state and the one worth having: a pin gh has since forgotten
+ * (`gh auth logout`) still reads as pinned rather than quietly reverting to the active
+ * account, because reverting is exactly what the pin was set to prevent — and the
+ * backend refuses the call rather than answering as somebody else, so the picker has to
+ * be able to show why.
+ */
+export interface GhWho {
+  login: string | null;
+  source: "pinned" | "active" | "none";
+  known: boolean;
+}
+
+export function ghWho(pinned: string | null, accounts: GhAccount[]): GhWho {
+  if (pinned) return { login: pinned, source: "pinned", known: accounts.some((a) => a.login === pinned) };
+  const active = accounts.find((a) => a.active);
+  return active
+    ? { login: active.login, source: "active", known: true }
+    : { login: null, source: "none", known: false };
+}
+
+/// Whether to offer the choice at all. One account is not a choice, and a picker over it
+/// is a control that cannot change its own answer — the same rule the branch sweep and
+/// the agent picker's "more supported" fold follow: say nothing rather than nothing useful.
+export const ghPickable = (accounts: GhAccount[]): boolean => accounts.length > 1;
+
 // ---------- ordering ----------
 
 /// When something last moved, as a bucket. The overlay groups by these because "how

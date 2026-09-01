@@ -121,7 +121,15 @@ describe("the project dashboard's verbs", () => {
   // listener from the two above (`#dashPane`, not `#inspector`/`#dashStrip`) into the
   // same if-chain. Three emitters, two listeners, one vocabulary.
   const gcard = verbs(DASHVIEW, "export function repoCard(", "gb");
-  const offered = [...new Set([...rows, ...rail, ...gcard])];
+  // The fourth surface, and the first that is not a row helper: the GitHub card's
+  // account picker writes its one fixed verb straight into the attribute. (Its other
+  // buttons carry `ghacct:<login>`, a parameterised verb the if-chain matches by prefix
+  // — neither half of this comparison can see those, which is why the fixed one is
+  // spelled separately rather than derived from a login.)
+  const ghpick = [...new Set(
+    [...body(DASHVIEW, "export function ghPicker(").matchAll(/data-dashact="([a-z]+)"/g)].map((m) => m[1]),
+  )];
+  const offered = [...new Set([...rows, ...rail, ...gcard, ...ghpick])];
   const handled = [...new Set(
     [...body(DASHBOARD, "function dashAction(act: string): void {")
       .matchAll(/act === "([a-z]+)"/g)].map((m) => m[1]),

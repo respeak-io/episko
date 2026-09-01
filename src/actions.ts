@@ -29,6 +29,7 @@ import {
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
   agentByProject, agentDef, defaultAgent, effectiveAgent,
+  ghAccountByProject, setGhLogins, setProjectGhAccount as setProjectGhAccountState,
   setDefaultAgent as setDefaultAgentState, setProjectAgent as setProjectAgentState,
   setPeekPrefs as setPeekPrefsState, setProviderPermissionMode as setPermissionModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
@@ -42,6 +43,7 @@ import {
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
+import type { GhAccount } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import {
@@ -63,6 +65,15 @@ import { dlog } from "./debug";
 // Every action here ends in a repaint of everything, which main.ts owns.
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
+
+/// Re-read one project's GitHub half, if the dashboard happens to be open on it.
+///
+/// ./dashboard sits above this layer and owns the fetch, so the one thing an account
+/// change needs from it arrives as a settable hook rather than an import — the second
+/// resolution in PLAN's order, and the same shape as `setActionsRenderAll` above. A
+/// no-op default is the honest behaviour when no dashboard is on screen.
+let ghReload: (root: string) => void = () => {};
+export function setGhReload(fn: typeof ghReload) { ghReload = fn; }
 
 // A plain shell in a project's folder — embedded gets an in-app pane, the external
 // engines their own window. Here rather than in ./projmenu because the context menu,
@@ -448,6 +459,38 @@ export function setProjectAgent(colorKey: string, id: string | null) {
   const a = effectiveAgent(colorKey);
   toast(id ? `${basename(colorKey)} runs ${a.label}` : `${basename(colorKey)} follows the default (${a.label})`);
   renderAll();
+}
+
+/// Which of your GitHub accounts this project's `gh` calls run as. `null` clears the
+/// pin, which is the row that says "follow gh's active account" rather than a third
+/// state — the same shape as the agent override above it.
+///
+/// The pin is read per call (`ghAccountFor`) and passed to the backend as an argument,
+/// so this stores one thing in one place. What it must also do is **forget what the
+/// previous identity answered**: `gh_threads`, the day's activity and the merged-PR
+/// evidence are all cached per repo for a minute, and every one of those answers was
+/// given by the account we have just stopped using.
+export function setProjectGhAccount(colorKey: string, login: string | null) {
+  setProjectGhAccountState(colorKey, login);
+  localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));
+  void invoke("gh_invalidate", { root: colorKey }).catch(() => {});
+  toast(login
+    ? `${basename(colorKey)} reads GitHub as ${login}`
+    : `${basename(colorKey)} follows gh's active account`);
+  ghReload(colorKey);
+  renderAll();
+}
+
+/// Re-read which accounts `gh` is logged in to.
+///
+/// Fired at startup and whenever a surface that offers the choice is about to be built,
+/// because `gh auth login` in a terminal must show up without restarting Episko. It is
+/// cheap to ask often: the backend holds the answer for the same 60s a board read is
+/// cached for, so this is usually a round trip to a lock.
+export async function refreshGhAccounts(): Promise<GhAccount[]> {
+  const a = await invoke<GhAccount[]>("gh_accounts").catch(() => [] as GhAccount[]);
+  setGhLogins(a);
+  return a;
 }
 
 export function setPermMode(provider: string, requested: string) {

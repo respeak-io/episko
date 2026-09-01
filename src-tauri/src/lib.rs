@@ -608,6 +608,7 @@ pub fn run() {
             git::git_log_days,
             git::project_facts,
             github::gh_threads,
+            github::gh_accounts,
             github::gh_invalidate,
             github::gh_claim,
             github::gh_release,

@@ -71,20 +71,34 @@ struct Cached { at: Instant, result: GhResult }
 // is to remember, not to coordinate.
 static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None);
 
-/// Who `gh` thinks you are. **Cached for the life of the process, and deliberately
-/// NOT per repo**: `gh api user` returns the same login whichever folder it is run in,
-/// so keying it by root spent one extra process per project for an answer already in
-/// hand. With a dashboard per project that was a real cost — it is the same call, N
-/// times, for one string that cannot differ.
+/// Who `gh` thinks you are **when nothing pins the project to another account**.
+///
+/// Cached for the life of the process and deliberately NOT per repo: `gh api user`
+/// returns the same login whichever folder it is run in, so keying it by root spent one
+/// extra process per project for an answer already in hand. With a dashboard per project
+/// that was a real cost — it is the same call, N times, for one string that cannot
+/// differ.
+///
+/// **That premise holds for the active account only.** A project pinned to a second
+/// account (see [`gh_accounts`]) has a different viewer, and it never reaches this cache
+/// because the pin already names it — see [`viewer_login`]. Caching one login per
+/// process is what made two accounts impossible to tell apart, and it is claims that
+/// pay: "mine" and "a colleague's" are decided by comparing an assignee to this string.
 static VIEWER: Mutex<Option<Option<String>>> = Mutex::new(None);
 
-fn viewer_login(root: &str) -> Option<String> {
+fn viewer_login(root: &str, account: Option<&str>) -> Option<String> {
+    // A pin *is* the answer. `gh api user` under that account's token can only reply
+    // with the same login, so the probe would spend a process to be told what we just
+    // told gh — and the cache below holds the ACTIVE account, which is the wrong one.
+    if let Some(login) = account {
+        return Some(login.to_string());
+    }
     if let Ok(g) = VIEWER.lock() {
         if let Some(v) = g.as_ref() {
             return v.clone();
         }
     }
-    let v = gh(root, &["api", "user", "--jq", ".login"])
+    let v = gh(root, None, &["api", "user", "--jq", ".login"])
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -96,17 +110,30 @@ fn viewer_login(root: &str) -> Option<String> {
     v
 }
 
-fn gh(root: &str, args: &[&str]) -> Result<String, String> {
-    let out = sys_command("gh")
-        .env("PATH", augmented_path())
+/// One `gh` call, run as `account` when the project names one.
+///
+/// **`GH_TOKEN` is how an account is chosen, and it is the only way there is.** gh has
+/// no per-invocation account flag: it uses whichever account is *active* for the host,
+/// switched globally with `gh auth switch`. That is fine for one identity and useless
+/// for two at once — a work account and a personal one, which is what an
+/// `~/.ssh/config` alias in a remote URL (`git@github.com-work:…`) is usually there to
+/// keep apart. gh documents `GH_TOKEN` as taking precedence over stored credentials, so
+/// handing it the token gh itself holds for that account picks it for this call and
+/// nothing else: no global switch, no config written, nothing for another project to
+/// trip over.
+fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = sys_command("gh");
+    cmd.env("PATH", augmented_path())
         // gh infers the repo from the working directory; there is no -C equivalent.
         .current_dir(root)
         .args(args)
         // Never let gh try to open a browser or prompt: this runs with no terminal.
         .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .output()
-        .map_err(|e| format!("gh not available: {e}"))?;
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    if let Some(login) = account {
+        cmd.env("GH_TOKEN", account_token(login)?);
+    }
+    let out = cmd.output().map_err(|e| format!("gh not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed");
@@ -115,15 +142,66 @@ fn gh(root: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// The token gh holds for one account, read back out of its own keyring.
+///
+/// **Deliberately not cached, and never logged.** gh refreshes these on its own
+/// schedule, so a remembered one can go stale in a way that reads as "your pinned
+/// account stopped working"; the read costs ~40ms against the ~600ms network call it
+/// precedes, which is not a saving worth a class of bug. It is also a secret, and the
+/// only place it exists here is one child process's environment.
+///
+/// A pin that gh no longer knows is an error rather than a silent fall-back to the
+/// active account: falling back is exactly the behaviour the pin was set to prevent,
+/// and it would show a *different* account's issues under this project's name.
+fn account_token(login: &str) -> Result<String, String> {
+    // The login reaches gh as an argument, so it must not be able to read as a flag —
+    // the same guard `ssh_hostname` puts on a host alias.
+    if login.is_empty() || login.starts_with('-') {
+        return Err(format!("{login:?} is not a GitHub account name"));
+    }
+    let out = sys_command("gh")
+        .env("PATH", augmented_path())
+        .args(["auth", "token", "--hostname", "github.com", "--user", login])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .map_err(|e| format!("gh not available: {e}"))?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || token.is_empty() {
+        return Err(format!("gh is not logged in as {login}, which this project is set to use"));
+    }
+    Ok(token)
+}
+
 /// Map gh's own failure text to something a person can act on.
 ///
 /// This is the one place we look at gh's stderr prose, and only to *classify* — the
 /// data paths all parse `--json`. Worth the exception because "gh: command not found"
 /// and "you are not logged in" need very different responses from the user, and gh
 /// gives no distinguishing exit code.
-fn classify(err: &str) -> String {
+///
+/// `who` is the account the failed call ran as, when we know it. It exists for one
+/// message: **GitHub answers a repository you cannot see exactly as it answers one that
+/// does not exist**, so the raw prose ("Could not resolve to a Repository with the name
+/// 'org/repo'") reads as a typo or a deleted repo. On a machine logged in to two
+/// accounts it is almost never either — it is the other account's repo, seen from this
+/// one — and naming the identity is the whole difference between a dead end and a
+/// one-click fix.
+fn classify(err: &str, who: Option<&str>) -> String {
     let e = err.to_lowercase();
-    if e.contains("not found") && e.contains("gh") { return "GitHub CLI (gh) is not installed".into(); }
+    if e.contains("could not resolve to a repository") {
+        return match who {
+            Some(w) => format!("signed in as {w}, which cannot see this repository"),
+            None => "the signed-in GitHub account cannot see this repository".into(),
+        };
+    }
+    // A spawn failure is the authoritative "not installed" — `gh()` writes that prefix
+    // itself. The looser string match stays for a PATH lookup that failed some other
+    // way, but must not swallow gh's own HTTP prose: `gh: Not Found (HTTP 404)` says
+    // "not found" about a *resource*, and answering that with "gh is not installed"
+    // sends the reader to reinstall a working CLI.
+    let missing = e.contains("not available") || (e.contains("not found") && !e.contains("http"));
+    if missing && e.contains("gh") { return "GitHub CLI (gh) is not installed".into(); }
     if e.contains("auth") || e.contains("logged in") || e.contains("token") {
         return "gh is not authenticated — run `gh auth login`".into();
     }
@@ -131,6 +209,95 @@ fn classify(err: &str) -> String {
         return "not a GitHub repository".into();
     }
     err.to_string()
+}
+
+/// The login to name in a failure message: the project's pin if it has one, else
+/// whatever the active account last answered. **Never a fresh probe** — this runs on a
+/// path that has already failed, and a second `gh` call to decorate an error is a
+/// second thing that can hang.
+fn who_for(account: Option<&str>) -> Option<String> {
+    account
+        .map(str::to_string)
+        .or_else(|| VIEWER.lock().ok().and_then(|g| g.clone().flatten()))
+}
+
+// ---------- which of your accounts ----------
+
+/// One github.com account `gh` is logged in to.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhAccount {
+    pub login: String,
+    /// The account gh uses when a project pins nothing — so the picker can mark it as
+    /// *the default* rather than as one more choice, which is the difference between
+    /// "I have not set this" and "I set this to the same value".
+    pub active: bool,
+}
+
+static ACCOUNT_CACHE: Mutex<Option<(Instant, Vec<GhAccount>)>> = Mutex::new(None);
+
+/// Every github.com account `gh` is logged in to.
+///
+/// github.com only, deliberately: `parse_remote` mints a slug for github.com alone, so
+/// an enterprise host has no dashboard to pin and listing its accounts would offer a
+/// choice that changes nothing.
+///
+/// Cached for the same TTL as a board read. `gh auth status` *tests* each account
+/// against the API rather than just reading config (~0.5s for two), and this is asked
+/// on every dashboard open and every project menu — but a `gh auth login` in a terminal
+/// must still show up without restarting the app, which a process-lifetime cache (the
+/// shape `VIEWER` uses) would not allow.
+#[tauri::command]
+pub(crate) async fn gh_accounts() -> Vec<GhAccount> {
+    tauri::async_runtime::spawn_blocking(|| {
+        if let Ok(g) = ACCOUNT_CACHE.lock() {
+            if let Some((at, v)) = g.as_ref() {
+                if at.elapsed() < TTL {
+                    return v.clone();
+                }
+            }
+        }
+        let out = sys_command("gh")
+            .env("PATH", augmented_path())
+            .args(["auth", "status", "--json", "hosts"])
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .output()
+            .ok();
+        // No gh, no accounts — the same degradation every read here makes. An empty
+        // list means the picker is simply absent, never an error dialog.
+        let list = out
+            .filter(|o| o.status.success())
+            .map(|o| parse_accounts(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default();
+        if let Ok(mut g) = ACCOUNT_CACHE.lock() {
+            *g = Some((Instant::now(), list.clone()));
+        }
+        list
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The github.com half of `gh auth status --json hosts`.
+///
+/// Parsed rather than scraped from the human output for the obvious reason, but also a
+/// specific one: the prose spells the active account with a tick and an indented
+/// "Active account: true" that a locale or a terminal width could move. The JSON shape
+/// is `{"hosts":{"<host>":[{"login":…,"active":…}]}}`.
+fn parse_accounts(json: &str) -> Vec<GhAccount> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = v.get("hosts").and_then(|h| h.get("github.com")).and_then(|a| a.as_array()) else {
+        return vec![];
+    };
+    arr.iter()
+        .filter_map(|a| {
+            let login = a.get("login")?.as_str()?.trim().to_string();
+            if login.is_empty() {
+                return None;
+            }
+            Some(GhAccount { login, active: a.get("active").and_then(serde_json::Value::as_bool).unwrap_or(false) })
+        })
+        .collect()
 }
 
 // ---------- parsing ----------
@@ -182,7 +349,7 @@ fn parse_list(json: &str, kind: &str) -> Vec<GhThread> {
 /// refresh; everything else — opening the board, switching altitude, a repaint — is
 /// served from memory, which is what stops a render loop becoming a network loop.
 #[tauri::command]
-pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
+pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String>) -> GhResult {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = CACHE.lock() {
@@ -212,16 +379,17 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
         // deliberately, and the one case where the two differ (a folder that is not a
         // GitHub repo) is exactly the case where `gh api user` still answers correctly,
         // since it is not repo-scoped.
+        let acct = account.as_deref();
         let (issues, prs, viewer) = std::thread::scope(|s| {
-            let i = s.spawn(|| gh(&root, &[
+            let i = s.spawn(|| gh(&root, acct, &[
                 "issue", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt",
             ]));
-            let p = s.spawn(|| gh(&root, &[
+            let p = s.spawn(|| gh(&root, acct, &[
                 "pr", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt,headRefName,author,isDraft",
             ]));
-            let v = s.spawn(|| viewer_login(&root));
+            let v = s.spawn(|| viewer_login(&root, acct));
             (
                 i.join().unwrap_or_else(|_| Err("gh issue list panicked".into())),
                 p.join().unwrap_or_else(|_| Err("gh pr list panicked".into())),
@@ -229,7 +397,7 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
             )
         });
         let result = match issues {
-            Err(e) => GhResult::unavailable(classify(&e)),
+            Err(e) => GhResult::unavailable(classify(&e, who_for(acct).as_deref())),
             Ok(issue_json) => {
                 let mut threads = parse_issues(&issue_json);
                 // A PR failure is not fatal: issues alone are still a useful board.
@@ -251,9 +419,26 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
 }
 
 /// Drop a repo's cached reads so the next call goes to the network.
+///
+/// **All three caches, not just the board.** A refresh is one question — "go and ask
+/// again" — and the day's activity and the merged-PR evidence are answers to it too.
+/// It also has to be all three for the account picker to mean anything: switching which
+/// identity a project reads as leaves every cached answer belonging to the previous
+/// one, and a board that repaints as the new account beside a triage list that is still
+/// the old one is worse than either alone.
 #[tauri::command]
 pub(crate) fn gh_invalidate(root: String) {
     if let Ok(mut guard) = CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+    if let Ok(mut guard) = EVENT_CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+    if let Ok(mut guard) = MERGED_CACHE.lock() {
         if let Some(m) = guard.as_mut() {
             m.remove(&root);
         }
@@ -286,6 +471,7 @@ pub(crate) struct ClaimOutcome {
 /// without undoing the other. Nothing here refuses: this records a claim, it does not
 /// enforce one.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command parameters are the frontend wire format.
 pub(crate) async fn gh_claim(
     root: String,
     number: i64,
@@ -294,37 +480,40 @@ pub(crate) async fn gh_claim(
     comment: bool,
     label: String,
     body: String,
+    account: Option<String>,
 ) -> ClaimOutcome {
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let noun = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
         let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
 
         if assign {
-            match gh(&root, &[noun, "edit", &n, "--add-assignee", "@me"]) {
+            match gh(&root, acct, &[noun, "edit", &n, "--add-assignee", "@me"]) {
                 Ok(_) => out.assigned = true,
-                Err(e) => out.problems.push(format!("assign: {}", classify(&e))),
+                Err(e) => out.problems.push(format!("assign: {}", classify(&e, who.as_deref()))),
             }
         }
         if !label.is_empty() {
-            match gh(&root, &[noun, "edit", &n, "--add-label", &label]) {
+            match gh(&root, acct, &[noun, "edit", &n, "--add-label", &label]) {
                 Ok(_) => out.labeled = true,
-                Err(e) => out.problems.push(format!("label: {}", classify(&e))),
+                Err(e) => out.problems.push(format!("label: {}", classify(&e, who.as_deref()))),
             }
         }
         if comment {
             let text = format!("{MARKER}\n{body}");
             // --edit-last --create-if-none: ONE comment per thread, updated. Appending
             // a new comment per dispatch is the behaviour that makes bots unwelcome.
-            let edited = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            let edited = gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
             match edited {
                 Ok(_) => out.commented = true,
                 Err(e) => {
                     // Older gh has no --create-if-none; fall back to a plain comment so
                     // the claim still lands rather than being silently skipped.
-                    match gh(&root, &[noun, "comment", &n, "--body", &text]) {
+                    match gh(&root, acct, &[noun, "comment", &n, "--body", &text]) {
                         Ok(_) => out.commented = true,
-                        Err(_) => out.problems.push(format!("comment: {}", classify(&e))),
+                        Err(_) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
                     }
                 }
             }
@@ -356,25 +545,28 @@ pub(crate) async fn gh_release(
     unassign: bool,
     label: String,
     body: String,
+    account: Option<String>,
 ) -> ClaimOutcome {
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let noun = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
         let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
 
         if unassign {
-            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
-                out.problems.push(format!("unassign: {}", classify(&e)));
+            if let Err(e) = gh(&root, acct, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
+                out.problems.push(format!("unassign: {}", classify(&e, who.as_deref())));
             }
         }
         if !label.is_empty() {
-            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-label", &label]) {
-                out.problems.push(format!("label: {}", classify(&e)));
+            if let Err(e) = gh(&root, acct, &[noun, "edit", &n, "--remove-label", &label]) {
+                out.problems.push(format!("label: {}", classify(&e, who.as_deref())));
             }
         }
         if !body.is_empty() {
             let text = format!("{MARKER}\n{body}");
-            let _ = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            let _ = gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
         }
         gh_invalidate(root);
         out
@@ -437,7 +629,7 @@ static EVENT_CACHE: Mutex<Option<HashMap<String, CachedEvents>>> = Mutex::new(No
 /// filter for these, so the window is applied by the caller after bucketing. The limit
 /// is what bounds the work — 120 covers a very busy month and costs two requests.
 #[tauri::command]
-pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
+pub(crate) async fn gh_day_activity(root: String, force: bool, account: Option<String>) -> Vec<GhEvent> {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = EVENT_CACHE.lock() {
@@ -448,14 +640,15 @@ pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
                 }
             }
         }
+        let acct = account.as_deref();
         let mut out = Vec::new();
-        if let Ok(j) = gh(&root, &[
+        if let Ok(j) = gh(&root, acct, &[
             "issue", "list", "--state", "all", "--limit", "120",
             "--json", "number,title,url,createdAt,closedAt",
         ]) {
             out.extend(parse_events(&j, "issue"));
         }
-        if let Ok(j) = gh(&root, &[
+        if let Ok(j) = gh(&root, acct, &[
             "pr", "list", "--state", "all", "--limit", "120",
             "--json", "number,title,url,createdAt,closedAt,mergedAt",
         ]) {
@@ -533,7 +726,7 @@ static MERGED_CACHE: Mutex<Option<HashMap<String, CachedMerged>>> = Mutex::new(N
 /// One call, cached for the same TTL as the board — the pane is opened deliberately, but
 /// it re-reads on every repaint of its list and that must not become a request each time.
 #[tauri::command]
-pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
+pub(crate) async fn gh_merged_prs(root: String, force: bool, account: Option<String>) -> MergedPrs {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = MERGED_CACHE.lock() {
@@ -544,11 +737,12 @@ pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
                 }
             }
         }
-        let result = match gh(&root, &[
+        let acct = account.as_deref();
+        let result = match gh(&root, acct, &[
             "pr", "list", "--state", "merged", "--limit", "100",
             "--json", "number,title,url,headRefName,mergedAt",
         ]) {
-            Err(e) => MergedPrs { available: false, reason: Some(classify(&e)), prs: vec![] },
+            Err(e) => MergedPrs { available: false, reason: Some(classify(&e, who_for(acct).as_deref())), prs: vec![] },
             Ok(j) => MergedPrs { available: true, reason: None, prs: parse_merged_prs(&j) },
         };
         if let Ok(mut guard) = MERGED_CACHE.lock() {
@@ -573,15 +767,22 @@ pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
 /// what was attempted, which is recoverable. The other order can leave an issue closed
 /// with no explanation at all.
 #[tauri::command]
-pub(crate) async fn gh_close_issue(root: String, number: i64, comment: String) -> Result<(), String> {
+pub(crate) async fn gh_close_issue(
+    root: String,
+    number: i64,
+    comment: String,
+    account: Option<String>,
+) -> Result<(), String> {
     let body = comment.trim().to_string();
     if body.is_empty() {
         return Err("a closing comment is required".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let n = number.to_string();
-        gh(&root, &["issue", "comment", &n, "--body", &body]).map_err(|e| classify(&e))?;
-        gh(&root, &["issue", "close", &n]).map_err(|e| classify(&e))?;
+        gh(&root, acct, &["issue", "comment", &n, "--body", &body]).map_err(|e| classify(&e, who.as_deref()))?;
+        gh(&root, acct, &["issue", "close", &n]).map_err(|e| classify(&e, who.as_deref()))?;
         gh_invalidate(root.clone());
         Ok(())
     })
@@ -955,10 +1156,62 @@ mod tests {
 
     #[test]
     fn classifies_the_failures_that_need_different_answers() {
-        assert!(classify("gh: command not found").contains("not installed"));
-        assert!(classify("error: not logged in to any GitHub hosts").contains("gh auth login"));
-        assert!(classify("fatal: not a git repository").contains("not a GitHub repository"));
+        assert!(classify("gh: command not found", None).contains("not installed"));
+        assert!(classify("gh not available: No such file or directory", None).contains("not installed"));
+        assert!(classify("error: not logged in to any GitHub hosts", None).contains("gh auth login"));
+        assert!(classify("fatal: not a git repository", None).contains("not a GitHub repository"));
         // Anything unrecognised is passed through rather than mangled into a guess.
-        assert_eq!(classify("API rate limit exceeded"), "API rate limit exceeded");
+        assert_eq!(classify("API rate limit exceeded", None), "API rate limit exceeded");
+    }
+
+    /// The failure this whole account business exists for. GitHub replies to a repo the
+    /// token cannot see exactly as it replies to one that was never there, so the raw
+    /// prose sends the reader looking for a typo in a name that is perfectly correct.
+    #[test]
+    fn an_invisible_repo_names_the_account_that_could_not_see_it() {
+        let err = "GraphQL: Could not resolve to a Repository with the name 'acme/secret'. (repository)";
+        let said = classify(err, Some("octocat"));
+        assert!(said.contains("octocat"), "{said}");
+        assert!(said.contains("cannot see"), "{said}");
+        // Nothing to name is still better than gh's prose: the sentence has to say an
+        // *account* is involved, or the fix stays invisible.
+        assert!(classify(err, None).contains("account"));
+    }
+
+    /// gh's own HTTP prose says "not found" about a resource, and answering that with
+    /// "gh is not installed" sends somebody to reinstall a CLI that is working.
+    #[test]
+    fn a_404_is_not_a_missing_cli() {
+        assert_ne!(classify("gh: Not Found (HTTP 404)", None), "GitHub CLI (gh) is not installed");
+    }
+
+    #[test]
+    fn reads_both_accounts_and_which_one_is_active() {
+        let json = r#"{"hosts":{"github.com":[
+            {"state":"success","active":true,"host":"github.com","login":"octocat","tokenSource":"keyring"},
+            {"state":"success","active":false,"host":"github.com","login":"octocat-work","tokenSource":"keyring"}
+        ]}}"#;
+        let a = parse_accounts(json);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0], GhAccount { login: "octocat".into(), active: true });
+        assert!(!a[1].active);
+    }
+
+    /// Only github.com. A slug is minted for nothing else (`parse_remote`), so an
+    /// enterprise account in the list would offer a choice that cannot change an answer.
+    #[test]
+    fn other_hosts_are_not_accounts_you_can_pick() {
+        let json = r#"{"hosts":{"github.example.com":[{"active":true,"login":"someone"}]}}"#;
+        assert!(parse_accounts(json).is_empty());
+    }
+
+    /// Every read here degrades rather than failing, this one included: no gh, a gh too
+    /// old for `--json`, or a login gh left blank all mean "no picker", never an error.
+    #[test]
+    fn unreadable_account_output_is_no_accounts_rather_than_a_panic() {
+        assert!(parse_accounts("").is_empty());
+        assert!(parse_accounts("not json at all").is_empty());
+        assert!(parse_accounts(r#"{"hosts":{"github.com":[{"active":true,"login":""}]}}"#).is_empty());
+        assert!(!parse_accounts(r#"{"hosts":{"github.com":[{"login":"octocat"}]}}"#)[0].active);
     }
 }

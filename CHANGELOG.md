@@ -16,8 +16,15 @@ Markers: `+` new · `~` changed · `!` fixed
 The header's running-server list finally reads the log Claude Code actually writes.
 
 + A row says **where it looked** for its log, and offers Reveal and Copy for that path.
++ Pick which of your GitHub accounts a project reads as, from the project menu or from
+  the GitHub card itself. `gh` keeps one active account and switches it globally, so a
+  work login and a personal one could not both be right at once — a private repo the
+  other account owns came back as *could not resolve to a Repository*, which named
+  neither the account nor the fix.
 ~ The popover splits **Running servers** from **Background jobs**; only something with an
   address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
+~ The GitHub card names the account a failed read ran as, instead of passing GitHub's
+  own wording through.
 ! Background shell logs were never found at all — the path was built from the wrong temp
   root, so every row sat at "starting…" for the life of the session.
 ! A shell whose log never appears now retires instead of staying on the list forever, and
@@ -31,6 +38,7 @@ The header's running-server list finally reads the log Claude Code actually writ
 ! Day spend: resuming a session whose original pane was still running re-booked the
   whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
   kept per pane within a conversation.
+! `gh: Not Found (HTTP 404)` no longer reads as "GitHub CLI (gh) is not installed".
 
 ## 0.24.0 — 2026-08-28
 

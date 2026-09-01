@@ -15,7 +15,7 @@ import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { DiffStat, WtHead } from "./types";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
-import type { GhThread, Holder, KeptIssue } from "./ghwork";
+import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
 import {
   localStanding, orderCands, standing, type CleanCand, type MergedPrs, type SweepResult,
 } from "./branches";
@@ -799,11 +799,47 @@ export function workCard(rows: GhThread[], total: number, prs: number, holder: (
     <div class="ac-b">${rows.map((t) => workRow(t, holder(t))).join("")}</div></div>`;
 }
 
-/// gh missing, logged out, or pointed at a non-GitHub folder. One quiet row, never an
-/// error dialog — the same stance a blocked runnable takes.
-export function ghUnavailable(reason: string): string {
+/// gh missing, logged out, pointed at a non-GitHub folder — or signed in as the wrong
+/// one of your accounts. One quiet row, never an error dialog: the same stance a blocked
+/// runnable takes.
+///
+/// **The account picker is offered here because here is where you find out.** On a
+/// machine logged in to two GitHub accounts, the commonest reason this card exists at
+/// all is that the repo belongs to the other one, and a card that only states the
+/// failure makes the reader go looking for a setting they have no reason to believe
+/// exists. It is absent for anybody with one account, where it could not change the
+/// answer.
+export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho): string {
   return `<div class="miss"><span class="t">GitHub</span><p>${esc(reason)}.</p>
-    <p>Everything else on this dashboard still works.</p></div>`;
+    <p>Everything else on this dashboard still works.</p>${ghPicker(accounts, who)}</div>`;
+}
+
+/// The account row: one button per account gh holds, the current one marked.
+///
+/// The mark is on the *effective* account whichever way it was reached, but the label
+/// underneath says which of the two it is — "gh's default" and "set for this project"
+/// look the same until the day the default changes under you, and then they are the
+/// whole story. A pin gh no longer knows says so rather than disappearing, because that
+/// is precisely the state in which the reads below it are failing.
+export function ghPicker(accounts: GhAccount[], who: GhWho): string {
+  if (!ghPickable(accounts)) return "";
+  const btn = (login: string, on: boolean) =>
+    `<button class="act${on ? " on" : ""}" data-dashact="ghacct:${esc(login)}">${esc(login)}</button>`;
+  const rows = accounts.map((a) => btn(a.login, a.login === who.login)).join("");
+  // A pin gh has forgotten still holds — the backend refuses the call rather than
+  // answering as somebody else — so it is shown, marked, and **inert**: it is the state
+  // to escape from, and a button that re-pins what is already pinned is a control whose
+  // only effect is to look like it did something. The way out is another account or the
+  // clear button beside it.
+  const gone = who.source === "pinned" && !who.known && who.login
+    ? `<button class="act on" disabled>${esc(who.login)}</button>` : "";
+  const sub = who.source === "pinned"
+    ? (who.known ? "set for this project" : `gh is not logged in as ${esc(who.login ?? "")} any more`)
+    : "gh's default account, for every project that sets none";
+  return `<div class="ghpick"><span class="lb">Read this project as</span>
+    <div class="row">${gone}${rows}${who.source === "pinned"
+      ? `<button class="act" data-dashact="ghacctclear">Follow gh's default</button>` : ""}</div>
+    <span class="sb">${sub}</span></div>`;
 }
 
 // ---------- the enlarged views ----------

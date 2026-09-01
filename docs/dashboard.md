@@ -34,7 +34,7 @@ Easy to get wrong:
 
 ## The GitHub half
 
-`ghwork.ts` owns the rules (tested); `claim.ts` owns what a dispatch writes. `gh_threads` is three `gh` calls per repo (issues, PRs, viewer) cached 60s, and **degrades rather than failing** (`available: false` + reason, one quiet row, like a blocked runnable).
+`ghwork.ts` owns the rules (tested); `claim.ts` owns what a dispatch writes. `gh_threads` is three `gh` calls per repo (issues, PRs, viewer) cached 60s, and **degrades rather than failing** (`available: false` + reason, one quiet row, like a blocked runnable). A project pinned to an account spends two, not three — the pin *is* the viewer.
 
 **Two orderings decide how long the card takes, and both were wrong in the same direction: the network waited on things it does not depend on.**
 
@@ -50,7 +50,19 @@ Easy to get wrong:
 - **Dispatch sends the prompt**, the one deliberate break of "Episko prefills, the human presses Enter": the confirm sheet *is* the reading. A colleague's shared note stays prefilled. Both halves need the session id back from `launch`: `panes.ts` returns `string | null` and `DashHost.launch` is typed to match; typed `unknown`, every dispatch failed for a release while looking like success. **Type the seam as well as the call site**, since only `tsc` catches this class.
 - **The Enter that sends must be its own `write_pty`**: a `\r` inside one chunk is a paste-newline rather than a submit (verified against the real CLI). Anything that *sends* rather than prefills inherits this.
 - **Pass every argument a `#[tauri::command]` declares**, because Tauri rejects the whole invoke on one missing key, so an omitted argument is no call at all. `gh_claim` shipped three releases missing its `body`: no assignee, label or comment ever landed while the UI said *Started*. `ipc.test.ts` now compares both directions, and outcomes are read, so a half-landed claim says so on screen.
-- **The viewer (`gh api user`) is cached per process, not per repo.**
+- **The viewer (`gh api user`) is cached per process, not per repo** — for gh's *active* account. A project pinned to another account never reaches that cache: its login is already known, so `viewer_login` returns it without a process. Caching one login per process is what made two accounts indistinguishable, and claims are what pay for it ("mine" vs "a colleague's" is that string compared to an assignee).
+
+### Two GitHub accounts on one machine
+
+**`gh` has one active account per host and switches it globally** (`gh auth switch`), which is fine for one identity and useless for two at once — a work account and a personal one, the situation an `~/.ssh/config` alias in a remote (`git@github.com-work:org/repo.git`) usually exists to keep apart. Episko already resolves that alias to mint the slug (`parse_remote`), so the dashboard finds the repo and then `gh` reads it as the wrong person.
+
+- **The failure names nothing.** GitHub answers a private repo your token cannot see exactly as it answers one that does not exist: *Could not resolve to a Repository with the name 'org/repo'*. Nothing in it mentions an account, so it reads as a typo or a deleted repo, and the fix — which is a *setting* — is invisible. `classify` therefore takes the login the call ran as and says "signed in as X, which cannot see this repository". Nothing else in the failure can point at the fix.
+- **The choice is per project, in `localStorage` (`cc-gh-account`, keyed by `colorKey`), never committed.** Which of *your* accounts you are is not a project fact; a colleague pulling the repo has their own. Same shape and same reasoning as the per-project agent override (`cc-agent-by-project`).
+- **`GH_TOKEN` is how an account is chosen, per call.** gh has no per-invocation account flag, so `gh()` reads that account's own token back out of gh's keyring (`gh auth token --user`) and hands it to the one child process. No global switch, no config written, nothing another project can trip over. The token is **never cached and never logged**: gh refreshes them on its own schedule, and the read costs ~40ms in front of a ~600ms network call.
+- **A pin gh has forgotten is an error, not a fall-back.** `account_token` fails loudly rather than letting the call run as the active account — falling back is precisely what the pin was set to prevent, and it would put a *different* account's issues under this project's name. `ghWho`'s `known: false` is how every surface shows that state instead of quietly ticking nothing.
+- **The pin is passed as an argument, never pushed to the backend as a map.** Every `gh` command takes `account: Option<String>`, read at the call site with `ghAccountFor(root)` — one copy of the preference, and `ipc.test.ts` fails if a call site forgets it. (A backend-held mirror of a frontend preference is the "second copy that can go stale" the agent override is written to avoid.)
+- **Switching accounts drops all three caches for that repo** (`gh_invalidate`), because the board, the day's activity and the merged-PR evidence were all answered by the identity you have just stopped using. A board that repaints as the new account beside a triage list that is still the old one is worse than either alone.
+- **The picker is offered in two places and only where it can change an answer** (`ghPickable`: more than one account). In the project menu beside the agent picker, which is where per-project preferences live; and *inside the GitHub card that failed*, because that card is where you find out the setting exists. One account is not a choice.
 
 **Three committed files, one rule**: `.episko/digest.md`, `.episko/episko.toml` (`[triage] keep`, `[claim]`), `.episko/notes.toml`. All are project facts, all `toml_edit` read-modify-write, all refusing to create themselves without an explicit yes, all needing **git rather than GitHub**.
 

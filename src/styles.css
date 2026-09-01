@@ -2882,6 +2882,14 @@ select.in-ctl { cursor: pointer; }
 .miss .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .miss p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted-2); }
 .miss code { font: 10.5px var(--font-mono); color: var(--accent-ink); }
+/* The account picker inside the GitHub card. A row of buttons rather than a select:
+   there are two of them, and the point is to see both names at once. */
+.ghpick { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.ghpick .lb { font: 600 10px var(--font-ui); color: var(--muted-2); }
+.ghpick .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.ghpick .act { height: 23px; font-size: 10.5px; padding: 0 9px; }
+.ghpick .act.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.ghpick .sb { font: 10px var(--font-ui); color: var(--muted-2); opacity: .75; }
 /* The work-log offer borrows `.miss`'s quiet dashed card, but sits in the timeline
    rather than the aside — so it needs the column's own top gap and a button that
    doesn't stretch to the card's full width. */
