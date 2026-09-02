@@ -1,5 +1,7 @@
 // Account-wide usage limits: merge the readings, forecast whether the burn rate runs the window out.
 
+import { readList } from "./store";
+
 // Shared by every session: each statusLine reports the same account numbers.
 export const rl: { h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null } =
   { h5: null, h5Reset: null, d7: null, d7Reset: null };
@@ -107,7 +109,7 @@ export interface FcLogEntry {
   late?: number;          // seconds between the window's real reset and us noticing
   flat?: boolean;         // snapshot had ~no burn: correct-but-uninformative
 }
-export const fcLog: FcLogEntry[] = JSON.parse(localStorage.getItem("cc-forecast-log") || "[]");
+export const fcLog: FcLogEntry[] = readList<FcLogEntry>("cc-forecast-log");
 export interface MidSnap { proj: number; used: number; burn: number; at: number }
 export const midSnap: Record<RlWin, MidSnap | null> = { h5: null, d7: null };
 // Snapshot the projection once past halfway. A flat-burn snapshot predicts nothing, so keep

@@ -5,6 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, takeStage, toast } from "./dom";
+import { readList } from "./store";
+import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
   canShare, clampRange, DASH_RANGE_DEFAULT, dashDays, dashPulse, densePerDay,
@@ -108,7 +110,7 @@ export function setDashSummaries(on: boolean) {
 }
 // Projects that said yes to creating `.episko/digest.md` (asked once, as tasks.rs does for tasks.toml).
 const OK_KEY = "cc-digest-ok";
-const digestOk = (): string[] => { try { return JSON.parse(localStorage.getItem(OK_KEY) || "[]"); } catch { return []; } };
+const digestOk = (): string[] => readList<string>(OK_KEY).filter((x) => typeof x === "string");
 function allowDigest(root: string) {
   const l = digestOk();
   if (!l.includes(root)) localStorage.setItem(OK_KEY, JSON.stringify([...l, root]));
@@ -939,11 +941,32 @@ async function doClose(): Promise<void> {
 }
 
 // Committed, so it needs the same create-gate as the digest; reviewable and undoable in the ⤢ view.
+// A new committable file is never created without asking (CLAUDE.md). The backend refuses a
+// missing file when `create` is false, and that refusal is the only "does it exist?" this side
+// can trust; a yes is the write, and a no leaves the repo as it was.
+async function withConsent(write: (create: boolean) => Promise<unknown>, file: string, why: string): Promise<boolean> {
+  try {
+    await write(false);
+    return true;
+  } catch (e) {
+    if (!String(e).includes("no .episko/")) throw e;
+    const ok = await ask(`Create ${file}?\n\n${why}\n\nIt is committed with the project, so your colleagues get it too.`,
+      { title: "A new file in the repo", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+    if (!ok) return false;
+    await write(true);
+    return true;
+  }
+}
+
 async function setKept(number: number, keep: boolean): Promise<void> {
   const r = root();
   const who = gh.viewer || "someone";
   try {
-    await invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create: true });
+    const wrote = await withConsent(
+      (create) => invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create }),
+      ".episko/episko.toml",
+      "Keeping an issue out of triage is a decision for the whole team, so it is recorded in the project.");
+    if (!wrote) return;
     kept = await invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => kept);
     toast(keep ? `#${number} kept. Nobody on the team is asked again` : `#${number} back in triage`);
     renderDash();
@@ -1026,10 +1049,11 @@ async function toggleShare(id: string): Promise<void> {
   if (!n) return;
   const on = shared.some((x) => x.id === id);
   try {
-    await invoke("set_shared_note", {
+    const wrote = await withConsent((create) => invoke("set_shared_note", {
       root: r, id, text: n.text, who: gh.viewer || "someone",
-      at: isoDay(Date.now()), share: !on, create: true,
-    });
+      at: isoDay(Date.now()), share: !on, create,
+    }), ".episko/notes.toml", "A shared note is written into the project rather than kept on your machine.");
+    if (!wrote) return;
     shared = await invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => shared);
     toast(on ? "Note is yours again" : "Shared. Commit .episko/notes.toml to send it");
     renderDash();

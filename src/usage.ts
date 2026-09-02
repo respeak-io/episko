@@ -3,6 +3,7 @@
 // per calendar day by `usageWindow`. Storage cadences: docs/architecture.md.
 
 import { hasAgentCapability, type AgentTokenBreakdown, type AgentTokenUsage, type InstallFile, type Sess } from "./types";
+import { readList, readObj } from "./store";
 import { basename } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
@@ -24,8 +25,8 @@ export interface DayDetail {
   projects: Record<string, number>;
   sess?: Record<string, DaySess>;
 }
-export const usage: Record<string, number> = JSON.parse(localStorage.getItem("cc-usage") || "{}");
-export const usageDetail: Record<string, DayDetail> = JSON.parse(localStorage.getItem("cc-usage-detail") || "{}");
+export const usage: Record<string, number> = readObj<number>("cc-usage");
+export const usageDetail: Record<string, DayDetail> = readObj<DayDetail>("cc-usage-detail");
 export function todayKey() { return dayKeyOf(Date.now()); }
 // Local wall-clock day, never UTC, like every key in both stores.
 export function dayKeyOf(ms: number) { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
@@ -381,8 +382,8 @@ export interface DayUsage {
 }
 export type UDay = { key: string; cost: number; tok: number; u?: DayUsage };
 interface LiveTokenDay extends DayUsage { session_ids: string[] }
-const scannedTokenDays: { value: DayUsage[] } = { value: JSON.parse(localStorage.getItem("cc-usage-tokens") || "[]") };
-const liveTokenDays: LiveTokenDay[] = JSON.parse(localStorage.getItem("cc-agent-usage-tokens") || "[]");
+const scannedTokenDays: { value: DayUsage[] } = { value: readList<DayUsage>("cc-usage-tokens") };
+const liveTokenDays: LiveTokenDay[] = readList<LiveTokenDay>("cc-agent-usage-tokens");
 function mergeTokenDays(scanned: DayUsage[], live: LiveTokenDay[]): DayUsage[] {
   const by = new Map<string, DayUsage>();
   const add = (d: DayUsage) => {
@@ -412,7 +413,7 @@ export function setTokenDays(days: DayUsage[]) {
 // (like the cost baseline). Claude is excluded: its transcript scan is already authoritative.
 const TOKEN_BASE_KEY = "cc-agent-token-base";
 interface TokenBase extends AgentTokenBreakdown { at: number }
-const tokenBase = new Map<string, TokenBase>(Object.entries(JSON.parse(localStorage.getItem(TOKEN_BASE_KEY) || "{}")) as [string, TokenBase][]);
+const tokenBase = new Map<string, TokenBase>(Object.entries(readObj<TokenBase>(TOKEN_BASE_KEY)));
 const tokenFields = ["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens"] as const;
 function tokenDiff(cur: AgentTokenBreakdown, prev?: TokenBase): AgentTokenBreakdown {
   const reset = !!prev && tokenFields.some((k) => cur[k] < prev[k]);

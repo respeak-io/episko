@@ -731,8 +731,14 @@ pub(crate) fn set_kept(
     root: String, number: i64, who: String, at: String, keep: bool, create: bool,
 ) -> Result<(), String> {
     let path = episko_toml(&root);
-    if !path.is_file() && !create {
-        return Err("no .episko/episko.toml yet".into());
+    if !path.is_file() {
+        // Un-keeping what no file records is already true, and must not create one to say so.
+        if !keep {
+            return Ok(());
+        }
+        if !create {
+            return Err("no .episko/episko.toml yet".into());
+        }
     }
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;

@@ -2,6 +2,7 @@
 // a row, and the frecency that breaks ties. No DOM; ./palui builds and paints the groups.
 
 import type { Sess } from "./types";
+import { readObj } from "./store";
 import { esc } from "./format";
 
 export interface PalItem {
@@ -16,7 +17,7 @@ export interface PalItem {
 }
 
 // Frecency: recency × frequency with a ~30-day half-life, for stable command/launch keys.
-export const frecency: Record<string, { n: number; t: number }> = JSON.parse(localStorage.getItem("cc-frecency") || "{}");
+export const frecency: Record<string, { n: number; t: number }> = readObj<{ n: number; t: number }>("cc-frecency");
 export function frecScore(key: string): number { const f = frecency[key]; return f ? f.n * Math.pow(0.5, (Date.now() - f.t) / 2592000000) : 0; }
 export function bumpFrec(key: string) { if (!key || key.startsWith("session:")) return; const f = frecency[key] || { n: 0, t: 0 }; f.n++; f.t = Date.now(); frecency[key] = f; localStorage.setItem("cc-frecency", JSON.stringify(frecency)); }
 // A deletion rather than a hidden flag: using the thing again earns the row back.

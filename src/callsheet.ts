@@ -2,6 +2,7 @@
 // is ~38 mono columns; see CLAUDE.md). Owns #callDlg on the ./diffview pattern. The detail
 // pane is the only scroller, and `overflow-wrap` stays default so a line is never cut mid-token.
 
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { ageBucket, esc, escAttr, fmtLatency } from "./format";
 import { toolClass } from "./inspectorview";
@@ -40,7 +41,8 @@ export function selectCall(key: string) {
   renderCallSheet();
 }
 
-// `navigator.clipboard`, like every other non-terminal copy; the plugin is for the panes.
+// Through the clipboard plugin like every other copy in the app: `navigator.clipboard`
+// asks the OS for permission, and a copy that raises a prompt is a copy that failed.
 export function copySelectedCall(side: string) {
   const a = selected();
   if (!a) return;
@@ -49,7 +51,7 @@ export function copySelectedCall(side: string) {
     : side === "out" ? (a.out || (a.durMs == null ? "still running" : "(nothing returned)"))
     : actClipText(a);
   const what = side === "inp" ? "Input copied" : side === "out" ? "Output copied" : "Call copied";
-  navigator.clipboard.writeText(text)
+  writeText(text)
     .then(() => toast(what))
     .catch(() => toast("copy failed"));
 }

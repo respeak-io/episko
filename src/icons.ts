@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "./dom";
+import { readObj } from "./store";
 import { basename, esc } from "./format";
 
 // Wired by main.ts at startup; until then (and in a test) an icon change paints nothing.
@@ -13,7 +14,7 @@ let renderMini: () => void = () => {};
 export function setIconRenderMini(fn: typeof renderMini) { renderMini = fn; }
 
 // path → data URI; "" means probed and none found, and a present key is never re-probed.
-const icons: Record<string, string> = JSON.parse(localStorage.getItem("cc-icons") || "{}");
+const icons: Record<string, string> = readObj<string>("cc-icons");
 function saveIcons() { localStorage.setItem("cc-icons", JSON.stringify(icons)); }
 // Bump when discovery improves: cached "no icon" entries are re-probed, found data URIs are kept.
 const ICON_CACHE_VERSION = "2";
@@ -23,7 +24,7 @@ if (localStorage.getItem("cc-icons-v") !== ICON_CACHE_VERSION) {
   saveIcons();
 }
 // Consulted before `icons`, so neither a re-probe nor a version bump can overwrite it.
-export const customIcons: Record<string, string> = JSON.parse(localStorage.getItem("cc-custom-icons") || "{}");
+export const customIcons: Record<string, string> = readObj<string>("cc-custom-icons");
 function saveCustomIcons() { localStorage.setItem("cc-custom-icons", JSON.stringify(customIcons)); }
 export function iconFor(key: string): string | null { const v = customIcons[key] || icons[key]; return v ? v : null; }
 export async function probeIcon(key: string) {

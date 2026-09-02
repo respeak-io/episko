@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
@@ -17,6 +18,7 @@ import {
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
+import { readList } from "./store";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
@@ -199,9 +201,7 @@ export function launchWorktree(project: string, root: string, dir: string, branc
 export async function adoptOrphans(): Promise<number> {
   let back: LiveSess[] = [];
   try { back = await invoke<LiveSess[]>("live_sessions"); } catch { return 0; }
-  let roster: Restorable[] = [];
-  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
-  if (!Array.isArray(roster)) roster = [];
+  const roster = readList<Restorable>("cc-restore");
   const orphans = orphanAdoptions(back, roster);
   for (const o of orphans) await adoptSession(o);
   if (orphans.length) {
@@ -838,7 +838,7 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
     toast("Prefilled in a shell. Press Enter to run");
     return;
   }
-  try { await navigator.clipboard.writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
+  try { await writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
   invoke("open_terminal_here", { workdir, engine: termEngine })
     .then(() => toast("Terminal opened, command copied: " + cmd))
     .catch((e) => toast("terminal: " + e));
