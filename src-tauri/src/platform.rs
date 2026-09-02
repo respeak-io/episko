@@ -526,7 +526,8 @@ pub(crate) fn resolve_link_path(bases: Vec<String>, cands: Vec<String>) -> Optio
     for (i, raw) in cands.iter().enumerate() {
         let c = raw.trim();
         // `.`/`..` resolve against every base; one character is leftover punctuation.
-        if c.len() < 2 || c == ".." {
+        // Counted in chars, not bytes: `ä` is two bytes and still one character.
+        if c.chars().nth(1).is_none() || c == ".." {
             continue;
         }
         let cand = match c.strip_prefix("~/") {

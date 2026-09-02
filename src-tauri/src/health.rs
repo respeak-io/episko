@@ -75,7 +75,11 @@ fn is_code(line: &str, fam: Family, in_block: &mut bool) -> bool {
                 *in_block = !t.contains("*/");
                 return false;
             }
-            !(t.starts_with("//") || t.starts_with('*'))
+            // A leading `*` continues a block comment only as `* text`, bare `*` or `*/`.
+            // `*count += 1` is a deref, and treating it as prose dropped those lines from
+            // the duplicate index entirely.
+            let cont = t == "*" || t.starts_with("* ") || t.starts_with("*/");
+            !(t.starts_with("//") || cont)
         }
         Family::Indent => !t.starts_with('#'),
         Family::Plain => true, // no comment syntax known; only blanks are discounted
@@ -188,6 +192,19 @@ pub(crate) fn measure(src: &str, fam: Family, ticks: Ticks) -> FileMetrics {
             Family::Indent => leading_cols(raw) / unit,
             Family::Plain => 0,
         };
+        // Indent closes on the dedent itself, BEFORE that line's own depth is taken, or the
+        // first top-level line after a `def` body reads as depth 1 and counts as its work.
+        // Only a code line dedents: a blank one carries no indentation to compare.
+        if fam == Family::Indent && code {
+            while let Some(&(fi, base)) = open.last() {
+                if (here as i32) < base {
+                    m.fns[fi].end = n - 1;
+                    open.pop();
+                } else {
+                    break;
+                }
+            }
+        }
         // Depth is relative to the enclosing function in both families, so one threshold
         // means one thing: level 1 is a statement in the function body wherever you are.
         m.depth.push(match open.last() {
@@ -237,14 +254,6 @@ pub(crate) fn measure(src: &str, fam: Family, ticks: Ticks) -> FileMetrics {
                 }
             }
             Family::Indent => {
-                while let Some(&(fi, base)) = open.last() {
-                    if (here as i32) < base {
-                        m.fns[fi].end = n - 1;
-                        open.pop();
-                    } else {
-                        break;
-                    }
-                }
                 if let Some(name) = def_name(t) {
                     // `def` is always a declaration; there is no callback form here.
                     m.fns.push(FnSpan { name, start: n, end: n, code_lines: 0, cognitive: 0, decl: true });
@@ -406,6 +415,24 @@ fn def_name(t: &str) -> Option<String> {
 // duplication
 // ---------------------------------------------------------------------------
 
+/// The line without its trailing `//` comment. Brace only — `#` is Indent's marker and
+/// `//` is Python's floor division — and never one inside a string, or every URL in the
+/// project would hash to the same `let x = "https:`.
+fn strip_line_comment(line: &str, fam: Family) -> &str {
+    if fam != Family::Brace {
+        return line;
+    }
+    let mut i = 0;
+    while let Some(rel) = line[i..].find("//") {
+        let at = i + rel;
+        if line[..at].matches('"').count() % 2 == 0 {
+            return &line[..at];
+        }
+        i = at + 2;
+    }
+    line
+}
+
 /// A line reduced to what a copy would share: no comment, no indentation, inner
 /// whitespace collapsed; pure punctuation does not count. Fills `buf` because this runs
 /// once per line of the whole project and the allocation it saves is one per line.
@@ -414,7 +441,7 @@ fn significant_into(line: &str, fam: Family, in_block: &mut bool, buf: &mut Stri
     if !is_code(line, fam, in_block) {
         return false;
     }
-    let t = line.split("//").next().unwrap_or(line).trim();
+    let t = strip_line_comment(line, fam).trim();
     if t.len() < 4 {
         return false;
     }
@@ -884,6 +911,51 @@ mod tests {
         // A method sits one brace deeper than a free function and must not report deeper.
         let meth = brace("class C {\n  m() {\n    if (a) {\n      deep();\n    }\n  }\n}\n");
         assert_eq!(meth.depth[4], 2, "a method's body is still level 1: {:?}", meth.depth);
+    }
+
+    /// The dedent belongs to what follows the function, not to the function.
+    #[test]
+    fn an_indent_family_dedent_leaves_the_function_it_closed() {
+        let py = measure("def f():\n    inner()\n\ntop()\n", Family::Indent, Ticks::Quote);
+        assert_eq!(py.depth[2], 1, "the body");
+        assert_eq!(py.depth[4], 0, "top level again: {:?}", py.depth);
+        assert_eq!(py.fns[0].code_lines, 1, "`top()` is not the function's work");
+    }
+
+    /// `*p = v` is a deref, and the duplicate index it was dropped from is the whole point.
+    #[test]
+    fn a_leading_star_is_code_unless_it_continues_a_comment() {
+        let mut blk = false;
+        assert!(is_code("*count += 1;", Family::Brace, &mut blk));
+        assert!(is_code("*p = v;", Family::Brace, &mut blk));
+        assert!(!is_code(" * still prose", Family::Brace, &mut blk));
+        assert!(!is_code("*", Family::Brace, &mut blk));
+        // A block comment still swallows its own continuation lines, star or not.
+        let mut blk = false;
+        assert!(!is_code("/* opens", Family::Brace, &mut blk));
+        assert!(!is_code("*none of this", Family::Brace, &mut blk));
+        assert!(!is_code("*/", Family::Brace, &mut blk));
+        assert!(is_code("*p = v;", Family::Brace, &mut blk));
+    }
+
+    /// A trailing-comment strip that fires inside a string makes every URL the same line.
+    #[test]
+    fn the_significant_line_keeps_a_url_and_pythons_floor_division() {
+        let mut blk = false;
+        let mut buf = String::new();
+        significant_into(r#"let a = "https://one.example";"#, Family::Brace, &mut blk, &mut buf);
+        let one = buf.clone();
+        significant_into(r#"let a = "https://two.example";"#, Family::Brace, &mut blk, &mut buf);
+        assert_ne!(one, buf, "two different URLs are two different lines");
+
+        let mut blk = false;
+        significant_into("half = total // 2", Family::Indent, &mut blk, &mut buf);
+        assert_eq!(buf, "half = total // 2", "`//` is floor division, not a comment");
+
+        // A real trailing comment still goes.
+        let mut blk = false;
+        significant_into("let a = 1; // note", Family::Brace, &mut blk, &mut buf);
+        assert_eq!(buf, "let a = 1;");
     }
 
     /// Every Rust test here lives in `mod tests` and every method in an `impl`; if the

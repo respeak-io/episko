@@ -47,8 +47,15 @@ pub(crate) fn set_shared_note(
     root: String, id: String, text: String, who: String, at: String, share: bool, create: bool,
 ) -> Result<(), String> {
     let path = notes_path(&root);
-    if !path.is_file() && !create {
-        return Err("no .episko/notes.toml yet".into());
+    if !path.is_file() {
+        // Only sharing can want the file created. Un-sharing what no file records is
+        // already true, so it succeeds as a no-op rather than reporting a missing file.
+        if !share {
+            return Ok(());
+        }
+        if !create {
+            return Err("no .episko/notes.toml yet".into());
+        }
     }
     if share && text.trim().is_empty() {
         return Err("an empty note is not worth sharing".into());
@@ -117,6 +124,14 @@ mod tests {
         assert!(list_shared_notes(r).is_empty());
         let text = std::fs::read_to_string(d.join(".episko").join("notes.toml")).unwrap();
         assert!(!text.contains("[[note]]"), "an empty table is noise: {text}");
+    }
+
+    #[test]
+    fn unsharing_with_no_file_is_a_no_op_rather_than_an_error() {
+        let d = scratch_dir();
+        let r = root_of(&d);
+        set_shared_note(r.clone(), "n1".into(), String::new(), String::new(), String::new(), false, false).unwrap();
+        assert!(!d.join(".episko").join("notes.toml").exists(), "and it creates nothing to say so");
     }
 
     #[test]
