@@ -47,6 +47,23 @@ The header's running-server list finally reads the log Claude Code actually writ
   whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
   kept per pane within a conversation.
 ! `gh: Not Found (HTTP 404)` no longer reads as "GitHub CLI (gh) is not installed".
+! History and the token ledger no longer stop dead on a transcript containing an umlaut
+  or an emoji at the wrong byte.
+! An agent that `cd $WT`'d or `cd ~`'d before writing no longer looked like it had come
+  home, which cleared the drift card while it worked somewhere else.
+! A branch sweep that finished after you switched project put its result — and its
+  toast — in the other project's Branches view.
+! *Keep* an issue and *Share* a note now ask before creating a committable file in your
+  repo, as the work log already did.
+! A permission the backend refused dropped its card and said nothing.
+! The sidebar's worktree chips are tinted by branch again, and the file-drop outline has
+  its rounded corners back.
+! *Reveal folder* is offered on shell and task panes, not just agents.
+! Tasks: a VS Code `npm` task with `dependsOn` ran its dependencies and silently skipped
+  its own script; a Taskfile or mise project came back as withheld unless `just` was
+  also switched on; and an `${input:…}` used only in an `env` value is now asked for.
+! The working-set diff no longer undercounts removed lines in a file whose comments
+  start with `--`.
 
 ## 0.24.0 — 2026-08-28
 
