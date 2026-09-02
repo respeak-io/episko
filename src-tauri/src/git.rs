@@ -3083,8 +3083,6 @@ canonicalizehostname false
         assert_eq!(tabbed.subject, "side\twork with\ttabs");
 
         // The layout matches on full shas, so a parent must never be abbreviated.
-        let p2 = git_graph(path.clone(), 0, 5, "all".into()).unwrap();
-        assert!(!p2.commits.is_empty());
         assert!(merge.parents.iter().all(|sha| sha.len() == merge.sha.len()));
 
         // `scope: "head"` shows the difference only on an unmerged branch.

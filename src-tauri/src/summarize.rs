@@ -379,10 +379,11 @@ mod tests {
 
     #[test]
     fn a_hand_edited_file_keeps_its_prose_out_of_the_keys() {
-        // A hand-added heading must not become a day, nor eat the entry above it.
-        let text = "# Work log\n\n## Notes for the team\nignore me\n\n## 2026-07-31\nReal entry.\n";
+        // A hand-added heading must not become a day, either side of the one real entry:
+        // above it (not a day) or below it (not part of the day it follows).
+        let text = "# Work log\n\n## Notes for the team\nignore me\n\n## 2026-07-31\nReal entry.\n\n## Conventions\nnor this\n";
         let m = parse_digest(text);
-        assert_eq!(m.len(), 1);
+        assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(m.get("2026-07-31").map(String::as_str), Some("Real entry."));
     }
 

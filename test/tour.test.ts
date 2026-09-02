@@ -24,7 +24,13 @@ const SET_TABS: Record<string, string> = Object.fromEntries(
 function inHtml(sel: string): boolean {
   let m: RegExpExecArray | null;
   if ((m = /^#([A-Za-z0-9_-]+)$/.exec(sel))) return HTML.includes(`id="${m[1]}"`);
-  if ((m = /^\[([a-z-]+)(?:="[^"]*")?\]$/.exec(sel))) return HTML.includes(m[1]);
+  // The name as a whole attribute (a substring lets `[data-add]` be satisfied by `data-addr`),
+  // and the value too when the selector names one.
+  if ((m = /^\[([a-z-]+)(?:="([^"]*)")?\]$/.exec(sel))) {
+    return m[2] === undefined
+      ? new RegExp(`\\s${m[1]}(?=[\\s=>])`).test(HTML)
+      : HTML.includes(`${m[1]}="${m[2]}"`);
+  }
   if ((m = /^\.([A-Za-z0-9_-]+)$/.exec(sel))) return new RegExp(`class="[^"]*\\b${m[1]}\\b`).test(HTML);
   throw new Error(`tour anchor "${sel}" uses a selector shape this test cannot check — `
     + `keep anchors to #id, [data-x], [data-x="v"] or .class, or teach inHtml() the new shape`);

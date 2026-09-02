@@ -129,7 +129,7 @@ describe("outputText — what came back", () => {
   });
   it("counts the lines of a created file, which has no patch to show", () => {
     const resp = { type: "create", filePath: "/a/made.txt", content: "made\n", structuredPatch: [], originalFile: null, userModified: false };
-    expect(outputText(resp, null)).toBe("created · 2 lines");
+    expect(outputText(resp, null)).toBe("created · 1 line");
   });
 
   // ---- everything else ----
@@ -166,7 +166,7 @@ describe("outputText — the shapes that used to read as nothing", () => {
     // Every hunk string has a newline after its `@@` header, so "has a newline" is not "has lines".
     const out = outputText({ type: "create", content: "a\nb\nc\n", structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, lines: [] }] }, null);
     expect(out).not.toContain("@@");
-    expect(out).toContain("4 lines");
+    expect(out).toContain("3 lines");   // the trailing newline ends the third, it is not a fourth
   });
 });
 

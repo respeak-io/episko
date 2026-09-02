@@ -724,9 +724,10 @@ mod tests {
 
         let claude = resolve_claude();
         // A throwaway dir, never a real session's (`--session-id` on an existing conversation
-        // appends to its transcript). Canonicalized: Claude records the resolved cwd and derives
-        // the project dir from it, and on macOS $TMPDIR is a symlink under /var/folders.
-        let cwd = std::fs::canonicalize(scratch_dir()).expect("resolve the scratch dir");
+        // appends to its transcript). `scratch_dir` already hands back the resolved spelling,
+        // which matters here: Claude records the resolved cwd and derives the project dir from
+        // it, and on macOS $TMPDIR is a symlink under /var/folders.
+        let cwd = scratch_dir();
         let sid = throwaway_uuid();
 
         let (app, port) = mock_telemetry_app();
