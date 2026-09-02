@@ -756,6 +756,22 @@ fn observer_loop(
         }
     }
 
+    // `stop_runtime` sends Stop and then kills the child, so the socket can close while this
+    // thread sits in `read()` and never sees it. Drain once more before calling a deliberate
+    // close a disconnect: a dropped sender means the runtime was taken away too.
+    if !stopped {
+        loop {
+            match control.try_recv() {
+                Ok(Control::Stop) | Err(TryRecvError::Disconnected) => {
+                    stopped = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+    }
+
     if !stopped {
         emit_provider_event(&app, &session_id, "episko/disconnected", Value::Null, None);
         if let Some(state) = app.try_state::<AppState>() {

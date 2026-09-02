@@ -382,11 +382,13 @@ pub(crate) async fn gh_claim(
             let edited = gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
             match edited {
                 Ok(_) => out.commented = true,
-                Err(e) => {
+                Err(_) => {
                     // Older gh has no --create-if-none; fall back so the claim still lands.
+                    // The FALLBACK's error is the one reported: the first is most likely that
+                    // missing flag, and `classify` cannot see an auth failure through it.
                     match gh(&root, acct, &[noun, "comment", &n, "--body", &text]) {
                         Ok(_) => out.commented = true,
-                        Err(_) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
+                        Err(e) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
                     }
                 }
             }
@@ -431,7 +433,16 @@ pub(crate) async fn gh_release(
         }
         if !body.is_empty() {
             let text = format!("{MARKER}\n{body}");
-            let _ = gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            // Reported like unassign and label above: a release comment that never landed
+            // leaves the thread saying somebody is still working on this.
+            if gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]).is_ok() {
+                out.commented = true;
+            } else {
+                match gh(&root, acct, &[noun, "comment", &n, "--body", &text]) {
+                    Ok(_) => out.commented = true,
+                    Err(e) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
+                }
+            }
         }
         gh_invalidate(root);
         out

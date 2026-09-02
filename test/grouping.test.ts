@@ -146,6 +146,21 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     ] });
     expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi", "/tmp/scratch"]);
   });
+  // An external terminal is listed by its raw cwd; `❯ Terminal` in an iTerm window opened
+  // over a subfolder used to mint a cluster of its own beside the checkout it is in.
+  it("clusters an external started in a subfolder by its checkout too", () => {
+    const repo = "/w/epi", wt = "/w/wt-feat";
+    worktreesByRepo.set(repo, [
+      { path: repo, branch: "main", is_main: true, exists: true },
+      { path: wt, branch: "feat", is_main: false, exists: true },
+    ]);
+    const p = grp({ path: repo,
+      sessions: [sess({ id: "agent", workdir: wt, colorKey: repo, branch: "feat" })],
+      externals: [ext({ session_id: "x", cwd: wt + "/src/deep", repo_root: repo, branch: "feat" })] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(cl[0].externals).toHaveLength(1);
+  });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
     expect(clusterByWorktree(p).map((c) => c.isMain)).toEqual([true, false]);

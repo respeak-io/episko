@@ -111,7 +111,9 @@ function wtStateOf(w: WtInfo, repoDir: string): WtState {
 function wtLabelOf(w: WtInfo) {
   return w.branch && w.branch !== "(detached)" ? w.branch : basename(w.path) + "/";
 }
-const wtSessionsIn = (path: string) => [...sessions.values()].filter((s) => s.workdir === path);
+// Through `wtNorm` like every other path comparison here: on Windows one side of this can
+// arrive with backslashes or a trailing slash, and a miss means a live pane is not closed.
+const wtSessionsIn = (path: string) => [...sessions.values()].filter((s) => wtNorm(s.workdir) === wtNorm(path));
 
 /** Head ellipsises, tail pinned: sibling branches often differ only in their suffix. */
 function wtName(name: string) {
@@ -1077,7 +1079,8 @@ export function removeWorktreeSession(s: Sess) {
 // `git worktree remove` would pull the folder from under an agent in someone else's terminal.
 export async function removeWorktreeAt(project: string, repoDir: string, path: string, branch: string) {
   const label = branch || basename(path);
-  if (externals.some((e) => e.cwd === path)) {
+  const at = wtNorm(path);
+  if (externals.some((e) => wtNorm(e.cwd) === at)) {
     toast(`${label}: a session outside Episko is running there. Close it first`);
     return;
   }
@@ -1086,7 +1089,7 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
   // record while a session names it, and the generic question below reads as a warning
   // about work to lose. The in-memory roster (`worktree_heads`) is the authority; unknown
   // means "assume it is there", since the backend removes a vanished checkout cleanly anyway.
-  const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => w.path === path);
+  const known = (worktreesByRepo.get(repoDir) ?? []).find((w) => wtNorm(w.path) === at);
   const gone = known ? !known.exists : false;
   if (gone) {
     if (!await ask(`Prune ${basename(path)}/?\n\nThe folder is already gone, so this only clears git's record of it. Nothing is lost.`,

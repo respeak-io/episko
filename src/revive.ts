@@ -225,7 +225,12 @@ export function reviveDeadline(list: Iterable<Sess>, p: RevivePrefs, now: number
   for (const s of list) {
     const st = s.revive;
     if (!st || st.gaveUp || st.attempts >= p.attempts) continue;
+    if (!isAgent(s) || s.external) continue;
     if (s.phase !== "error" || !s.apiErr || s.attention) continue;
+    // The same gate `reviveStep` applies, or unticking a bucket leaves a countdown
+    // running towards a send that answers `why: "kind"` and never happens.
+    const kind = reviveKind(s.apiErr.kind);
+    if (!kind || !p.kinds.includes(kind)) continue;
     if (st.dueAt < now) return now; // already overdue — the next tick sends it
     if (at === null || st.dueAt < at) at = st.dueAt;
   }

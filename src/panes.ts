@@ -17,6 +17,7 @@ import {
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
+import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
@@ -138,8 +139,6 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === id) renderHeader(s); }
   });
   setActive(id);
-  // A restored session replaces its dormant row, or the sidebar lists the conversation twice.
-  if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
   // Read here rather than passed as an opt: it is a preference, like termEngine.
@@ -161,6 +160,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   }
   // Only a spawn that worked: the failure already toasts, and a chirp under it reads as success.
   if (spawned) playSound("launched");
+  // A restored session replaces its dormant row, or the sidebar lists the conversation
+  // twice — after the spawn, or a resume that failed has thrown its restorable row away.
+  if (spawned && opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
@@ -262,7 +264,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     // Most likely the process exited since the listing; no pty-exit reaches a pane that did not exist yet.
     const gone = String(e).includes("no such session");
     if (gone) {
-      s.phase = "ended";
+      setPhase(s, "ended");   // never bare: `phaseSince` is what every "for how long" reads
       term.writeln("\x1b[90m[this session ended while the pane was being reattached]\x1b[0m");
     } else {
       // Degraded: no history, but the live stream still flows from here on.

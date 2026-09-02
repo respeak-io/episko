@@ -87,6 +87,9 @@ export interface ClaimRecord {
   // What the claim actually wrote, so a release undoes exactly that. Absent (a ledger
   // from before this existed) means "unknown", which reads as "touch nothing".
   wrote?: { assigned: boolean; label: string };
+  // Who signed the claim. Kept here because the release runs on `pty-exit`, long after
+  // the dashboard may have moved to another project's GitHub half.
+  who?: string;
 }
 
 const LEDGER = "cc-claims";

@@ -75,6 +75,15 @@ function rustCommands(): Map<string, Cmd> {
 
 interface Site { cmd: string; keys: string[]; file: string; literal: boolean }
 
+/** How far a comment starting at `i` runs, or 0 if none does. Both scanners below skip
+ *  comments: a `// … `pty-exit` …` line above an argument would otherwise open a template
+ *  string that swallows the rest of the object, and the test fails for the wrong reason. */
+function commentEnd(s: string, i: number): number {
+  if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); return nl < 0 ? s.length : nl; }
+  if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); return end < 0 ? s.length : end + 2; }
+  return 0;
+}
+
 /** Read from `from` (an index of `{`) to its matching `}`, ignoring string contents. */
 function braceBody(s: string, from: number): string {
   let depth = 0, quote = "";
@@ -85,6 +94,8 @@ function braceBody(s: string, from: number): string {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(s, i);
+    if (c) { i = c - 1; continue; }
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if (ch === "{") depth++;
     else if (ch === "}") { depth--; if (depth === 0) return s.slice(from + 1, i); }
@@ -103,6 +114,8 @@ function objectKeys(body: string): string[] {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(body, i);
+    if (c) { i = c - 1; cur = ""; continue; }   // a comment names no key
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if ("{([".includes(ch)) { depth++; continue; }
     if ("})]".includes(ch)) { depth--; continue; }

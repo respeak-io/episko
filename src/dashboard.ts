@@ -227,8 +227,10 @@ async function loadDash(): Promise<void> {
     if (wantGit) void loadSync(r); else mainStat = null;   // fired, not awaited: nothing else waits on it
     // The digest is the project's line, never yours: it seeds `teamSummaries` only.
     for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
-    hasDigest = Object.keys(digest).length > 0
+    const anyDigest = Object.keys(digest).length > 0
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
+    if (root() !== r) return;   // a second await, so the stage may have moved again since
+    hasDigest = anyDigest;
     days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
   } finally {
     if (root() === r) loading = false;   // guarded: the next project's load may be running
@@ -839,15 +841,20 @@ async function runLocalClean(): Promise<void> {
     }
     const swept = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
     dlog("info", `branches · ${swept.summary}`);
+    // Guarded on the project throughout: a sweep outlives a stage switch, and its result
+    // and toast belong to the repo it ran in, not to whatever is on screen when it lands.
+    if (root() !== r) return;
     toast(swept.summary);
     branchResult = { swept, wts };
   } catch (e) {
     dlog("error", `branches clean failed: ${e}`);
-    toast("branches: " + e);
+    if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
-    await loadBranches(true);          // re-read: the roster and the branch list both moved
-    await host.refreshGit();
+    if (root() === r) {
+      await loadBranches(true);        // re-read: the roster and the branch list both moved
+      await host.refreshGit();
+    }
     renderDash();
   }
 }
@@ -864,16 +871,17 @@ async function runRemoteClean(): Promise<void> {
   try {
     const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks });
     dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
-    toast(swept.summary);
-    branchResult = { swept, wts: [], remote };
+    // The fetch still runs for the repo that was swept; only the reporting is guarded.
+    const landed = root() === r;
+    if (landed) { toast(swept.summary); branchResult = { swept, wts: [], remote }; }
     // A remote delete leaves refs/remotes alone until a fetch prunes them.
     await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
   } catch (e) {
     dlog("error", `remote clean failed: ${e}`);
-    toast("remote: " + e);
+    if (root() === r) toast("remote: " + e);
   } finally {
     branchBusy = false;
-    await loadBranches(true);
+    if (root() === r) await loadBranches(true);
     renderDash();
   }
 }
@@ -968,7 +976,7 @@ async function doDispatch(): Promise<void> {
     }).then((out) => {
       // Record what actually landed, not what was asked for — the release undoes this.
       recordClaim({ threadId: `${r}#${t.number}`, root: r, number: t.number,
-        kind, sessionId: sid, at: Date.now(),
+        kind, sessionId: sid, at: Date.now(), who: gh.viewer || "",
         wrote: { assigned: out.assigned, label: out.labeled ? eff.label.value : "" } });
       if (out.problems.length) {
         dlog("warn", `claim #${t.number} partial: ${out.problems.join("; ")}`);
@@ -1003,7 +1011,9 @@ export function releaseClaimFor(sessionId: string): void {
     root: rec.root, number: rec.number, kind: rec.kind,
     unassign: rec.wrote?.assigned ?? false,
     label: rec.wrote?.label ?? "",
-    body: releaseComment(gh.viewer || "", Date.now()),
+    // The claim's own signature: this runs on `pty-exit`, when `gh.viewer` may belong to
+    // another project's GitHub half, or to none. An older ledger entry has no `who`.
+    body: releaseComment(rec.who ?? (rec.root === root() ? gh.viewer || "" : ""), Date.now()),
   }).then((out) => {
     if (out.problems.length) dlog("warn", `release #${rec.number} partial: ${out.problems.join("; ")}`);
   }).catch((e) => { dlog("warn", `release #${rec.number} failed: ${e}`); });

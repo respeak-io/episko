@@ -134,10 +134,15 @@ export function resolvePermission(id: string, behavior: string) {
   const owner = [...sessions.values()].find((s) => s.pendingPermId === id
     || s.pendingPermissions.some((pending) => pending.id === id));
   if (owner) {
-    resolveProviderPermission(owner, id, behavior).catch(() => {});
+    // The card goes either way (an answer must never look stuck), so a refusal has no other
+    // surface left: say it, or the agent sits at a prompt nobody knows is still open.
+    resolveProviderPermission(owner, id, behavior).catch((e) => {
+      dlog("warn", `permission ${behavior} failed: ${e}`);
+      toast(`the ${behavior} didn't reach the agent: ${e}`);
+    });
   } else {
     // An unrouted Claude hook may still be held open in the backend; release it directly.
-    invoke("resolve_permission", { id, behavior }).catch(() => {});
+    invoke("resolve_permission", { id, behavior }).catch((e) => dlog("warn", `resolve_permission: ${e}`));
   }
   if (owner) removePermission(owner, id);
   renderAll();

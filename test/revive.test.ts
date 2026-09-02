@@ -326,6 +326,14 @@ describe("what the surfaces read", () => {
     expect(reviveDeadline([sess()], prefs(), NOW)).toBeNull();
     expect(reviveDeadline([sess({ revive: state({ attempts: 6 }) })], prefs(), NOW)).toBeNull();
   });
+  // The status line and the timer must agree with what `reviveStep` would actually do.
+  it("reports no deadline for a failure whose bucket is unticked", () => {
+    const s = sess({ id: "a", revive: state({ dueAt: NOW + 30_000 }) });   // an `overloaded`
+    expect(reviveDeadline([s], prefs({ kinds: ["rate_limit"] }), NOW)).toBeNull();
+    expect(reviveStep(s, prefs({ kinds: ["rate_limit"] }), NOW).why).toBe("kind");
+    // An external pane holds no PTY to send into, so it has no deadline either.
+    expect(reviveDeadline([sess({ external: true, revive: state() })], prefs(), NOW)).toBeNull();
+  });
   it("writes a gap in the fewest characters that stay unambiguous", () => {
     expect(reviveGap(0)).toBe("0s");
     expect(reviveGap(45_000)).toBe("45s");
