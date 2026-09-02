@@ -88,6 +88,14 @@ describe("parseCombo / formatCombo", () => {
     expect(formatCombo(combo("mod++"))).toBe("mod+=");
     expect(formatCombo(combo("mod+_"))).toBe("mod+-");
   });
+
+  // A hand-edited `cc-keys` can say `mod+shift+=`; a real Shift+= press arrives as "+" and
+  // folds to an unshifted "=", so keeping the shift would store a chord that never fires.
+  it("drops a shift the key itself cannot carry", () => {
+    expect(formatCombo(combo("mod+shift+="))).toBe("mod+=");
+    expect(formatCombo(combo("mod+shift+-"))).toBe("mod+-");
+    expect(comboMatches(combo("mod+shift+="), cmd("+", { shiftKey: true }))).toBe(true);
+  });
 });
 
 describe("comboOf", () => {

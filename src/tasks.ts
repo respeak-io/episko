@@ -236,6 +236,8 @@ export async function launchWithDeps(
 // Must list every `source` tasks.rs `discover` emits; a missing one is silently filtered from the picker.
 export const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
 export type Provider = (typeof ALL_PROVIDERS)[number];
+// The three that run the project to enumerate it, and so sit behind the trust gate.
+export const INTROSPECTING: readonly Provider[] = ["just", "taskfile", "mise"];
 export const PROVIDER_LABEL: Record<Provider, string> = {
   episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
   just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
@@ -317,7 +319,10 @@ export function toggleHidden(key: string, id: string) {
 // ---------- discovery ----------
 // `trusted` lets the backend run `just --dump`, which evaluates the justfile; all three switches gate it.
 export async function discoverTasks(workdir: string, colorKey = workdir, includeHidden = false): Promise<Runnable[]> {
-  const trusted = taskPrefs.introspect && taskPrefs.providers.includes("just") && (isTrusted(workdir) || isTrusted(colorKey));
+  // Any introspecting provider opens the gate, not `just` alone: the backend takes one bool
+  // for all three, and gating on `just` left `task`/`mise` reporting withheld rows (docs/tasks.md).
+  const wantsIntrospection = INTROSPECTING.some((p) => taskPrefs.providers.includes(p));
+  const trusted = taskPrefs.introspect && wantsIntrospection && (isTrusted(workdir) || isTrusted(colorKey));
   try {
     const raw = (await invoke<Runnable[]>("discover_runnables", { workdir, trusted }))
       .filter((r) => taskPrefs.providers.includes(r.source as Provider));

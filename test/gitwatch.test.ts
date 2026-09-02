@@ -350,6 +350,18 @@ describe("driftTarget", () => {
       expect(cmd(d, `cd ${launched} && cat > src/phase.ts <<'E'\nE`)).toBeNull();
     });
 
+    it("refuses a cd only a shell could expand instead of reading it as a write home", () => {
+      const cmd = (prev: Drift | null, command: string) =>
+        driftUpdate(prev, launched, "Bash", { command }, launched, roster);
+      const d = cmd(null, `cd ../overview && cat > src/tour.ts <<'E'\nE`);
+      expect(d).toEqual(moved);
+      // Joined onto the pinned cwd these land INSIDE the launch checkout, which used to
+      // clear the drift the agent was still writing under.
+      expect(cmd(d, `cd ~/wt/overview && cat > a.ts <<'E'\nE`)).toEqual(moved);
+      expect(cmd(d, `cd $WT && cat > a.ts <<'E'\nE`)).toEqual(moved);
+      expect(cmd(d, `cd ~ && cat > a.ts <<'E'\nE`)).toEqual(moved);
+    });
+
     // --- the cwd signal: Claude Code moving the session itself ---
 
     it("reads a moved cwd as drift with no write at all", () => {

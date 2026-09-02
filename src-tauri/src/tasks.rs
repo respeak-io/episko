@@ -578,17 +578,19 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
             let label = t.get("label").or_else(|| t.get("taskName"))?.as_str()?.to_string();
             let ttype = t.get("type").and_then(|v| v.as_str()).unwrap_or("process");
 
+            // Blocked and runnable rows must share one id, or an override, pin or frecency
+            // entry is lost the moment the task stops being blocked. `launch_configs` too.
+            let id = format!("vscode:{}", slugify(&label));
+
             let cwd = match t.get("options").and_then(|o| o.get("cwd")).and_then(|c| c.as_str()) {
                 Some(c) => match substitute(c, root, &root_str) {
                     Ok(c) => c,
-                    Err(why) => return Some(blocked_row(&format!("vscode:{label}"), &label, &rel, "vscode", root, &why)),
+                    Err(why) => return Some(blocked_row(&id, &label, &rel, "vscode", root, &why)),
                 },
                 None => root_str.clone(),
             };
 
-            let mk_blocked = |why: &str| {
-                Some(blocked_row(&format!("vscode:{label}"), &label, &rel, "vscode", root, why))
-            };
+            let mk_blocked = |why: &str| Some(blocked_row(&id, &label, &rel, "vscode", root, why));
 
             let command = t.get("command").and_then(|v| v.as_str()).unwrap_or("");
             let args: Vec<String> = t
@@ -638,7 +640,9 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
             // A compound task (no command; `dependsOn` is the work) is usually what ⌘⇧B
             // points at, so it must not be blocked as "no command". Lenient about `type`
             // on purpose: a compound declares none, and a stray one is not worth refusing.
-            let compound = subbed[0].trim().is_empty() && !depends_on.is_empty();
+            // `type:"npm"` declares no `command` — its work is in `script` — so it is never
+            // compound, or `dependsOn` would silently swallow the script it exists to run.
+            let compound = subbed[0].trim().is_empty() && !depends_on.is_empty() && ttype != "npm";
 
             let exec = if compound {
                 // `launchWithDeps` runs the deps and stops; `spawn_task`'s empty-line guard is the backstop.
@@ -665,7 +669,11 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 return mk_blocked("no command");
             }
 
-            let ids = referenced_inputs(&subbed);
+            // env values as well as the command line: an `${input:x}` missed here reaches the
+            // process as its own literal text, with nothing asked and nothing reported.
+            let mut scan = subbed.clone();
+            scan.extend(env.values().cloned());
+            let ids = referenced_inputs(&scan);
             let inputs: Vec<InputSpec> =
                 all_inputs.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
             // A ${input:x} with no matching declaration can never be filled in.
@@ -690,7 +698,7 @@ fn vscode_tasks(root: &Path) -> Vec<Runnable> {
                 .and_then(|g| Some(g.get("kind")?.as_str()?.to_string()));
 
             Some(Runnable {
-                id: format!("vscode:{}", slugify(&label)),
+                id,
                 detail: t
                     .get("detail")
                     .and_then(|v| v.as_str())
@@ -829,7 +837,9 @@ fn launch_configs(root: &Path) -> Vec<Runnable> {
             }
 
             let line = exec_line(&exec);
-            let ids = referenced_inputs(std::slice::from_ref(&line));
+            let mut scan = vec![line.clone()];
+            scan.extend(env.values().cloned());
+            let ids = referenced_inputs(&scan);
             let inputs: Vec<InputSpec> =
                 all_inputs.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
             if let Some(missing) = ids.iter().find(|id| !inputs.iter().any(|i| &&i.id == id)) {
@@ -1557,14 +1567,10 @@ mod tests {
     /// A scratch project directory that cleans itself up.
     struct Tmp(std::path::PathBuf);
     impl Tmp {
+        /// `scratch_dir`, never `env::temp_dir()` by hand: only the resolved spelling
+        /// compares equal to a cwd discovery hands back (docs/testing.md).
         fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "episko-tasks-{tag}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let p = crate::testutil::scratch_dir().join(tag);
             std::fs::create_dir_all(&p).unwrap();
             Tmp(p)
         }
@@ -1576,7 +1582,8 @@ mod tests {
     }
     impl Drop for Tmp {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            // The tagged dir sits inside a scratch dir of its own; take both.
+            let _ = std::fs::remove_dir_all(self.0.parent().unwrap_or(&self.0));
         }
     }
 
@@ -1822,6 +1829,60 @@ env = { RUST_LOG = "debug" }
         // An ordinary task is untouched by any of this.
         let fe = found.iter().find(|r| r.label == "Frontend (vite dev)").unwrap();
         assert!(!fe.compound && fe.default_for.is_none() && fe.background);
+    }
+
+    /// An npm task keeps its work in `script`, so an absent `command` plus `dependsOn`
+    /// once read as compound and ran the dependencies only.
+    #[test]
+    fn an_npm_task_with_dependencies_still_runs_its_own_script() {
+        let t = Tmp::new("vscnpmdep");
+        t.write("package.json", r#"{"scripts":{"build":"tsc","prep":"echo prep"}}"#);
+        t.write(
+            ".vscode/tasks.json",
+            r#"{"tasks":[
+              {"label":"Prep","type":"npm","script":"prep"},
+              {"label":"Build","type":"npm","script":"build","dependsOn":["Prep"]}
+            ]}"#,
+        );
+        let found = discover(&t.0, true);
+        let b = found.iter().find(|r| r.label == "Build" && r.source == "vscode").unwrap();
+        assert!(!b.compound, "its script is the command");
+        assert_eq!(b.depends_on, vec!["Prep"]);
+        assert!(exec_line(&b.exec).ends_with("run build"), "{}", exec_line(&b.exec));
+    }
+
+    /// Overrides, pins and frecency are keyed on the id, so it must not change with the
+    /// row's standing.
+    #[test]
+    fn a_blocked_vscode_row_keeps_the_id_it_would_have_when_runnable() {
+        let t = Tmp::new("vscblockid");
+        t.write(
+            ".vscode/tasks.json",
+            r#"{"tasks":[{"label":"Deploy It","type":"gulp","command":"gulp deploy"}]}"#,
+        );
+        let found = discover(&t.0, true);
+        let r = found.iter().find(|r| r.label == "Deploy It").unwrap();
+        assert!(r.blocked.is_some());
+        assert_eq!(r.id, "vscode:deploy-it");
+    }
+
+    /// A variable only an env value mentions is still a variable somebody has to answer.
+    #[test]
+    fn an_input_used_only_in_an_env_value_is_attached() {
+        let t = Tmp::new("vscenvin");
+        t.write(
+            ".vscode/tasks.json",
+            r#"{
+  "tasks": [{ "label": "Deploy", "type": "shell", "command": "deploy",
+              "options": { "env": { "TARGET": "${input:environment}" } } }],
+  "inputs": [{ "id": "environment", "type": "promptString", "description": "Target" }]
+}"#,
+        );
+        let found = discover(&t.0, true);
+        let d = found.iter().find(|r| r.label == "Deploy").unwrap();
+        assert!(d.blocked.is_none());
+        assert_eq!(d.inputs.len(), 1, "asked for, not passed through as literal text");
+        assert_eq!(d.inputs[0].id, "environment");
     }
 
     /// Otherwise the first build-ish task in the file silently becomes "the" build task.

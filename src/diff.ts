@@ -30,8 +30,10 @@ export function parsePatch(patch: string): DiffFile[] {
     if (line.startsWith("rename from ")) { cur.oldPath = line.slice(12); cur.status = "renamed"; continue; }
     if (line.startsWith("rename to ")) { cur.path = line.slice(10); cur.status = "renamed"; continue; }
     if (line.startsWith("Binary files")) { cur.binary = true; continue; }
-    if (line.startsWith("--- ")) { const p = line.slice(4); if (p !== "/dev/null") cur.oldPath = strip(p); continue; }
-    if (line.startsWith("+++ ")) { const p = line.slice(4); if (p !== "/dev/null") cur.path = strip(p); continue; }
+    // Both gated on `!hunk`: inside a hunk a removed `-- sql comment` arrives as `--- …` and
+    // would be eaten as a path header, undercounting `removed`.
+    if (!hunk && line.startsWith("--- ")) { const p = line.slice(4); if (p !== "/dev/null") cur.oldPath = strip(p); continue; }
+    if (!hunk && line.startsWith("+++ ")) { const p = line.slice(4); if (p !== "/dev/null") cur.path = strip(p); continue; }
     if (line.startsWith("@@")) {
       const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
       oldNo = m ? +m[1] : 0;

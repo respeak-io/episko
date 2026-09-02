@@ -39,6 +39,27 @@ describe("parsePatch", () => {
     ]);
   });
 
+  it("keeps a `-- `/`++ ` line inside a hunk as content, not as a path header", () => {
+    const [f] = parsePatch(patch(
+      "diff --git a/q.sql b/q.sql",
+      "index 111..222 100644",
+      "--- a/q.sql",
+      "+++ b/q.sql",
+      "@@ -1,3 +1,3 @@",
+      " select 1;",
+      "-- old note",
+      "++ new note",
+    ));
+    expect([f.added, f.removed]).toEqual([1, 1]);
+    expect(f.path).toBe("q.sql");
+    expect(f.oldPath).toBe("q.sql");
+    expect(f.hunks[0].lines).toEqual([
+      { kind: "ctx", text: "select 1;", oldNo: 1, newNo: 1 },
+      { kind: "del", text: "- old note", oldNo: 2, newNo: null },
+      { kind: "add", text: "+ new note", oldNo: null, newNo: 2 },
+    ]);
+  });
+
   it("parses an added file (path from +++, oldPath stays null) and keeps blank added lines", () => {
     const [f] = parsePatch(patch(
       "diff --git a/GUIDE.md b/GUIDE.md",

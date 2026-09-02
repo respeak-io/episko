@@ -100,9 +100,12 @@ describe("findLinks · paths with spaces", () => {
     expect(cands("wrote report.pdf final version")).toEqual(["report.pdf"]);
   });
 
-  it("bounds the proposal list whatever the line does", () => {
+  it("bounds the proposal list whatever the line does, and never at the bare token's cost", () => {
     const long = "a/b " + "word ".repeat(40);
-    expect(cands(long).length).toBeLessThanOrEqual(18);
+    const c = cands(long);
+    expect(c.length).toBeLessThanOrEqual(18);
+    // Longest first, so the cap trims the far end of the list — not the usual winner.
+    expect(c[c.length - 1]).toBe("a/b");
   });
 });
 

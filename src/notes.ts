@@ -20,7 +20,10 @@ function load(): Note[] {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "[]");
     if (!Array.isArray(raw)) return [];
-    return raw.filter((n): n is Note => !!n && typeof n.id === "string" && typeof n.text === "string");
+    return raw
+      .filter((n): n is Note => !!n && typeof n.id === "string" && typeof n.text === "string")
+      // `created` is what `noteList` sorts on, and one NaN makes every comparison in the sort false.
+      .map((n) => (Number.isFinite(n.created) ? n : { ...n, created: 0 }));
   } catch {
     return [];
   }
