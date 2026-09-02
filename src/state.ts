@@ -155,7 +155,8 @@ export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) =
 export let availEngines: Engine[] = ["embedded"];
 export let diffMode: DiffMode = localStorage.getItem("cc-diff-mode") === "split" ? "split" : "unified";
 export function setDiffMode(m: DiffMode) { diffMode = m; }
-export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
+export const TERM_FONT_DEFAULT = 12.5;
+export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || TERM_FONT_DEFAULT;
 export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
 // --- agent providers ------------------------------------------------------------

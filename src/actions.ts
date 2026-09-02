@@ -148,13 +148,13 @@ export function resolvePermission(id: string, behavior: string) {
   renderAll();
 }
 
+// Settings › Sessions owns this now (`data-set="wtgroup"`); the console stopgap that stood
+// in for it before that window shipped is gone.
 export function setWtGroup(m: WtGroup) {
   setWtGroupState(m);
   localStorage.setItem("cc-worktree-group", wtGroup);
   renderAll();
 }
-// Dev affordance: episkoWtGroup("chip") from the console.
-(window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
 
 // No repaint: the only reader is the ⑃ dialog, which re-reads git itself afterwards.
 export function setCmpBase(repoDir: string, ref: string) {

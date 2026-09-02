@@ -330,7 +330,7 @@ describe("what the surfaces read", () => {
   it("reports no deadline for a failure whose bucket is unticked", () => {
     const s = sess({ id: "a", revive: state({ dueAt: NOW + 30_000 }) });   // an `overloaded`
     expect(reviveDeadline([s], prefs({ kinds: ["rate_limit"] }), NOW)).toBeNull();
-    expect(reviveStep(s, prefs({ kinds: ["rate_limit"] }), NOW).why).toBe("kind");
+    expect(reviveStep(s, prefs({ kinds: ["rate_limit"] }), NOW, true)).toEqual({ do: "none", why: "kind" });
     // An external pane holds no PTY to send into, so it has no deadline either.
     expect(reviveDeadline([sess({ external: true, revive: state() })], prefs(), NOW)).toBeNull();
   });

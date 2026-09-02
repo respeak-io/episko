@@ -62,8 +62,8 @@ export async function pickCustomIcon(key: string) {
 export function resetCustomIcon(key: string) {
   delete customIcons[key]; saveCustomIcons();
   delete icons[key]; saveIcons();
-  probeIcon(key); // re-probes, then renders
-  renderSidebar(); renderMini();
+  void probeIcon(key);            // async: paints again if disk turns up a logo
+  renderSidebar(); renderMini();  // the removal itself, now rather than a probe later
 }
 
 export function projGlyph(key: string, accent: string): string {

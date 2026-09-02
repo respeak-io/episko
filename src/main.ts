@@ -108,7 +108,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, termEngine,
+  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
@@ -646,7 +646,7 @@ const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   settings: () => { settingsOpen() ? closeSettings() : openSettings(); },
   fontUp: () => bumpFont(0.5),
   fontDown: () => bumpFont(-0.5),
-  fontReset: () => { setTermFontSize(12.5); applyFontSize(); toast("Terminal font 12.5px"); },
+  fontReset: () => { setTermFontSize(TERM_FONT_DEFAULT); applyFontSize(); toast(`Terminal font ${TERM_FONT_DEFAULT}px`); },
 };
 window.addEventListener("keydown", (e) => {
   // A Settings › Keys row is armed: what the capture-phase recorder let through must not fire.

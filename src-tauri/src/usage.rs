@@ -437,10 +437,7 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
         .and_then(|m| m.get("usage"))
         .or_else(|| v.get("usage"))?;
     // `get(..10)`, not `[..10]`: a torn line's timestamp must skip the record, not panic the scan.
-    let day = match v.get("timestamp").and_then(|t| t.as_str()).and_then(|ts| ts.get(..10)) {
-        Some(d) => d.to_string(),
-        None => return None,
-    };
+    let day = v.get("timestamp").and_then(|t| t.as_str()).and_then(|ts| ts.get(..10))?.to_string();
     let g = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
     let model = v
         .get("message")

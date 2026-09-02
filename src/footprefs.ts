@@ -50,4 +50,6 @@ export function toggleFootSeg(p: FootPrefs, id: FootSeg): FootPrefs {
     : { hidden: p.hidden.filter((x) => x !== id) };
 }
 
-export function footHiddenCount(p: FootPrefs): number { return p.hidden.filter((id) => IDS.has(id)).length; }
+// No re-filter: `hidden` only ever comes from `parseFootPrefs` (which drops what IDS lacks)
+// or `toggleFootSeg` (whose `id` is a `FootSeg`).
+export function footHiddenCount(p: FootPrefs): number { return p.hidden.length; }

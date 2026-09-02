@@ -425,7 +425,7 @@ fn strip_line_comment(line: &str, fam: Family) -> &str {
     let mut i = 0;
     while let Some(rel) = line[i..].find("//") {
         let at = i + rel;
-        if line[..at].matches('"').count() % 2 == 0 {
+        if line[..at].matches('"').count().is_multiple_of(2) {
             return &line[..at];
         }
         i = at + 2;

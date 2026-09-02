@@ -363,10 +363,13 @@ describe("the permission modes it plans around", () => {
   });
 
   it("only names modes the app actually ships", () => {
-    // A typo'd mode id makes `permAsks` false for everybody, and nothing else would notice.
+    // Nothing reads ASKING_MODES at runtime, so a mode renamed out from under it would leave
+    // the list quietly describing an app that no longer exists.
     expect(shipped).toEqual(expect.arrayContaining([...ASKING_MODES]));
   });
 
+  // The configured mode is passed in every case and read in none: the answer is what the
+  // provider did (`permissionCanAsk`), never what the setting said it might do.
   it("knows which modes still raise a card", () => {
     expect(permAsks({ ...W0, permMode: "default", permissionCanAsk: true })).toBe(true);
     expect(permAsks({ ...W0, permMode: "acceptEdits", permissionCanAsk: true })).toBe(true);

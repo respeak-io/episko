@@ -28,8 +28,10 @@ export interface DayDetail {
 export const usage: Record<string, number> = readObj<number>("cc-usage");
 export const usageDetail: Record<string, DayDetail> = readObj<DayDetail>("cc-usage-detail");
 export function todayKey() { return dayKeyOf(Date.now()); }
-// Local wall-clock day, never UTC, like every key in both stores.
-export function dayKeyOf(ms: number) { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+// Local wall-clock day, never UTC, like every key in both stores. One formatter, two
+// spellings: `uDkey` takes a Date, `dayKeyOf` the milliseconds.
+export const uDkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+export function dayKeyOf(ms: number) { return uDkey(new Date(ms)); }
 
 // `cc-usage` is written eagerly (small, and lost spend is unreconstructable). The detail
 // split is ~25x bigger and would otherwise be stringified about once a second on a working
@@ -462,8 +464,6 @@ export const uModels = (a: UDay[]): Record<string, number> => {
   for (const d of a) if (d.u) { m.Opus += d.u.opus; m.Sonnet += d.u.sonnet; m.Haiku += d.u.haiku; m.Other += d.u.other; }
   return m;
 };
-
-export const uDkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 // The last n calendar days ending today, oldest first, each joined to its cost and tokens.
 export function usageWindow(n: number): UDay[] {

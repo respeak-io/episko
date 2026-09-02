@@ -270,13 +270,15 @@ export function renderAttn() {
   const n = list.filter((s) => reactorState(s) === dom).length;
   b.className = `attn-badge show react-${dom}${list.length > 1 ? " multi" : ""}`;
   $("attnBadgeTxt").textContent = reactorLabel(dom, n);
-  if ($("attnPop").classList.contains("show")) { if (list.length > 1) openAttnPop(list); else closeAttnPop(); }
+  if ($("attnPop").classList.contains("show")) { if (list.length > 1) openAttnPop(list, true); else closeAttnPop(); }
 }
 function badgeLabel(s: Sess) { return s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session")); }
-function openAttnPop(list: Sess[]) {
+// `refresh` is the repaint `renderAttn` does while the pop is already up: it must not
+// re-apply the one-open-menu rule, or a menu opened next to it closes on the next paint.
+function openAttnPop(list: Sess[], refresh = false) {
   const r = $("attnBadge").getBoundingClientRect();
   const pop = $("attnPop");
-  closeFootMenus("attnPop");
+  if (!refresh) closeFootMenus("attnPop");
   const html = list.map((s) => {
     const k = statusKey(s);
     const reason = s.attention || phaseText(s);
