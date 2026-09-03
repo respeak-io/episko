@@ -96,3 +96,28 @@ export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] 
   if (list.length > PROMPT_CAP) list.splice(0, list.length - PROMPT_CAP);
   return restored;
 }
+
+// ---------- finding a question in a pane's scrollback ----------
+// The address is the text, not a coordinate: the submit hook fires when you press Enter, and
+// the REPL commits the line afterwards, above where the cursor then was (docs/sessions.md).
+
+/** A terminal row, read as prose: the REPL's own `>` marker is not part of the question. */
+export const normLine = (raw: string): string =>
+  raw.replace(/\s+/g, " ").replace(/^[\s>│┃|]+/, "").trim();
+
+export interface PromptKey { key: string; strict: boolean }
+const KEY_MAX = 60; // enough to be this question rather than a similar one
+const KEY_SHORT = 24; // the retry, for a REPL that wrapped the message narrower than KEY_MAX
+const KEY_MIN = 12; // under this an `includes` is a coin toss, so the row must START with the key
+
+const asKey = (key: string): PromptKey => ({ key, strict: key.length < KEY_MIN });
+
+/** What to look for, longest first: a row the REPL wrapped itself holds only the start of it. */
+export function promptKeys(text: string): PromptKey[] {
+  const first = (text.split("\n").map(normLine).find(Boolean) ?? "").slice(0, KEY_MAX);
+  if (!first) return [];
+  return first.length > KEY_SHORT ? [asKey(first), asKey(first.slice(0, KEY_SHORT))] : [asKey(first)];
+}
+
+export const lineHasPrompt = (line: string, k: PromptKey): boolean =>
+  k.strict ? line.startsWith(k.key) : line.includes(k.key);

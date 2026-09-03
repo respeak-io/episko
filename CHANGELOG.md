@@ -24,6 +24,9 @@ The header's running-server list finally reads the log Claude Code actually writ
   the conversation into the pane, so Episko goes and finds the line.
 ~ Clicking a question marks the line it lands on, so it says where you asked it even when
   the terminal was already showing it and had nowhere to scroll.
+! Clicking a question lands on the question, not on the prompt bar: Episko now finds the
+  line by **matching what you typed**, rather than trusting the position the terminal was
+  at when you pressed Enter.
 ~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
 + A **shelved session's card** lists what you asked before you resume it, and clicking a
   question jumps the read-only mirror beside it to that message.

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  cleanPrompt, clampOutlinePrefs, clearsOutline, isEnvelope, notePrompt, OUTLINE_DEFAULTS,
-  promptLabel, PROMPT_CAP, seedPrompts,
+  cleanPrompt, clampOutlinePrefs, clearsOutline, isEnvelope, lineHasPrompt, normLine, notePrompt,
+  OUTLINE_DEFAULTS, promptKeys, promptLabel, PROMPT_CAP, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -136,5 +136,41 @@ describe("only /clear starts a new outline", () => {
     expect(clearsOutline("resume")).toBe(false);
     expect(clearsOutline("startup")).toBe(false);
     expect(clearsOutline(undefined)).toBe(false);
+  });
+});
+
+describe("finding the question in the scrollback", () => {
+  const hit = (row: string, text: string) =>
+    promptKeys(text).some((k) => lineHasPrompt(normLine(row), k));
+
+  it("reads a row without the REPL's own marker or padding", () => {
+    expect(normLine("> fix   the header   ")).toBe("fix the header");
+    expect(normLine("│ ┃ still the header")).toBe("still the header");
+  });
+  it("strips the marker off both sides, so a quoted question still matches", () => {
+    expect(hit("> > quoting something back at you", "> quoting something back at you")).toBe(true);
+    expect(hit("> - and a bullet leads this one", "- and a bullet leads this one")).toBe(true);
+  });
+  it("keys on the first line that says anything, capped", () => {
+    expect(promptKeys("\n\n  fix the header\nand the footer")[0].key).toBe("fix the header");
+    expect(promptKeys("z".repeat(200)).map((k) => k.key.length)).toEqual([60, 24]);
+    expect(promptKeys("   \n  ")).toEqual([]);
+  });
+  it("falls back to the start of a question the terminal wrapped short", () => {
+    const q = "can you look at the retry ladder again, and the backoff with it";
+    expect(hit("> can you look at the retry", q)).toBe(true);
+    expect(hit("> can you look at", q)).toBe(false); // shorter than the retry key: too little to go on
+  });
+  it("matches a question wherever the row puts it", () => {
+    expect(hit("  > can you look at the retry ladder again", "can you look at the retry ladder again"))
+      .toBe(true);
+    expect(hit("> a different question entirely", "can you look at the retry ladder again"))
+      .toBe(false);
+  });
+  it("makes a short question lead its row, since `includes` would match anything", () => {
+    expect(promptKeys("go on")[0].strict).toBe(true);
+    expect(promptKeys("have another go at it")[0].strict).toBe(false);
+    expect(hit("> go on", "go on")).toBe(true);
+    expect(hit("> now tell it to go on", "go on")).toBe(false);
   });
 });

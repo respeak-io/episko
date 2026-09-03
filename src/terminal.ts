@@ -8,7 +8,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
-import type { Sess } from "./types";
+import type { Prompt, Sess } from "./types";
+import { lineHasPrompt, normLine, promptKeys, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
@@ -173,13 +174,13 @@ export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
 }
 
 // ---------- outline anchors ----------
-// Where in the scrollback a question was asked. A marker rather than a line number: xterm
-// tracks it as the buffer trims and disposes it when that line finally scrolls out, which
-// is the only honest way to know a jump has expired.
+// The submit hook fires as you press Enter, so its marker sits in the input box while the
+// REPL commits the message above it a frame later: the address is the TEXT, and that marker
+// only says where to look (docs/sessions.md). The line, once found, gets a marker of its
+// own, which xterm disposes as it scrolls out — how a jump is known to have expired.
 
-// The marker lands on the input box's cursor row, and the REPL then redraws the message
-// over it, so the jump aims a little above rather than exactly at the line.
-const JUMP_LEAD = 3;
+const JUMP_LEAD = 2; // rows of context above the question, where the viewport can scroll at all
+const SLACK = 2;     // the commit is above the cursor row, give or take a reflow since
 
 export function markPrompt(s: Sess, id: string) {
   if (!s.term) return;
@@ -195,26 +196,61 @@ const liveMark = (s: Sess, id: string) => {
   return m && !m.isDisposed && m.line >= 0 ? m : null;
 };
 
-// A restored prompt was never watched, so it has no marker — but a resume replays the
-// conversation into the pane, so the line is usually right there. Search on the click that
-// needs it (a scan is the whole scrollback) and remember a miss, so it runs at most once.
-const KEY_MIN = 8, KEY_MAX = 40; // long enough not to match a stray line, short enough not to wrap
-const searchKey = (text: string) => (text.split("\n").find((l) => l.trim()) ?? "").trim().slice(0, KEY_MAX);
-
-function findLine(term: Terminal, key: string): number | null {
-  const buf = term.buffer.active;
-  // Top down: the replay is above whatever the pane has done since.
-  for (let y = 0; y < buf.length; y++) {
-    if (buf.getLine(y)?.translateToString(true).includes(key)) return y;
-  }
-  return null;
-}
-
 function anchorAt(s: Sess, id: string, line: number) {
   const buf = s.term!.buffer.active;
   const m = s.term!.registerMarker(line - (buf.baseY + buf.cursorY)); // the offset is from the cursor
-  if (m) (s.promptMarks ?? (s.promptMarks = new Map())).set(id, m);
-  return m ?? null;
+  if (!m) return null;
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  marks.get(id)?.dispose(); // the submit hint has done its job
+  marks.set(id, m);
+  return m;
+}
+
+// The rows xterm wrapped into one logical line, as prose. Capped: a match needs a key's worth
+// of text, not the paragraph a wall of pasted output wraps into.
+const RUN_MAX = 240;
+function runText(buf: Buf, y: number): string {
+  let t = buf.getLine(y)?.translateToString(false) ?? "";
+  for (let i = y + 1; i < buf.length && t.length < RUN_MAX; i++) {
+    const l = buf.getLine(i);
+    if (!l?.isWrapped) break;
+    t += l.translateToString(false);
+  }
+  return normLine(t);
+}
+
+/**
+ * The question's own line, by its text. `below` is the submit marker's: the message was
+ * committed above it, so the nearest match at or above that is the one you asked, while a
+ * reply quoting you back comes later. Without one (a restored prompt) the first match wins.
+ */
+function findPrompt(term: Terminal, k: PromptKey, below: number | null): number | null {
+  const buf = term.buffer.active;
+  const last = Math.min(below == null ? buf.length : below + SLACK, buf.length - 1);
+  let hit: number | null = null;
+  for (let y = 0; y <= last; y++) {
+    if (buf.getLine(y)?.isWrapped) continue; // a continuation row belongs to the run above it
+    if (!lineHasPrompt(runText(buf, y), k)) continue;
+    if (below == null) return y;
+    hit = y;
+  }
+  return hit;
+}
+
+// One search per question: a scan is the whole scrollback, and a miss stays a miss — either
+// the text was never rendered as typed (a pasted block collapses to a placeholder) or it has
+// gone. The submit marker is what a miss falls back to, so the row stays clickable.
+function resolve(s: Sess, p: Prompt) {
+  const hint = liveMark(s, p.id);
+  if (p.found || p.lost || !s.term) return hint;
+  for (const k of promptKeys(p.text)) { // the whole key first: the short retry is likelier to lie
+    const y = findPrompt(s.term, k, hint && hint.line);
+    if (y == null) continue;
+    const m = anchorAt(s, p.id, y);
+    if (m) { p.found = true; return m; }
+  }
+  p.lost = true;
+  return hint;
 }
 
 /** The prompts still reachable in this pane's buffer; the rest render as out of reach. */
@@ -232,7 +268,10 @@ const FLASH_MS = 1600;
 let flash: number | undefined;
 function flashLine(term: Terminal, line: number) {
   clearTimeout(flash);
-  term.selectLines(line, line);
+  const buf = term.buffer.active;
+  let end = line; // a question wrapped over three rows is three rows of answer
+  while (end + 1 < buf.length && buf.getLine(end + 1)?.isWrapped) end++;
+  term.selectLines(line, end);
   const ours = JSON.stringify(term.getSelectionPosition() ?? null);
   // Only clear what we made: by now the pointer may have selected something to copy.
   flash = window.setTimeout(() => {
@@ -241,20 +280,17 @@ function flashLine(term: Terminal, line: number) {
 }
 
 export function scrollToPrompt(s: Sess, id: string): boolean {
-  let m = liveMark(s, id);
   const p = s.prompts.find((x) => x.id === id);
-  if (!m && s.term && p?.restored && !p.lost) {
-    const key = searchKey(p.text);
-    const y = key.length >= KEY_MIN ? findLine(s.term, key) : null;
-    if (y == null) p.lost = true; else m = anchorAt(s, id, y);
-  }
-  if (!s.term || !m) return false;
+  if (!s.term || !p) return false;
+  const m = resolve(s, p);
+  if (!m) return false;
   const before = s.term.buffer.active.viewportY;
   s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
   // Never let the marking take the navigation down with it, whatever the renderer is doing.
   try { flashLine(s.term, m.line); } catch (e) { dlog("warn", `outline: could not mark the line (${e})`); }
   // One line per click, and the one that would have answered "why did nothing happen".
-  dlog("info", `outline jump · line ${m.line} · view ${before} → ${s.term.buffer.active.viewportY}`);
+  dlog("info", `outline jump · line ${m.line} · ${p.found ? "matched" : "marker only"}`
+    + ` · view ${before} → ${s.term.buffer.active.viewportY}`);
   return true;
 }
 

@@ -297,18 +297,21 @@ And the things that hold however the files are arranged:
   reviewing work you did not type, so the fix will not be typed by you either, and a chip you
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
-- **The outline's anchor is taken at the submit, never derived later.** A question is only
-  useful if clicking it lands you where you asked it, and the buffer line that was current
-  then has moved by the time you look. So `UserPromptSubmit` (and a Codex `userMessage`)
-  registers an **xterm marker** through ./phase's `setOnPrompt` seam — ./terminal owns it,
-  ./outline holds only the text — and xterm tracks it as the scrollback trims and disposes
-  it when that line finally goes. A disposed marker is what greys the row: the question is
-  still worth reading, the jump is not still on offer. Same trap as `X-CC-Session` and
-  `BgServer.transcript` — an address recomputed later points at somewhere else. Prompts are
-  **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
-  and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript
-  instead, once, and those rows earn their anchor on the click that needs it (the resume
-  replayed them into the pane, so ./terminal goes and looks). `docs/sessions.md` has both.
+- **The outline's anchor is the question's TEXT, not a coordinate taken at the submit.**
+  A marker registered on `UserPromptSubmit` (or a Codex `userMessage`) cannot be the answer:
+  the hook fires as you press Enter, so it lands on the input box's cursor row and the REPL
+  commits the message *above* it a frame later — which is why the first cut jumped you to
+  the prompt bar. So the submit marker is kept as a **hint** (roughly where, and whether that
+  region is still in the buffer) and the line is **found by matching the text** on the click
+  that needs it: ./outline owns the match (`promptKeys`, `normLine`, `lineHasPrompt` — a short
+  question must *lead* its row, since `includes` on "go on" matches anything, and the whole
+  key is retried short for a REPL that wrapped the message itself), ./terminal
+  walks the buffer up to the hint and takes the nearest hit at or above it, then anchors an
+  xterm marker on that line and never searches again. A miss keeps the hint, so the row still
+  jumps somewhere honest; a disposed marker is what greys it. Prompts are **in memory only**,
+  like a tool payload, and `/clear` empties the list while `/compact` and `/resume` do not.
+  A **resumed** pane seeds its list from the provider's transcript instead, once, and its rows
+  are found the same way (the resume replayed them into the pane). `docs/sessions.md` has both.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so

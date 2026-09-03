@@ -228,12 +228,13 @@ const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 
 // Three states, two classes. A restored row nobody has clicked yet is NOT greyed: it has no
 // marker because Episko never watched it, and the resume usually replayed it into the pane,
 // so the click is what settles it (./terminal searches once and stamps `lost` on a miss).
+// `lost` on a live row means only that the search missed; its submit marker still jumps.
 function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, lines: number): string {
   const gone = !anchored && (!p.restored || !!p.lost);
   const why = anchored ? "Jump to it in the terminal"
+    : !p.restored ? "Scrolled out of the terminal"
     : p.lost ? "Asked before this pane, and not in its scrollback"
-    : p.restored ? "Asked before this pane — click to look for it in the scrollback"
-    : "Scrolled out of the terminal";
+    : "Asked before this pane — click to look for it in the scrollback";
   const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
   return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(`${promptLabel(p.text)}\n${why}`)}">`
     + `<span class="ol-n">${n}</span>`
