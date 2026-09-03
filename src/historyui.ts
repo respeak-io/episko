@@ -130,7 +130,9 @@ function histPaintDetail() { $("histDetail").innerHTML = histDetailHtml(histSele
 
 // Wide enough that the questions list is worth having; the ending still shows the last few.
 const PREVIEW_READ = 60;
-const ASK_SHOW = 6, END_SHOW = 6;
+// The ending is the last exchange, not a second copy of the list above it: both roles, so an
+// answer keeps the question it answers, but short enough that the overlap is context.
+const ASK_SHOW = 6, END_SHOW = 4;
 const askClock = (at: string | null | undefined) => {
   const ms = at ? Date.parse(at) : NaN;
   return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -139,7 +141,7 @@ const askClock = (at: string | null | undefined) => {
 // Newest first, like the inspector's own outline, and unnumbered: this is the tail of the
 // transcript, so a number here would count from nowhere.
 function histAskedHtml(msgs: ProviderMessage[]): string {
-  const asked = msgs.filter((m) => m.role === "user" && !isEnvelope(m.text.trim()));
+  const asked = msgs.filter((m) => m.role === "user");
   if (!asked.length) return "";
   const shown = asked.slice(-ASK_SHOW).reverse();
   const rest = asked.length - shown.length;
@@ -175,7 +177,9 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Provider sessions must resume in their original directory, so this one can only be read.</div>`
     : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
        <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
-  const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id) ? histPreview.msgs : null;
+  // Envelopes are dropped from both halves: a `Caveat:` preamble is not how a conversation ended.
+  const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id)
+    ? histPreview.msgs.filter((m) => !isEnvelope(m.text.trim())) : null;
   const asked = loaded ? histAskedHtml(loaded) : "";
   const preview = loaded
     ? (loaded.length

@@ -24,6 +24,8 @@ The header's running-server list finally reads the log Claude Code actually writ
   the conversation into the pane, so Episko goes and finds the line.
 ~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
 ~ History's detail pane leads with **what you asked**, above *how it ended*.
+! *How it ended* was a one-line sliver with its own scrollbar: it shrank to whatever the
+  detail column had left over instead of letting the column scroll.
 ~ The inspector's state, model and context share one card, so the working set and the new
   questions list sit above the fold.
 + Pick which of your GitHub accounts a project reads as, from the project menu or from
