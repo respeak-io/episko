@@ -33,7 +33,7 @@ import {
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
-  setRevivePrefs,
+  setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setScrollback, openDevtools, reloadUi,
@@ -214,7 +214,7 @@ setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
-  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,

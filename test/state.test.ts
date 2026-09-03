@@ -9,7 +9,7 @@ describe("state.ts boots whatever localStorage holds", () => {
   beforeEach(() => { store.clear(); });
 
   it("survives a truncated write of every key it reads at import time", async () => {
-    for (const k of ["cc-agent-by-project", "cc-colors", "cc-favorites", "cc-proj-order", "cc-gh-account"]) {
+    for (const k of ["cc-agent-by-project", "cc-colors", "cc-favorites", "cc-proj-order", "cc-gh-account", "cc-title"]) {
       store.clear();
       store.set(k, '{"a":');     // what a crash mid-write leaves behind
       await expect(boot(), `${k} took the app down`).resolves.toBeTruthy();
@@ -26,6 +26,25 @@ describe("state.ts boots whatever localStorage holds", () => {
       expect(s.agentByProject, `cc-agent-by-project = ${raw}`).toEqual({});
       expect(s.colorOverrides, `cc-colors = ${raw}`).toEqual({});
     }
+  });
+
+  it("refuses a cc-title whose extra is not a string", async () => {
+    // The value is spread into a compiled RegExp character class on every title change.
+    // `null` and `[]` both parse; only a shape check catches them, and the failure
+    // would land in the terminal's OSC handler rather than here.
+    for (const raw of ["null", "[]", '{"extra":7}', '{"extra":null}', '"nope"']) {
+      store.clear();
+      store.set("cc-title", raw);
+      const s = await boot();
+      expect(s.titlePrefs, `cc-title = ${raw}`).toEqual({ scrub: true, extra: "" });
+    }
+  });
+
+  it("still reads a well-formed cc-title, and defaults the scrub to on", async () => {
+    store.set("cc-title", JSON.stringify({ extra: "◐-◗" }));
+    expect((await boot()).titlePrefs).toEqual({ scrub: true, extra: "◐-◗" });
+    store.set("cc-title", JSON.stringify({ scrub: false, extra: "§" }));
+    expect((await boot()).titlePrefs).toEqual({ scrub: false, extra: "§" });
   });
 
   it("keeps the good entries out of a half-corrupt map", async () => {

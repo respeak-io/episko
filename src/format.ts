@@ -36,13 +36,86 @@ export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").spl
 // ---------- a pane's title, off the terminal's OSC ----------
 
 // Claude Code's OSC title leads with a spinner frame (braille, U+2733, the quadrant circles).
-// A missed frame parks in the sidebar as a glyph, so whole ranges are covered.
-const TITLE_DECOR = /^(?:[\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿◐-◗◴-◷\uFE0F\u200D]|\u{1F31F})+/u;
+// A missed frame parks in the sidebar as a glyph, so whole ranges are covered. A class
+// *source* rather than a literal, because `titleDecor` concatenates the user's additions.
+const TITLE_DECOR_CLASS = "\\s•·∙⋅●○◦◆◇✦✧★☆✨✩-✷✺-✽∗＊*⏺⬤⭐⠀-⣿◐-◗◴-◷\\uFE0F\\u200D";
+
+// What the user added to that table, and whether it runs at all. `extra` only ever adds:
+// a field that could subtract would give "my titles went strange" two possible causes.
+export interface TitlePrefs {
+  // Off shows the OSC title as sent. The folder-echo rule below is a different question.
+  scrub: boolean;
+  // `◐-◗ ◴-◷ ✦✧` — characters and `a-b` ranges, whitespace ignored, malformed input dropped
+  // rather than thrown, since this is a field somebody is mid-typing in.
+  extra: string;
+}
+
+export const TITLE_DEFAULTS: TitlePrefs = { scrub: true, extra: "" };
+// Room for ~30 ranges. Bounded because the value is compiled into a RegExp.
+export const TITLE_EXTRA_MAX = 120;
+
+export function clampTitlePrefs(p: Partial<TitlePrefs> | null | undefined): TitlePrefs {
+  return {
+    // `!== false`, like every shipped-on preference: an absent key lands on the default.
+    scrub: p?.scrub !== false,
+    extra: typeof p?.extra === "string" ? p.extra.slice(0, TITLE_EXTRA_MAX) : "",
+  };
+}
+
+// `extra` as codepoint pairs, a single character being `[c, c]`. Exported because the
+// settings preview shows what it *understood*: `◐-◗` is three characters and eight codepoints.
+export function titleExtra(extra: string): [number, number][] {
+  const cps = [...(extra || "")].map((c) => c.codePointAt(0)!);
+  const out: [number, number][] = [];
+  for (let i = 0; i < cps.length;) {
+    // A separator, never a member: the built-in class already covers `\s`.
+    if (/\s/u.test(String.fromCodePoint(cps[i]))) { i++; continue; }
+    const dash = cps[i + 1] === 0x2d || cps[i + 1] === 0x2013 || cps[i + 1] === 0x2014;
+    const end = cps[i + 2];
+    if (dash && end !== undefined && !/\s/u.test(String.fromCodePoint(end))) {
+      // Swap an inverted range rather than dropping it: `◗-◐` can only have meant the same
+      // eight codepoints, and an empty result for a value that looks right diagnoses worst.
+      out.push(cps[i] <= end ? [cps[i], end] : [end, cps[i]]);
+      i += 3;
+      continue;
+    }
+    out.push([cps[i], cps[i]]);
+    i++;
+  }
+  return out;
+}
+
+// Every added codepoint is emitted as a `\u{…}` escape rather than as itself: `]`, `^`, `\`
+// and `-` would otherwise change the *shape* of the class, and `-` is the range syntax this
+// field invites people to type.
+const decorRe = (added: string) => new RegExp(`^(?:[${TITLE_DECOR_CLASS}${added}]|\\u{1F31F})+`, "u");
+// The built-in table alone, and the fallback when an addition will not compile.
+const TITLE_DECOR = decorRe("");
+const decorCache = new Map<string, RegExp>();
+export function titleDecor(extra: string): RegExp {
+  const hit = decorCache.get(extra);
+  if (hit) return hit;
+  const u = (c: number) => `\\u{${c.toString(16)}}`;
+  const added = titleExtra(extra).map(([a, b]) => (a === b ? u(a) : `${u(a)}-${u(b)}`)).join("");
+  let re = TITLE_DECOR;
+  // The escaping makes a failure unlikely; the alternative to a fallback is a pane that
+  // stops updating, since this runs on every title change.
+  if (added) { try { re = decorRe(added); } catch { re = TITLE_DECOR; } }
+  // Bounded: the key is a text field, so Settings recompiles on every keystroke.
+  if (decorCache.size > 32) decorCache.clear();
+  decorCache.set(extra, re);
+  return re;
+}
 
 // The OSC auto-summary, unless it is just the folder we already show. Takes three fields
 // rather than a `Sess` to keep ./format free of a types.ts import.
-export function cleanTitle(t: string, s: { title: string; workdir: string; project: string }): string {
-  const x = (t || "").replace(TITLE_DECOR, "").trim();
+export function cleanTitle(
+  t: string,
+  s: { title: string; workdir: string; project: string },
+  prefs: TitlePrefs = TITLE_DEFAULTS,
+): string {
+  const raw = t || "";
+  const x = (prefs.scrub ? raw.replace(titleDecor(prefs.extra), "") : raw).trim();
   if (!x) return s.title;
   if (x === s.workdir || x === tilde(s.workdir) || x === s.project || x === basename(s.workdir)) return "";
   return x;

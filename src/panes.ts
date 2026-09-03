@@ -42,7 +42,7 @@ import {
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
-  termFontSize, termScrollback, worktreesByRepo, wtSig,
+  termFontSize, termScrollback, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 
@@ -70,6 +70,19 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
   winClaudePaste(id, term, pane);
   return { term, fit };
+}
+
+// A pane's OSC title landed, for both agent spawners. `rawTitle` is kept even when the
+// cleaned title is unchanged, so Settings can re-clean a pane that has since gone quiet.
+function applyOscTitle(s: Sess, t: string) {
+  s.rawTitle = t;
+  const c = cleanTitle(t, s, titlePrefs);
+  if (c === s.title) return;
+  s.title = c;
+  // The tray reads the title too, and this path bypasses renderAll.
+  renderSidebar();
+  updateTray();
+  if (activeId === s.id) renderHeader(s);
 }
 
 // Agent TUIs own their chords, so clipboardKeys only, never shellKeys; shared by launch and adoption.
@@ -135,11 +148,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
   };
   sessions.set(id, s);
-  term?.onTitleChange((t) => {
-    const c = cleanTitle(t, s);
-    // The tray reads the title too, and this path bypasses renderAll.
-    if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === id) renderHeader(s); }
-  });
+  term?.onTitleChange((t) => applyOscTitle(s, t));
   setActive(id);
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
@@ -252,10 +261,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
       dlog("warn", `provider state refresh failed for ${o.id.slice(0, 8)}: ${e}`);
     });
   }
-  term.onTitleChange((t) => {
-    const c = cleanTitle(t, s);
-    if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === o.id) renderHeader(s); }
-  });
+  term.onTitleChange((t) => applyOscTitle(s, t));
   try {
     const snap = await invoke<{ data: string; seq: number }>("read_scrollback", { sessionId: o.id });
     term.write(Uint8Array.from(atob(snap.data), (c) => c.charCodeAt(0)));

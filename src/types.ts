@@ -349,6 +349,10 @@ export interface Sess {
   // the provider's own conversation id, not the pane id; Claude rotates it on /clear, /compact and /resume
   resumeId: string;
   branch: string; worktree: string | null; title: string;
+  // The OSC title as the terminal sent it, before `cleanTitle`. `title` is lossy, so
+  // this is what lets the scrub setting re-clean panes already on screen rather than
+  // only the next one to speak. Optional: only an agent pane has an OSC to record.
+  rawTitle?: string;
   phase: Phase; phaseSince: number; lastActivity: number; attention: string | null; pendingCmd: string; pendingPermId: string | null; pendRisk: Risk | null;
   pendingPermissions: PendingPermission[];
   // entered the needs-you set, 0 when not in it; stamped only by syncAttn (./grouping), never from phaseSince

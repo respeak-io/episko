@@ -3,14 +3,17 @@
 // changes: every setter arrives through the SettingsHost object main.ts hands over.
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
-import { basename, esc, escAttr, tilde } from "./format";
+import {
+  basename, cleanTitle, esc, escAttr, tilde, titleExtra, TITLE_EXTRA_MAX,
+  type TitlePrefs,
+} from "./format";
 import { agentCapabilitySummary, type Engine } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
   allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   motionPrefs,
   keyPrefs, missingAgents,
-  peekPrefs, permissionModeFor, revivePrefs, termScrollback, vitalsPrefs,
+  peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -76,6 +79,9 @@ export interface SettingsHost {
   setPermMode: (provider: string, mode: string) => void;
   setDefaultAgent: (id: string) => void;
   setPeekPrefs: (p: PeekPrefs) => void;
+  // `repaintPanel` is for the DOM, not the data: the field commits on every keystroke, and
+  // a repaint mid-word would replace the <input> being typed into, caret and all.
+  setTitlePrefs: (p: TitlePrefs, repaintPanel?: boolean) => void;
   setSoundPrefs: (p: SoundPrefs) => void;
   setKeyPrefs: (p: KeyPrefs) => void;
   setAttnPrefs: (p: AttnPrefs) => void;
@@ -126,6 +132,7 @@ let host: SettingsHost = {
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
+  setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
   setVitalsPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   vitalsDrift: () => null,
@@ -147,6 +154,9 @@ type SetControl =
   | { kind: "keys"; label: string; hint?: string }
   | { kind: "attn"; label: string; hint?: string }
   | { kind: "revive"; label: string; hint?: string }
+  // The OSC-title scrub: switch, extra characters and a live before/after. One control,
+  // like `peek` — a field of bare characters says nothing without what it understood.
+  | { kind: "title"; label: string; hint?: string }
   | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean; preview?: () => string }
   // Prose with no control under it: a rule governing the group below.
   | { kind: "note"; label: string; hint: string }
@@ -266,6 +276,10 @@ const SET_TABS: SetTab[] = [
           { value: "dark",  label: "Dark",  glyph: "☾", sub: "Dim surfaces" },
         ] },
       { kind: "font", label: "Terminal font size", hint: "Text size in embedded terminals (also ⌘+ / ⌘− / ⌘0)." },
+      {
+        kind: "title", label: "Clean up session names",
+        hint: "Claude Code animates a spinner in front of the terminal title it sets, so a session's name arrives with a frame of animation stuck to it. Episko strips the frames it knows about and keeps the summary. Add a character here when a new one starts turning up in the sidebar.",
+      },
       // The note carries the reason once; the rows come straight off ./motion's table.
       {
         kind: "note", label: "Visual effects",
@@ -920,6 +934,85 @@ function recordKey(e: KeyboardEvent) {
   else toast(`${keyActionDef(id).label} → ${comboText(c, IS_MAC)}`);
 }
 
+// ---- Settings > Appearance: the OSC title scrub ---------------------------------
+// ./format parses the field and owns every rule; everything here is readout — what it
+// understood, and the rule run on a title you can recognise.
+
+type TitleSample = { raw: string; ctx: { title: string; workdir: string; project: string } };
+
+// What the preview runs the rule against, latched while the panel is up: which session
+// the rule "currently changes" depends on what you have typed, so re-picking per keystroke
+// would swap the example out mid-word. The canned fallback is deliberately not latched —
+// its job is to carry the character you just typed.
+let heldSample: TitleSample | null = null;
+function titleSample(prefs: TitlePrefs): TitleSample {
+  if (heldSample) return heldSample;
+  let any: TitleSample | null = null;
+  for (const sess of sessions.values()) {
+    if (!sess.rawTitle) continue;
+    const one = { raw: sess.rawTitle, ctx: sess };
+    // The pane worth showing is one the rule currently *changes*. `.trim()` is the
+    // do-nothing baseline: cleanTitle trims either way, so comparing against the raw
+    // string would call every title with a leading space "changed".
+    if (cleanTitle(sess.rawTitle, sess, prefs) !== sess.rawTitle.trim()) return (heldSample = one);
+    any ||= one;
+  }
+  if (any) return (heldSample = any);
+  const first = titleExtra(prefs.extra)[0];
+  return {
+    raw: `${first ? String.fromCodePoint(first[0]) : "✳"} Fixing the parser`,
+    ctx: { title: "", workdir: "/w/app", project: "app" },
+  };
+}
+
+// One chip per parsed token. The codepoint count on a range is the honest part —
+// `⠀-⣿` is three characters to type and 256 to strip.
+function titleChips(extra: string): string {
+  const toks = titleExtra(extra);
+  if (!toks.length) {
+    return `<div class="tnone">${esc(extra.trim()
+      ? "Nothing usable in there yet."
+      : "Nothing added — the built-in table only.")}</div>`;
+  }
+  return `<div class="chips">${toks.map(([a, b]) => {
+    const ch = (c: number) => `<span class="mono">${esc(String.fromCodePoint(c))}</span>`;
+    return a === b
+      ? `<span class="tchip">${ch(a)}</span>`
+      : `<span class="tchip">${ch(a)}–${ch(b)}<span class="tchip-n">${b - a + 1}</span></span>`;
+  }).join("")}</div>`;
+}
+
+function renderTitleControl(): string {
+  const p = titlePrefs;
+  heldSample = null; // a fresh paint re-picks
+  const { raw, ctx } = titleSample(p);
+  const out = cleanTitle(raw, ctx, p);
+  return `<div class="titlebox${p.scrub ? "" : " off"}">
+    <label class="tlabel" for="titleExtra">Extra characters to strip</label>
+    <input id="titleExtra" class="tfield mono" type="text" spellcheck="false" autocomplete="off"
+      maxlength="${TITLE_EXTRA_MAX}" data-titleextra
+      placeholder="◐-◗ ◴-◷ ✦✧"
+      value="${escAttr(p.extra)}"
+      aria-describedby="titleParsed">
+    <div class="thint">Single characters, or <span class="mono">a-b</span> for a range. Only ever
+      <em>added</em> to the built-in table, never taken from it.</div>
+    <div id="titleParsed" class="tparsed">${titleChips(p.extra)}</div>
+    ${titlePreviewHtml(raw, out)}
+    <div class="trow-end"><button class="set-freset" data-settitle="reset"
+      ${p.extra ? "" : "disabled"}>Clear</button></div>
+  </div>`;
+}
+
+// Split out because the keystroke handler repaints only this row — rebuilding the
+// whole control would take the <input> with it.
+function titlePreviewHtml(raw: string, out: string): string {
+  return `<div class="tprev" id="titlePrev">
+    <div class="tprev-r"><span class="tprev-k">Sent</span><span class="tprev-v mono">${esc(raw)}</span></div>
+    <div class="tprev-r"><span class="tprev-k">Shown</span><span class="tprev-v mono${out ? "" : " tprev-empty"}">${
+      esc(out) || "— the folder name, so the row shows nothing extra"}</span></div>
+  </div>`;
+}
+
 function renderSetControl(c: SetControl): string {
   const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
   if (c.kind === "note") return `<div class="set-group set-note">${head}</div>`;
@@ -938,6 +1031,13 @@ function renderSetControl(c: SetControl): string {
     return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
       + `<button class="sw${attnPrefs.highlight ? " on" : ""}" data-setattn="highlight" role="switch"`
       + ` aria-checked="${attnPrefs.highlight}"></button></div>${renderAttnControl()}</div>`;
+  }
+  if (c.kind === "title") {
+    // Same shape as `peek` and `sound`: the switch that governs the panel rides the
+    // label row, the panel it governs sits under it, because they are one decision.
+    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
+      + `<button class="sw${titlePrefs.scrub ? " on" : ""}" data-settitle="toggle" role="switch"`
+      + ` aria-checked="${titlePrefs.scrub}"></button></div>${renderTitleControl()}</div>`;
   }
   if (c.kind === "guide") {
     return `<div class="set-group">${head}${renderGuideControl()}</div>`;
@@ -1058,6 +1158,32 @@ function applySetting(set: string, val: string) {
   else if (set === "unstop") clearStopRule(val);
   renderSettings();
 }
+// The switch and Clear. Both repaint: neither owns a live node.
+function applyTitleSetting(cmd: string) {
+  if (cmd === "toggle") { host.setTitlePrefs({ ...titlePrefs, scrub: !titlePrefs.scrub }); return; }
+  // Names the field it clears rather than spreading TITLE_DEFAULTS, like peek's Reset
+  // below: it says Clear next to the text field and must not also flip the switch.
+  if (cmd === "reset") host.setTitlePrefs({ ...titlePrefs, extra: "" });
+}
+
+// A keystroke in the extra-characters field. Commits live, but patches only the readout:
+// `renderSettings()` here would replace the <input> mid-word.
+function applyTitleExtra(el: HTMLInputElement) {
+  const next = { ...titlePrefs, extra: el.value };
+  host.setTitlePrefs(next, false);
+  const box = el.closest(".titlebox");
+  const parsed = box?.querySelector("#titleParsed");
+  if (parsed) parsed.innerHTML = titleChips(titlePrefs.extra);
+  const prev = box?.querySelector("#titlePrev");
+  if (prev) {
+    const { raw, ctx } = titleSample(titlePrefs);
+    prev.outerHTML = titlePreviewHtml(raw, cleanTitle(raw, ctx, titlePrefs));
+  }
+  // Clear is the one control whose enabled state depends on the field.
+  const clear = box?.querySelector<HTMLButtonElement>("[data-settitle='reset']");
+  if (clear) clear.disabled = !titlePrefs.extra;
+}
+
 // Everything routes through the host's clamping setter; the buttons disable at the bounds.
 function applyPeekSetting(cmd: string) {
   // Reset restores the two timings only: it sits in the stepper row and must not flip the
@@ -1188,6 +1314,8 @@ $("setTabs").addEventListener("click", (e) => {
 $("setBody").addEventListener("click", (e) => {
   const f = (e.target as HTMLElement).closest<HTMLElement>("[data-setfont]");
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
+  const ti = (e.target as HTMLElement).closest<HTMLElement>("[data-settitle]");
+  if (ti) { applyTitleSetting(ti.dataset.settitle!); return; }
   const pk = (e.target as HTMLElement).closest<HTMLElement>("[data-setpeek]");
   if (pk) { applyPeekSetting(pk.dataset.setpeek!); return; }
   const at = (e.target as HTMLElement).closest<HTMLElement>("[data-setattn]");
@@ -1209,6 +1337,13 @@ $("setBody").addEventListener("click", (e) => {
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");
   if (o) applySetting(o.dataset.set!, o.dataset.val!);
 });
+// The one text field in this window, delegated on #setBody like every handler here so it
+// survives a tab change's renderSettings().
+$("setBody").addEventListener("input", (e) => {
+  const f = (e.target as HTMLElement).closest<HTMLInputElement>("[data-titleextra]");
+  if (f) applyTitleExtra(f);
+});
+
 // Delegated on the persistent #setBody: renderSettings() replaces the demo DOM on every press.
 $("setBody").addEventListener("mouseover", (e) => {
   // The attention preview replays under the pointer. `attnHover` is the guard ./sidebar's

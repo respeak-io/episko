@@ -27,6 +27,9 @@ The header's running-server list finally reads the log Claude Code actually writ
 + A relative path resolves against where the pane's process actually is, so it keeps
   working after a `cd`, and against the folders the session has already worked in.
 + A terminal's own OSC 8 hyperlinks now open instead of doing nothing.
++ Settings › Appearance › *Clean up session names*: the characters stripped off a session's
+  name are yours to add to, so the next spinner frame Claude Code ships doesn't wait for an
+  Episko release. Characters or `a-b` ranges, with a live before/after and an off switch.
 ~ The popover splits **Running servers** from **Background jobs**; only something with an
   address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
 ~ The GitHub card names the account a failed read ran as, instead of passing GitHub's

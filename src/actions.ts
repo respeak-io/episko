@@ -34,6 +34,7 @@ import {
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
+  titlePrefs, setTitlePrefs as setTitlePrefsState,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
@@ -47,6 +48,7 @@ import {
 import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
+import { cleanTitle, type TitlePrefs } from "./format";
 import type { SoundPrefs } from "./sound";
 import { canShelve, CLAUDE_CLI, midWork, phaseText } from "./types";
 import { resolveProviderPermission } from "./providers/control";
@@ -170,6 +172,20 @@ export function setPeekPrefs(p: PeekPrefs) {
   closePeek();
   renderSidebar();
   renderSettings(); // the live preview in the Worktrees tab reads these values
+}
+
+// `Sess.title` is the *cleaned* string, so re-derive it from `rawTitle` or an idle or
+// ended pane keeps wearing the old rule, which reads as the switch not working.
+export function setTitlePrefs(p: TitlePrefs, repaintSettings = true) {
+  setTitlePrefsState(p);
+  localStorage.setItem("cc-title", JSON.stringify(titlePrefs));
+  for (const s of sessions.values()) {
+    if (s.rawTitle === undefined) continue; // a shell or task pane never had an OSC
+    s.title = cleanTitle(s.rawTitle, s, titlePrefs);
+  }
+  renderAll();
+  // Off for the keystroke path only: a repaint under a live <input> takes the caret with it.
+  if (repaintSettings) renderSettings();
 }
 
 // Full renderAll: the badge, the tray title, group glyphs and rail highlights all read these.
