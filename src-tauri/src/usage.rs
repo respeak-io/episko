@@ -20,6 +20,9 @@ fn claude_dir() -> Option<PathBuf> {
 pub(crate) struct TranscriptMsg {
     role: String,
     text: String,
+    /// The line's own ISO timestamp, passed through rather than parsed: `Date.parse` is
+    /// already the reader, and a line without one says so instead of guessing.
+    at: Option<String>,
 }
 
 /// Claude's `<base>/projects/<enc>/`, where `<enc>` is the physical cwd with every
@@ -643,6 +646,7 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
         if t != "user" && t != "assistant" {
             continue;
         }
+        let at = v.get("timestamp").and_then(|x| x.as_str()).map(str::to_string);
         let content = v.get("message").and_then(|m| m.get("content"));
         let mut text = String::new();
         match content {
@@ -673,7 +677,7 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
             text.truncate(cut);
             text.push('…');
         }
-        msgs.push(TranscriptMsg { role: t.to_string(), text });
+        msgs.push(TranscriptMsg { role: t.to_string(), text, at });
     }
     let n = msgs.len();
     if n > limit {
@@ -1457,7 +1461,7 @@ mod tests {
                 r#"{"type":"system","message":{"content":"not a turn"}}"#, "\n",
                 "torn write, not json\n",
                 r#"{"type":"user","message":{"content":"   "}}"#, "\n",
-                r#"{"type":"user","message":{"content":"last human turn"}}"#, "\n",
+                r#"{"type":"user","message":{"content":"last human turn"},"timestamp":"2026-09-03T10:15:00.000Z"}"#, "\n",
             ),
         )
         .unwrap();
@@ -1472,6 +1476,10 @@ mod tests {
                 ("user", "last human turn"),    // the tool-only turn, the system line,
             ],                                  // the garbage and the blank all dropped
         );
+
+        // A line's own timestamp rides along; one without stays None rather than guessing.
+        assert_eq!(msgs[2].at.as_deref(), Some("2026-09-03T10:15:00.000Z"));
+        assert_eq!(msgs[0].at, None);
 
         // `limit` takes the LAST n, because the mirror shows the end of a conversation.
         let tail = read_transcript_in(&base, cwd, "sid", 1).unwrap();

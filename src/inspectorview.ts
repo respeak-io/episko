@@ -224,13 +224,20 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
 
 const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// Three states, two classes. A restored row nobody has clicked yet is NOT greyed: it has no
+// marker because Episko never watched it, and the resume usually replayed it into the pane,
+// so the click is what settles it (./terminal searches once and stamps `lost` on a miss).
 function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, lines: number): string {
-  const label = promptLabel(p.text);
-  const tip = anchored ? `${label}\nJump to it in the terminal` : `${label}\nScrolled out of the terminal`;
-  return `<div class="ol-row${anchored ? "" : " gone"}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(tip)}">`
+  const gone = !anchored && (!p.restored || !!p.lost);
+  const why = anchored ? "Jump to it in the terminal"
+    : p.lost ? "Asked before this pane, and not in its scrollback"
+    : p.restored ? "Asked before this pane — click to look for it in the scrollback"
+    : "Scrolled out of the terminal";
+  const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
+  return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(`${promptLabel(p.text)}\n${why}`)}">`
     + `<span class="ol-n">${n}</span>`
     + `<div class="ol-txt" style="--ol-lines:${lines}">${esc(p.text)}</div>`
-    + `<span class="ol-t">${promptClock(p.at)}</span></div>`;
+    + `<span class="ol-t">${back}${p.at ? promptClock(p.at) : ""}</span></div>`;
 }
 
 export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean): string {

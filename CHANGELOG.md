@@ -19,7 +19,11 @@ The header's running-server list finally reads the log Claude Code actually writ
 + The inspector lists **your questions**, newest first; clicking one scrolls that pane's
   terminal back to where you asked it. Settings › Sessions has the switch, the line count
   and the hover.
++ **Resume a session and the questions come back with it**, read out of the conversation's
+  own transcript, with the times it recorded. Clicking one still jumps: the resume replays
+  the conversation into the pane, so Episko goes and finds the line.
 ~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
+~ History's detail pane leads with **what you asked**, above *how it ended*.
 ~ The inspector's state, model and context share one card, so the working set and the new
   questions list sit above the fold.
 + Pick which of your GitHub accounts a project reads as, from the project menu or from

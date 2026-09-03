@@ -20,7 +20,9 @@ const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "bypassPermissions", label: "Bypass",       sub: "No permission checks at all. Claude confirms once",      glyph: "⚠", asks: false },
 ];
 
-export interface ProviderMessage { role: string; text: string }
+// `at` is the message's own ISO timestamp where the provider records one; a reader that
+// wants a clock parses it and shows nothing when it is absent.
+export interface ProviderMessage { role: string; text: string; at?: string | null }
 
 export interface ProviderHistory {
   list(limit: number): Promise<HistEntry[]>;

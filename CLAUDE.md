@@ -154,7 +154,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
-| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, and which of Claude's four `SessionStart` sources starts a new one |
+| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 | `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
@@ -306,7 +306,9 @@ And the things that hold however the files are arranged:
   still worth reading, the jump is not still on offer. Same trap as `X-CC-Session` and
   `BgServer.transcript` — an address recomputed later points at somewhere else. Prompts are
   **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
-  and `/resume` do not.
+  and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript
+  instead, once, and those rows earn their anchor on the click that needs it (the resume
+  replayed them into the pane, so ./terminal goes and looks). `docs/sessions.md` has both.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so

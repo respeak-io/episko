@@ -19,6 +19,8 @@ import {
   type WtHead,
 } from "./types";
 import { readList } from "./store";
+import { seedPrompts } from "./outline";
+import { readProviderHistory } from "./providers";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
@@ -174,11 +176,27 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // A restored session replaces its dormant row, or the sidebar lists the conversation
   // twice — after the spawn, or a resume that failed has thrown its restorable row away.
   if (spawned && opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
+  if (spawned && opts.resume) void seedOutline(s, opts.resume);
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
   return spawned ? id : null;
+}
+
+// A resumed pane starts blind: its questions are in the provider's transcript, not in the
+// hooks it is about to receive. Both roles are read, so the window is generous; ./outline
+// keeps the user turns and refuses a second seeding.
+const SEED_READ = 240;
+async function seedOutline(s: Sess, resumeId: string) {
+  if (!s.provider) return;
+  try {
+    const msgs = await readProviderHistory(s.provider, resumeId, s.workdir, SEED_READ);
+    if (sessions.get(s.id) !== s) return; // closed while we read
+    if (seedPrompts(s.prompts, msgs).length) renderAll();
+  } catch (e) {
+    dlog("info", `outline: no transcript to restore for ${resumeId.slice(0, 8)} (${e})`);
+  }
 }
 
 // Offer a worktree when launching into a repo that already has a session. Synchronous on
@@ -355,7 +373,10 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   let spawned = true;
   try {
     await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80, resume: opts.resume ?? null, mode: permission.mode });
-    if (opts.resume) setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
+    if (opts.resume) {
+      setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
+      void seedOutline(s, opts.resume);
+    }
   } catch (e) {
     spawned = false;
     dlog("error", `${agent.id} launch failed: ${e}`);

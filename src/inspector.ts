@@ -42,8 +42,12 @@ export function toggleOutlineAll() { outlineAll = !outlineAll; repaintActive(); 
 // outlives the `activeId` that produced it, as with the tool timeline.
 export function jumpToPrompt(sid: string, promptId: string) {
   const s = sessions.get(sid);
-  if (!s) return;
-  if (!scrollToPrompt(s, promptId)) toast("That far back has scrolled out of this terminal");
+  if (!s || scrollToPrompt(s, promptId)) return;
+  const p = s.prompts.find((x) => x.id === promptId);
+  toast(p?.restored
+    ? "That question is from before this pane, and isn't in its scrollback"
+    : "That far back has scrolled out of this terminal");
+  repaintActive(); // the row has just learned it is out of reach
 }
 
 // Hover-to-unfold, ./peek's idea in a single row. The class goes straight on the element and

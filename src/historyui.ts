@@ -8,7 +8,8 @@ import { basename, esc, relTime, tilde } from "./format";
 import { abbr } from "./phase";
 import { activeProjectCtx, launch } from "./panes";
 import { accentFor, availAgents } from "./state";
-import { historyProviders, readProviderHistory } from "./providers";
+import { historyProviders, readProviderHistory, type ProviderMessage } from "./providers";
+import { isEnvelope } from "./outline";
 import { providerSessionKey } from "./types";
 import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
@@ -23,7 +24,7 @@ let histScoped = false;           // ◧ narrow to the project on stage
 let histLoading = false;
 // Keyed by session id and re-checked on arrival: a late transcript read must not paint
 // over a row the user has already moved off.
-let histPreview: { key: string; msgs: { role: string; text: string }[] } | null = null;
+let histPreview: { key: string; msgs: ProviderMessage[] } | null = null;
 const HIST_LIMIT = 300;
 const HIST_TTL = 60000;           // re-scan on reopen if the last one is older
 
@@ -126,6 +127,28 @@ export function histRender() {
   void histLoadPreview(histSelected());
 }
 function histPaintDetail() { $("histDetail").innerHTML = histDetailHtml(histSelected()); }
+
+// Wide enough that the questions list is worth having; the ending still shows the last few.
+const PREVIEW_READ = 60;
+const ASK_SHOW = 6, END_SHOW = 6;
+const askClock = (at: string | null | undefined) => {
+  const ms = at ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+};
+// What identifies a past conversation is what you asked it, so it goes above how it ended.
+// Newest first, like the inspector's own outline, and unnumbered: this is the tail of the
+// transcript, so a number here would count from nowhere.
+function histAskedHtml(msgs: ProviderMessage[]): string {
+  const asked = msgs.filter((m) => m.role === "user" && !isEnvelope(m.text.trim()));
+  if (!asked.length) return "";
+  const shown = asked.slice(-ASK_SHOW).reverse();
+  const rest = asked.length - shown.length;
+  const rows = shown.map((m) =>
+    `<div class="ol-row static"><div class="ol-txt" style="--ol-lines:2">${esc(m.text)}</div>`
+    + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
+  return `<div class="wt-dkind">what you asked</div><div class="ol">${rows}</div>`
+    + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
+}
 // Same shape as ./worktree's wtFacts, copied: one dialog exporting a fragment to another is worse.
 function histFacts(pairs: [string, string][]) {
   return `<dl class="wt-facts">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
@@ -152,9 +175,11 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Provider sessions must resume in their original directory, so this one can only be read.</div>`
     : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
        <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
-  const preview = histPreview?.key === providerSessionKey(h.provider, h.session_id)
-    ? (histPreview.msgs.length
-        ? `<div class="hist-tv">${histPreview.msgs.map((m) => {
+  const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id) ? histPreview.msgs : null;
+  const asked = loaded ? histAskedHtml(loaded) : "";
+  const preview = loaded
+    ? (loaded.length
+        ? `<div class="hist-tv">${loaded.slice(-END_SHOW).map((m) => {
             const user = m.role === "user";
             return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(abbr(m.text, 420))}</div></div>`;
           }).join("")}</div>`
@@ -167,6 +192,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
     </div>
     ${facts}
     ${action}
+    ${asked}
     <div class="wt-dkind">how it ended</div>
     ${preview}`;
 }
@@ -176,7 +202,7 @@ async function histLoadPreview(h: HistEntry | undefined) {
   const key = providerSessionKey(h.provider, id);
   if (histPreview?.key === key) return;
   try {
-    const msgs = await readProviderHistory(h.provider, id, h.cwd, 8);
+    const msgs = await readProviderHistory(h.provider, id, h.cwd, PREVIEW_READ);
     const selected = histSelected();
     if (!histOpen() || !selected || providerSessionKey(selected.provider, selected.session_id) !== key) return;
     histPreview = { key, msgs };

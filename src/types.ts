@@ -59,8 +59,8 @@ export interface BgServer {
 }
 export interface Todo { content: string; status: string }
 
-// One prompt you sent; `id` keys the scrollback marker ./terminal anchors it with (./outline).
-export interface Prompt { id: string; text: string; at: number }
+// One prompt you sent (./outline); `id` keys ./terminal's marker, `at` is 0 when nothing said.
+export interface Prompt { id: string; text: string; at: number; restored?: boolean; lost?: boolean }
 export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number; // as of the last fetch (upstream_state in git.rs)

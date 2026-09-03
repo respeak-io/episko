@@ -195,6 +195,28 @@ const liveMark = (s: Sess, id: string) => {
   return m && !m.isDisposed && m.line >= 0 ? m : null;
 };
 
+// A restored prompt was never watched, so it has no marker — but a resume replays the
+// conversation into the pane, so the line is usually right there. Search on the click that
+// needs it (a scan is the whole scrollback) and remember a miss, so it runs at most once.
+const KEY_MIN = 8, KEY_MAX = 40; // long enough not to match a stray line, short enough not to wrap
+const searchKey = (text: string) => (text.split("\n").find((l) => l.trim()) ?? "").trim().slice(0, KEY_MAX);
+
+function findLine(term: Terminal, key: string): number | null {
+  const buf = term.buffer.active;
+  // Top down: the replay is above whatever the pane has done since.
+  for (let y = 0; y < buf.length; y++) {
+    if (buf.getLine(y)?.translateToString(true).includes(key)) return y;
+  }
+  return null;
+}
+
+function anchorAt(s: Sess, id: string, line: number) {
+  const buf = s.term!.buffer.active;
+  const m = s.term!.registerMarker(line - (buf.baseY + buf.cursorY)); // the offset is from the cursor
+  if (m) (s.promptMarks ?? (s.promptMarks = new Map())).set(id, m);
+  return m ?? null;
+}
+
 /** The prompts still reachable in this pane's buffer; the rest render as out of reach. */
 export function anchoredPrompts(s: Sess): Set<string> {
   const out = new Set<string>();
@@ -203,7 +225,13 @@ export function anchoredPrompts(s: Sess): Set<string> {
 }
 
 export function scrollToPrompt(s: Sess, id: string): boolean {
-  const m = liveMark(s, id);
+  let m = liveMark(s, id);
+  const p = s.prompts.find((x) => x.id === id);
+  if (!m && s.term && p?.restored && !p.lost) {
+    const key = searchKey(p.text);
+    const y = key.length >= KEY_MIN ? findLine(s.term, key) : null;
+    if (y == null) p.lost = true; else m = anchorAt(s, id, y);
+  }
   if (!s.term || !m) return false;
   s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
   return true;
