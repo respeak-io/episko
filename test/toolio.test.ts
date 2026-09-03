@@ -2,16 +2,9 @@ import { describe, expect, it } from "vitest";
 import { actClipText, clip, DESC_CAP, descText, DETAIL_CAP, fieldsText, inputText, outputText } from "../src/toolio";
 import type { Act } from "../src/types";
 
-// What a tool call was and what came back, out of the raw hook payloads.
-//
-// **Every payload below is a real one**, captured by pointing a throwaway `--settings`
-// file at `/bin/cat` and running claude against it — the same instrumentation Episko
-// generates, so these are the exact shapes `applyHook` receives. That matters more here
-// than anywhere else in the suite: this module's whole job is knowing what Claude Code
-// puts in `tool_response`, and a hand-invented fixture would only ever agree with what
-// we assumed it puts there. Two of the three modelled shapes were nothing like the
-// guess (a failure has NO `tool_response` at all; an `Edit` reply carries the entire
-// pre-change file), and both were found this way.
+// Every payload below is a real one, captured by pointing a throwaway `--settings` file at
+// `/bin/cat` and running claude against it. Keep it so: a hand-invented fixture only agrees
+// with what we assumed `tool_response` holds, and two of the three modelled shapes did not.
 
 describe("clip — the cap, applied at capture", () => {
   it("leaves anything under the cap alone, bar trailing whitespace", () => {
@@ -25,8 +18,7 @@ describe("clip — the cap, applied at capture", () => {
   it("takes a smaller cap for a caller that wants one", () => {
     expect(clip("abcdef", 3)).toBe("abc\n… 3 more characters");
   });
-  // The marker is inside the text rather than a flag beside it, so the <pre>, the copy
-  // button and this test cannot disagree about whether what they hold is the whole thing.
+  // The marker is in the text, not a flag beside it, so the <pre> and the copy button can't disagree.
   it("carries the truncation into anything that copies the string", () => {
     expect(clip("y".repeat(10), 4)).toMatch(/more characters$/);
   });
@@ -54,8 +46,6 @@ describe("fieldsText — a payload object as something readable", () => {
   it("drops absent fields rather than printing ten lines of null", () => {
     expect(fieldsText({ a: 1, b: null, c: "", d: undefined, e: false })).toBe("a: 1\ne: false");
   });
-  // An empty collection is not an absent field: `matches: []` is what a search that
-  // found nothing came back with, and that is the answer rather than the lack of one.
   it("keeps an empty collection, which is an answer", () => {
     expect(fieldsText({ matches: [] })).toBe("matches: []");
   });
@@ -124,11 +114,8 @@ describe("outputText — what came back", () => {
   });
 
   // ---- Write / Edit ----
-  // The reason this shape is modelled by hand at all: `originalFile` is the WHOLE file
-  // before the change, so the generic dump would bury the one-line patch beside it and
-  // spend the entire cap doing it.
-  // No `type` on this payload, deliberately: the real Edit reply has none. Only Write
-  // carries the create/update discriminant, which is why the patch itself has to answer.
+  // `originalFile` is the whole pre-change file, so the generic dump would spend the cap on
+  // it. No `type` here: the real Edit reply has none; only Write carries create/update.
   it("shows an Edit's patch, never the pre-change file it also carries", () => {
     const resp = {
       filePath: "/a/data.txt", oldString: "alpha", newString: "ALPHA",
@@ -142,7 +129,7 @@ describe("outputText — what came back", () => {
   });
   it("counts the lines of a created file, which has no patch to show", () => {
     const resp = { type: "create", filePath: "/a/made.txt", content: "made\n", structuredPatch: [], originalFile: null, userModified: false };
-    expect(outputText(resp, null)).toBe("created · 2 lines");
+    expect(outputText(resp, null)).toBe("created · 1 line");
   });
 
   // ---- everything else ----
@@ -165,9 +152,7 @@ describe("outputText — what came back", () => {
 
 describe("outputText — the shapes that used to read as nothing", () => {
   it("dumps an array response instead of claiming nothing came back", () => {
-    // Neither a scalar nor a record, so it reached neither `scalar` nor `fieldsText` and
-    // fell out as "" — which the sheet renders as "(nothing returned)" for a call that
-    // returned plenty. An MCP tool's content blocks are exactly this shape.
+    // An MCP tool's content blocks are this shape, and the sheet renders "" as "(nothing returned)".
     const out = outputText([{ type: "text", text: "first" }, { type: "text", text: "second" }], null);
     expect(out).toContain("first");
     expect(out).toContain("second");
@@ -178,12 +163,10 @@ describe("outputText — the shapes that used to read as nothing", () => {
     expect(outputText(null, null)).toBe("");
   });
   it("falls back to the line count when a patch has no hunk lines", () => {
-    // Every hunk string carries a newline after its `@@` header whether or not anything
-    // follows, so the old `.includes("\n")` filter passed an empty hunk through and the
-    // truthy `body` blocked the `N lines` fallback underneath it.
+    // Every hunk string has a newline after its `@@` header, so "has a newline" is not "has lines".
     const out = outputText({ type: "create", content: "a\nb\nc\n", structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, lines: [] }] }, null);
     expect(out).not.toContain("@@");
-    expect(out).toContain("4 lines");
+    expect(out).toContain("3 lines");   // the trailing newline ends the third, it is not a fourth
   });
 });
 
@@ -193,9 +176,7 @@ describe("actClipText — what Copy hands over", () => {
     id: "toolu_01", inp: "pnpm test", desc: "", out: "12 passed", failed: false, ...o,
   });
 
-  // The pasted text has to say which half is which — a command and its output are both
-  // just text, and the two are indistinguishable once they leave the card that labelled
-  // them.
+  // A command and its output are both just text once they leave the card that labelled them.
   it("labels both halves and heads it with the call", () => {
     expect(actClipText(act())).toBe(
       "Bash · pnpm test\n\n# executed\npnpm test\n\n# returned\n12 passed\n",
@@ -204,8 +185,6 @@ describe("actClipText — what Copy hands over", () => {
   it("says failed rather than returned when the call did", () => {
     expect(actClipText(act({ failed: true, out: "Exit code 1" }))).toContain("# failed\nExit code 1");
   });
-  // The three fallbacks are distinct facts, and the whole point is that a paste never
-  // reads as an empty result when it was really an unfinished one.
   it("distinguishes a call still in flight from one that returned nothing", () => {
     expect(actClipText(act({ durMs: null, out: "" }))).toContain("# returned\nstill running\n");
     expect(actClipText(act({ out: "" }))).toContain("# returned\n(nothing returned)\n");
@@ -219,9 +198,7 @@ describe("actClipText — what Copy hands over", () => {
 });
 
 describe("descText — Claude's note on why, kept out of what ran", () => {
-  // The real shape: Claude Code sends `description` inside `tool_input`, right beside
-  // the command. Rendered there it made the Executed block unpasteable — you got the
-  // command plus a `description:` line, and `find . | sort` came back needing an edit.
+  // The real shape: Claude Code puts `description` inside `tool_input`, beside the command.
   const bash = { command: 'find . -maxdepth 1 -name "*.md" | sort', description: "List markdown files at top level" };
 
   it("lifts the description off a tool whose payload has one field that IS the call", () => {
@@ -232,9 +209,8 @@ describe("descText — Claude's note on why, kept out of what ran", () => {
     expect(inputText("Bash", bash)).toBe('find . -maxdepth 1 -name "*.md" | sort');
   });
 
-  // The reason this is not a blanket "drop every `description`": for a tool with no
-  // dominant field, all of them are arguments — an MCP call that creates a calendar
-  // event puts the event's own description there, and hiding it would hide an input.
+  // Not a blanket drop: with no dominant field every field is an argument, and a calendar
+  // MCP call puts the event's own description there.
   it("leaves a description that IS an argument alone", () => {
     const ev = { summary: "Standup", description: "Daily sync, 15 minutes" };
     expect(descText("mcp__google_calendar__create_event", ev)).toBe("");
@@ -253,8 +229,6 @@ describe("descText — Claude's note on why, kept out of what ran", () => {
     expect(long).toContain("more characters");
   });
 
-  // The whole point of the split: one copy is annotated for reading, the other is the
-  // command itself. The note may appear in the first and must never appear in the second.
   it("puts the note in the header of a copied call, never in the executed block", () => {
     const text = actClipText({
       tool: "Bash", arg: "find .", time: "12:58", startMs: 0, durMs: 193, id: "t1",

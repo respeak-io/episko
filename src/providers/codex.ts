@@ -6,10 +6,8 @@ import type { HistEntry } from "../history";
 import { riskLevel } from "../phase";
 import type { AgentPermissionMode, AgentTokenBreakdown, AgentTokenUsage, Todo, TouchKind } from "../types";
 
-// Codex launch policy is expressed with the current CLI's stable approval/sandbox
-// primitives. "Auto" is the useful, sandboxed meaning the old `--full-auto` shorthand
-// carried: do not stop for approvals, but keep writes inside the workspace sandbox.
-// The backend maps these ids to a whitelist; none is passed through as an argv value.
+// Ids only; the backend maps each to a whitelist and none is passed through as argv. "auto"
+// keeps the old `--full-auto` meaning: no approval stops, writes inside the workspace sandbox.
 export const CODEX_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "default", label: "Codex config", sub: "Uses approval_policy and sandbox_mode from config.toml", glyph: "◇", asks: true },
   { id: "on-request", label: "On request", sub: "Codex asks when a command needs approval", glyph: "◆", asks: true },
@@ -46,14 +44,9 @@ function usage(v: unknown): AgentTokenUsage {
 
 type TokenPrice = { input: number; cached: number; cacheWrite?: number; output: number };
 
-// Standard API dollars per million tokens, checked against OpenAI's pricing/model
-// pages on 2026-08-24. App Server's own USD estimate wins whenever it is available;
-// this table is the subscription-login fallback, where the server can return token
-// groups and credits but no USD route. Snapshot suffixes inherit their base model.
-//
-// GPT-5.5/5.4 long-context and regional uplifts cannot be recovered from the grouped
-// cumulative response, so the fallback deliberately means the ordinary standard API
-// equivalent — the same sort of useful approximation Claude presents, not a bill.
+// USD per million tokens, per OpenAI's pricing pages (2026-08-24): the subscription-login
+// fallback when App Server returns token groups but no USD. Standard tier only, since the
+// uplifts (long-context, regional) cannot be recovered from the grouped total; snapshots inherit.
 const API_PRICES: Record<string, TokenPrice> = {
   "gpt-5.6": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
   "gpt-5.6-sol": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
@@ -77,12 +70,8 @@ const priceFor = (model: string): TokenPrice | null => {
 };
 const tokens = (v: unknown): number => Number.isFinite(v) ? Math.max(0, Number(v)) : 0;
 
-/**
- * App Server groups every model/cache/service-tier route used by the thread. Prefer
- * its cumulative USD-micros estimate; if a ChatGPT subscription route omits USD, price
- * those same groups at public API rates. Repricing only the latest aggregate token
- * counter would make a mid-thread model change rewrite all of the older turns.
- */
+// App Server's cumulative USD-micros when present; else price its per-model groups at API
+// rates. Per group, since repricing one aggregate after a model change rewrites older turns.
 export function codexApiEquivalentUsd(v: unknown): number | null {
   const x = obj(v); const micros = x.estimatedUsageUsdMicros;
   if (Number.isFinite(micros) && micros >= 0) return Number(micros) / 1_000_000;
@@ -118,18 +107,15 @@ function fileTouches(item: Record<string, any>): AgentFileTouch[] {
       const t = text(c?.kind?.type ?? c?.type);
       const kind: TouchKind = t === "add" ? "created" : "edited";
       found.push({ path, kind });
-      // An update can also be a move. Keep the destination as a real file touch; the
-      // source may no longer exist, but both paths are useful history and the neutral
-      // reducer resolves either relative spelling against the session cwd.
+      // An update can also be a move; the destination counts as a touch as well.
       const moved = text(c?.kind?.move_path ?? c?.kind?.movePath);
       if (moved) found.push({ path: moved, kind: "edited" });
     }
   } else if (item.type === "imageView") {
     const path = text(item.path); if (path) found.push({ path, kind: "read" });
   } else if (item.type === "commandExecution" && Array.isArray(item.commandActions)) {
-    // App Server already parsed these commands and only calls an action `read` when it
-    // has a concrete file path. Do not infer paths from shell text, listFiles folders,
-    // search roots or unknown commands.
+    // App Server only calls an action `read` with a concrete path; never infer paths from
+    // shell text, listFiles folders or search roots.
     for (const action of item.commandActions) {
       if (action?.type !== "read") continue;
       const path = text(action.path); if (path) found.push({ path, kind: "read" });
@@ -137,8 +123,7 @@ function fileTouches(item: Record<string, any>): AgentFileTouch[] {
   } else if (item.type === "imageGeneration" && item.status !== "failed") {
     const path = text(item.savedPath); if (path) found.push({ path, kind: "created" });
   }
-  // A command can contain the same read action more than once. One completed item is
-  // one touch in the set, so de-duplicate here before the neutral reducer counts it.
+  // One completed item is one touch: a command can repeat the same read action.
   return found.filter((touch, i) => found.findIndex((x) => x.path === touch.path && x.kind === touch.kind) === i);
 }
 
@@ -165,9 +150,7 @@ function itemParts(item: Record<string, any>) {
     };
     case "webSearch": return { tool: "WebSearch", arg: text(item.query), inputData: { query: text(item.query) }, input: text(item.query), output: clip(item.results), failed: false };
     case "imageView": return { tool: "Read", arg: leaf(text(item.path)), inputData: { file_path: text(item.path) }, input: text(item.path), output: "image viewed", failed: false };
-    // `collabToolCall` is the public App Server spelling; recent schemas renamed the
-    // richer item to `collabAgentToolCall`. Supporting both keeps the timeline useful
-    // across that protocol transition without leaking either spelling past this file.
+    // `collabToolCall` is the public spelling; newer schemas say `collabAgentToolCall`.
     case "collabToolCall": case "collabAgentToolCall": {
       const tool = text(item.tool, "agent");
       const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
@@ -226,17 +209,14 @@ function plan(v: unknown): Todo[] {
   })).filter((x) => x.content) : [];
 }
 
-/// Turn statuses that mean "somebody stopped this", not "this went wrong". Codex has
-/// used more than one spelling across versions, so this is a small set rather than a
-/// single equality test.
+// Turn statuses meaning "somebody stopped this", in every spelling Codex has used.
 const ABORTED: ReadonlySet<string> = new Set(["aborted", "cancelled", "canceled", "interrupted", "stopped"]);
 
 export function codexEvents(e: ProviderEvent): AgentEvent[] {
   const p = obj(e.params);
   const child = p.episkoChild === true;
-  // Child tools and approvals belong in the parent's cockpit; child lifecycle, plan,
-  // token and error events do not. Letting a child turn complete would mark the parent
-  // done, and letting its plan through would replace the plan the user is looking at.
+  // Child tools and approvals belong in the parent's cockpit; a child's lifecycle, plan,
+  // token and error events would mark the parent done or replace the plan on screen.
   if (child && e.method !== "item/started" && e.method !== "item/completed"
     && !e.method.endsWith("/requestApproval") && e.method !== "episko/request/resolved") return [];
   switch (e.method) {
@@ -251,18 +231,9 @@ export function codexEvents(e: ProviderEvent): AgentEvent[] {
     case "turn/started": return [{ type: "turn-started" }];
     case "turn/completed": {
       const t = obj(p.turn); const status = text(t.status);
-      // A turn the USER stopped is not a failure, and the distinction is load-bearing
-      // rather than cosmetic. `finishAgentTurn(s, true, …)` stamps a generic
-      // `apiErr {kind:"unknown"}`, which buckets as `other` in ./revive — a bucket that
-      // is ON in `REVIVE_DEFAULTS`. So with the watchdog enabled, pressing Esc in the
-      // Codex TUI was answered ~30s later by Episko typing the prompt back in and
-      // pressing Enter, restarting the exact work you had just cancelled. Revive's whole
-      // premise is "the API killed it, not you", and only the adapter can tell them
-      // apart.
-      //
-      // Unknown statuses still count as failures: reporting an outage that was really
-      // something else costs a retry, while silently calling a failure "done" loses the
-      // error card altogether. Same direction the item mappers above take.
+      // A turn the user stopped is not a failure: a generic `apiErr` buckets as `other` in
+      // ./revive, which is on by default, so Esc in the TUI would be answered by Episko
+      // retyping the prompt. Unknown statuses still count as failures (keeps the error card).
       const stopped = ABORTED.has(status);
       return [{
         type: "turn-completed",

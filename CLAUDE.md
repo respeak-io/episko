@@ -41,8 +41,12 @@ Rust backend (run from `src-tauri/`): `cargo check`, `cargo test`, `cargo build`
   only the base one gates them, which is what keeps the guard real. Tests went unchecked
   until 0.22.0 and had drifted: a `Sess` fixture still carried a field deleted two PRs
   earlier, and two `HistEntry` fixtures were missing a required one.
-- Four **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector), `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key) and `tour.test.ts` (a tour step's anchor must resolve in `index.html`, the rail legend it teaches must match `GLYPH`/`GCLASS`, and a card that says *Settings › Sounds* must name a tab `settings.ts` ships). The first two joins had silently broken in production before the tests existed; the third is the same shape. The fourth, `health.test.ts`, holds `isSourcePath` against `is_code_file` in `health.rs` — health.rs's own doc comment says the two lists must stay in step, and a comment is exactly as strong as whoever reads it; when they drifted, CSS files were measured and then silently never chipped.
+- Five **contract tests parse source rather than call it**: `dispatch.test.ts` (a `[data-*]` branch is unreachable unless its attribute is in the dispatcher's `closest()` selector), `ipc.test.ts` (an `invoke("x", {…})` must pass exactly the arguments `#[tauri::command] fn x` declares, since Tauri rejects the whole invoke on one missing key) and `tour.test.ts` (a tour step's anchor must resolve in `index.html`, the rail legend it teaches must match `GLYPH`/`GCLASS`, and a card that says *Settings › Sounds* must name a tab `settings.ts` ships). The first two joins had silently broken in production before the tests existed; the third is the same shape. The fourth, `health.test.ts`, holds `isSourcePath` against `is_code_file` in `health.rs` — health.rs's own doc comment says the two lists must stay in step, and a comment is exactly as strong as whoever reads it; when they drifted, CSS files were measured and then silently never chipped. The fifth, `comments.test.ts`, is the comment gate (§ Comments).
 - Rust tests are in-file `#[cfg(test)] mod tests`, several driving real `git` or the real `tiny_http` server; there is deliberately no `src-tauri/tests/` dir. Two `#[ignore]`d tests run against the real `claude` CLI via `cargo test -- --ignored`, which is a `RELEASE.md` step rather than a CI one.
+
+## Comments
+
+A comment says what the code cannot: a non-obvious *why*, an invariant to keep, or where the full story lives (`docs/`, the CHANGELOG, `git log -S`). It never restates the code, narrates the bug that shipped, or runs to a paragraph: **one or two lines, five at the very most**. A rule that needs more is a `docs/` entry with a one-line pointer in the code. `test/comments.test.ts` gates every source file on block length and density (0.3 comment lines per code line plus a small allowance), so a comment that outgrows this fails CI rather than a review. The 2026-09 sweep took the repo from 0.52 to 0.15; don't grow it back.
 
 ## Claude's core mechanism: per-launch instrumentation
 
@@ -61,7 +65,7 @@ Three hard constraints shape this code:
 - **The hooks run no shell; the statusLine cannot avoid one.** A command hook takes an **exec form** (`command` plus an `args` array, each element delivered verbatim), so the hooks spawn `curl` and nothing else (the shell form it replaced paid a PowerShell launch per hook event). The statusLine gets no such escape: Claude Code defines neither `args` nor `shell` for it and routes it through **Git Bash whenever Git Bash is installed** (else PowerShell), so that one command must parse in *either* shell: no `&` call operator, no `$null`, no `Write-Output`, and forward slashes. Get that wrong and there is no error, just every figure the statusLine carries (model, context %, cost, duration, **the rate limits**) gone at once while the hooks keep phases flowing. That shipped once.
   **Neither half can be checked by reading the generated JSON** (such a test agrees with our intent, and the intent was the bug), so both are *executed* against a mock server for no tokens: `statusline_command_posts_from_every_shell_claude_might_pick` and `hook_exec_form_posts_without_any_shell`, guarding opposite hazards (a shell may not *parse* the string; with no shell nothing strips quotes, so shell-style quoting reaches curl verbatim). Both failures are silent (`-s` + `async`).
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
-- **The server must be supervised, and it must come back on the SAME port.** `tiny_http`'s accept thread `break`s out of its loop on *any* `accept()` error, and `IncomingRequests::next()` is `self.server.recv().ok()` — so one `Err` becomes a `None` that ends the `for` loop, drops the `Server` and closes the socket. One `ECONNABORTED` did exactly that after six days of uptime and it stayed dead for fourteen hours: `AppState.port` still held the number, so every session launched afterwards got an instrument file pointing at a closed socket and sat at `idle` with no model, context, files or tools. Nothing anywhere said so — the hooks are `async` and everything uses `curl -s`. So `run_telemetry_server` is wrapped in **`serve_telemetry`**, which re-binds and re-binds *that port*: an instrument file is written at launch and never revisited, so reclaiming the number revives every running pane on its next statusLine, while a fresh port would only help future launches (it takes one only after ~a minute of failures, and then updates the now-**`AtomicU16`** `AppState.port`). Re-binding **must sleep first** — `tiny_http`'s `Drop` pokes its accept thread but never joins it, so the old listener is briefly still bound and `SO_REUSEADDR` does not help against a *listening* socket. Both transitions emit `telemetry-health`, which raises the top bar's red badge; a fleet nobody can hear must never look like a quiet one.
+- **The server must be supervised, and it must come back on the SAME port.** `tiny_http`'s accept thread `break`s out of its loop on *any* `accept()` error, and `IncomingRequests::next()` is `self.server.recv().ok()` — so one `Err` becomes a `None` that ends the `for` loop, drops the `Server` and closes the socket. One `ECONNABORTED` did exactly that after six days of uptime and it stayed dead for fourteen hours: `AppState.port` still held the number, so every session launched afterwards got an instrument file pointing at a closed socket and sat at `idle` with no model, context, files or tools. Nothing anywhere said so — the hooks are `async` and everything uses `curl -s`. So `run_telemetry_server` is wrapped in **`serve_telemetry`**, which re-binds and re-binds *that port*: an instrument file is written at launch and never revisited, so reclaiming the number revives every running pane on its next statusLine, while a fresh port would only help future launches (it takes one only after the ladder has run out — `REBIND_GIVE_UP = 8` attempts, so ~two minutes of failures — and then updates the now-**`AtomicU16`** `AppState.port`). Re-binding **must sleep first** — `tiny_http`'s `Drop` pokes its accept thread but never joins it, so the old listener is briefly still bound and `SO_REUSEADDR` does not help against a *listening* socket. Both transitions emit `telemetry-health`, which raises the top bar's red badge; a fleet nobody can hear must never look like a quiet one.
 
 ## Backend (`src-tauri/src/`): sixteen modules
 
@@ -73,7 +77,7 @@ Three hard constraints shape this code:
 | `git.rs` | worktrees, branches (local **and** remote-only, each with its standing and author), the working-set diff, the paged commit graph, the toolbar's fetch/pull/push, commit info, the branch sweeps (`sweep_branches`, `delete_remote_branches`) |
 | `tasks.rs` | runnable discovery; see docs/tasks.md |
 | `usage.rs` | transcripts (incl. History's whole-machine scan) + the token ledger; everything read out of `~/.claude` |
-| `pty.rs` | the four launch engines, Claude's permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output), `stream_pty_session`, the PTY lifecycle |
+| `pty.rs` | the four launch engines, Claude's permission-mode whitelist, app-wide disk I/O (incl. `read_bg_log`, the tail of a background shell's output, and `bg_log_roots`/`bg_log_path`, where to find it), `stream_pty_session`, the PTY lifecycle |
 | `agent.rs` | provider control planes beside a PTY: Codex App Server observer, launch-policy/approval routing and public history calls |
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server` + the `serve_telemetry` supervisor that re-binds it, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
@@ -102,13 +106,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 79 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 82 modules
 
-**No framework, and no longer one file.** 79 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 82 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (thirty-three, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (forty, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -125,11 +129,12 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
 | `toolio.ts` | what a tool call *was* and what came back: the three response shapes worth modelling by hand, the generic dump for everything else, the cap both sides are cut to as they land, and what Copy hands over |
+| `termlinks.ts` | what in a pane's output is worth a click: where a URL ends and the sentence's punctuation begins, and — for a path — the ordered readings it might be, since a folder a person named has spaces in it. Proposals only; disk decides |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
+| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died, and what the row says when the log was never found), telling a *server* from a *job* Claude auto-backgrounded at its 120s timeout (`timedOut`, `isJob`, `bgKind`), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg` |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
@@ -150,8 +155,9 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
+| `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
-**Shared**: `state.ts` (the session map, the stage pointer, every persisted preference) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
+**Shared**: `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
 **Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
 
@@ -159,7 +165,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 79 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 82 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -189,6 +195,20 @@ And the things that hold however the files are arranged:
   phase vocabulary and drew a live shell as an idle agent.
 - **A pane's WebGL context comes from a small LRU pool** (`attachWebgl`/`detachWebgl` in `terminal.ts`, `GL_POOL_MAX` = 8). Both simpler designs (a context per pane for life, dispose-per-deactivation) were tried and are wrong; `docs/architecture.md` says why, along with the ended-pane scrollback rules.
 - **A claude pane's keystrokes are filtered before the PTY sees them.** They go through `claudeInput` in `terminal.ts`, which swallows a fast double `^C`. xterm keeps only **one** `attachCustomKeyEventHandler` per pane: a new key rule belongs in `claudeInput`/`winClaudePaste` (claude), `shellKeys` (shell) or `clipboardKeys` (task), never in a second handler.
+- **A path in a pane is only a link once disk says so.** ./termlinks proposes readings
+  of a line (a folder a person named has spaces in it, the agent may have broken the path
+  across lines of its own, and a `printf` puts a literal `\n` inside the token),
+  `resolve_link_path` answers which exists, and nothing is underlined until one does.
+  That check is the whole safety margin: it is what lets the proposals be greedy, and it
+  is why there must be no second "does this look like a path?" test at a call site — the
+  same half-off switch the sound rule warns about, one layer down. A relative candidate is
+  tried against the pane's **live cwd first** (`session_cwd` — a shell that has `cd`ed
+  reports its directory to nobody), then its drift dir, then its workdir, then the
+  ancestors of everything in its Context card, which is what resolves a path an agent
+  shortened against a root it never ran in. `wireLinks` runs on **every** pane (claude,
+  agent, shell, task): a path in Codex's output is the same path, and a shell pane has no
+  Context card behind it at all. The OSC 8 half stays http(s)-only, because a program
+  chooses that URI, not us.
 - **Copy/paste in a shell or task pane is Ctrl+Shift+C/V**, read/written via `tauri-plugin-clipboard-manager` (never `navigator.clipboard`, which raises OS permission prompts) and pasted through `term.paste` (never `write_pty`, since bracketed paste and `\r\n`→`\r` must still apply).
 - **A `[data-*]` branch is only reachable if its attribute is ALSO in the dispatcher's
   `closest()` selector.** One selector decides what `el` is; an unlisted attribute means
@@ -277,6 +297,14 @@ And the things that hold however the files are arranged:
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
+- **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
+  Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
+  the running turn's `Stop` arrives *after* it — `Sess.queuedPrompt` (set from `working`,
+  consumed by one `Stop`) is what stops that `Stop` being read as "your turn". And the
+  tool guard in `applyHook` is bounded by `STRAGGLER_MS` rather than by `s.phase ===
+  "done"`: unbounded, one `Stop` silenced every later `PreToolUse`/`PostToolUse` and the
+  row claimed your turn for the whole of the next turn. Both shipped; see
+  `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
@@ -301,9 +329,10 @@ And the things that hold however the files are arranged:
   is a blank window before any UI exists to say why — and a stored value is not safe just
   because we wrote it (a crash mid-write truncates, and these are the keys people hand-edit).
   A parseable value of the wrong shape is the sharper half: `"null"` and `"[]"` survive the
-  parse and only fail at the first property access, somewhere else entirely. Use `strMap` /
-  `strList` / `favList` / a `clamp*`, never a bare `JSON.parse`, and discard a bad value on
-  its own rather than letting it take the session (`test/state.test.ts`).
+  parse and only fail at the first property access, somewhere else entirely. Read through
+  **`store.ts`** (`readObj` / `readList` / `safeParse`) or a narrowing local (`strMap` /
+  `strList` / `favList` / a `clamp*`), never a bare `JSON.parse`, and discard a bad value on
+  its own rather than letting it take the session (`test/store.test.ts`, `test/state.test.ts`).
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash. The durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
 - **A leak that takes fifteen hours cannot be diagnosed from a snapshot.** `dbgSnapshot`
   is state-of-now, so the *growth* half is **Settings › Diagnostics** (./perf decides,
@@ -332,16 +361,27 @@ And the things that hold however the files are arranged:
   not beside it (docs/explorer.md).
 - **The stage has one owner**: `activeId` and the `mirror` pointer (`{kind:"ext"|"past"|"dash"}`) are mutually exclusive, and `takeStage(show)` in `dom.ts` is the only code that may touch `#extPane`/`#dashPane`/`#empty`/`insp-mini`. Add a stage kind by extending `Stage`, never by poking `hidden` at a call site.
 - **Three orthogonal facts decide a launch**: `defaultAgent` (**what** runs — Claude Code by default, overridable per project via `agentByProject`; resolved by `pickAgent` in ./types), `termEngine` (**where** its terminal lives), and the selected provider's entry in `permissionModes` (**how** it starts). Provider adapters own the choices; backend whitelists own their CLI mapping. `launch()` forks on the provider before it builds anything; a resume carries its original provider, while new sessions and dashboard issue dispatch follow the project preference (`docs/sessions.md`).
-- **A background shell's log is addressed by the transcript path it had AT START.**
-  An agent's `Bash{run_in_background:true}` is how every dev server in this app gets
-  started, and Episko sees it for free: `tool_response.backgroundTaskId` on a
-  PostToolUse it already receives, with the output at
-  `<tmp>/claude/<slug>/<uuid>/tasks/<id>.output` — the last two components of
-  `transcript_path`. But Claude mints a **new** session dir on `/clear`, `/compact` and
-  `/resume`, so re-deriving that path later points at a directory that has never held
-  the log. `BgServer.transcript` is captured when the shell is recorded and never
-  recomputed (./servers, ./types); `read_bg_log` resolves it. Same trap as the
-  `X-CC-Session` rule above, one level down.
+- **A background shell's log is addressed by the transcript path it had AT START, under
+  a root we have to go and find.** An agent's `Bash{run_in_background:true}` is how every
+  dev server in this app gets started, and Episko sees it for free:
+  `tool_response.backgroundTaskId` on a PostToolUse it already receives, with the output
+  at `<root>/<slug>/<uuid>/tasks/<id>.output`. Only the `<slug>/<uuid>` half genuinely
+  mirrors `transcript_path`. **The root is not ours and cannot be derived** — it is
+  `${CLAUDE_CODE_TMPDIR ?? "/tmp"}/claude-<uid>`, and the `env::temp_dir()/claude` we
+  used to build has never once existed on a Mac (macOS ignores `TMPDIR` here — measured,
+  not inferred), so every row sat at "starting…" for the life of the feature with `tsc`,
+  vitest and cargo all green. So `bg_log_roots` probes a **ranked candidate
+  list** (both directory shapes on every OS; only the order differs per OS, and no
+  platform's row is asserted as the only possible answer), the winner is remembered in
+  `AppState.bg_root` and invalidated rather than defended, and anything resolving below
+  the first candidate raises `bglog-health` the way a re-bound telemetry port does — the
+  feature still works and the app says so anyway, which buys one release of warning
+  before the fallback stops matching too. But Claude mints a **new** session dir on
+  `/clear`, `/compact` and `/resume`, so re-deriving the `<slug>/<uuid>` half later
+  points at a directory that has never held the log. `BgServer.transcript` is captured
+  when the shell is recorded and never recomputed (./servers, ./types); widening the
+  ROOT must never re-derive it. Same trap as the `X-CC-Session` rule above, one level
+  down.
 - **Stopping a server is asked of the agent, never done behind its back.** The process
   is a descendant of Episko's own tree and could be killed — but the agent holds
   `TaskStop`, believes the server is up, and goes on saying so after a kill it never
@@ -357,15 +397,18 @@ And the things that hold however the files are arranged:
   `is_descendant_of`'s cap — and that is the only signal that can see a server nobody
   announced: one typed by hand into a shell pane, or one whose banner nothing parses.
   `reconcilePorts` joins the two in a three-step ladder (a port a record already names
-  is that record's → **one** silent record and **one** loose port are each other → the
-  rest get rows of their own), failing closed the moment either side is ambiguous.
+  is that record's → **one** silent record *that could be a server* and **one** loose
+  port are each other → the rest get rows of their own), failing closed the moment
+  either side is ambiguous.
   **`usefulPort` runs first and matters**: one real `wrangler dev` holds five listening
   sockets, of which four are Node's inspector and kernel-assigned control channels, so
   an unfiltered scan puts four pieces of noise in front of one useful row. And
   **`reconcilePorts` mutates**, so it belongs to the poll and never to a render pass.
 - **The header lists three sources on different rules, because it is for what is
   otherwise invisible.** An agent's background shell has no pane, no row, nothing on screen, so
-  **every** one is listed — URL or not. An Episko **task** (`just dev`, a VS Code task,
+  **every** one is listed, but only one with an address is called a *server*: `bgKind`
+  splits the popover into **Running servers** and **Background jobs**, and only the first
+  heading counts toward the pill. An Episko **task** (`just dev`, a VS Code task,
   an npm script) already has a pane, a sidebar row, a glyph and a phase, so it appears
   **only once it has announced a URL** — the one thing its pane cannot give you. Same
   reason a failed *task* never appears here and a failed *shell* does: the sidebar has
@@ -377,6 +420,17 @@ And the things that hold however the files are arranged:
   it sits several hops below a pane that has its own ✕, and the row exists to tell you the
   port is open rather than to take responsibility for it. Its empty cell is kept so ◨
   stays in line down the list.
+- **Claude Code backgrounds things nobody chose to background.** Any Bash command still
+  running at its **120s timeout** is auto-backgrounded with `run_in_background` UNSET —
+  12 of 143 real payloads, and they are `npm ci`, `pytest`, `vue-tsc`, `gh run watch`
+  polls and `until …; do sleep …; done` waits, which is how a one-shot `python3 -c` once
+  reached the header calling itself a running server. `tool_response.timedOutAfterMs` is
+  how we know, `isJob` is the only thing that reads it, and what it decides is narrow:
+  such a record may **never silently adopt a loose kernel port**, because nothing about
+  it says it opened one. It does **not** decide the heading — that is `bgKind`, and it
+  splits on *evidence* (an address, announced or adopted) rather than on the command
+  string, for the same reason ./health has no `.unwrap()` rule: a rule that fires on
+  ordinary commands teaches you to ignore the row that matters.
 - **A task's server URL is latched as its output streams, never rescanned from `tail`.**
   `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
   after the first HMR line — a URL read back off the tail would appear and then silently
@@ -391,7 +445,19 @@ And the things that hold however the files are arranged:
   already follow. `exit === 0` (a background one-shot finishing) and `exit === null` (a
   kill somebody requested) are not news and leave. `liveServers` is what the poll
   re-reads, `shownServers` what the popover draws; keep those two questions apart, or a
-  dead log is re-read every four seconds forever.
+  dead log is re-read every four seconds forever. **Two further endings carry no exit
+  code at all**, and that is the point: a record whose root was found and whose log never
+  appeared **retires** ten minutes after the log went MISSING (`endReason: "stale"`;
+  measured from `missSince` rather than from `startedAt`, or a log read all afternoon and
+  then deleted would be given up on four seconds later as *log never appeared*), and a
+  pane's own `pty-exit` **ends** every live record it started
+  (`"session"`) rather than clearing the array, which would delete the crashed-server
+  rows this whole rule exists to keep. Both are `exit: null`, so `failedServers` never
+  sees them and the pill never goes red for something that did not fail — and `endReason`
+  is what stops "nobody could find it", "somebody asked for this" and "it exited" from
+  collapsing into one word. Retirement fires on `reason === "notYet"` alone: `noRoot` and
+  `ambiguous` are an outage in our own probe, and a probe outage that quietly retires the
+  fleet is a worse silence than the one being fixed.
 - **`needsYou` is the raw fact; `attnPending` is what you count at the user.** A session
   you have been to since it finished leaves the badge, the tray title, the palette's
   "Needs you" group and a collapsed group's glyph (`Sess.seenAt >= Sess.attnAt`, ./attn);
@@ -419,7 +485,7 @@ And the things that hold however the files are arranged:
   modal. Esc, the cancel button and a backdrop click all resolve `false`; a second
   question raised while one is up **queues** rather than replacing it.
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
-- **Episko presses Enter for you in exactly one place**, and it must stay one: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed. Everything else that puts text in a terminal — `sendOutputToSession`, the dashboard's dispatch, `handToTerminal` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about.
+- **Episko presses Enter for you in exactly two places**, and it must stay two: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed, and the dashboard's **dispatch**, where the confirm sheet *is* the reading (docs/dashboard.md) — and where the `\r` must be a `write_pty` of its own, a beat behind the text, or the REPL reads it as a paste. Everything else that puts text in a terminal — `sendOutputToSession`, `handToTerminal`, ./serversui's `TaskStop` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about.
 
 ## Deep dives (`docs/`)
 

@@ -56,8 +56,7 @@ describe("parseChangelog", () => {
   });
 
   it("rejects a prose heading rather than inventing a version from it", () => {
-    // Somebody will add `## Notes for the team`. It must not become a release, and it
-    // must not swallow the release above it either.
+    // It must neither become a release nor hand its entries to the release above it.
     const l = parseChangelog("## 1.0.0 — 2026-01-01\n\n+ Real.\n\n## Notes\n\n+ Not a release.\n");
     expect(l.map((r) => r.version)).toEqual(["1.0.0"]);
     expect(l[0].entries).toHaveLength(1);
@@ -95,16 +94,12 @@ describe("shouldAnnounce — when What's new opens by itself", () => {
     expect(shouldAnnounce("Unreleased", ["0.12.0"], log)).toBe(false);
   });
 
-  // THE REGRESSION. 0.13.0 introduced this screen, so on every existing install the
-  // seen-record was absent — the same state a fresh install is in. The old rule read an
-  // absent record as "never been here" and stayed shut, so the release that shipped the
-  // feature was the one release nobody was shown it for.
+  // Don't reintroduce the fresh-install guard: an absent record must open the screen (docs/releases.md).
   it("opens on an empty record — an absent record is not evidence of anything", () => {
     expect(shouldAnnounce("0.12.0", [], log)).toBe(true);
   });
 
-  // Why a set and not a last-seen string: with one value, going back to a version
-  // already read differs from it and would announce a second time.
+  // A set, not a last-seen string: with one value, going back to a read version would announce again.
   it("stays shut on a version read before, even after running a newer one", () => {
     expect(shouldAnnounce("0.11.1", ["0.11.1", "0.12.0"], log)).toBe(false);
   });
@@ -118,8 +113,7 @@ describe("the seen record", () => {
     expect(parseSeen('["0.12.0","0.13.0"]', null)).toEqual(["0.12.0", "0.13.0"]);
   });
   it("migrates 0.13.0's single-value key when the list is absent", () => {
-    // The whole reason the legacy key is still read: a machine that has opened the
-    // screen once must not be told about that version a second time.
+    // The legacy key is still read so a machine that opened the screen once is not told again.
     expect(parseSeen(null, "0.13.0")).toEqual(["0.13.0"]);
   });
   it("prefers the list once it exists, and ignores the stale legacy key", () => {
@@ -163,8 +157,7 @@ describe("releaseFor", () => {
     expect(releaseFor("0.11.1", log)?.version).toBe("0.11.1");
   });
   it("falls back to the newest RELEASED one, not to Unreleased", () => {
-    // A dev build's version isn't in the file; Unreleased describes something nobody
-    // is running, so it must not be what the screen lands on.
+    // A dev build's version isn't in the file, and Unreleased is what nobody is running.
     expect(releaseFor("0.13.0-dev", log)?.version).toBe("0.12.0");
   });
   it("is null for an empty log", () => {
@@ -182,16 +175,14 @@ describe("grouped", () => {
   });
 });
 
-// The file is shipped in the bundle and parsed at runtime, so a malformed one is a
-// broken feature in a release nobody would notice until after it went out.
+// CHANGELOG.md ships in the bundle and is parsed at runtime, so a malformed one breaks a release.
 describe("the real CHANGELOG.md", () => {
   const log = parseChangelog(readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8"));
 
   it("parses, and leads with Unreleased while it has something in it", () => {
     expect(log.length).toBeGreaterThan(5);
-    // On `dev` between releases this is Unreleased; on `main` right after one is cut the
-    // section is empty and dropped, so the newest release leads. Both are correct — what
-    // must never happen is a blank row at the top of the rail.
+    // On dev this is Unreleased; on main right after a cut it is dropped and the newest
+    // release leads. Either is fine; a blank row at the top of the rail is not.
     expect(log[0].entries.length).toBeGreaterThan(0);
   });
   it("gives every released section a date and at least one entry", () => {
@@ -201,12 +192,8 @@ describe("the real CHANGELOG.md", () => {
     }
   });
   it("shows no section that would render as a blank page", () => {
-    // Whether `## Unreleased` is non-empty is a *branch* policy and belongs to
-    // `changelog.mjs check`, which runs on the dev → main PR and has its own parser —
-    // asserting it here would fail on main every time a release is cut, which is the one
-    // moment the section is legitimately blank. What this asserts instead is that a
-    // blank one never reaches the rail: every released build ships one, and it opened on
-    // a heading, "not released yet", and nothing else.
+    // Whether Unreleased is non-empty is branch policy and belongs to `changelog.mjs check`
+    // on the PR; asserting it here would fail on main at every cut. Only blankness is asserted.
     for (const r of log) {
       expect(r.entries.length > 0 || r.lede !== "", `${r.version} is empty`).toBe(true);
     }
@@ -217,13 +204,10 @@ describe("the real CHANGELOG.md", () => {
   });
 
   it("leaves no markdown unrendered in any entry or lede", () => {
-    // The check that would have caught the missing italic rule: after `inlineMd`, no
-    // `*` may survive anywhere in the file. Bold worked, italics did not, and the file
-    // uses both — so the app showed literal asterisks for nine releases.
+    // After `inlineMd` no marker may survive anywhere in the file; the samples missed italics once.
     for (const r of log) {
       for (const text of [r.lede, ...r.entries.map((e) => e.text)]) {
-        // Outside a code span, because a `*` *inside* one is rendered output and not a
-        // leftover marker — quoting the characters is the whole point of the span.
+        // A `*` inside a code span is rendered output, not a leftover marker.
         const stray = inlineMd(text).replace(/<code>[\s\S]*?<\/code>/g, "");
         expect(stray, `${r.version}: unrendered markup`).not.toMatch(/[*`]/);
       }
@@ -240,24 +224,21 @@ describe("inlineMd — the little markup an entry may carry", () => {
   });
 
   it("does not let the italic rule eat a bold run", () => {
-    // The ordering trap: `**x**` handed to the italic rule first becomes an empty
-    // emphasis wrapped around `x*`. Bold is applied first, and both patterns are
-    // anchored on runs containing no `*`.
+    // `**x**` handed to the italic rule first becomes an empty emphasis around `x*`, so bold
+    // is applied first and both patterns are anchored on runs containing no `*`.
     expect(inlineMd("**A day gets two sentences.** Then *this*."))
       .toBe("<b>A day gets two sentences.</b> Then <i>this</i>.");
     expect(inlineMd("**bold**")).not.toContain("<i>");
   });
 
   it("renders italics nested inside bold, which the real file uses", () => {
-    // 0.13.6's entry, verbatim in shape. Bold anchored on a run with no `*` in it
-    // skipped this entirely — no bold, and the asterisks showed.
+    // 0.13.6's entry, verbatim in shape; a bold rule anchored on a `*`-free run skips it entirely.
     expect(inlineMd("**The *Reveal idle checkouts on hover* switch sits beside its label**, not underneath."))
       .toBe("<b>The <i>Reveal idle checkouts on hover</i> switch sits beside its label</b>, not underneath.");
   });
 
   it("keeps two bold runs on one line separate", () => {
-    // The reason bold is non-greedy: `.+` would swallow everything between the first
-    // `**` and the last.
+    // Bold is non-greedy: `.+` would swallow everything between the first `**` and the last.
     expect(inlineMd("**one** middle **two**")).toBe("<b>one</b> middle <b>two</b>");
   });
 
@@ -268,9 +249,6 @@ describe("inlineMd — the little markup an entry may carry", () => {
   });
 
   it("treats a code span as opaque, so markers inside it stay literal", () => {
-    // Found by the whole-file check above, on this very release's entry: quoting `*`
-    // and `**` in code left those asterisks exposed to the emphasis passes, and the
-    // sentence came back italicised from the inside out.
     expect(inlineMd("literal `*` and `**` markers"))
       .toBe("literal <code>*</code> and <code>**</code> markers");
     expect(inlineMd("`a * b` stays put")).toBe("<code>a * b</code> stays put");

@@ -1,17 +1,6 @@
-// Keep-awake: the top-bar split button that holds the machine awake while agents
-// work. The icon toggles the last-used preset; the caret opens the picker.
-//
-// The distinction the whole module turns on is **armed vs asserting**. "Armed" is
-// the user having switched it on; "asserting" is a power assertion actually being
-// held right now. For the agents preset those genuinely differ — armed but idle
-// shows the cup lit without steam, and it re-asserts by itself when the fleet gets
-// busy again. reconcileCaf() is the single choke point: it diffs desired flags
-// against what is running and only pokes the backend on a real change, the same
-// guarded-invoke pattern updateTray uses.
-//
-// The flags are macOS `caffeinate` switches and stay the wire format on both
-// platforms — the Windows backend maps them onto SetThreadExecutionState bits
-// (see `execution_state_for`) rather than making the UI speak two dialects.
+// Keep-awake: the top-bar split button that holds the machine awake while agents work.
+// Armed (the user switched it on) is distinct from asserting (a power assertion is held now).
+// reconcileCaf() is the single choke point: it runs on every renderAll and only invokes on a real change.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, IS_WIN, toast } from "./dom";
@@ -21,27 +10,13 @@ import { dlog } from "./debug";
 import { sessions } from "./state";
 import { hasSessionState, isAgent } from "./types";
 
-// Three things it needs from the layer that owns the footer and the repaint.
 let host: { closeFootMenus: (keep?: string) => void; renderFoot: () => void; renderAll: () => void } =
   { closeFootMenus: () => {}, renderFoot: () => {}, renderAll: () => {} };
 export function setCafHost(h: typeof host) { host = h; }
 
-// The top-bar split button drives a macOS `caffeinate` power assertion. The icon
-// toggles the last-used preset (one click); the caret opens the picker. Three
-// kinds of preset:
-//   • static  — fixed flags, on until you stop it (display / system / full)
-//   • timer   — a chosen duration (15m/1h/2h/4h), auto-off when it elapses
-//   • agents  — dynamic: hold the Mac awake ONLY while sessions are busy, and
-//               release when the fleet goes dormant; re-arms when work resumes
-// "Armed" (the user turned it on) is distinct from "asserting" (a caffeinate
-// child is actually running right now). For the agent mode those differ: armed
-// but idle shows the cup lit without steam; asserting adds the steam + glow.
-// reconcileCaf() is the single choke point — called on every host.renderAll(), it
-// diffs the desired flags against what's running and only pokes the backend on a
-// real change (same guarded-invoke pattern as updateTray).
-// The flags below are macOS `caffeinate` switches, and they stay the wire format
-// on both platforms: the Windows backend maps them onto `SetThreadExecutionState`
-// bits (see `execution_state_for`) rather than making the UI speak two dialects.
+// Preset kinds: static (fixed flags until stopped), timer (auto-off), agents (asserts only
+// while the fleet is busy). The flags are macOS `caffeinate` switches and stay the wire
+// format on Windows, where `execution_state_for` maps them onto SetThreadExecutionState bits.
 const CAF_HOST = IS_WIN ? "PC" : "Mac";
 type CafKind = "static" | "timer" | "agents";
 interface CafPreset { id: string; kind: CafKind; label: string; desc: string; glyph: string; flags?: string[] }
@@ -52,12 +27,10 @@ const ALL_CAF_PRESETS: CafPreset[] = [
   { id: "timer",   kind: "timer",  label: "Timed",              desc: "Stay awake, then auto-off",   glyph: "◷" },
   { id: "agents",  kind: "agents", label: "Until agents idle",  desc: "Awake only while agents work", glyph: "⟳" },
 ];
-// Windows has no disk (`-m`) or user-active (`-u`) assertion, so "Fully
-// caffeinated" would be a second, identical "Keep display awake" row there.
-// Drop it — the validity check below rewrites a stored "full" to the first preset.
+// Windows has no disk (`-m`) or user-active (`-u`) assertion, so "full" would duplicate
+// "display" there; the validity check below rewrites a stored "full".
 const CAF_PRESETS: CafPreset[] = IS_WIN ? ALL_CAF_PRESETS.filter((p) => p.id !== "full") : ALL_CAF_PRESETS;
-// The popover's right-hand chip: the literal flags on macOS, the execution state
-// they translate to on Windows, where the raw flags would be meaningless jargon.
+// The popover's chip: the literal flags on macOS, the execution state they map to on Windows.
 function cafChip(p: CafPreset): string {
   const flags = p.kind === "agents" ? ["-i"] : (p.flags ?? []);
   if (!flags.length) return "";
@@ -72,8 +45,7 @@ let cafPresetId = localStorage.getItem("cc-caffeinate") || CAF_PRESETS[0].id;
 if (!CAF_PRESETS.some((p) => p.id === cafPresetId)) cafPresetId = CAF_PRESETS[0].id;
 let cafTimerSec = parseInt(localStorage.getItem("cc-caf-timer") || "", 10) || 3600;
 if (!CAF_DURATIONS.some((d) => d.sec === cafTimerSec)) cafTimerSec = 3600;
-// agents mode: also count "waiting on you" (permission prompt / your turn) as
-// busy, so an unattended run's prompt keeps the screen up. User-toggled switch.
+// agents mode: also count "waiting on you" (permission prompt, your turn) as busy.
 let cafAgentsAwait = localStorage.getItem("cc-caf-await") !== "0";
 let cafArmed = false;         // the user turned it on
 let cafAssertKey = "";        // flags currently handed to the backend ("" = off)
@@ -84,10 +56,8 @@ function cafPersist() {
   localStorage.setItem("cc-caf-timer", String(cafTimerSec));
   localStorage.setItem("cc-caf-await", cafAgentsAwait ? "1" : "0");
 }
-// Is any real (instrumented) session doing work worth staying awake for?
-// Panes with no telemetry are skipped outright rather than left to fail the phase
-// tests below: their phase is `idle` for life, so the tests would answer correctly
-// today and silently start voting the moment anything else writes to that field.
+// Panes with no telemetry are skipped outright rather than left to fail the phase tests:
+// their phase is `idle` for life, so they would start voting the moment anything wrote it.
 function cafAgentsBusy(): boolean {
   for (const s of sessions.values()) {
     if (s.kind === "shell" || (isAgent(s) && !hasSessionState(s)) || s.phase === "ended") continue;
@@ -96,8 +66,7 @@ function cafAgentsBusy(): boolean {
   }
   return false;
 }
-// The flags we WANT running now, or null for "assert nothing".
-function cafDesiredFlags(): string[] | null {
+function cafDesiredFlags(): string[] | null {   // null = assert nothing
   if (!cafArmed) return null;
   const p = cafPreset(cafPresetId);
   if (p.kind === "agents") return cafAgentsBusy() ? ["-i"] : null;
@@ -110,13 +79,8 @@ function cafArmTimer() {
     cafTimerHandle = window.setTimeout(() => { cafArmed = false; reconcileCaf(); toast("Caffeinate ended"); }, cafTimerSec * 1000);
   }
 }
-// Clear any assertion the backend is still holding for us. A reload (⌘R) restarts
-// this module — cafArmed false, cafAssertKey "" — but leaves the Rust side untouched,
-// and reconcileCaf() then computes key "" against cafAssertKey "", sees no change and
-// invokes nothing. So a reload while caffeinated stranded the assertion: held forever,
-// with the cup painted off and no way to stop it short of quitting the app. Call this
-// once at boot, where "caffeinate always starts off" is decided (see main.ts). It is a
-// no-op against a backend holding nothing.
+// Called once at boot: a reload (⌘R) resets this module but not the Rust side, and
+// reconcileCaf() would then see "" against "" and leave the assertion held forever.
 export function initCaf() {
   invoke("set_caffeinate", { active: false, flags: [] }).catch(() => {});
 }
@@ -189,12 +153,12 @@ $("cafMain").addEventListener("click", (e) => { e.stopPropagation(); closeCafPop
 $("cafCaret").addEventListener("click", (e) => { e.stopPropagation(); $("cafPop").classList.contains("show") ? closeCafPop() : openCafPop(); });
 $("cafPop").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  // Sub-controls rebuild the popover (fillCafPop), which detaches the clicked
-  // node — so stop the event before it reaches the document outside-click
-  // handler, which would then see a detached target and close the popover.
+  // Sub-controls rebuild the popover, detaching the clicked node; stop the event or the
+  // document's outside-click handler sees a detached target and closes it.
   const dur = t.closest<HTMLElement>("[data-cafdur]");
   if (dur) { e.stopPropagation(); cafSetDuration(+dur.dataset.cafdur!); return; } // keep open — sub-control
-  if (t.closest("[data-cafawait]")) { e.stopPropagation(); cafSetAwait(!cafAgentsAwait); return; } // keep open — sub-control
+  // keep open — sub-control
+  if (t.closest("[data-cafawait]")) { e.stopPropagation(); cafSetAwait(!cafAgentsAwait); return; }
   const b = t.closest<HTMLElement>("[data-caf]");
   if (!b) return;
   const id = b.dataset.caf!;

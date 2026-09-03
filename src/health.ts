@@ -1,78 +1,37 @@
-// What the measurements *mean* — the rules that turn `health.rs`'s facts into the chips
-// on a changed file's row.
-//
-// The split is the same one ./dash has with `project_facts`: the backend answers numbers
-// (712 code lines, cognitive 24, this block also lives in refunds.py) and this module
-// decides which of them are worth saying. Thresholds are display policy, so they live
-// where they can be changed without a rebuild — and where they can be tested, which is
-// the half that matters, because every rule here fails quietly. A threshold set too low
-// produces a chip on every file, which reads as noise and gets ignored; set too high it
-// produces nothing, which reads as a clean change.
-//
-// Two of the seven rules never reach the backend at all. Silenced errors and "no test
-// changed" are answered entirely from the patch, which the frontend has already parsed
-// (./diff), so asking Rust for them would mean parsing the patch twice.
-//
-// **This is a signal, never a gate.** Nothing here blocks anything, and the moment a chip
-// stops you merging something you wanted to merge it has become CI, which is where that
-// belongs.
+// Which of `health.rs`'s measurements earn a chip on a changed file. Thresholds are display
+// policy: they live here, changeable without a rebuild and testable. Two rules (silenced
+// errors, no test changed) are answered from the patch alone. A signal, never a gate.
 
 import type { DiffFile } from "./diff";
 import type { FileHealth, HealthReport } from "./types";
 
-/// How loud a chip is. Not a score: three levels, and the difference between them is
-/// whether you would want to know before merging (`bad`), after (`warn`), or only as
-/// context (`info`).
+/** bad: worth knowing before merging; warn: after; info: context only. */
 export type Sev = "bad" | "warn" | "info";
 
 export interface Chip {
-  /// Stable id, for the CSS class and for tests naming a rule.
-  id: string;
+  id: string; // stable: the CSS class, and what tests name
   sev: Sev;
-  /// What the chip says. Short enough for a rail row.
-  text: string;
-  /// The whole finding, on hover.
-  title: string;
-  /// Where the finding *is*, in the order a repeat click walks them. Empty when it is
-  /// about the file as a whole and there is nowhere more specific to be.
-  places: number[];
-  /// **Every** line to mark, which is not the same list. A `dup ×3` has three places and
-  /// marks three lines; a complex function has one place and marks the whole span the
-  /// change added inside it. Conflating them made a chip claim "200 places".
-  lines: number[];
+  text: string; // short enough for a rail row
+  title: string; // the whole finding, on hover
+  places: number[]; // where a repeat click walks; empty for a whole-file finding
+  lines: number[]; // every line to mark; not `places` (one place can mark a whole span)
 }
 
 // ---------- thresholds ----------
 
 export interface HealthPrefs {
-  /// Cognitive complexity at or above which a touched function is called out.
-  cognitive: number;
-  /// Nesting depth an added line has to reach.
-  nesting: number;
-  /// Code lines in a single function.
-  longFn: number;
-  /// How much code a change has to add before the file's *size* is worth mentioning.
-  /// Size alone is a property of the file, not of your change; without this the biggest
-  /// file in the project would carry a chip forever, including on the commit that made
-  /// it smaller.
-  sizeAdd: number;
+  cognitive: number; // cognitive complexity at which a touched function is called out
+  nesting: number; // nesting depth an added line has to reach
+  longFn: number; // code lines in a single function
+  sizeAdd: number; // added code before size is mentioned: size alone is the file's, not the change's
 }
 
-/// The defaults, and where each comes from:
-///
-/// - `cognitive: 15` is SonarSource's own default for the metric, and the metric exists
-///   because cyclomatic complexity measures testability rather than understandability.
-/// - `nesting: 5` is the cheapest honest proxy for the same thing, and the one an
-///   indentation walk gets right without a parser.
-/// - `longFn: 60` is roughly one screen. Below that, length is a style argument; above
-///   it, it reliably hides a second responsibility.
-/// - `sizeAdd: 25` is a change big enough that "and the file is now among the largest in
-///   the project" is a fact about what you just did.
+// cognitive 15 is SonarSource's default; nesting 5 is the cheapest proxy an indentation walk
+// gets right; longFn 60 is about one screen; sizeAdd 25 makes the file's size a fact about
+// what the change did.
 export const DEFAULT_HEALTH: HealthPrefs = { cognitive: 15, nesting: 5, longFn: 60, sizeAdd: 25 };
 
-/// Repair a stored or hand-written table. A threshold of 0 would fire on everything, so
-/// anything non-positive falls back rather than being honoured — a `.episko/episko.toml`
-/// somebody typed by hand must not be able to turn every file red.
+// Non-positive falls back to the default: a threshold of 0 fires on every file.
 export function clampHealth(raw: unknown): HealthPrefs {
   const o = (raw ?? {}) as Partial<Record<keyof HealthPrefs, unknown>>;
   const num = (v: unknown, d: number) => {
@@ -89,13 +48,8 @@ export function clampHealth(raw: unknown): HealthPrefs {
 
 // ---------- the two rules the patch answers on its own ----------
 
-/// A pattern worth flagging on an added line, and whether it lives in a comment.
-///
-/// The list is short on purpose, and what is *missing* from it is the design. `.unwrap()`
-/// was the obvious candidate and is out: it appears 156 times in `git.rs` alone, nearly
-/// all of it in tests where it is correct, so including it would put a chip on almost
-/// every Rust change and teach you to ignore the row. A rule that fires on ordinary code
-/// is worse than no rule, because it also hides the ones that mean something.
+// Patterns flagged on an added line. `.unwrap()` is left out on purpose: it is everywhere in
+// ordinary Rust, and a rule that fires on ordinary code hides the ones that matter.
 const SILENCED: { re: RegExp; what: string; inComment: boolean }[] = [
   { re: /\bexcept\s*:/, what: "a bare `except:`", inComment: false },
   { re: /\bexcept\s+(Base)?Exception\s*:/, what: "`except Exception`", inComment: false },
@@ -108,35 +62,21 @@ const SILENCED: { re: RegExp; what: string; inComment: boolean }[] = [
   { re: /#\s*noqa/, what: "`# noqa`", inComment: true },
 ];
 
-/// A line that is nothing but a comment, for the patterns that are not themselves ones.
-/// Deliberately crude — the exact rule is per language and lives in `health.rs`; here it
-/// only has to stop a prose line mentioning `as any` from being read as code doing it.
-///
-/// Per path, because the marker is: `# never use a bare except:` in a Python file failed
-/// the brace-family test below, was probed as code, and earned a red chip — the exact
-/// false-positive class the CHANGELOG incident above is about, in the `#`-comment
-/// languages instead of prose. A SWITCH rather than a union of both markers, since in C
-/// a line-start `#` is a preprocessor directive — code, not commentary — and uniting
-/// them would silence real findings there. The `inComment: true` patterns (`# noqa`,
-/// `@ts-ignore`) are unaffected either way: they match regardless of the answer here.
+// Crude comment-line tests; the exact rule is per language and lives in health.rs. A switch
+// per path rather than a union: in C a line-start `#` is a preprocessor directive, and
+// uniting the two would silence real findings there.
 const COMMENTISH = /^\s*(\/\/|\*|\/\*)/;
 const HASH_COMMENTISH = /^\s*#/;
-/// The `#`-comment half of `isSourcePath`'s list, plus the configs the diff also shows.
+// The `#`-comment half of `isSourcePath`'s list, plus the configs the diff also shows.
 const HASH_EXTS = new Set(["py", "pyi", "rb", "sh", "bash", "zsh", "yml", "yaml", "toml"]);
 function commentishFor(path: string): RegExp {
   const ext = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
   return HASH_EXTS.has(ext) ? HASH_COMMENTISH : COMMENTISH;
 }
 
-/// Blank the contents of string literals, so a line that *documents* a pattern is not
-/// read as a line that *does* it.
-///
-/// This module's own pattern table earned six chips on itself and its tests earned ten,
-/// all of them the literal patterns sitting inside quotes. Mirrors `blank_literals` in
-/// `health.rs`, and has the same single-line limitation and the same failure mode: an
-/// unmatched quote (an apostrophe) blanks the rest of the line, which loses a finding
-/// rather than inventing one. Comment lines are never blanked — prose is full of
-/// apostrophes, and the patterns that legitimately live in a comment are matched raw.
+// Blank string literals so a line that documents a pattern is not read as one that does it.
+// Mirrors `blank_literals` in health.rs: single-line, and an unmatched quote blanks the rest,
+// losing a finding rather than inventing one. Comment lines are never blanked.
 function blankLiterals(line: string): string {
   let out = "";
   let quote: string | null = null;
@@ -157,11 +97,7 @@ function blankLiterals(line: string): string {
   return out;
 }
 
-/// The silencings this change introduced, in the order they appear.
-///
-/// Added lines only. A file that already had a bare `except:` before you opened it is not
-/// something this change did, and reporting it would make the chip a property of the file
-/// rather than of the diff.
+// Added lines only: a bare `except:` the file already had is not something this change did.
 export function silencedIn(f: DiffFile): { line: number; what: string }[] {
   const out: { line: number; what: string }[] = [];
   const commentish = commentishFor(f.path);
@@ -181,8 +117,7 @@ export function silencedIn(f: DiffFile): { line: number; what: string }[] {
   return out;
 }
 
-/// Whether a path is somewhere tests live. Covers the shapes the five languages here
-/// actually use rather than trying to be complete: a miss costs one informational chip.
+// The test-path shapes the five languages here use, not a complete list; a miss costs one info chip.
 export function isTestPath(p: string): boolean {
   const l = p.toLowerCase();
   return /(^|\/)(tests?|__tests__|spec|specs)\//.test(l)
@@ -191,29 +126,19 @@ export function isTestPath(p: string): boolean {
     || /_test\.(go|py|rs|ts|js)$/.test(l);
 }
 
-/// Whether a path is code at all. Config, docs and lockfiles change constantly and
-/// legitimately without tests, and a "no test changed" chip on `CHANGELOG.md` is noise
-/// that makes the same chip on a source file easier to skip past.
+// Config, docs and lockfiles change without tests; a chip on CHANGELOG.md would be noise.
 export function isSourcePath(p: string): boolean {
   const ext = p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCase() : "";
-  // Must match `is_code_file` in health.rs, which says so in its own doc comment: the
-  // backend decides which files it measures and indexes, this decides which of those may
-  // carry a chip, and a file only one side calls source is measured and then never spoken
-  // about. `kts`, `bash`, `css` and `scss` had drifted out of this half — so a CSS change
-  // was measured, counted into `p90_code_lines`, and then took the early return below and
-  // earned no chip at all.
+  // Must match `is_code_file` in health.rs (test/health.test.ts checks): a file only one side
+  // calls source is measured and then never spoken about.
   const CODE = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "go", "py", "rb", "java",
     "c", "h", "cc", "cpp", "hpp", "cs", "swift", "kt", "kts", "scala", "php", "dart",
     "sh", "bash", "css", "scss"];
   return CODE.includes(ext);
 }
 
-/// Did this working set change any source without changing any test?
-///
-/// A whole-diff question, not a per-file one, and it is rendered once beside the totals
-/// rather than on every source row — the same finding repeated five times reads as five
-/// findings. Returns false when nothing source-like changed at all, since a documentation
-/// change needing no test is not worth a line of UI.
+// A whole-diff question, rendered once beside the totals rather than on every source row.
+// False when nothing source-like changed: a docs change needing no test is not news.
 export function noTestChanged(files: DiffFile[]): boolean {
   const source = files.filter((f) => isSourcePath(f.path) && !isTestPath(f.path));
   if (!source.length) return false;
@@ -224,8 +149,7 @@ export function noTestChanged(files: DiffFile[]): boolean {
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-/// The one finding that applies to any file, whatever it is written in — which is why it
-/// is lifted out: a copy-pasted block is a copy-pasted block in prose and in config too.
+// The one finding that applies to any file, code or not.
 function dupChip(h: FileHealth): Chip {
   const where = h.dups.map((d) => `${d.other_path}:${d.other_line}`);
   return {
@@ -238,21 +162,8 @@ function dupChip(h: FileHealth): Chip {
   };
 }
 
-/// Every chip one changed file has earned, worst first.
-///
-/// `h` is absent while the measurement is still in flight, or when the backend could not
-/// read the file (deleted, binary, over the size cap). Both cases render the same way:
-/// the patch-only rules still apply and the rest is simply not claimed. A missing
-/// measurement must never look like a clean one, which is why nothing here substitutes a
-/// zero for an unknown.
-/// The first line this change *added* inside a span, or 0.
-///
-/// What the complexity and length chips point at. Their finding is about a function, and
-/// the obvious target is its declaration — but for a change deep inside a long function
-/// that line is nowhere near a hunk, so it is not rendered, and the click scrolls to
-/// nothing and flashes nothing: indistinguishable from a dead control. A line the change
-/// added is always on screen, and is a better answer anyway — it is the part of the
-/// function you are actually being asked about.
+// The lines this change added inside a span. Chips point at one of these rather than the
+// declaration, which for a change deep in a long function is nowhere near a hunk.
 function addedIn(f: DiffFile, start: number, end: number): number[] {
   const out: number[] = [];
   for (const h of f.hunks) {
@@ -263,6 +174,9 @@ function addedIn(f: DiffFile, start: number, end: number): number[] {
   return out;
 }
 
+// Every chip one changed file has earned, worst first. `h` is absent while measurement is in
+// flight or when the backend could not read the file; a missing measurement must never look
+// clean, so nothing here substitutes a zero for an unknown.
 export function fileChips(
   f: DiffFile,
   h: FileHealth | undefined,
@@ -271,10 +185,7 @@ export function fileChips(
 ): Chip[] {
   const out: Chip[] = [];
 
-  // Documentation, config and lockfiles get one rule and no more. They are not code, so
-  // the code-shaped findings do not apply to them — and `silenced` in particular read the
-  // CHANGELOG entry *announcing* the rule as a swallowed error, which is exactly the kind
-  // of false positive that teaches you to stop reading the row.
+  // Not code, so only the duplicate rule applies.
   if (!isSourcePath(f.path)) {
     return h?.measured && h.dups.length ? [dupChip(h)] : [];
   }
@@ -296,9 +207,7 @@ export function fileChips(
 
   if (h.dups.length) out.push(dupChip(h));
 
-  // Size is only ever relative — a fixed number would flag half of one project and
-  // nothing at all in another — and it is only worth saying when this change is what
-  // made the file bigger.
+  // Size is relative (the project's p90) and only said when this change made the file bigger.
   const p90 = rep?.p90_code_lines ?? 0;
   if (p90 > 0 && h.code_lines > p90 && h.code_added >= prefs.sizeAdd) {
     out.push({
@@ -326,8 +235,7 @@ export function fileChips(
   }
 
   const g = h.longest_fn;
-  // Suppressed when the complexity chip already names the same function: two chips
-  // pointing at one line is the same finding twice.
+  // Suppressed when the complexity chip already names this function: one finding, not two.
   if (g && g.code_lines >= prefs.longFn && !(w && w.cognitive >= prefs.cognitive && w.start === g.start)) {
     out.push({
       id: "longfn",
@@ -353,17 +261,8 @@ export function fileChips(
   return out;
 }
 
-/// The findings as text, for handing to an agent.
-///
-/// The point of the whole feature is that you are reviewing work you did not type, so the
-/// fix is going to be typed by an agent too — and a chip you can only *look* at makes you
-/// the courier. This is the same information as the chips, written so it can be pasted
-/// into a session and acted on: every finding names a file, a line and what is wrong, and
-/// the lead-in says what to do with them.
-///
-/// Deliberately not a machine format. The consumer is a model reading a prompt, and a
-/// path with a line number is the most actionable thing you can hand one — it can open
-/// exactly that line. JSON would only add ceremony for a reader that does not need it.
+// The findings as text for an agent to act on. Prose rather than JSON: a path with a line
+// number is the most actionable thing you can hand a model.
 export function findingsText(title: string, files: DiffFile[], chips: Chip[][], set: Chip[]): string {
   const out: string[] = [];
   const found = files.map((f, i) => [f, chips[i] ?? []] as const).filter(([, c]) => c.length);
@@ -381,8 +280,7 @@ export function findingsText(title: string, files: DiffFile[], chips: Chip[][], 
       const where = c.places.length
         ? ` (line ${c.places[0]}${c.places.length > 1 ? `, ${c.places.length} places` : ""})`
         : "";
-      // The title is the whole finding and is already written for a reader; flattened to
-      // one line so a bullet stays a bullet.
+      // flattened to one line so a bullet stays a bullet
       out.push(`- **${c.text}**${where} — ${c.title.replace(/\s*\n\s*/g, " ")}`);
     }
     out.push("");
@@ -395,8 +293,7 @@ export function findingsText(title: string, files: DiffFile[], chips: Chip[][], 
   return out.join("\n").trimEnd() + "\n";
 }
 
-/// The worst severity in a set, for the rail's pips and for sorting. `null` when a file
-/// has earned nothing — which is the common case and should stay visually silent.
+// null when a file earned nothing, the common case, which stays visually silent.
 export function worstSev(chips: Chip[]): Sev | null {
   if (chips.some((c) => c.sev === "bad")) return "bad";
   if (chips.some((c) => c.sev === "warn")) return "warn";
@@ -404,8 +301,7 @@ export function worstSev(chips: Chip[]): Sev | null {
   return null;
 }
 
-/// The health of a whole working set, as one line beside the totals — the findings that
-/// are about the change rather than about any one file in it.
+// Findings about the change as a whole, one line beside the totals.
 export function setChips(files: DiffFile[], rep: HealthReport | null, diffCut = false): Chip[] {
   const out: Chip[] = [];
   if (noTestChanged(files)) {
@@ -419,10 +315,8 @@ export function setChips(files: DiffFile[], rep: HealthReport | null, diffCut = 
       lines: [],
     });
   }
-  // Two different cuts, and both have to say so, because a measurement that covered less
-  // than the change did reads as a *cleaner* change rather than a partial one. The
-  // viewer's own "diff truncated" note is not enough on its own: it says the diff is
-  // short, which a reader takes to mean the listing is short — not that the findings are.
+  // Both cuts must say so: a measurement that covered less than the change reads as a cleaner
+  // change, and the viewer's own "diff truncated" note only says the listing is short.
   if (diffCut) {
     out.push({
       id: "partial",

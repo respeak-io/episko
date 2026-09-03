@@ -1,14 +1,6 @@
-// The History dialog. ./history owns the rules; this owns the markup, the state that
-// only a dialog has (selection, filter text, the cached scan) and the events — the
-// same split as ./palette and ./palui.
-//
-// It is its own module rather than more of ./mirror because it shares nothing with
-// it: no `mirror` stage pointer, no roster, no polling. The one thing it borrows is
-// provider history readers and the `.tvmsg` markup that renders their prose.
-//
-// Resuming from here is the same operation a dormant row performs, under the same two
-// constraints: resume must run in the session's ORIGINAL cwd (hence `entry.cwd` and
-// the `exists` guard), and a live session must not be resumed twice (`histBusy`).
+// The History dialog. ./history owns the rules; this owns the markup, the dialog's state and
+// its events. Resume runs in the session's ORIGINAL cwd (`entry.cwd`, the `exists` guard),
+// and a live session is never resumed twice (`histBusy`).
 
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
@@ -29,9 +21,8 @@ let histSel = 0;
 let histLoadedAt = 0;
 let histScoped = false;           // ◧ narrow to the project on stage
 let histLoading = false;
-// The preview is keyed by session id and re-checked on arrival: arrow keys move the
-// selection faster than a transcript read returns, and a late reply must not paint
-// over the row the user has already moved to.
+// Keyed by session id and re-checked on arrival: a late transcript read must not paint
+// over a row the user has already moved off.
 let histPreview: { key: string; msgs: { role: string; text: string }[] } | null = null;
 const HIST_LIMIT = 300;
 const HIST_TTL = 60000;           // re-scan on reopen if the last one is older
@@ -39,12 +30,8 @@ const HIST_TTL = 60000;           // re-scan on reopen if the last one is older
 export const histOpen = () => $("histDlg").classList.contains("show");
 const histSelected = (): HistEntry | undefined => histRows[histSel];
 
-// Two doors into one dialog, and the difference is only which scope it opens in.
-// `◷ History` in the stage header is scoped, because everything beside it
-// (❯ Terminal, ▶ Run, ＋ Session) acts on the project on screen and a global
-// button among them would read as one more of those. The whole-machine view lives in
-// the top bar with the other app-wide controls. Either way the ◧ chip switches
-// between them, and a scoped open with nothing on stage falls back to all projects.
+// Two doors, differing only in scope: `◷ History` in the stage header opens scoped (its
+// neighbours all act on the project on stage), the top bar's opens global. ◧ switches.
 export async function openHistory(scoped: boolean) {
   histScoped = scoped && !!activeProjectCtx();
   $("scrim").classList.add("show");
@@ -59,8 +46,7 @@ export function closeHistory() {
   $("histDlg").classList.remove("show");
   dropScrim();
 }
-// The scan reads real files, so it's cached between openings and refreshed on a TTL
-// (or the ⟳ chip). `force` bypasses the cache; an empty cache always loads.
+// The scan reads real files, so it's cached and refreshed on a TTL or the ⟳ chip; `force` bypasses.
 export async function loadHistory(force: boolean) {
   if (histLoading || (!force && histAll.length)) return;
   histLoading = true;
@@ -79,8 +65,7 @@ export async function loadHistory(force: boolean) {
   }
   if (histOpen()) { histSel = 0; histPreview = null; histRender(); }
 }
-// The project the ◧ chip narrows to — null when nothing owns the stage, in which
-// case the chip is a no-op rather than a filter that silently empties the list.
+// null when nothing owns the stage: the chip is then a no-op, not a filter that empties the list.
 const histScopeCtx = () => (histScoped ? activeProjectCtx() : null);
 function histFiltered(): HistEntry[] {
   const term = ($("histQ") as HTMLInputElement).value.trim();
@@ -96,8 +81,6 @@ export function histRender() {
   if (histSel >= histRows.length) histSel = Math.max(0, histRows.length - 1);
   const ctx = activeProjectCtx();
   const scope = histScopeCtx();
-  // Nothing on stage → nothing to narrow to, so the chip goes dead rather than
-  // toggling a state with no visible effect.
   ($("histScope") as HTMLButtonElement).disabled = !ctx;
   $("histScope").title = !ctx ? "Nothing on stage to scope to" : scope ? "Show every project" : `Show only ${ctx.project}`;
   $("histScopeTxt").textContent = scope ? scope.project : "all projects";
@@ -110,8 +93,8 @@ export function histRender() {
     $("histList").innerHTML = Array.from({ length: 7 }, (_, i) =>
       `<div class="wt-sk"><i class="a"></i><i style="width:${45 + ((i * 37) % 45)}%"></i></div>`).join("");
   } else if (!histRows.length) {
-    // An empty scoped list is a different answer from an empty search, and saying so
-    // is what stops "this project has none" reading as "History is broken".
+    // An empty scoped list is a different answer from an empty search; saying so keeps
+    // "this project has none" from reading as "History is broken".
     const [head, body] = !histAll.length
       ? ["No past sessions", "No supported coding agent has saved a conversation on this machine yet."]
       : ($("histQ") as HTMLInputElement).value.trim()
@@ -143,9 +126,7 @@ export function histRender() {
   void histLoadPreview(histSelected());
 }
 function histPaintDetail() { $("histDetail").innerHTML = histDetailHtml(histSelected()); }
-// The new-session dialog's `wtFacts` in the same shape. Copied rather than exported
-// from ./worktree: it is four lines of markup, and the alternative is a module that
-// owns one dialog exporting a fragment helper to a module that owns another.
+// Same shape as ./worktree's wtFacts, copied: one dialog exporting a fragment to another is worse.
 function histFacts(pairs: [string, string][]) {
   return `<dl class="wt-facts">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
 }
@@ -156,7 +137,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
   const busy = histBusy(h);
   const p = histProject(h);
   const when = new Date(h.last_active * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  // Binary units, spelled binary — this divides by 1024, same as `fmtMb`/`fmtRate`.
+  // Binary units spelled binary, same as fmtMb/fmtRate.
   const size = h.bytes >= 1048576 ? `${(h.bytes / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(h.bytes / 1024))} KiB`;
   const facts = histFacts([
     ["project", `<span class="em">${esc(p.project)}</span>`],
@@ -189,8 +170,6 @@ function histDetailHtml(h: HistEntry | undefined): string {
     <div class="wt-dkind">how it ended</div>
     ${preview}`;
 }
-// Lazily mirror the selected provider conversation, just a few messages inline in
-// the detail column.
 async function histLoadPreview(h: HistEntry | undefined) {
   if (!h) return;
   const id = h.session_id;
@@ -218,10 +197,8 @@ export function histResume(h: HistEntry | undefined) {
 }
 
 // ---------- the dialog's own events ----------
-// Rows are addressed by index into histRows, so nothing leaks into the delegated
-// document dispatcher in main.ts — in particular the resume button carries
-// `data-histact`, not the `data-resume` that dispatcher already owns for the
-// sidebar's dormant rows.
+// Rows are indexed into histRows, off main.ts's dispatcher; the resume button carries
+// `data-histact`, not the `data-resume` that dispatcher already owns for dormant rows.
 export function initHistoryEvents() {
   $("histRefresh").addEventListener("click", () => { void loadHistory(true); ($("histQ") as HTMLInputElement).focus(); });
   $("histScope").addEventListener("click", () => { histScoped = !histScoped; histSel = 0; histRender(); ($("histQ") as HTMLInputElement).focus(); });
@@ -231,11 +208,9 @@ export function initHistoryEvents() {
     else if (e.key === "ArrowUp") { e.preventDefault(); histSel = Math.max(histSel - 1, 0); histRender(); }
     else if (e.key === "Enter") { e.preventDefault(); histResume(histSelected()); }
     else if (e.key === "Escape") {
-      // stopPropagation matters: main.ts's global handler also closes History (so Esc
-      // works when focus has left the box), and without this both would fire — peeling
-      // the filter and closing the dialog on one keypress.
+      // stopPropagation: main.ts's global handler also closes History on Esc, and both firing
+      // would peel the filter and close the dialog at once. Esc peels the filter first.
       e.preventDefault(); e.stopPropagation();
-      // Esc peels the filter first, then the dialog — same as the new-session dialog.
       if (($("histQ") as HTMLInputElement).value) { ($("histQ") as HTMLInputElement).value = ""; histSel = 0; histRender(); }
       else closeHistory();
     }
@@ -246,8 +221,7 @@ export function initHistoryEvents() {
     const row = t.closest<HTMLElement>("[data-hi]");
     if (row) { histSel = +row.dataset.hi!; histRender(); ($("histQ") as HTMLInputElement).focus(); }
   });
-  // Double-click a row to resume, so the mouse path doesn't require crossing to the
-  // detail pane's button. The first click of the pair already selected it.
+  // Double-click resumes; the first click of the pair already selected the row.
   $("histList").addEventListener("dblclick", (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>("[data-hi]");
     if (row) { e.preventDefault(); histResume(histRows[+row.dataset.hi!]); }

@@ -218,6 +218,13 @@ describe("tilde — home-dir abbreviation", () => {
     setHome("/Users/ada");
     expect(tilde("/Users/ada/w/Users/ada")).toBe("~/w/Users/ada");
   });
+  it("only abbreviates a real home prefix, on a separator boundary", () => {
+    setHome("/Users/ada");
+    // A backup mount that merely contains the home path is not the home dir.
+    expect(tilde("/Volumes/backup/Users/ada/x")).toBe("/Volumes/backup/Users/ada/x");
+    // Nor is a sibling whose name starts with it.
+    expect(tilde("/Users/ada2/code")).toBe("/Users/ada2/code");
+  });
 });
 
 describe("basename", () => {
@@ -360,13 +367,11 @@ describe("the title scrub as a setting", () => {
     });
 
     it("adds exactly the codepoints titleExtra named, whatever was typed", () => {
-      // The escaping test, and it has to be written this way round to be worth
-      // anything. "does a hostile value crash it?" passes trivially — `titleDecor`
-      // falls back to the built-in table on a compile failure, so a broken class and a
-      // correct one both leave an ordinary title alone. What separates them is whether
-      // the characters that carry the class's OWN syntax (`]`, `^`, `\`, `-`) end up
-      // as members or as structure. Concatenated raw, `]` closes the class early and
-      // `\` swallows the bracket; escaped as \u{…}, both simply join it.
+      // The escaping test, written this way round on purpose: "does a hostile value crash
+      // it?" passes trivially, since `titleDecor` falls back to the built-in table on a
+      // compile failure. What separates a broken class from a correct one is whether the
+      // characters carrying the class's OWN syntax (`]`, `^`, `\`, `-`) end up as members
+      // or as structure.
       const probes = ["]", "^", "\\", "-", "z", "Z", "5", "a", "`"];
       for (const extra of ["]", "^", "\\", "[", "-z", "]^\\-", "a-\\", ".*"]) {
         const named = new Set<number>();

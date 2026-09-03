@@ -11,8 +11,7 @@ const T = 1_000_000;
 const prefs = (over: Partial<SoundPrefs> = {}): SoundPrefs => ({ ...soundDefaults(), ...over });
 const gate = (over: Partial<SoundGate> = {}): SoundGate =>
   ({ focused: false, lastAt: 0, lastEv: null, ...over });
-/// Every event switched on, so a test about the burst rules isn't quietly measuring
-/// a default instead.
+// Every event on, so a burst test isn't quietly measuring a default.
 function allOn(over: Partial<SoundPrefs> = {}): SoundPrefs {
   const p = prefs(over);
   for (const d of SOUND_EVENTS) p.events[d.id] = { ...p.events[d.id], on: true };
@@ -49,8 +48,7 @@ describe("the catalogue", () => {
   });
 
   it("starts the events that fire constantly switched OFF", () => {
-    // The whole feature's credibility: a set of alerts that fires on every failed grep
-    // is a set of alerts you learn to ignore, which makes the permission chime useless.
+    // Alerts that fire on every failed grep teach you to ignore the permission chime too.
     const byId = Object.fromEntries(SOUND_EVENTS.map((d) => [d.id, d.on]));
     expect(byId.toolFail).toBe(false);
     expect(byId.ended).toBe(false);
@@ -60,9 +58,7 @@ describe("the catalogue", () => {
   });
 
   it("keeps the off-by-default ones LAST, because the settings hint says so", () => {
-    // Settings › Sounds reads "the last three start switched off". A reorder that left
-    // that sentence pointing at the wrong rows is exactly the kind of drift nothing
-    // else would catch.
+    // Settings › Sounds says "the last three start switched off"; nothing else catches a reorder.
     const off = SOUND_EVENTS.filter((d) => !d.on).map((d) => d.id);
     expect(off.length).toBe(3);
     expect(SOUND_EVENTS.slice(-3).map((d) => d.id)).toEqual(off);
@@ -176,8 +172,7 @@ describe("soundFor: bursts", () => {
   });
 
   it("lets a MORE urgent event through the gap — the whole point of the feature", () => {
-    // A permission 80ms after a "your turn" is not a duplicate of it; suppressing it
-    // would silence exactly the alert this exists for.
+    // A permission 80ms after a "your turn" is not a duplicate of it.
     const g = gate({ lastAt: T, lastEv: "done" });
     expect(soundFor(allOn(), "permission", T + 80, g)).toBe(allOn().events.permission.tone);
   });
@@ -227,9 +222,6 @@ describe("hookSound", () => {
   });
 
   it("separates a turn the API killed from a tool call that failed", () => {
-    // The distinction this codebase already draws for the LABEL, drawn again for the
-    // noise — and here it matters more, because a failed grep is routine and an alarm
-    // you hear ten times an hour is an alarm you stop hearing.
     const before = snap({ phase: "working" });
     expect(hookSound(before, snap({ phase: "error", apiErrAt: T }))).toBe("error");
     expect(hookSound(before, snap({ phase: "error" }))).toBe("toolFail");
@@ -240,14 +232,11 @@ describe("hookSound", () => {
     expect(hookSound(before, snap({ phase: "error", apiErrAt: T + 60_000 }))).toBe("error");
   });
   it("stays quiet for a failure the revive watchdog is already handling", () => {
-    // An outage Episko rides out and resumes from is a log line, not five alarms through
-    // the bedroom wall at 04:00 — and somebody woken by those switches the sounds off
-    // and loses the permission alert too. The FIRST failure still rings (`revive` is null
-    // until the watchdog schedules against it, a tick later), and ./actions plays "error"
-    // by hand at the moment it gives up. This silences only the retries in between.
+    // Only the retries in between are silent: `revive` is null until the watchdog schedules
+    // against the first failure, so that one still rings, and ./actions plays "error" by
+    // hand at the moment it gives up.
     const before = snap({ phase: "error", apiErrAt: T, reviving: true });
     expect(hookSound(before, snap({ phase: "error", apiErrAt: T + 60_000, reviving: true }))).toBeNull();
-    // The first one, before any schedule exists, is unaffected.
     expect(hookSound(snap({ phase: "working" }), snap({ phase: "error", apiErrAt: T }))).toBe("error");
   });
 
@@ -286,8 +275,7 @@ describe("exitSound", () => {
 
   it("treats anything else as merely having stopped, whatever the code", () => {
     expect(exitSound("shell", 0)).toBe("ended");
-    // An agent pane has no verdict to report — only a task's exit code is one, and
-    // reading a codex exit as taskFail would ring the failure chime on every quit.
+    // Only a task's exit code is a verdict; a codex exit read as taskFail would ring on every quit.
     expect(exitSound("agent", 0)).toBe("ended");
     expect(exitSound("agent", 130)).toBe("ended");
   });
@@ -308,11 +296,9 @@ describe("limitCrossed", () => {
   });
 
   it("treats the first reading of a run as a baseline, not a crossing", () => {
-    // Otherwise every launch that starts above 50% rings — at the one moment the
-    // sound is worth least, because the footer meter is right there saying it.
+    // Otherwise every launch that starts above 50% rings, with the footer meter already saying so.
     expect(limitCrossed(null, 90)).toBeNull();
     expect(limitCrossed(null, 12)).toBeNull();
-    // …and the very next reading behaves normally.
     expect(limitCrossed(90, 96)).toBe(95);
   });
 

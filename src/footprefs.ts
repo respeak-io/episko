@@ -1,27 +1,12 @@
-// Which segments the status bar shows — the model behind Settings › Footer.
-//
-// The bar had grown to six segments plus the debug button, and the disk-I/O figures
-// moving down from the inspector made it seven. Not everyone wants all of them: a
-// machine that never approaches a usage limit has no use for the limits readout, and
-// somebody who only ever launches embedded sessions is reading "new in embedded"
-// forever. So they are individually switchable.
-//
-// **Three are not, and that is what makes the rest safe to switch off**: the repo link,
-// the version number and the What's-new button always stay. Between them the bar can
-// never become an empty strip you cannot get back — and the version is how you find out
-// there is an update, which is not a thing to let someone hide by accident.
-//
-// Pure logic, no DOM and no Tauri: the store, its repair, and every mutation of it,
-// on the same pattern as ./projgroups.
+// Which status-bar segments show (Settings › Footer). The repo link, version and What's-new have
+// no switch: the bar can never become an empty strip, and the version is how you learn of an update.
 
-/// A switchable segment. The order here is the order Settings lists them in; the *bar's*
-/// order is fixed in index.html, because these are markup, not data.
+// Settings lists them in this order; the bar's own order is fixed in index.html.
 export type FootSeg = "sessions" | "cost" | "limits" | "io" | "engine" | "shortcuts" | "debug";
 
 export interface FootSegDef {
   id: FootSeg;
-  /// The element the footer hides, so there is exactly one place the two are joined.
-  el: string;
+  el: string; // the element the footer hides
   label: string;
   hint: string;
 }
@@ -38,23 +23,12 @@ export const FOOT_SEGS: readonly FootSegDef[] = [
 
 const IDS = new Set<string>(FOOT_SEGS.map((s) => s.id));
 
-/// What is switched **off**, rather than what is on.
-///
-/// Storing the hidden ones is what makes a segment added later appear by default: it
-/// cannot be in a list written before it existed, so it is shown, which is the right
-/// answer for a new feature nobody has opted out of yet. A record of booleans would
-/// instead give every existing user `undefined` for it and force a `?? true` at each
-/// read — one that is easy to leave out at exactly one of them.
+// Stores the hidden set, so a segment added later shows by default for existing users.
 export interface FootPrefs { hidden: FootSeg[] }
 
 export const DEFAULT_FOOT: FootPrefs = { hidden: [] };
 
-/// Read the stored value, keeping only ids this build knows.
-///
-/// An unknown id is dropped rather than kept: it would otherwise ride along forever,
-/// and — worse — a segment that is *renamed* would come back switched off for everyone
-/// who had hidden its predecessor. Anything unparseable falls back to showing
-/// everything, which is the state you can see and fix.
+// Unknown ids are dropped: a renamed segment must not come back hidden for whoever hid its predecessor.
 export function parseFootPrefs(raw: string | null): FootPrefs {
   if (!raw) return { hidden: [] };
   try {
@@ -69,13 +43,13 @@ export function footPrefsJson(p: FootPrefs): string { return JSON.stringify({ hi
 
 export function footShown(p: FootPrefs, id: FootSeg): boolean { return !p.hidden.includes(id); }
 
-/// Flip one segment. Returns a new object rather than mutating, so a caller cannot
-/// half-apply a change it then fails to persist.
+// Returns a new object so a caller cannot half-apply a change it then fails to persist.
 export function toggleFootSeg(p: FootPrefs, id: FootSeg): FootPrefs {
   return footShown(p, id)
     ? { hidden: [...p.hidden, id] }
     : { hidden: p.hidden.filter((x) => x !== id) };
 }
 
-/// How many segments are switched off, for the Settings tab's own summary line.
-export function footHiddenCount(p: FootPrefs): number { return p.hidden.filter((id) => IDS.has(id)).length; }
+// No re-filter: `hidden` only ever comes from `parseFootPrefs` (which drops what IDS lacks)
+// or `toggleFootSeg` (whose `id` is a `FootSeg`).
+export function footHiddenCount(p: FootPrefs): number { return p.hidden.length; }

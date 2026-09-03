@@ -1,29 +1,11 @@
-// The core mechanism, both ends of it.
-//
-// `write_instrument_settings` generates the throwaway `--settings` file whose hooks
-// and statusLine POST to us; `run_telemetry_server` receives those POSTs and
-// forwards each to the frontend as one `telemetry` event. They are one module
-// because they are one contract — a field renamed on either side goes quiet rather
-// than failing, which is what the Phase-0 server test exists to catch.
-//
-// The two hard constraints CLAUDE.md names:
-//
-// - **Route by our stable launch id, never Claude's runtime `session_id`.** Claude
-//   mints a new one on /clear, /compact and /resume. Every request carries ours in
-//   `X-CC-Session` (or `?sid=` for the permission hook, which is `type:"http"` and
-//   has no shell to add a header), and the server *forces* it onto the payload —
-//   keeping Claude's incoming id as `claude_session_id`, because that, not ours, is
-//   what `--resume` must target.
-// - **`PermissionRequest` is a *blocking* hook.** Its request is held open in
-//   `AppState.pending` and answered only by `resolve_permission`, which is why that
-//   command lives here and not with the other `State<AppState>` commands. Do not
-//   make it async or respond early — Claude hangs or loses the decision.
+// Both ends of the instrumentation contract: `write_instrument_settings` generates the
+// `--settings` file whose hooks and statusLine POST here, and `run_telemetry_server`
+// forwards each POST as one `telemetry` event. The routing and blocking rules: CLAUDE.md.
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::AppState;
 
-/// Find a request header by (case-insensitive) name.
 fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
     req.headers()
         .iter()
@@ -31,8 +13,7 @@ fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
         .map(|h| h.value.as_str().to_string())
 }
 
-/// Read a query-string param from a URL like `/permission?sid=abc` (no decoding —
-/// our values are uuids).
+/// No percent-decoding: the only value read this way is a uuid.
 fn query_param(url: &str, key: &str) -> Option<String> {
     let q = url.split('?').nth(1)?;
     q.split('&').find_map(|pair| {
@@ -41,42 +22,35 @@ fn query_param(url: &str, key: &str) -> Option<String> {
     })
 }
 
-/// How long to wait before the *n*th attempt to re-bind the telemetry port.
-///
-/// Doubles from a second and caps at thirty. The cap matters more than the ladder:
-/// the common cause of a failed re-bind is a TIME_WAIT window measured in tens of
-/// seconds, so retrying forever at a bounded interval gets the port back on its own,
-/// while a ladder with no ceiling would still be sleeping ten minutes later.
+/// Doubles from 1s and caps at 32s. The cap matters more than the ladder: a failed
+/// re-bind is usually a TIME_WAIT window of tens of seconds, which an uncapped ladder outsleeps.
 fn rebind_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(1u64 << attempt.min(5))
 }
 
-/// Attempts (≈ a minute at the ladder above) on the *original* port before giving up
-/// on it and taking a fresh ephemeral one. Staying put is strongly preferred: every
-/// instrument file already on disk names the old port, so re-binding it revives every
-/// running pane at once, whereas a new port only helps sessions launched after it.
+/// Attempts on the original port before taking a fresh ephemeral one. Every
+/// instrument file on disk names the old port, so reclaiming it revives every running pane.
 const REBIND_GIVE_UP: u32 = 8;
 
-/// Get a listener back, and say which port it landed on.
-///
-/// **Sleeps before the first attempt, and that is not politeness.** `tiny_http`'s
-/// `Drop` sets its close flag and pokes the accept thread awake, but never joins it —
-/// so the old `TcpListener` is still bound for a short unbounded moment after the
-/// `Server` is gone, and an immediate re-bind fails with `EADDRINUSE`. `SO_REUSEADDR`
-/// (which `std`'s `TcpListener::bind` sets for us on unix) covers a socket in
-/// TIME_WAIT; it does nothing about one that is still *listening*. A second is nothing
-/// against a ~10s statusLine cadence, so the wait is free.
+/// Get a listener back on `port`, and say where it landed. Must sleep before the first try:
+/// `tiny_http`'s `Drop` never joins its accept thread, so the old listener is briefly still
+/// bound, and `SO_REUSEADDR` covers TIME_WAIT, not a socket that is still listening.
 fn rebind_telemetry(port: u16) -> (tiny_http::Server, u16) {
     let mut attempt = 0u32;
     loop {
         std::thread::sleep(rebind_delay(attempt));
-        // Past the give-up point, ask for an ephemeral port instead: the original is
-        // held by something else and is not coming back.
-        let want = if attempt >= REBIND_GIVE_UP { 0 } else { port };
+        let want = if attempt >= REBIND_GIVE_UP { 0 } else { port }; // 0: any ephemeral port
         match tiny_http::Server::http(("127.0.0.1", want)) {
             Ok(s) => {
-                let got = s.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
-                return (s, got);
+                // Never store a 0: `AppState.port` is what every later instrument file is
+                // written with, so a give-up value there would point new panes at nothing.
+                match s.server_addr().to_ip().map(|a| a.port()) {
+                    Some(got) if got != 0 => return (s, got),
+                    _ => {
+                        log::error!("telemetry: re-bind reported no port; retrying");
+                        attempt = attempt.saturating_add(1);
+                    }
+                }
             }
             Err(e) => {
                 log::warn!("telemetry: re-bind of 127.0.0.1:{want} failed (attempt {attempt}): {e}");
@@ -86,36 +60,13 @@ fn rebind_telemetry(port: u16) -> (tiny_http::Server, u16) {
     }
 }
 
-/// Keep a telemetry server listening for the life of the app.
-///
-/// `run_telemetry_server` returns whenever its listener dies, and **one transient
-/// error is enough**: `tiny_http`'s accept thread `break`s out of its loop on any
-/// `accept()` error, pushes the error into the queue, and `IncomingRequests::next()`
-/// is `self.server.recv().ok()` — so the `Err` becomes a `None` that ends the `for`
-/// loop, drops the `Server`, and closes the socket. Nothing retries and nothing
-/// complains.
-///
-/// That is not hypothetical. A single `ECONNABORTED` ("Software caused connection
-/// abort", errno 53) took the server down after six days of uptime and it never came
-/// back: `AppState.port` still held the dead number, so every session launched over
-/// the following fourteen hours got an instrument file pointing at a closed socket and
-/// sat at `idle` with no model, no context, no files and no tools. The whole path is
-/// silent by design — the hooks are `"async": true` and both hooks and statusLine use
-/// `curl -s` — so a refused connection produces no output anywhere, on either side.
-///
-/// So: re-bind, and re-bind **the same port**, because that is what makes the outage
-/// transient rather than terminal. The instrument files are written at launch and
-/// never revisited, so a pane that was deaf during the gap starts reporting again on
-/// its next statusLine (~10s) without being relaunched. Only after `REBIND_GIVE_UP`
-/// failures do we take a new port and publish it, so that at least new launches work.
-///
-/// Both transitions are announced to the frontend as `telemetry-health`, because the
-/// original failure's real cost was that nothing on screen said anything was wrong.
+/// Keep a listener up for the life of the app: tiny_http drops its socket on any `accept()`
+/// error and nothing retries, and a dead port is silent everywhere (async hooks, `curl -s`).
+/// Re-bind the SAME port, or every pane already launched stays deaf; CLAUDE.md has the story.
 pub(crate) fn serve_telemetry<R: Runtime>(server: tiny_http::Server, app: AppHandle<R>) {
     let mut server = server;
     loop {
-        // Returns only when the listener is gone.
-        run_telemetry_server(server, app.clone());
+        run_telemetry_server(server, app.clone()); // returns only when the listener is gone
 
         let port = app.state::<AppState>().port.load(std::sync::atomic::Ordering::Relaxed);
         log::error!("telemetry: listener on 127.0.0.1:{port} died; re-binding");
@@ -124,8 +75,6 @@ pub(crate) fn serve_telemetry<R: Runtime>(server: tiny_http::Server, app: AppHan
         let (next, now) = rebind_telemetry(port);
         server = next;
         if now != port {
-            // Everything already launched is permanently deaf at this point; say so
-            // rather than letting the recovery read as a clean one.
             log::error!("telemetry: could not reclaim {port}, now on {now} — sessions launched before this stay silent until relaunched");
             app.state::<AppState>().port.store(now, std::sync::atomic::Ordering::Relaxed);
         } else {
@@ -135,26 +84,17 @@ pub(crate) fn serve_telemetry<R: Runtime>(server: tiny_http::Server, app: AppHan
     }
 }
 
-/// Receive hook + statusLine POSTs from Claude Code and forward each to the
-/// frontend as a `telemetry` event. Every request carries Episko's stable launch
-/// id (`X-CC-Session` header, or `?sid=` for the permission hook); we force it onto
-/// the payload as `session_id` so the frontend routes by it — immune to Claude
-/// rotating its own runtime session_id on /clear, /compact or /resume.
-///
-/// **Returns when the listener dies**, which is a thing that happens — see
-/// `serve_telemetry`, which is what production runs and what puts it back.
-///
-/// Generic over the runtime so the tests can drive the real server against
-/// `tauri::test::mock_app()`; production passes the concrete `AppHandle<Wry>`.
+/// Forward each hook/statusLine POST as one `telemetry` event, with our stable launch id
+/// forced onto `session_id`. Returns when the listener dies; `serve_telemetry` puts it back.
+/// Generic over the runtime so tests can drive it against `tauri::test::mock_app()`.
 pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: AppHandle<R>) {
     for mut request in server.incoming_requests() {
         let url = request.url().to_string();
         let stable_sid = header_value(&request, "X-CC-Session").or_else(|| query_param(&url, "sid"));
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
-        // A parse failure here silently degrades the whole pane (session shows but
-        // no model/cost/phase) — e.g. the PowerShell-BOM class of bug — so it must
-        // be loud. Log length + error only, never the body (it can carry prompts).
+        // Loud on purpose (a dropped payload blanks the pane), but never log the body:
+        // it can carry prompts.
         let mut data: serde_json::Value = match serde_json::from_str(&body) {
             Ok(v) => v,
             Err(e) => {
@@ -173,11 +113,8 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
             if !data.is_object() {
                 data = serde_json::json!({});
             }
-            // Keep Claude's *runtime* id before forcing ours onto the payload. It
-            // rotates on /clear, /compact and /resume — and each rotation starts a
-            // NEW transcript file. So the runtime id, not our stable launch id, is
-            // what `--resume` must target; the frontend records it for restore.
-            // Routing still uses `session_id` (ours) and is unaffected.
+            // Claude's runtime id rotates on /clear, /compact and /resume, and each rotation
+            // starts a new transcript, so it (not ours) is what `--resume` must target.
             if let Some(rt) = data.get("session_id").and_then(|v| v.as_str()) {
                 if rt != sid {
                     let rt = rt.to_string();
@@ -204,49 +141,19 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
 
 
 
-/// Per-session settings file layered on top of the user's ~/.claude via
-/// `claude --settings`. The generated hook/statusLine commands POST their stdin
-/// payload to our telemetry server. Both platforms use absolute paths to a
-/// guaranteed `curl` because Claude runs hooks/statusLine with a stripped PATH:
-/// `/usr/bin/curl` (macOS/Linux) or `C:\Windows\System32\curl.exe` (Windows,
-/// present since Win10 1803). curl reads Claude's payload straight from the
-/// shell's *inherited* stdin (`--data-binary @-`); we deliberately do NOT
-/// round-trip it through a PowerShell string (`$x=[Console]::In.ReadToEnd(); $x |
-/// curl`), because PowerShell prepends a UTF-8 BOM when piping a string to a
-/// native process, which `serde_json` then refuses to parse — silently dropping
-/// every payload. (Verified empirically.)
-///
-/// **The hooks run no shell at all; the statusLine has to.** A command hook takes
-/// an *exec form* — `command` plus an `args` array, each element passed as one
-/// argument with no quoting and no shell in between — so the hooks name `curl`
-/// directly. That is what removes the per-hook shell process: on Windows the
-/// previous shell form was pinned to `"shell": "powershell"`, which meant a whole
-/// PowerShell launch (~220 ms, and a second process) for every PreToolUse,
-/// PostToolUse, Stop and Notification of every session, just to reach curl. It
-/// also retires the entire quoting hazard, since nothing re-parses these strings.
-///
-/// The statusLine gets no such escape: Claude Code defines no `args` and no
-/// `shell` for it, and routes it through Git Bash whenever Git Bash is installed
-/// (else PowerShell). So that one command must still parse in *either* shell: no
-/// `&` call operator, no `$null` (Git Bash would expand it away and leave a bare
-/// `1>`), no `Write-Output`, and forward slashes, since Git Bash eats lone
-/// backslashes as escapes. `echo` and single-quoted arguments mean the same thing
-/// in both. Getting this wrong costs no hook and no error — just every figure the
-/// statusLine carries (model, context %, cost, duration, rate limits), silently.
+/// The per-launch `--settings` file whose hooks and statusLine POST to our server. curl by
+/// absolute path (Claude strips PATH), reading Claude's payload from inherited stdin, never
+/// via a PowerShell string (it prepends a BOM serde_json rejects). Hooks use the exec form
+/// (no shell); the statusLine must parse in Git Bash AND PowerShell. Details: CLAUDE.md.
 pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io::Result<String> {
     let mut dir = std::env::temp_dir();
     dir.push("cc-launcher");
     std::fs::create_dir_all(&dir)?;
 
-    // Tag every POST with Episko's STABLE launch id via an `X-CC-Session` header,
-    // so telemetry keeps routing to the right pane even after Claude rotates its own
-    // runtime session_id (/clear, /compact, /resume all mint a new one). The id is
-    // baked into the generated command — no dependence on env propagation.
+    // The stable id is baked into each command as the X-CC-Session header, never read from env.
     #[cfg(windows)]
     let (statusline_cmd, curl, null_dev): (String, &str, &str) = {
-        // Shell-agnostic (see above): the statusLine can't say which shell it wants,
-        // so it says nothing either shell would choke on. `-o NUL` replaces the
-        // PowerShell-only `1>$null 2>$null`; `echo` replaces `Write-Output`.
+        // Must parse in Git Bash and PowerShell alike: -o NUL, not 1>$null; echo, not Write-Output.
         let statusline = format!(
             "C:/Windows/System32/curl.exe -s -o NUL --max-time 1 -X POST 'http://127.0.0.1:{port}/statusline' -H 'X-CC-Session: {session_id}' --data-binary '@-'; echo cc-launcher"
         );
@@ -260,14 +167,9 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
         (statusline, "/usr/bin/curl", "/dev/null")
     };
 
-    // Exec form: `args` elements reach curl verbatim, so there is no shell to pick
-    // and nothing to quote. Built once and cloned per event.
-    //
-    // No `|| true` counterpart is needed for the shell form this replaces. These are
-    // `async`, so Claude does not wait on them, and the only exit code that means
-    // anything to a hook is 2 (block the tool) — which curl uses for "failed to
-    // initialize" and never for a refused connection (7) or a timeout (28). A
-    // telemetry POST that misses therefore stays what it was: invisible.
+    // Exec form: each arg reaches curl verbatim, so no shell runs and nothing is quoted.
+    // No `|| true` needed: the hooks are async, and the one exit code a hook reads (2, block
+    // the tool) is curl's "failed to initialize", never a refused connection or a timeout.
     let hook_leaf = serde_json::json!({
         "type": "command",
         "command": curl,
@@ -293,9 +195,7 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
             serde_json::json!([ { "matcher": "", "hooks": [ hook_leaf.clone() ] } ]),
         );
     }
-    // PermissionRequest is a BLOCKING http hook — Claude waits for the app's
-    // decision. It's `type:"http"`, so it's shell-independent and identical on
-    // every platform.
+    // The one BLOCKING hook; `type:"http"`, so shell-independent and identical on every platform.
     hooks.insert(
         "PermissionRequest".to_string(),
         serde_json::json!([
@@ -303,18 +203,10 @@ pub(crate) fn write_instrument_settings(port: u16, session_id: &str) -> std::io:
         ]),
     );
 
-    // No `shell` here: Claude Code doesn't define one for the statusLine, so setting
-    // it would be silently ignored while reading as though the shell were pinned.
-    //
-    // `refreshInterval` is the *idle* cadence only — an active session's statusLine is
-    // already re-run event-driven (new assistant message, /compact, a mode change) —
-    // and it is baked into the settings file at launch, so it ticks for every running
-    // session forever, on or off screen. On Windows each tick is a Git Bash + curl +
-    // console (no `shell` field to pin it), which at 3s measured ~6 process spawns a
-    // second on a 3-session fleet. Nothing read off the statusLine (model, context %,
-    // cost, duration, rate limits) moves faster than minutes while a session is idle,
-    // so 10s keeps the figures and the frontend's un-end backstop alive at a third of
-    // the cost. Don't drop it entirely: idle sessions have no events to ride.
+    // No `shell`: Claude Code defines none for the statusLine and would silently ignore it.
+    // `refreshInterval` is the idle cadence only (an active session re-runs it on events),
+    // and each tick is a shell + curl spawn per running session, so 10s, not 3s. Don't drop
+    // it: idle sessions have no events to ride, and the frontend's un-end backstop needs it.
     let statusline = serde_json::json!({ "type": "command", "command": statusline_cmd, "refreshInterval": 10, "padding": 0 });
 
     let settings = serde_json::json!({
@@ -357,14 +249,9 @@ mod tests {
     use std::sync::Mutex;
 
 
-    /// The core mechanism: every launch writes a throwaway `--settings` file whose
-    /// hooks and statusLine POST to our telemetry server. Four properties of it are
-    /// load-bearing and invisible to the compiler — our stable launch id must ride on
-    /// every request (routing), curl must be called by absolute path (Claude runs
-    /// hooks with a stripped PATH), the lifecycle hooks must stay fire-and-forget, and
-    /// PermissionRequest must stay a *blocking* `type:"http"` hook carrying its id in
-    /// `?sid=` (it has no shell to add a header). Break any one and telemetry goes
-    /// quiet or Claude hangs, both at runtime only.
+    /// Four properties the compiler cannot see: our stable id on every request, curl by
+    /// absolute path (Claude strips PATH), lifecycle hooks fire-and-forget, and
+    /// PermissionRequest a blocking `type:"http"` hook carrying its id in `?sid=`.
     #[test]
     fn instrument_settings_wire_every_hook_to_our_server() {
         let sid = format!("test-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
@@ -372,8 +259,7 @@ mod tests {
         assert!(path.ends_with(&format!("instrument-{sid}.json")), "unexpected path {path}");
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
-        // The statusLine spells its curl with forward slashes on Windows — Git Bash,
-        // which may be the shell that runs it, would eat the backslashes as escapes.
+        // Forward slashes in the statusLine's curl: Git Bash eats lone backslashes as escapes.
         #[cfg(windows)]
         let (curl, sl_curl) = (r"C:\Windows\System32\curl.exe", "C:/Windows/System32/curl.exe");
         #[cfg(not(windows))]
@@ -394,11 +280,8 @@ mod tests {
             let leaf = &matchers[0]["hooks"][0];
             assert_eq!(leaf["type"], "command", "{ev}");
             assert_eq!(leaf["async"], true, "{ev} must stay fire-and-forget");
-            // Exec form: `command` is the executable ITSELF, never shell command text,
-            // and every argument is its own `args` element. That is what means no shell
-            // is spawned per hook — the thing this shape exists for — so an equality
-            // check here, not a `contains`: command text that happens to start with the
-            // curl path would run through a shell again and still pass a substring test.
+            // Equality, not `contains`: command text that merely starts with the curl path
+            // would run through a shell again and still pass a substring test.
             assert_eq!(leaf["command"], curl, "{ev} must name the curl binary itself");
             let args: Vec<&str> = leaf["args"].as_array()
                 .unwrap_or_else(|| panic!("{ev} must use exec form (an args array)"))
@@ -407,8 +290,7 @@ mod tests {
                 "{ev} must tag the POST with our stable id: {args:?}");
             assert!(args.contains(&"http://127.0.0.1:45678/hook"), "{ev} must POST to our port: {args:?}");
             assert!(args.contains(&"@-"), "{ev} must forward Claude's stdin payload: {args:?}");
-            // Nothing may re-parse these, so nothing may need quoting. A stray quote
-            // would reach curl as part of the value rather than being stripped.
+            // Nothing re-parses these, so a quote would reach curl as part of the value.
             for a in &args {
                 assert!(!a.contains('\'') && !a.contains('"'), "{ev} arg {a:?} is quoted — exec form takes it literally");
             }
@@ -420,16 +302,10 @@ mod tests {
         assert!(perm.get("async").is_none(), "PermissionRequest must block until the user answers");
         assert!(perm["timeout"].as_u64().unwrap_or(0) >= 60, "a human needs longer than a hook default to decide");
 
-        // `shell` is a *hook* field, and only a hook may carry it. Claude Code defines
-        // none for the statusLine — on Windows it runs that command through Git Bash
-        // whenever Git Bash is installed — so setting one there is worse than useless:
-        // it is ignored, while reading as though the shell were pinned. It isn't; the
-        // command parses in either shell, which `statusline_command_posts_from_every_
-        // shell_claude_might_pick` proves by running the string this file generates.
+        // `shell` is a hook field; the statusLine has none, and one set there is ignored
+        // while reading as though the shell were pinned.
         assert!(statusline.get("shell").is_none(), "the statusLine has no shell field to set: {statusline}");
-        // …and now neither does a hook. `shell` only applies to the shell form; with
-        // `args` set Claude Code ignores it, so carrying one would read as a pinned
-        // shell while no shell runs at all — the same lie the statusLine one was.
+        // With `args` set Claude Code ignores `shell` too, so an exec-form hook must not carry one.
         assert!(hooks["Stop"][0]["hooks"][0].get("shell").is_none(),
             "an exec-form hook has no shell to pin");
         assert!(perm.get("shell").is_none(), "an http hook has no shell to set");
@@ -437,16 +313,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// How the *blocking* permission hook identifies itself: it's `type:"http"`, so
-    /// there's no shell to add the `X-CC-Session` header and the id rides in `?sid=`
-    /// instead. Getting nothing back here means the request can't be routed.
+    /// `type:"http"` has no shell to add a header, so the permission hook's id rides in `?sid=`.
     #[test]
     fn query_param_reads_the_permission_sid() {
         assert_eq!(query_param("/permission?sid=abc-123", "sid").as_deref(), Some("abc-123"));
         assert_eq!(query_param("/permission?x=1&sid=abc&y=2", "sid").as_deref(), Some("abc"));
-        // A key that merely ends with ours is a different key.
         assert_eq!(query_param("/permission?xsid=abc", "sid"), None);
-        // The other endpoints carry no query string at all.
         assert_eq!(query_param("/hook", "sid"), None);
         assert_eq!(query_param("/statusline?", "sid"), None);
         // Degenerate spellings yield an empty id rather than panicking.
@@ -455,13 +327,10 @@ mod tests {
     }
 
     // ---------- telemetry server ----------
-    //
-    // The app's core mechanism, driven for real: a `tiny_http` server on an ephemeral
-    // port, a windowless `mock_app()` to emit through, and raw sockets standing in for
-    // the curl commands `write_instrument_settings` generates. No Claude, no PTY.
+    // The real server on an ephemeral port, a windowless `mock_app()` to emit through, and
+    // raw sockets standing in for curl. No Claude, no PTY.
 
-    /// Bring the real server up against a mock app. The returned `App` must be kept
-    /// alive by the caller — it owns the listeners the assertions read.
+    /// The caller keeps the returned `App` alive: it owns the listeners the assertions read.
     fn mock_telemetry_app() -> (tauri::App<tauri::test::MockRuntime>, u16) {
         let app = tauri::test::mock_app();
         let server = tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server");
@@ -473,6 +342,7 @@ mod tests {
             owned_pids: Mutex::new(HashSet::new()),
             io_samples: Mutex::new(HashMap::new()),
             io_retired: Mutex::new((0, 0)),
+            bg_root: Mutex::new(crate::pty::BgRootState::default()),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             caffeinate: Mutex::new(None),
@@ -496,9 +366,7 @@ mod tests {
         s
     }
 
-    /// Read one response, stopping at the end of its body rather than waiting for the
-    /// connection to close (so a keep-alive server can't stall the test), and
-    /// returning whatever arrived if `wait` elapses first.
+    /// Stops at the end of the body, not at close: a keep-alive server would stall the test.
     fn read_response(mut s: std::net::TcpStream, wait: std::time::Duration) -> String {
         s.set_read_timeout(Some(wait)).expect("set read timeout");
         let mut out = Vec::new();
@@ -523,11 +391,8 @@ mod tests {
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    /// The routing-drift bug class, end to end. Claude mints a NEW session_id on
-    /// /clear, /compact and /resume, so the id in the payload drifts away from the one
-    /// we launched with. Every POST therefore carries our stable id in `X-CC-Session`
-    /// and the server forces it onto the payload — get this wrong and telemetry routes
-    /// to nothing: the inspector freezes while the process runs on.
+    /// Claude mints a new session_id on /clear, /compact and /resume; the header must win
+    /// over the payload, or telemetry routes to nothing while the process runs on.
     #[test]
     fn telemetry_forces_our_session_id_and_preserves_claudes() {
         use tauri::Listener;
@@ -544,8 +409,7 @@ mod tests {
         };
         let wait = std::time::Duration::from_secs(5);
 
-        // A hook fired after a rotation: the body carries Claude's *new* runtime id,
-        // the header carries ours.
+        // After a rotation: the body carries Claude's new runtime id, the header ours.
         read_response(
             open_post(port, "/hook", &[("X-CC-Session", "ours-abc")], r#"{"session_id":"claude-rotated","hook_event_name":"Stop"}"#),
             wait,
@@ -556,8 +420,7 @@ mod tests {
         assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "the resume target must survive");
         assert_eq!(ev["data"]["hook_event_name"], "Stop", "the rest of the payload is untouched");
 
-        // Same id on both sides (the pre-rotation common case): there's nothing to
-        // preserve, so no resume target is invented.
+        // Same id on both sides: no resume target is invented.
         read_response(
             open_post(port, "/statusline", &[("X-CC-Session", "ours-abc")], r#"{"session_id":"ours-abc","model":{"display_name":"Opus"}}"#),
             wait,
@@ -568,19 +431,15 @@ mod tests {
         assert!(ev["data"].get("claude_session_id").is_none(), "no rotation, no second id");
         assert_eq!(ev["data"]["model"]["display_name"], "Opus");
 
-        // An unparseable body (the PowerShell-BOM class of bug) must still route, so
-        // the pane degrades to "no detail" rather than the event vanishing.
+        // An unparseable body (a BOM, say) still routes, so the pane degrades rather than vanishes.
         read_response(open_post(port, "/hook", &[("X-CC-Session", "ours-abc")], "\u{feff}{not json}"), wait);
         let ev = next();
         assert_eq!(ev["data"]["session_id"], "ours-abc");
     }
 
-    /// The bash Claude Code would actually use on Windows: *Git* Bash, not whatever
-    /// `bash` happens to come first on PATH. On a machine with WSL that is
-    /// `C:\Windows\System32\bash.exe` — a Linux shell, where `C:/Windows/...` genuinely
-    /// doesn't exist and a passing or failing result would say nothing about the
-    /// product. Claude Code reads `CLAUDE_CODE_GIT_BASH_PATH` for the same reason, so
-    /// honour it first, then the default install locations, then git's own directory.
+    /// Git Bash specifically, not the first `bash` on PATH: with WSL that is System32's Linux
+    /// bash, where `C:/Windows/...` does not exist and the result would say nothing about the
+    /// product. `CLAUDE_CODE_GIT_BASH_PATH` first, as Claude Code itself reads it.
     #[cfg(windows)]
     fn git_bash() -> Option<std::path::PathBuf> {
         if let Some(p) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(std::path::PathBuf::from) {
@@ -592,8 +451,7 @@ mod tests {
             std::path::PathBuf::from(r"C:\Program Files\Git"),
             std::path::PathBuf::from(r"C:\Program Files (x86)\Git"),
         ];
-        // `git --exec-path` lands somewhere under the install root (…/Git/mingw64/
-        // libexec/git-core), so walk back up looking for the one with bin/bash.exe.
+        // `git --exec-path` sits under the install root (…/mingw64/libexec/git-core); walk up.
         if let Ok(out) = std::process::Command::new("git").arg("--exec-path").output() {
             let p = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
             roots.extend(p.ancestors().map(|a| a.to_path_buf()));
@@ -601,20 +459,9 @@ mod tests {
         roots.into_iter().map(|r| r.join("bin").join("bash.exe")).find(|p| p.is_file())
     }
 
-    /// The statusLine's command string, actually **executed**. Everything the cockpit
-    /// shows that isn't a phase — model, context %, cost, duration and the account-wide
-    /// rate limits — arrives on this one path and nowhere else, so a command the shell
-    /// won't parse takes all of them out at once while the hooks keep the pane looking
-    /// perfectly healthy. That is not hypothetical: Windows shipped exactly that. The
-    /// statusLine was written in PowerShell and marked `"shell": "powershell"`, but
-    /// `shell` is a hook field with no statusLine counterpart, so Claude handed the
-    /// string to Git Bash, which failed on the leading `&` and posted nothing.
-    ///
-    /// Reading the generated JSON cannot catch this — such a test agrees with our
-    /// intent, and our intent was the bug (the old one asserted that very `"shell"`
-    /// key, and stayed green throughout). Only the shell's own parser is authoritative,
-    /// so run the real string through every shell Claude might pick and require the
-    /// payload out the far end. No Claude and no tokens: the command is just curl.
+    /// The statusLine string, executed by every shell Claude might pick: only a shell's own
+    /// parser can say it parses, and one that rejects it silently drops every figure the
+    /// statusLine carries while the hooks keep the pane looking healthy. No Claude, no tokens.
     #[test]
     fn statusline_command_posts_from_every_shell_claude_might_pick() {
         use tauri::Listener;
@@ -629,17 +476,15 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let cmd = v["statusLine"]["command"].as_str().expect("statusLine command").to_string();
 
-        // Claude's own payload shape, trimmed to the fields `applyStatusline` reads.
-        // `session_id` differs from ours on purpose: a statusLine fires after /clear
-        // too, and the header is what routes it back to the pane.
+        // Trimmed to what `applyStatusline` reads. `session_id` differs from ours on purpose:
+        // a statusLine fires after /clear too, and the header is what routes it back.
         let payload = concat!(
             r#"{"session_id":"claude-rotated","model":{"display_name":"Opus"},"#,
             r#""context_window":{"used_percentage":37},"cost":{"total_cost_usd":1.25},"#,
             r#""rate_limits":{"five_hour":{"used_percentage":42}}}"#
         );
 
-        // On Windows Claude picks Git Bash when it's installed and PowerShell when it
-        // isn't, and never tells us which — so both have to work.
+        // Claude picks Git Bash when installed, else PowerShell, and never says which.
         #[cfg(windows)]
         let shells: Vec<(std::path::PathBuf, &[&str])> = {
             let mut v: Vec<(std::path::PathBuf, &[&str])> = Vec::new();
@@ -665,31 +510,25 @@ mod tests {
                 .spawn();
             let mut child = match spawned {
                 Ok(c) => c,
-                // Claude only picks a shell that exists, and so does this test. A box
-                // without Git Bash is one where Claude would use PowerShell anyway.
+                // A shell Claude could not pick either is skipped, not failed.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     eprintln!("skipping {bin}: not installed");
                     continue;
                 }
                 Err(e) => panic!("could not spawn {bin}: {e}"),
             };
-            // Dropping the handle at the end of the statement closes the pipe, which is
-            // the EOF `--data-binary @-` waits for.
             let mut sin = child.stdin.take().expect("child stdin");
             sin.write_all(payload.as_bytes()).expect("pipe the payload in");
-            drop(sin);
+            drop(sin); // EOF is what `--data-binary @-` waits for
             let out = child.wait_with_output().expect("wait for the statusLine command");
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            // The trailing `; echo` makes the exit status echo's, so it stays 0 even
-            // when curl never ran — stderr is the honest channel here. A shell that
-            // can't parse the command, or can't find curl, says so there and nowhere
-            // else, because `-s` means curl itself is silent either way.
+            // The trailing `; echo` makes the exit status echo's, so a shell that cannot parse
+            // the command or find curl says so on stderr and nowhere else (`-s` keeps curl quiet).
             assert!(
                 out.status.success() && err.is_empty(),
                 "{bin} could not run the statusLine command ({}):\n  {cmd}\n  {err}",
                 out.status
             );
-            // Whatever it prints is what Claude renders in the status bar.
             assert!(
                 String::from_utf8_lossy(&out.stdout).contains("cc-launcher"),
                 "{bin} ran it but printed no marker: {:?}",
@@ -703,8 +542,7 @@ mod tests {
             assert_eq!(ev["kind"], "statusline", "{bin}");
             assert_eq!(ev["data"]["session_id"], sid.as_str(), "{bin}: the header must route it to our launch id");
             assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "{bin}: the resume target must survive");
-            // A body mangled in transit — a PowerShell BOM, a lost pipe, a shell that
-            // ate a quote — lands here as a parse failure rather than these figures.
+            // A body mangled in transit (a BOM, a lost pipe, an eaten quote) fails here.
             assert_eq!(ev["data"]["model"]["display_name"], "Opus", "{bin}");
             assert_eq!(ev["data"]["context_window"]["used_percentage"], 37, "{bin}");
             assert_eq!(ev["data"]["cost"]["total_cost_usd"], 1.25, "{bin}");
@@ -717,19 +555,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The hook's **exec form**, actually executed — `command` spawned directly with
-    /// its `args`, exactly as Claude Code runs it, with no shell anywhere.
-    ///
-    /// The sibling statusLine test exists because a shell might not parse our string.
-    /// This one exists for the opposite hazard, and it is the one the exec form
-    /// introduces: with no shell, nothing strips quotes and nothing splits words. An
-    /// argument written the way it would be written *for* a shell — `'X-CC-Session:
-    /// …'`, or a whole `-H foo` in one element — reaches curl with the quotes still
-    /// on it or as a single unparsable argument. curl then fails, `-s` keeps it quiet,
-    /// `async` means Claude never waits, and the pane loses every phase it has while
-    /// looking perfectly healthy. Reading the JSON back cannot catch that: the strings
-    /// are exactly what we meant to write. Only curl's own argv parsing is
-    /// authoritative, so this runs it. No Claude and no tokens — it's just curl.
+    /// The hook's exec form, spawned exactly as Claude Code spawns it: no shell anywhere, so
+    /// nothing strips quotes or splits words, and shell-style quoting reaches curl verbatim and
+    /// fails silently (`-s`, `async`). Only curl's own argv parsing can say the args are right.
     #[test]
     fn hook_exec_form_posts_without_any_shell() {
         use tauri::Listener;
@@ -747,14 +575,12 @@ mod tests {
         let args: Vec<String> = leaf["args"].as_array().expect("hook args (exec form)")
             .iter().map(|a| a.as_str().expect("arg is a string").to_string()).collect();
 
-        // A PostToolUse body, trimmed to what `applyHook` and `noteGitCommand` read.
-        // `session_id` differs from ours deliberately: the header is what routes it.
+        // Trimmed to what `applyHook` reads. `session_id` is not ours: the -H arg has to route it.
         let payload = concat!(
             r#"{"session_id":"claude-rotated","hook_event_name":"PostToolUse","#,
             r#""cwd":"/tmp/x","tool_name":"Bash","tool_input":{"command":"git checkout -b feat"}}"#
         );
 
-        // Spawned with no shell in between — the argv Claude Code itself would build.
         let mut child = std::process::Command::new(&prog)
             .args(&args)
             .stdin(std::process::Stdio::piped())
@@ -772,8 +598,7 @@ mod tests {
             "the hook argv did not run cleanly ({}):\n  {prog} {args:?}\n  {err}",
             out.status
         );
-        // `-o <null device>` is per-platform and easy to get backwards; a wrong one
-        // leaves the response body on stdout instead of discarding it.
+        // A wrong `-o` null device leaves the response body on stdout.
         assert!(out.stdout.is_empty(), "the hook must print nothing: {:?}", String::from_utf8_lossy(&out.stdout));
 
         let raw = rx
@@ -783,18 +608,15 @@ mod tests {
         assert_eq!(ev["kind"], "hook");
         assert_eq!(ev["data"]["session_id"], sid.as_str(), "the -H arg must route it to our launch id");
         assert_eq!(ev["data"]["claude_session_id"], "claude-rotated", "the resume target must survive");
-        // A quote that survived into the value, or a body mangled in transit, lands
-        // here as a parse failure rather than as these fields.
+        // A quote that survived into the value, or a mangled body, fails here.
         assert_eq!(ev["data"]["hook_event_name"], "PostToolUse");
         assert_eq!(ev["data"]["tool_input"]["command"], "git checkout -b feat");
 
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The one *blocking* hook. Claude sits on the open request until the user
-    /// answers, so the server must hold it rather than respond, route it by the
-    /// `?sid=` in the URL (it's `type:"http"` — no shell to add a header), and hand
-    /// back the decision only when `resolve_permission` supplies one.
+    /// Claude sits on the open request until the user answers: the server must hold it, route
+    /// it by `?sid=`, and answer only when `resolve_permission` supplies the decision.
     #[test]
     fn permission_request_is_held_open_until_the_ui_answers() {
         use tauri::Listener;
@@ -829,34 +651,21 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 200"), "expected a 200 with the decision, got:\n{resp}");
         assert!(resp.contains(r#""behavior":"deny""#), "the decision must reach Claude:\n{resp}");
 
-        // The held request is consumed by answering: a second decision (a double
-        // click, a stale dialog) is a no-op rather than a panic on a gone request.
+        // A second decision (a double click, a stale dialog) is a no-op, not a panic.
         resolve_permission(app.state(), id, "allow".to_string());
     }
 
     // ---------- surviving a dead listener ----------
 
-    /// The premise of the whole recovery: after a listener dies we get **the same port**
-    /// back, which is what revives every already-launched pane rather than only the ones
-    /// started afterwards. Every instrument file on disk names that number and none of
-    /// them is ever rewritten, so if this stops holding the fix is worth nothing.
-    ///
-    /// Driven through `rebind_telemetry` rather than a bare `Server::http`, because the
-    /// wait is part of the answer: `tiny_http`'s `Drop` never joins its accept thread,
-    /// so for a moment after the `Server` is gone the old listener is still bound and an
-    /// immediate re-bind fails with `EADDRINUSE` — which is exactly what this test did
-    /// before it was pointed at the real path.
-    ///
-    /// Served-then-closed, not merely bound: the request leaves a socket whose *local*
-    /// end is the port being reclaimed, which is the TIME_WAIT case on top of the racing
-    /// listener.
+    /// Driven through `rebind_telemetry` because the wait is part of the answer (tiny_http's
+    /// `Drop` never joins its accept thread), and served-then-closed so the reclaimed port is
+    /// also sitting in TIME_WAIT.
     #[test]
     fn the_telemetry_port_can_be_reclaimed_after_its_listener_dies() {
         let first = tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server");
         let port = first.server_addr().to_ip().expect("ip address").port();
 
-        // Answer one request and drop the listener, exactly as the accept-error path
-        // leaves things.
+        // Answer one request and drop the listener, as the accept-error path leaves things.
         let served = std::thread::spawn(move || {
             let rq = first.recv().expect("one request");
             let _ = rq.respond(tiny_http::Response::from_string(""));
@@ -876,9 +685,6 @@ mod tests {
         assert_eq!(again.server_addr().to_ip().expect("ip address").port(), port);
     }
 
-    /// The ladder backs off and then stops growing. The ceiling is the load-bearing
-    /// half: the usual reason a re-bind fails is a TIME_WAIT window of tens of seconds,
-    /// so an uncapped doubling would still be asleep long after the port came free.
     #[test]
     fn rebind_delay_backs_off_to_a_ceiling() {
         let ladder: Vec<u64> = (0..9).map(|n| rebind_delay(n).as_secs()).collect();
@@ -892,38 +698,11 @@ mod tests {
     }
 
     // ---------- the CLI contract, against the real `claude` ----------
-    //
-    // The only test here that runs the external binary, and the only one that is
-    // #[ignore]d. Everything above proves *our* two ends agree with each other; this
-    // proves they still agree with **Claude Code**, which ships weekly and whose hook
-    // schema and transcript layout CLAUDE.md itself calls unstable.
-    //
-    // That gap is the reason it exists. If a release renames `hook_event_name`, or
-    // stops passing `cwd`, or moves `message.usage`, everything here still compiles,
-    // every other test stays green, and the app simply goes quiet — a pane with no
-    // phase, a cost meter stuck at zero. Nothing else in this repo can see that.
-    //
-    //   cargo test -- --ignored --nocapture
-    //
-    // Never a PR gate: it needs `claude` on PATH, an authenticated account, and it
-    // **spends tokens**. It belongs to the release checklist (see RELEASE.md).
-    //
-    // What it CANNOT cover, and why the coverage is not a lie by omission:
-    //
-    // - **The statusLine half.** `claude -p` is non-interactive and statusLine only
-    //   fires from a live REPL, so model / context % / cost / duration and every
-    //   rate-limit field are out of reach here. That is exactly the half that has
-    //   been observed missing on Windows, so this test passing says nothing about it.
-    // - **`~/.claude/sessions/<pid>.json`.** That registry holds one entry per running
-    //   *interactive* session; a `-p` run is not one. External-session discovery
-    //   stays a click-through check.
-    // - **PermissionRequest.** Answering it needs a UI; `-p` would either
-    //   auto-approve or hang. The blocking behaviour is covered against our own
-    //   server above, which is the part we own.
+    // The one #[ignore]d test: `cargo test -- --ignored` needs `claude` on PATH and spends
+    // tokens, so it is a RELEASE.md step, never a PR gate. It cannot cover the statusLine
+    // (`-p` has no REPL), the sessions registry (interactive only) or PermissionRequest (UI).
 
-    /// A v4-shaped uuid for the throwaway session. Episko's real ids come from the
-    /// frontend's `crypto.randomUUID`, so the backend has never needed to mint one
-    /// and this stays test-local rather than becoming a dependency.
+    /// Test-local v4 uuid: real ids come from the frontend's `crypto.randomUUID`, so no dependency.
     fn throwaway_uuid() -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -944,16 +723,11 @@ mod tests {
         use tauri::Listener;
 
         let claude = resolve_claude();
-        // A throwaway directory, and emphatically NOT a real session's: `--session-id`
-        // on an existing conversation appends to its transcript.
-        //
-        // Canonicalized, because on macOS `$TMPDIR` is under `/var/folders`, itself a
-        // symlink to `/private/var/folders`. Claude records the *resolved* cwd and
-        // derives the project dir from that, so encoding the symlinked spelling looks
-        // for a directory that will never exist. Resolving it here keeps assertion 4 a
-        // check of Claude's encoding rather than of macOS's symlinks — and matches what
-        // the app passes, since a workdir comes from a real folder the user picked.
-        let cwd = std::fs::canonicalize(scratch_dir()).expect("resolve the scratch dir");
+        // A throwaway dir, never a real session's (`--session-id` on an existing conversation
+        // appends to its transcript). `scratch_dir` already hands back the resolved spelling,
+        // which matters here: Claude records the resolved cwd and derives the project dir from
+        // it, and on macOS $TMPDIR is a symlink under /var/folders.
+        let cwd = scratch_dir();
         let sid = throwaway_uuid();
 
         let (app, port) = mock_telemetry_app();
@@ -964,16 +738,11 @@ mod tests {
 
         let settings = write_instrument_settings(port, &sid).expect("write the instrument file");
 
-        // stdout/stderr go to files rather than pipes: nothing reads a pipe while the
-        // child runs, so a chatty response could fill the buffer and deadlock.
+        // Files, not pipes: nothing drains a pipe while the child runs, so a long reply deadlocks.
         let out_path = cwd.join("claude-stdout.txt");
         let err_path = cwd.join("claude-stderr.txt");
-        // The prompt asks for a *tool call*, not just a reply, and that is deliberate:
-        // assertion 5 below checks `tool_input.command`, which only exists on a
-        // PostToolUse hook. The old prompt ("reply with pong") used no tools at all, so
-        // the whole tool-call half of the hook schema went unexercised — including the
-        // field the sidebar's git invalidation now reads. `--allowedTools Bash` is what
-        // lets it run without a UI to answer the permission prompt.
+        // The prompt demands a Bash call and a Write so the tool-call half of the hook schema
+        // is exercised; `--allowedTools` is what lets them run with no UI to answer a prompt.
         let mut child = std::process::Command::new(&claude)
             .arg("-p")
             .arg("Do exactly two things and reply with nothing else: run the shell \
@@ -986,9 +755,7 @@ mod tests {
             .arg("--settings")
             .arg(&settings)
             .current_dir(&cwd)
-            // A GUI-spawned app gets a stripped PATH, and so does a cargo test runner
-            // launched from one — the same reason the app rebuilds it before spawning.
-            .env("PATH", augmented_path())
+            .env("PATH", augmented_path()) // a test runner launched from a GUI has a stripped PATH too
             .stdin(std::process::Stdio::null())
             .stdout(std::fs::File::create(&out_path).expect("create stdout capture"))
             .stderr(std::fs::File::create(&err_path).expect("create stderr capture"))
@@ -996,8 +763,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("could not run `claude` at {claude:?}: {e}\n\
                  This test needs Claude Code installed and on PATH."));
 
-        // std has no timeout on wait(), and a hung `claude` would otherwise hang a
-        // release checklist indefinitely.
+        // `wait()` has no timeout, and a hung `claude` must not hang the release checklist.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         let status = loop {
             match child.try_wait().expect("poll the claude process") {
@@ -1016,8 +782,7 @@ mod tests {
             "`claude -p` exited {status}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
 
-        // Hooks are fire-and-forget (`async: true`), so the last few can still be in
-        // flight when the process exits. Drain until the channel goes quiet.
+        // Async hooks can still be in flight at exit; drain until the channel goes quiet.
         let mut events: Vec<serde_json::Value> = Vec::new();
         while let Ok(raw) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
             events.push(serde_json::from_str(&raw).expect("telemetry payload should be json"));
@@ -1057,13 +822,8 @@ mod tests {
         }
 
         // --- 3b. the tool-call fields, which only a hook from a *tool* carries ---
-        // `tool_name` drives the activity timeline and the risk label; `tool_input`
-        // carries the argument each surface shows. `tool_input.command` in particular
-        // is the app's only warning that an agent moved HEAD or added a worktree —
-        // `gitMutates` reads it off PostToolUse, and nothing else watches the
-        // filesystem, so if this field goes away the sidebar silently stops noticing
-        // a branch switch rather than failing. It is asserted here, against the real
-        // binary, because no local test can see Claude Code changing its own schema.
+        // `tool_input.command` is the app's only warning that an agent moved HEAD (`gitMutates`
+        // reads it off PostToolUse); nothing else watches the filesystem.
         let tool_hook = events
             .iter()
             .find(|e| e["kind"] == "hook" && e["data"]["hook_event_name"] == "PostToolUse")
@@ -1085,13 +845,8 @@ mod tests {
         );
 
         // --- 3c. `file_path`, absolute — the only signal that an agent changed checkout ---
-        // Claude Code pins a session's `cwd` to its launch directory and actively undoes
-        // any `cd` that leaves it ("Shell cwd was reset to …"), verified against 2.1.220.
-        // So when an agent creates a worktree and moves into it, `cwd` never changes and
-        // the sidebar would go on naming the checkout it left. What *does* name the new
-        // one is a write's `file_path` — which is why `driftTarget` reads it, and why it
-        // has to be absolute: a path relative to a cwd that never moved would resolve
-        // back into the old checkout and the drift would be invisible.
+        // Claude Code pins `cwd` to the launch dir and undoes any `cd` out of it, so a write's
+        // `file_path` is what names a new worktree (`driftTarget`), and only an absolute one can.
         let write_hook = events
             .iter()
             .find(|e| e["kind"] == "hook"
@@ -1122,8 +877,7 @@ mod tests {
         );
 
         // --- 4. the transcript layout the usage ledger reads ---
-        // Deliberately parsed raw rather than through parse_usage_line: the point is
-        // to check the EXTERNAL format, not our reader's agreement with itself.
+        // Parsed raw rather than through `parse_usage_line`: the point is the EXTERNAL format.
         let enc: String = cwd
             .to_string_lossy()
             .chars()
@@ -1146,11 +900,9 @@ mod tests {
                 Ok(v) => v,
                 Err(_) => continue, // a record we don't read; not our contract
             };
-            // Only the records the ledger actually buckets are our contract. Claude
-            // also writes bookkeeping rows with no timestamp at all (`last-prompt`,
-            // `ai-title` — which `list_past_sessions` reads for labels, never for a
-            // day), and `parse_usage_line` filters on `"usage"` before it looks for
-            // one, so asserting a timestamp on every line tests Claude's file, not ours.
+            // Only the records the ledger buckets are our contract: Claude also writes
+            // bookkeeping rows with no timestamp (`last-prompt`, `ai-title`), which
+            // `parse_usage_line` filters out on "usage" before it looks for one.
             let Some(usage) = v.get("message").and_then(|m| m.get("usage")) else { continue };
             saw_usage = true;
             assert!(
@@ -1181,7 +933,6 @@ mod tests {
 
         let _ = std::fs::remove_file(&settings);
         let _ = std::fs::remove_dir_all(&cwd);
-        // The transcript is deliberately left on disk: it is under a throwaway temp
-        // path in ~/.claude/projects, and deleting things there is not this test's job.
+        // The transcript stays: deleting inside ~/.claude/projects is not this test's job.
     }
 }

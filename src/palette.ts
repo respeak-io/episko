@@ -1,17 +1,10 @@
-// The ⌘K palette's ranking logic: what a typed query matches, how well it matches,
-// and how often you've reached for a thing before. Three independent decisions —
-// the prefix that scopes the search, the fuzzy match that scores and highlights a
-// row, and the frecency that breaks ties between rows you've used — and none of
-// them touches the DOM. Building the groups and painting them stays in main.ts;
-// this is only the part that decides what should come first.
-//
-// See test/palette.test.ts.
+// The ⌘K palette's ranking: the prefix that scopes a query, the fuzzy match that scores
+// a row, and the frecency that breaks ties. No DOM; ./palui builds and paints the groups.
 
 import type { Sess } from "./types";
+import { readObj } from "./store";
 import { esc } from "./format";
 
-// One row in the palette. `key` is the frecency identity: stable across restarts
-// and across a rescan, which is why it is the id rather than the label.
 export interface PalItem {
   kind: "session" | "launch" | "command" | "action" | "task" | "fallback";
   key: string;                 // stable key for frecency (commands/launches)
@@ -24,20 +17,17 @@ export interface PalItem {
 }
 
 // Frecency: recency × frequency with a ~30-day half-life, for stable command/launch keys.
-export const frecency: Record<string, { n: number; t: number }> = JSON.parse(localStorage.getItem("cc-frecency") || "{}");
+export const frecency: Record<string, { n: number; t: number }> = readObj<{ n: number; t: number }>("cc-frecency");
 export function frecScore(key: string): number { const f = frecency[key]; return f ? f.n * Math.pow(0.5, (Date.now() - f.t) / 2592000000) : 0; }
 export function bumpFrec(key: string) { if (!key || key.startsWith("session:")) return; const f = frecency[key] || { n: 0, t: 0 }; f.n++; f.t = Date.now(); frecency[key] = f; localStorage.setItem("cc-frecency", JSON.stringify(frecency)); }
-// Drop a key's history — the ✕ on a Run picker "recent" row. A deletion rather than
-// a hidden flag, because the score *is* the memory: forgetting is the whole of it,
-// and using the thing again earns the row back, which is the undo.
+// A deletion rather than a hidden flag: using the thing again earns the row back.
 export function forgetFrec(key: string) {
   if (!(key in frecency)) return;
   delete frecency[key];
   localStorage.setItem("cc-frecency", JSON.stringify(frecency));
 }
 
-// Subsequence fuzzy match with matched-char highlighting. null = no match; higher
-// score = better (rewards contiguous runs and matches at word starts).
+// Subsequence match; null = no match, higher = better (contiguous runs and word starts score up).
 export function fuzzy(text: string, q: string): { score: number; html: string } | null {
   if (!q) return { score: 0, html: esc(text) };
   const tl = text.toLowerCase(), ql = q.toLowerCase();
@@ -46,9 +36,7 @@ export function fuzzy(text: string, q: string): { score: number; html: string } 
     let found = -1;
     for (let k = ti; k < tl.length; k++) if (tl[k] === c) { found = k; break; }
     if (found === -1) return null;
-    // The backslash belongs here as much as the slash: a palette subtitle carries a
-    // native path (tilde(p.path)), so without it no path segment is a word start on
-    // Windows and an exactly-named folder loses to an incidental substring match.
+    // Backslash too: subtitles carry native paths, so on Windows no segment would be a word start.
     const boundary = found === 0 || /[\s/\\·._-]/.test(text[found - 1]);
     run = found === ti ? run + 1 : 1;
     score += 1 + run + (boundary ? 4 : 0) - found * 0.02;

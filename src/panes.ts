@@ -1,25 +1,11 @@
-// Panes: the four things Episko can put on stage, and the life of one once it is
-// there. `spawn_claude`, `spawn_shell`, `spawn_task` and `spawn_agent` are four backend
-// entry points but one frontend shape — a `Sess` in the map, a `.term-pane` in
-// #terminals, and a PTY behind it — which is why they sit together rather than beside
-// the surfaces that trigger them.
-//
-// What each spawner does *not* share is the point of having four: Claude uses launch
-// hooks (and may live in an external terminal), integrated providers use their own
-// control plane beside the PTY, terminal-only providers expose just the TUI, a shell
-// gets Terminal.app's ⌥/⌘ key conventions, and a task's exit code is its phase.
-//
-// Also here: the stage's own chrome (`renderHeader`, `syncStageButtons`), because both
-// read only what pane is active, and the two context resolvers every "…here" action
-// starts from — `activeProjectCtx` (the repo, for grouping) and `activeCwd` (the actual
-// directory, which differs for a worktree session).
-//
-// The xterm plumbing all three share is ./terminal. The one thing this module cannot
-// own is the app-wide repaint.
+// Panes: the four spawners (claude, shell, task, agent) and the life of a pane once it is
+// on stage, plus the stage's own chrome (renderHeader, syncStageButtons) and the two
+// "…here" context resolvers (activeProjectCtx, activeCwd). The xterm plumbing is ./terminal.
 
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
@@ -32,10 +18,12 @@ import {
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
+import { readList } from "./store";
+import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
-  refit, shellKeys, trimScrollback, winClaudePaste,
+  refit, shellKeys, trimScrollback, winClaudePaste, wireLinks,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -58,8 +46,7 @@ import {
 } from "./state";
 import { providerPermissionMode } from "./providers";
 
-// The one thing a pane's lifecycle cannot own: `renderAll()` repaints every surface
-// from scratch, and it is the file that orchestrates them that owns it.
+// The app-wide repaint belongs to main.ts, which wires this at startup.
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
@@ -69,8 +56,7 @@ function launchPermission(agent: AgentCli) {
   return { mode: def && def.id !== "default" ? def.id : null, def };
 }
 
-// The embedded terminal of a claude pane — shared by a fresh launch and by the
-// adoption of a reload orphan, so the two cannot drift on options or key wiring.
+// Shared by a fresh launch and reload adoption, so key wiring cannot drift between them.
 function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
     fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
@@ -78,31 +64,28 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  // No WebGL here: setActive attaches a pooled context the moment the pane is on
-  // stage — a context per pane for life is the 16-context cliff (see attachWebgl).
+  // No WebGL here: setActive attaches a pooled context once the pane is on stage (attachWebgl).
   term.open(pane);
+  wireLinks(id, term);
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
   winClaudePaste(id, term, pane);
   return { term, fit };
 }
 
-/// A pane's OSC title landed, for both agent spawners. `rawTitle` is stored even when
-/// the cleaned title is unchanged, so Settings can re-clean a pane that has since gone
-/// quiet.
+// A pane's OSC title landed, for both agent spawners. `rawTitle` is kept even when the
+// cleaned title is unchanged, so Settings can re-clean a pane that has since gone quiet.
 function applyOscTitle(s: Sess, t: string) {
   s.rawTitle = t;
   const c = cleanTitle(t, s, titlePrefs);
   if (c === s.title) return;
   s.title = c;
-  // The tray row reads the title too, and this path bypasses renderAll — without the
-  // nudge the menu shows the old summary until the next telemetry tick.
+  // The tray reads the title too, and this path bypasses renderAll.
   renderSidebar();
   updateTray();
   if (activeId === s.id) renderHeader(s);
 }
 
-// The corresponding terminal for providers whose TUI owns its own chords. Fresh
-// launches and reload adoption both go through this constructor so input cannot drift.
+// Agent TUIs own their chords, so clipboardKeys only, never shellKeys; shared by launch and adoption.
 function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: FitAddon } {
   const term = new Terminal({
     fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
@@ -110,36 +93,25 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
   });
   const fit = new FitAddon();
   term.loadAddon(fit); term.open(pane);
+  wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   term.attachCustomKeyEventHandler(clipboardKeys(term));
   return { term, fit };
 }
 
 // ---------- launch ----------
-// Returns the new session id, or null if the spawn failed. Most callers ignore it —
-// but the dashboard's dispatch paths need it to type the prompt in and to write the
-// claim, and "did this start?" is a question only this function can answer. It used to
-// return nothing at all while `DashHost.launch` was typed `Promise<unknown>`, so every
-// `typeof sid !== "string"` guard downstream was permanently true: the pane appeared,
-// the toast said it hadn't, and neither the prompt nor the claim was ever sent.
+// Returns the session id, or null when the spawn failed; the dashboard's dispatch depends on it.
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
-  // Which provider this is, before anything else is built. Claude has its hook-backed
-  // spawner and optional external terminal; every other provider goes through the
-  // adapter-aware agent spawner and its own capabilities.
-  //
-  // Two things can override the preference, and both are explicit launch facts:
-  //   · a **resume** carries its provider, so it cannot follow today's default.
-  //   · an explicit `opts.agent` lets a specialized workflow request one provider.
+  // The provider first: a resume carries its own, an explicit opts.agent overrides the
+  // project preference, and only Claude uses the hook-backed spawner below.
   const agent = opts.resume
     ? resumeAgent(opts.resumeProvider, availAgents)
     : agentDef(opts.agent ?? "") ?? effectiveAgent(colorKey);
-  // A restore row's provider is durable identity, not a preference. Starting Claude
-  // here would open a different provider's conversation id, then make the successful
-  // launch path consume the original row. Refuse before a pane, session or roster
-  // mutation; the dormant remains available to a build that knows its provider.
+  // A restore row's provider is identity, not a preference: refuse before any pane,
+  // session or roster mutation rather than open the conversation under Claude.
   if (!agent) {
     const provider = opts.resumeProvider || "unknown";
     dlog("warn", `resume refused for unsupported provider ${provider} · ${opts.resume}`);
@@ -168,7 +140,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const s: Sess = {
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
-    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, revive: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
@@ -178,15 +150,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   sessions.set(id, s);
   term?.onTitleChange((t) => applyOscTitle(s, t));
   setActive(id);
-  // A restored session takes over its roster entry: drop the dormant row so the
-  // sidebar doesn't show the same conversation twice, live and dormant.
-  if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
-  // The permission mode a launch starts in (Settings › Sessions). "default" is
-  // Claude's own ask-me behaviour, which is what passing NO flag means — so it goes
-  // over the wire as null rather than as a spelling of the standard mode. Read here
-  // rather than taken as an opt, exactly like termEngine: it is a preference, and a
-  // restore is as much a new launch as anything else.
+  // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
+  // Read here rather than passed as an opt: it is a preference, like termEngine.
   const permission = launchPermission(agent);
   const mode = permission.mode;
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
@@ -203,10 +169,11 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (term) term.writeln(`\r\n\x1b[31m[launch error] ${e}\x1b[0m`);
     else pane.innerHTML = `<div class="ext-pane"><h2>Couldn't launch ${esc(eng.label)}</h2><p>${esc(String(e))}</p></div>`;
   }
-  // Off by default — you were standing right here — but it is the one confirmation an
-  // EXTERNAL engine gives that the window really opened somewhere else. Only a spawn
-  // that worked: the failure above already toasts, and a chirp under it reads as success.
+  // Only a spawn that worked: the failure already toasts, and a chirp under it reads as success.
   if (spawned) playSound("launched");
+  // A restored session replaces its dormant row, or the sidebar lists the conversation
+  // twice — after the spawn, or a resume that failed has thrown its restorable row away.
+  if (spawned && opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
@@ -214,71 +181,42 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   return spawned ? id : null;
 }
 
-// Offer a worktree when launching into a repo that already has a session.
-// Deliberately synchronous: NOTHING may be awaited before the dialog is on screen.
-// This used to `await git_branch` first, and because Tauri runs non-async commands on
-// the main thread, that one call queued behind whatever git work was already in flight
-// (the 3s/4s/5s pollers, or worse a `fetch`) — so "+ Session" felt dead for as long as
-// that took. Everything needed to decide is already in memory:
-//   • a live session in this repo carries `branch` (set at launch, refreshed every 4s)
-//   • an external session carries the branch the registry reported
-//   • dirtyByFolder holds a non-null diffstat for anything that IS a git repo
-// so repo-ness and the branch label both come for free, with zero IPC.
-//
-// All three of those only cover a folder something is *running* in, which is exactly
-// what a project dashboard is not — so a caller that already knows better passes
-// `known`. It is still not an await: the dashboard bought that answer when it opened.
+// Offer a worktree when launching into a repo that already has a session. Synchronous on
+// purpose: nothing may be awaited before the dialog is up (a git_branch IPC queues behind
+// the pollers and "+ Session" feels dead). A caller that knows better (the dashboard) passes `known`.
 export function requestLaunch(project: string, path: string, known?: { branch: string } | null) {
   if (known) { openWt(project, path, known.branch); return; }
-  // "Is anything already running here?" must include EXTERNAL sessions: they live in
-  // their own array, not in `sessions`, so checking only the map sent a click straight
-  // to a bare launch in the repo root even when the dialog was the obvious answer.
+  // Externals live in their own array and count as "already running here" too.
   const sess = [...sessions.values()].find((s) => s.colorKey === path);
   const ext = externals.find((e) => (e.repo_root || e.cwd) === path);
   if (sess || ext) {
     const branch = sess?.branch || ext?.branch || "";
-    // Only offer the worktree dialog for an actual repo — otherwise there is nothing
-    // to branch and a plain launch is the honest answer, exactly as before.
+    // Only a repo gets the worktree dialog; otherwise a plain launch is the honest answer.
     if (branch || dirtyByFolder.get(path) != null) { openWt(project, path, branch); return; }
   }
   launch(project, path, { colorKey: path });
 }
 
-// The sidebar's per-worktree ＋ (subheader grouping). Unlike requestLaunch this never
-// opens the worktree dialog: the cluster header the button sits on *is* the answer
-// that dialog asks for, so offering it again would only re-ask what was just clicked.
-// `root` is the repo root — the colorKey every session in the project groups by, which
-// a worktree's own path is not (get that wrong and the new session splits off into a
-// project group of its own).
+// The sidebar's per-worktree ＋: never opens the worktree dialog, since the cluster header
+// is that dialog's answer. `root` is the repo root, the colorKey the project groups by.
 export function launchWorktree(project: string, root: string, dir: string, branch: string) {
   launch(project, dir, { colorKey: root, worktree: dir === root ? null : branch, branch });
 }
 
 // ---------- adoption: panes for the PTYs a webview reload orphaned (#47) ----------
-// A reload empties this module's world while every backend PTY runs on. Stage 1 of
-// the fix makes such an orphan read busy; this puts it back on screen: one Sess per
-// claude orphan, the backend's scrollback ring replayed into a fresh term, and the
-// existing pty-output listener picks the stream back up with no new plumbing.
-// Identity comes from the roster, which knew this pane before the reload; a
-// roster-less orphan adopts under its workdir's name — a running conversation is
-// worth more than a tidy label. Telemetry re-routes by itself: hooks tag the launch
-// uuid via X-CC-Session, and that uuid is exactly what the map is keyed by again.
-//
-// Called once at startup, BEFORE loadDormants — an adopted id is live again, so the
-// roster reconcile then skips it instead of also offering it as a dormant row.
+// One Sess per orphan, the backend's scrollback replayed into a fresh term; identity comes
+// from the roster (a roster-less orphan adopts under its workdir's name). Runs once at
+// startup, BEFORE loadDormants, so the roster reconcile skips the ids that are live again.
 export async function adoptOrphans(): Promise<number> {
   let back: LiveSess[] = [];
   try { back = await invoke<LiveSess[]>("live_sessions"); } catch { return 0; }
-  let roster: Restorable[] = [];
-  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
-  if (!Array.isArray(roster)) roster = [];
+  const roster = readList<Restorable>("cc-restore");
   const orphans = orphanAdoptions(back, roster);
   for (const o of orphans) await adoptSession(o);
   if (orphans.length) {
     dlog("warn", `adopted ${orphans.length} orphaned pane${orphans.length === 1 ? "" : "s"} after a webview reload`);
     toast(`Reattached ${orphans.length} running session${orphans.length === 1 ? "" : "s"} after a reload`);
-    // The reload took the stage's pane away; give it back to the freshest orphan —
-    // unless the user beat this to it, which their click already answered.
+    // Give the stage to the freshest orphan, unless the user has already picked something.
     if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror()) {
       const front = [...sessions.values()].sort((a, b) => b.lastActivity - a.lastActivity)[0];
       if (front) setActive(front.id);
@@ -293,9 +231,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const provider = o.provider || m?.provider || "claude";
   const providerDef = provider === "claude" ? CLAUDE_CLI : agentDef(provider);
   const capabilities = providerDef?.capabilities ?? providerCapabilities(provider);
-  // Only a roster-less orphan pays for this, and it is one spawn-free read of the
-  // repo's checkouts: enough for a pane in a worktree to adopt under its REPO rather
-  // than mint a project named after the branch folder (./grouping's `adoptIdentity`).
+  // Roster-less only: lets a worktree pane adopt under its repo, not its branch folder (adoptIdentity).
   const heads = m ? [] : await invoke<WtHead[]>("worktree_heads", { dir: o.workdir }).catch(() => [] as WtHead[]);
   const { project, colorKey, worktree, branch } = adoptIdentity(o.workdir, m, heads);
   probeIcon(colorKey);
@@ -309,7 +245,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     title: m?.title ?? providerDef?.label ?? provider,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
-    apiErr: null, revive: null, drift: null,
+    queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
@@ -317,11 +253,9 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     capabilities: [...capabilities], external: false, term, fit, pane,
     adopt: { pending: [] },
   };
-  // From this line the pty-output listener queues this session's chunks into
-  // `s.adopt` — the snapshot below decides which of them it already contains.
+  // From here the pty-output listener queues chunks into s.adopt until the snapshot lands.
   sessions.set(o.id, s);
-  // The backend observer survives a WebView reload, while every frontend snapshot does
-  // not. Ask it to replay provider state only after the Sess exists to receive events.
+  // The backend observer survived the reload; ask it to replay once the Sess can receive events.
   if (capabilities.includes("session-state") && provider !== "claude") {
     invoke("refresh_agent_state", { sessionId: o.id }).catch((e) => {
       dlog("warn", `provider state refresh failed for ${o.id.slice(0, 8)}: ${e}`);
@@ -333,12 +267,10 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     term.write(Uint8Array.from(atob(snap.data), (c) => c.charCodeAt(0)));
     for (const c of s.adopt!.pending) if (c.seq > snap.seq) term.write(c.bytes);
   } catch (e) {
-    // Snapshot refused — most likely the process exited in the window between the
-    // listing and this call, in which case the reaper has already dropped it from
-    // the backend map and no pty-exit can reach a pane that did not exist yet.
+    // Most likely the process exited since the listing; no pty-exit reaches a pane that did not exist yet.
     const gone = String(e).includes("no such session");
     if (gone) {
-      s.phase = "ended";
+      setPhase(s, "ended");   // never bare: `phaseSince` is what every "for how long" reads
       term.writeln("\x1b[90m[this session ended while the pane was being reattached]\x1b[0m");
     } else {
       // Degraded: no history, but the live stream still flows from here on.
@@ -354,12 +286,10 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   queueRosterSave();
 }
 
-// A plain login shell in an embedded xterm pane — no Claude, no telemetry.
-// Returns the new session id so a caller can write into the shell (see handToTerminal).
+// A plain login shell; returns the id so a caller can write into it (handToTerminal).
 export async function launchShell(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string> {
   const id = crypto.randomUUID();
-  // Group by the repo root (opts.colorKey), not the raw cwd, so a shell opened in a
-  // worktree nests under its repo instead of becoming a standalone top-level project.
+  // Key on the repo root so a shell opened in a worktree nests under its repo.
   const colorKey = opts.colorKey ?? workdir;
   const pane = document.createElement("div");
   pane.className = "term-pane";
@@ -371,6 +301,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
   term.attachCustomKeyEventHandler(shellKeys(id, term));
@@ -378,7 +309,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     // resumeId is inert for a shell — it has no transcript and saveRoster skips it.
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
-    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, revive: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
@@ -399,24 +330,18 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   return id;
 }
 
-// Any non-Claude coding agent in an embedded xterm pane. The AgentCli capability set
-// makes this one launch path serve both integrated providers (Codex today) and the
-// terminal-only fallback (OpenCode, Gemini and the rest until adapters land).
+// Any non-Claude agent; the AgentCli capability set serves integrated and terminal-only providers alike.
 export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
-  // Same grouping rule as a shell: key on the repo root so an agent started in a
-  // worktree nests under its project instead of becoming a top-level entry.
   const colorKey = opts.colorKey ?? workdir;
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
-  // `newAgentTerm` installs clipboard keys alone, not `shellKeys`: these are
-  // full-screen TUIs that own the rest of their keyboard.
   const { term, fit } = newAgentTerm(id, pane);
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
-    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, revive: null, drift: null,
+    phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
@@ -441,30 +366,23 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   return spawned ? id : null;
 }
 
-// Start one run of a Runnable in its own pane. Mirrors launchShell — same PTY,
-// same xterm setup — because a task genuinely is just another pane.
+// One run of a Runnable in its own pane; same PTY and xterm setup as launchShell.
 export async function launchTask(r: Runnable, project: string, opts: TaskLaunchOpts = {}): Promise<string | null> {
   if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return null; }
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? r.cwd;
-  // Which directory the run inherits (Settings › Tasks). "session" keeps the
-  // folder it was discovered in — the active session's, so with several worktrees
-  // open "run tests" means *this* worktree. "root" redirects to the repo root.
-  // Either way a task that declared its own cwd (tasks.toml `cwd`, VS Code
-  // `options.cwd`) keeps it: an explicit directory is never second-guessed.
+  // Settings › Tasks: "root" redirects to the repo root, "session" keeps the discovering
+  // folder. A task that declared its own cwd (tasks.toml, VS Code options.cwd) keeps it.
   const declaredOwnCwd = !!opts.discoveredIn && r.cwd !== opts.discoveredIn;
   const cwd = taskPrefs.cwd === "root" && !declaredOwnCwd ? colorKey : r.cwd;
   const pane = document.createElement("div");
   pane.className = "term-pane";
   $("terminals").appendChild(pane);
-  // A caption naming this step, CSS-hidden until the stage tiles a run group — a
-  // tiled chain is unreadable without one, and a single pane already has the header.
-  // Created here rather than at tile time because `term.open(pane)` appends, so the
-  // caption has to exist before it to end up above it.
+  // The caption a tiled run group shows (CSS-hidden otherwise). Created before
+  // term.open(pane), which appends, so it ends up above the terminal.
   const cap = document.createElement("div");
   cap.className = "pane-cap";
-  // The ✕ carries `data-close`, which the delegated dispatcher in main.ts already
-  // routes to closeSession — a tiled pane needs no dispatch of its own.
+  // data-close is routed to closeSession by main.ts's dispatcher.
   cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
     + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
   pane.appendChild(cap);
@@ -475,9 +393,9 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  wireLinks(id, term);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
-  // …and a run's output is the thing you most want out of a pane, so it copies too.
   term.attachCustomKeyEventHandler(clipboardKeys(term));
 
   const cmd = execCmd(r);
@@ -485,7 +403,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null, revive: null, drift: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [],
@@ -494,22 +412,15 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
   };
   sessions.set(id, s);
-  // An unfocused pane can't be measured, so it starts at xterm's default 24×80 and
-  // gets a real size the moment you activate it (setActive/openRunGroup refit and
-  // resize the PTY). Only run-on-stop takes that path.
-  //
-  // A pane that belongs to a chain puts its **group** on the stage, not itself. One
-  // chord starts a whole stack, so the stack is what you meant to look at; activating
-  // each member as it spawned left the stage on whichever step happened to start last,
-  // and (since a plain activation leaves the tiled view) untiled the group on the way.
+  // A chain member puts its GROUP on stage, not itself: activating each member as it
+  // spawned left the stage on the last step to start and untiled the group on the way.
+  // An unfocused pane starts at xterm's 24×80 and gets a real size when activated.
   if (opts.focus !== false) {
     const gid = opts.groupId;
     if (!gid) {
       setActive(id);
     } else {
-      // Re-tile as later steps appear, but only while the stage is still on this
-      // group. A sequential chain can start step 3 minutes in, and it must not yank
-      // you back from wherever you navigated in the meantime.
+      // Re-tile for later steps only while the stage is still on this group; never yank you back.
       const first = ![...sessions.values()].some((x) => x.id !== id && x.run?.groupId === gid);
       if (first || stageGroup === gid) openRunGroup(gid);
     }
@@ -540,28 +451,22 @@ export function closeSession(id: string) {
   const waiter = exitWaiters.get(id);
   if (waiter) { exitWaiters.delete(id); waiter(-1); }
   const wasActive = activeId === id;
-  // Resolve the successor while the closing session is still in the map, so its
-  // sidebar position (same-project neighbour) is known.
+  // Resolve the successor while the closing session is still in the map.
   const next = wasActive ? nextAfterClose(s) : null;
-  // Closing one tile of a mosaic stays in the mosaic. `nextAfterClose` answers the
-  // sidebar's question over the whole project, so on its own it handed the stage to
-  // whichever Claude session sat next to the group — and untiled it on the way.
+  // Closing one tile stays in the mosaic; `nextAfterClose` alone would hand the stage to a sidebar neighbour.
   const gid = s.run?.groupId;
   const groupNext = wasActive && gid && stageGroup === gid
     ? nextInGroup(groupMembers(gid), id)
     : null;
   invoke("kill_session", { sessionId: id }).catch(() => {});
-  // Release the GL context explicitly — term.dispose() disposes the addon, but only
-  // detachWebgl gives the context slot back to the page's budget (see terminal.ts).
+  // term.dispose() alone does not return the pooled GL slot (terminal.ts).
   detachWebgl(s);
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
   sessions.delete(id);
   flushRoster(); // an explicit close means done — it should not come back on restart
-  // A tiled group that just lost its last-but-one member is no longer a group, and a
-  // tiled stage with nothing left in it would keep #terminals in grid mode showing
-  // empty cells. Drop the pointer *before* the successor is activated, so setActive
-  // paints a normal single-pane stage.
+  // Drop an emptied group's pointer BEFORE the successor is activated, so setActive
+  // paints a single-pane stage rather than a grid of empty cells.
   if (stageGroup && ![...sessions.values()].some((x) => x.run?.groupId === stageGroup)) {
     setStageGroup(null);
     $("terminals").classList.remove("tiled");
@@ -576,35 +481,15 @@ export function closeSession(id: string) {
     document.documentElement.style.setProperty("--accent", "#a78bfa");
     takeStage("none");
   }
-  // Closing a tile that wasn't the focused one still reflows the grid — every
-  // surviving cell changed size. #terminals itself did not, so the ResizeObserver
-  // never fires and nothing would re-measure the terminals inside.
+  // The grid reflowed but #terminals did not resize, so the ResizeObserver never fires.
   if (stageGroup) refit();
   renderAll();
 }
 
-/// Shelve a session: stop the process, keep the row.
-///
-/// The middle answer between the two the app used to offer. A session you leave open
-/// costs a provider process, a PTY and a WebGL context for as long as it sits there;
-/// closing it gives all three back but takes the row with them, and a conversation you
-/// mean to carry on is far easier to find in the sidebar under its project than in
-/// ◷ History among every session on the machine.
-///
-/// It is deliberately not a new kind of object. A shelved session becomes exactly the
-/// restorable row a quit already produces (`rosterEntry` → `dormants`), so it inherits
-/// the read-only transcript mirror, the ⟲ Resume button, the busy guard, the roster's
-/// persistence and its provider reconcile at boot for free.
-///
-/// **The dormant row goes on the list before the pane comes down**, and the order is
-/// load-bearing: `closeSession` ends with `flushRoster`, which keeps only the dormants
-/// that are not also live — so an entry added first survives the very flush its own
-/// close triggers, while one added after would race a save that had already dropped it.
-///
-/// `backendLive` is pruned by hand for the same reason. It is refreshed by a 3s poll,
-/// so for up to three seconds after the kill it still names a PTY the backend released
-/// synchronously — long enough for `dormantBusy` to paint the fresh row "busy" and
-/// refuse the resume you just made possible.
+// Shelve: stop the process, keep the row. A shelved session becomes the same restorable
+// row a quit writes (rosterEntry → dormants), never a second kind. The dormant entry goes
+// on the list BEFORE closeSession, whose flushRoster keeps only dormants that are not live;
+// backendLive is pruned by hand because its 3s poll would paint the fresh row busy.
 export function shelveSession(id: string): boolean {
   const s = sessions.get(id);
   if (!s) return false;
@@ -622,15 +507,9 @@ export function shelveSession(id: string): boolean {
   return true;
 }
 
-/// Close every pane of one run group — the ✕ on its sidebar header.
-///
-/// **Asks first if anything is still running.** One ✕ standing for a dev server, a
-/// database container and four finished installs is a lot of destruction behind a
-/// 12-pixel target, and killing a stack you meant to keep is not undoable — whereas
-/// closing a chain that has already finished is just tidying, so that stays instant.
-///
-/// Snapshot the ids first: `closeSession` mutates the map and can re-enter `setActive`,
-/// so iterating the live values would skip members.
+// The ✕ on a run group's sidebar header. Asks first if anything still runs (killing a
+// stack is not undoable); a finished chain closes at once. Snapshot the ids first:
+// closeSession mutates the map and can re-enter setActive.
 export async function closeRunGroup(gid: string) {
   const members = groupMembers(gid);
   if (!members.length) return;
@@ -647,8 +526,7 @@ export async function closeRunGroup(gid: string) {
   for (const id of members.map((x) => x.id)) closeSession(id);
 }
 
-/// Collapse/expand a run group's step list in the sidebar. Purely presentational, so
-/// it repaints the sidebar and nothing else.
+// Presentational only, so it repaints the sidebar and nothing else.
 export function toggleRunGroup(gid: string) {
   if (collapsedRuns.has(gid)) collapsedRuns.delete(gid);
   else collapsedRuns.add(gid);
@@ -656,34 +534,27 @@ export function toggleRunGroup(gid: string) {
 }
 
 
-/// One run group's live panes, **in launch order** — which is the order they were
-/// appended to `#terminals`, and therefore the order the mosaic lays them out in. The
-/// map's own insertion order already matches, but sorting says so out loud: "the next
-/// tile" has to mean the next tile on screen.
+// Launch order is mosaic order, so "the next tile" means the next one on screen.
 function groupMembers(gid: string): Sess[] {
   return [...sessions.values()]
     .filter((x) => x.run?.groupId === gid)
     .sort((a, b) => (a.run?.startedAt ?? 0) - (b.run?.startedAt ?? 0));
 }
 
-/// Repaint the captions of a tiled group. Called from `renderAll` because panes sit
-/// outside the render-everything sweep, and a caption shows live state.
+// Called from renderAll: panes sit outside the render-everything sweep, and a caption shows live state.
 export function refreshPaneCaps() {
   if (!stageGroup) return;
   for (const s of sessions.values()) if (s.run?.groupId === stageGroup) paintPaneCap(s);
 }
 
-/// Fill in a pane's caption. Only visible in the tiled view (see the CSS), so this
-/// is cheap to keep current rather than tracking whether anyone can see it.
+// Only visible in the tiled view, so cheap enough to keep current unconditionally.
 function paintPaneCap(s: Sess) {
   const cap = s.pane.querySelector<HTMLElement>(".pane-cap");
   if (!cap) return;
   const name = cap.querySelector<HTMLElement>(".pc-name");
   const state = cap.querySelector<HTMLElement>(".pc-state");
   if (name) name.textContent = s.run?.label ?? s.title ?? "pane";
-  // A finished run keeps its ✕ on screen: it is done, so dismissing it is the next
-  // thing you want, and hunting for a hover target in a grid of six is not. A running
-  // one still has one, just on hover — closing it means killing it.
+  // A finished run's ✕ stays on screen (dismissing it is what comes next); a running one's is hover-only.
   cap.classList.toggle("done", s.run?.exitCode != null);
   if (state) {
     state.textContent = s.kind === "task" ? taskStateText(s) : "";
@@ -691,33 +562,20 @@ function paintPaneCap(s: Sess) {
   }
 }
 
-/// Put a run group's panes on the stage side by side, focused on its most
-/// interesting member.
-///
-/// "Most interesting" is the failure if there is one — a chain is opened to find out
-/// what broke — else the last one to start, which is the step still running or the
-/// one that finished the chain.
-///
-/// Called both from clicking the group's header and, as a chain fans out, from
-/// `launchTask` for each member — so it must be idempotent and safe to call with the
-/// group half-populated. It is: it re-derives the member list every time.
+// Tile a run group, focused on the failure if there is one, else the last step to start.
+// Called from the header click and from launchTask per member, so it re-derives the
+// member list every time and is safe with the group half-populated.
 export function openRunGroup(gid: string) {
   const members = groupMembers(gid);
   if (!members.length) return;
   const focus = members.find((m) => m.phase === "error")
     ?? members.reduce((a, b) => (b.run!.startedAt > a.run!.startedAt ? b : a));
   setStageGroup(gid);
-  // `keepGroup` is not optional here: `setActive` clears `stageGroup` by default (a
-  // sidebar row means "show me that one"), so without it this would set the group and
-  // then immediately drop it, and the stage would never tile at all.
+  // keepGroup is required: setActive clears stageGroup by default, and the stage would never tile.
   setActive(focus.id, true);
 }
 
-/// Move the focus *within* a tiled group — what clicking one of the tiles means.
-///
-/// The counterpart to `setActive` untiling: clicking a tile is "I'm reading this one",
-/// not "drop the mosaic". Keeps `stageGroup`, so the layout survives; moves `activeId`,
-/// so the header, inspector and footer follow what you're looking at.
+// Clicking a tile: keeps the mosaic (stageGroup) and moves activeId, where setActive would untile.
 export function focusInGroup(id: string) {
   const s = sessions.get(id);
   if (!s || !stageGroup || s.run?.groupId !== stageGroup || id === activeId) return;
@@ -728,25 +586,17 @@ export function focusInGroup(id: string) {
   renderAll();
 }
 
-/// Put one pane on the stage. `keepGroup` is for `openRunGroup` alone — see below.
+// Put one pane on the stage. keepGroup is for openRunGroup alone.
 export function setActive(id: string, keepGroup = false) {
   const s = sessions.get(id);
   if (!s) return;
-  // The pointer and the transcript timer, then the panes: `closeExternalView` owns the
-  // first pair, `takeStage` the second. It is called after, not instead — that one drops
-  // the stage to the empty card, which this immediately replaces with the pane.
+  // closeExternalView drops the stage to the empty card; takeStage below replaces it with the pane.
   closeExternalView();
   setActiveId(id);
-  // You have now looked at this one. The only write of `seenAt`, and the whole of what
-  // takes a finished session back out of the reactor badge and stops its row flashing
-  // (./attn). Stamped for every pane, agent or not, so the field never has to be read
-  // together with a kind test.
+  // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
+  // Stamped for every kind of pane so the field never needs a kind test.
   s.seenAt = Date.now();
-  // Picking a row in the sidebar always means "show me that one", group member or not.
-  // It used to keep the tiled view when the row was inside the tiled group and only
-  // move the focus ring — which read as the click doing nothing at all. The split is
-  // now the obvious one: the group *header* shows all of them, a *row* shows one, and
-  // the header takes you back. Clicking a tile is `focusInGroup`, not this.
+  // A sidebar row always shows one pane; the group header tiles them, and a tile click is focusInGroup.
   if (stageGroup && !keepGroup) setStageGroup(null);
   const gid = stageGroup;
   takeStage("session");
@@ -755,13 +605,9 @@ export function setActive(id: string, keepGroup = false) {
     const on = gid ? x.run?.groupId === gid : x.id === id;
     x.pane.classList.toggle("active", on);
     x.pane.classList.toggle("focused", !!gid && x.id === id);
-    // WebGL: attach after the class flip (the addon activates against a measurable
-    // pane). A live pane leaving the stage KEEPS its addon — the LRU pool in
-    // terminal.ts bounds the total, and evicting on every deactivation churns a
-    // context per switch, which WebKit punishes once its GC falls behind. An exited
-    // pane won't be revisited soon, so it frees its slot at once — and an ended
-    // claude pane gives up its scrollback too, the deferred half of the pty-exit trim
-    // for the pane you watched end.
+    // Attach after the class flip (the addon needs a measurable pane). A live pane leaving
+    // the stage keeps its context (the LRU pool bounds them; docs/architecture.md); an
+    // exited one frees it now, and an ended claude pane gives up its scrollback too.
     if (on) { paintPaneCap(x); attachWebgl(x); }
     else if (isExited(x)) {
       detachWebgl(x);
@@ -770,54 +616,33 @@ export function setActive(id: string, keepGroup = false) {
   }
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
   if (gid) {
-    // Every visible pane needs a real size, not just the focused one — an unfitted
-    // pane sits at xterm's default 24×80 inside its grid cell.
+    // Every tile needs a real size, not just the focused one.
     for (const x of sessions.values()) if (x.pane.classList.contains("active")) fitSession(x);
     s.term?.focus();
   } else if (s.term && s.fit) {
     fitSession(s);
     s.term.focus();
   }
-  // ⌘1–9, `nextAfterClose` and the tray can all land on a session filed inside a
-  // collapsed project group — and a rail with nothing selected while a pane is plainly
-  // on screen reads as the selection having been lost. Unfold it before painting.
+  // ⌘1–9, nextAfterClose and the tray can land inside a collapsed project group; unfold it.
   revealProjGroup(s.colorKey);
-  // `renderAttn` and `updateTray` join the targeted list because the stamp above moved
-  // the needs-you set: opening a session takes it out of the badge and the tray title
-  // (./attn), and a count that only caught up on the next telemetry event would leave
-  // the badge advertising a session you are looking at.
+  // renderAttn and updateTray too: the seenAt stamp above moved the needs-you set (./attn).
   renderHeader(s); renderInspector(s); renderSidebar(); renderMini(); renderFoot();
   renderAttn(); updateTray();
-  // Show the branch that's really checked out right now, immediately on activate.
   void refreshBranch(s).then((changed) => { if (changed) { renderSidebar(); if (activeId === id) renderHeader(s); } });
-  void refreshSessionStats(s); // working-set diff + CPU/RAM for the inspector
+  void refreshSessionStats(s); // working-set diff + disk I/O
 }
 
-// Poll the inspector's on-demand stats: Episko's disk I/O across *every* owned claude
-// session (all_sessions_resources), plus a pick-up of the visible session's working-set
-// diff from `dirtyByFolder` — the map the stale-driven dirty poll keeps fresh for every
-// agent folder at once. The scopes differ on purpose: a working set belongs to one
-// checkout, while the I/O bars answer "how hard is Episko working the disk", which is
-// not a per-pane question. See `ioAll` in state.ts.
-/// Take ONE reading of the app-wide disk-I/O counters and bank it.
-///
-/// Split out of `refreshSessionStats` so the rollup can be kept sampled without paying
-/// for the `git_diffstat` that used to travel beside it — that one spawns a `git`
-/// process per call, which is precisely the kind of churn a disk meter must not add to
-/// the thing it is measuring. This half spawns nothing: the backend answers it from one
-/// `sysinfo` refresh over the pids we already own, which is a syscall per pid and no
-/// disk traffic at all. Persisting stays floored inside `addIo`, so a caller polling
-/// this more often does not write more often.
+// One reading of the app-wide disk-I/O counters, banked. Kept apart from
+// refreshSessionStats so it spawns nothing: a disk meter must not add git churn to what
+// it measures. Persisting is floored inside addIo. App-wide by design (ioAll in state.ts).
 export async function pollIo(): Promise<void> {
   const res = await invoke<
     { read_bps: number; write_bps: number; read_mb: number; written_mb: number; primed: boolean;
       install: InstallFile[] } | null
   >("all_sessions_resources").catch(() => null);
   if (!res) return;
-  // Bank the increment off the SAME sample the bars are drawn from, so the rollup and
-  // the live figure can never describe different readings — and banked FIRST, because it
-  // is what decides how much of this reading was a claude self-update rather than session
-  // churn (`addIo`), which every figure below then has to be net of.
+  // Banked first, off the same sample the bars use: addIo decides how much of this
+  // reading was a claude self-update, which every figure below is net of.
   const bank = addIo({ r: res.read_mb, w: res.written_mb }, res.install);
   // Mutated in place, not reassigned: `ioAll` is a live binding every reader imports.
   ioAll.readBps = res.read_bps; ioAll.writeBps = Math.max(0, res.write_bps - ioCreditBps(bank));
@@ -827,32 +652,19 @@ export async function pollIo(): Promise<void> {
 
 export async function refreshSessionStats(s: Sess) {
   if (!hasSessionState(s) || s.external) return;
-  // Only re-render when the *displayed* values change — comparing the rendered strings
-  // avoids a needless inspector rebuild (which would restart the heartbeat animation)
-  // every 4s while a session sits idle.
-  //
-  // The I/O half of this signature went with the card: those figures are a footer
-  // segment now, and `renderFoot` only writes `textContent`, which destroys no node and
-  // restarts no animation — so it is called unconditionally below rather than guarded.
-  // The rates jitter every poll, which is exactly why the *inspector* could not be.
+  // Repaint the inspector only when the displayed values change (a rebuild restarts the
+  // heartbeat animation); renderFoot writes textContent only, so it runs unconditionally.
   const sig = (g: DiffStat | null) =>
     (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
   const before = sig(s.git);
   await pollIo();
   renderFoot();
-  // The working set is read from the dirty poll's map, not fetched here — this tick
-  // used to spawn a `git status` every 4s for whatever was on stage, the only
-  // recurring subprocess in the app, to re-learn what `refreshDirtyStates` already
-  // keeps fresh for every agent folder (hook-driven, 15s sweep for editor changes).
-  // The cost is one dirty-poll tick of extra latency before the numbers move.
+  // Read from the dirty poll's map rather than spawning a git status every 4s.
   s.git = dirtyByFolder.get(s.workdir) ?? null;
   if (sig(s.git) !== before && activeId === s.id && !extMirrorId()) renderInspector(s);
 }
 
-// Re-derive a session's branch label from its live git HEAD, so it reflects the
-// branch actually checked out rather than the one the worktree/session was born
-// with (a worktree shows whatever branch is checked out, and that can change).
-// Returns true if the label changed. Detached HEAD shows "(detached @<sha>)".
+// Re-read the label from live HEAD (a checkout's branch can change). True if it changed.
 async function refreshBranch(s: Sess): Promise<boolean> {
   if (!s.workdir) return false;
   const info = await invoke<{ branch: string | null; short: string } | null>("git_head", { workdir: s.workdir }).catch(() => null);
@@ -863,23 +675,14 @@ async function refreshBranch(s: Sess): Promise<boolean> {
   return true;
 }
 async function refreshBranches(): Promise<boolean> {
-  // Exited panes leave the poll: nothing behind them can move HEAD any more, and a
-  // day's dead panes would otherwise out-poll the live fleet (one git_head IPC each,
-  // every 4s, forever). Activating one still re-reads once — setActive calls
-  // refreshBranch directly — which covers a branch switched under it externally.
+  // Exited panes leave the poll, or a day's dead panes out-poll the live fleet; setActive still re-reads one.
   const changed = await Promise.all([...sessions.values()].filter((s) => !isExited(s)).map(refreshBranch));
   return changed.some(Boolean);
 }
 
-// Re-read the set of checkouts for every repo that currently has something running in
-// it. Returns true if any repo's roster moved. Repos with nothing live are pruned: the
-// sidebar is a view of what is in play, and listing the worktrees of a project you
-// aren't working in would be noise rather than information.
-/// How often a project with *nothing running* has its checkouts re-read. Same
-/// stale-driven shape as `refreshDirtyStates`: the live set rides the 4s tick because a
-/// worktree an agent just created must appear at once, while a repo nobody is working in
-/// changes on human timescales. Reading every favourite every 4s would be ~20 IPC calls
-/// a tick to learn nothing.
+// Re-read the checkouts of every repo with something running on each tick; a favourite
+// with nothing running only every IDLE_WT_SWEEP_MS, since it changes on human timescales
+// and reading every favourite every 4s is ~20 IPC calls to learn nothing.
 const IDLE_WT_SWEEP_MS = 20_000;
 let idleWtSweptAt = 0;
 
@@ -887,24 +690,17 @@ async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
-  // **A favourite with nothing running needs a roster too.** This set used to be
-  // sessions and externals alone, which quietly made the sidebar's peek rows a feature
-  // of *busy* projects only: `clusterByWorktree(p, true)` folds in
-  // `worktreesByRepo.get(p.path)`, so a project you had not started anything in offered
-  // no checkouts to hover for — and closing the last session in one took its rows away
-  // again, since the entry was then deleted below. The rule was invisible and read as
-  // "the bar sometimes doesn't come".
+  // A favourite with nothing running needs a roster too, or the sidebar's peek rows
+  // (clusterByWorktree reads worktreesByRepo) become a feature of busy projects only.
   const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
   const roots = new Set(live);
   for (const f of FAVORITES) {
     if (live.has(f.path)) continue;
-    // Never read: seed it now, so the rows are there the first time you hover rather
-    // than up to a sweep later. Otherwise wait for the slow tick.
+    // Never read yet: seed it now rather than up to a sweep later.
     if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
   }
   if (sweep) idleWtSweptAt = Date.now();
-  // Keep what is live OR a favourite — dropping an idle favourite's roster on the tick
-  // that stops reading it would undo the whole point.
+  // Keep favourites' rosters too, or the tick that stops reading one would drop it.
   const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
   for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
   let changed = false;
@@ -913,8 +709,7 @@ async function refreshWorktrees(): Promise<boolean> {
     if (!list) return;                                  // not a repo, or it vanished
     const prev = worktreesByRepo.get(root);
     if (prev && wtSig(prev) === wtSig(list)) return;    // the common case: nothing moved
-    // Announce only against a roster we already had. The first read of a repo is
-    // entirely "new", and toasting every checkout at launch would be pure noise.
+    // Announce only against a roster we already had; the first read is all "new".
     if (prev) announceWtDelta(root, prev, list);
     worktreesByRepo.set(root, list);
     changed = true;
@@ -922,16 +717,13 @@ async function refreshWorktrees(): Promise<boolean> {
   return changed;
 }
 
-// Tell the user when a checkout appears or disappears underneath them — the event a
-// terminal would have shown in its scrollback and the sidebar used to swallow.
+// A checkout appearing or vanishing underneath you is news a terminal would have shown.
 function announceWtDelta(root: string, prev: WtHead[], next: WtHead[]) {
   const was = new Set(prev.filter((w) => w.exists).map((w) => w.path));
   const now = new Set(next.filter((w) => w.exists).map((w) => w.path));
   const added = next.filter((w) => w.exists && !was.has(w.path));
   const gone = prev.filter((w) => w.exists && !now.has(w.path));
-  // One toast, not one per checkout: `git worktree add` in a loop would otherwise fire
-  // a burst where only the last is readable (toast shows a single message at a time),
-  // and an add paired with a removal would hide the add entirely.
+  // One toast: it shows a single message at a time, so a burst would hide all but the last.
   const parts: string[] = [];
   if (added.length === 1) parts.push(`⑃ ${added[0].branch} added`);
   else if (added.length > 1) parts.push(`⑃ ${added.length} worktrees added`);
@@ -940,9 +732,7 @@ function announceWtDelta(root: string, prev: WtHead[], next: WtHead[]) {
   if (parts.length) toast(`${parts.join(" · ")} · ${basename(root)}`);
 }
 
-// The single place every git-derived label is re-read and repainted. Both the poll and
-// the hook-driven poke land here, so the sidebar, the header's branch chip and the ⑃
-// dialog can never disagree about what is checked out where.
+// The single place git-derived labels are re-read, so the sidebar, header chip and ⑃ dialog agree.
 export async function refreshGitViews() {
   const [branchMoved, wtMoved] = await Promise.all([refreshBranches(), refreshWorktrees()]);
   if (!branchMoved && !wtMoved) return;
@@ -950,10 +740,8 @@ export async function refreshGitViews() {
   if (wtMoved) void refreshWtDialog();   // …and the ⑃ dialog, if it happens to be open
 }
 
-// A Bash call an agent just made is the earliest warning that HEAD moved or a checkout
-// appeared. `gitMutates` decides only whether it is worth looking; the re-read decides
-// what actually changed. Coalesced, because `git worktree add` immediately followed by
-// a checkout inside it is two hooks describing one change.
+// An agent's Bash call is the earliest warning that HEAD moved. Coalesced: `git worktree
+// add` followed by a checkout inside it is two hooks describing one change.
 const GIT_POKE_MS = 250;
 let gitPokeT: number | undefined;
 export function noteGitCommand(cmd: unknown) {
@@ -962,31 +750,21 @@ export function noteGitCommand(cmd: unknown) {
   gitPokeT = window.setTimeout(() => { void refreshGitViews(); }, GIT_POKE_MS);
 }
 
-// The other half of the same hook: a write tells us *where* the agent is working, which
-// is the one thing a branch re-read can never discover — `refreshBranch` reads HEAD in
-// the session's own folder, so a session whose agent moved to a sibling checkout goes on
-// reporting the branch it left, forever and correctly.
-//
-// `driftUpdate` owns the rule (including which signal outranks which); this owns only
-// the repaint. Everything it reads comes off the same payload — `cwd` catches the moves
-// Claude Code makes itself, `tool_input` the ones it doesn't know about (a write's
-// `file_path`, or the `cd` a Bash-first agent wrote under).
+// A write says WHERE the agent works, which a HEAD re-read in the session's own folder can
+// never discover. driftUpdate owns the rule; this owns the repaint (docs/worktrees.md).
 export function noteDrift(s: Sess, tool: string, data: any) {
   if (!hasAgentCapability(s, "activity") || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
   const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
-  // All three fields, not just the identity of the checkout: the branch on a drifted-into
-  // checkout can be switched underneath us, and it is what every drift surface spells out.
+  // All three fields: the branch of a drifted-into checkout can be switched underneath us.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;
   dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
   renderAll();
 }
 
-// A green run shouldn't linger — tasks are far more numerous and shorter-lived
-// than sessions, and without this the rail silently fills with ticks. A pane you
-// are actually looking at is never yanked away, and a failure never auto-closes.
+// Auto-close a green run: tasks are many and short-lived, and the rail would fill with ticks.
 export function scheduleDismiss(s: Sess) {
   if (s.run?.background || !taskPrefs.dismissMs) return;
   window.setTimeout(() => {
@@ -999,13 +777,9 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   ($("btnClose") as HTMLButtonElement).hidden = !s;
-  // ⇩ sits beside ✕ and is offered only where it means something. A shell, a task run
-  // and a terminal-only agent have nothing to resume, so the button would be a promise
-  // the row could not keep — and `canShelve` is the one place that decides, so the
-  // header, the palette and the sign-off sheet cannot drift on the answer.
+  // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
-  // Reset every attribute a previous session may have left on the shared chip — the
-  // drift branch below sets `title`, and only one of the arms after it would clear it.
+  // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
   $("hProj").textContent = s.project;
@@ -1013,9 +787,7 @@ export function renderHeader(s: Sess | null) {
     hb.textContent = s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : (s.title || s.provider || "agent");
     hb.hidden = false; hb.classList.add("ext-chip");
   }
-  // A drifted session gets BOTH branches, in the order they happened: the chip is the
-  // only thing on screen that says which checkout the work is landing in, and showing
-  // just the new one would trade a stale label for a lie about where `--resume` goes.
+  // A drifted session shows BOTH branches: the new one alone would lie about where --resume goes.
   else if (s.drift) {
     hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
@@ -1023,33 +795,23 @@ export function renderHeader(s: Sess | null) {
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
-  // The path follows the work for the same reason — it is the answer to "where am I?".
   $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
 }
 
-// The active project context is an Episko session, an external one, or — when the
-// dashboard is on stage — the project the dashboard is *about*. That last case is the
-// whole reason these two resolvers are shared: a dashboard names its project more
-// plainly than any session does, so ＋ Session, ❯ Terminal, ▶ Run and ◷ History should
-// act on it exactly as they act on a session's project rather than greying out (or,
-// in ＋ Session's case, falling back to ⌘K and asking a question already answered).
+// The active project: a session, an external, or the project a dashboard is about, so
+// ＋ Session, ❯ Terminal, ▶ Run and ◷ History act on it rather than greying out.
 export function activeProjectCtx(): { project: string; path: string } | null {
-  // The dashboard's root *is* the repo key — the sidebar groups by it — so it needs no
-  // resolution, and it is checked first because all three mirror kinds share one pointer.
+  // Checked first: the three mirror kinds share one pointer, and a dashboard's root is the repo key.
   const dm = dashMirror();
   if (dm) return { project: dm.name, path: dm.root };
-  // For an external session use its repo root, not the worktree cwd, so launching a
-  // session / opening a worktree from it operates on the repo (and groups under it).
+  // An external's repo root, not its worktree cwd, so a launch from it groups under the repo.
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
-  // A dormant session already stores colorKey (the repo key), so it needs no such resolution.
   if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); if (d) return { project: d.project, path: d.colorKey }; }
   const s = activeId ? sessions.get(activeId) : null;
   return s ? { project: s.project, path: s.colorKey } : null;
 }
-// The active session's *actual* cwd (the worktree dir for worktree sessions, not
-// the color-grouping repo key) — used when opening a plain terminal there.
+// The actual cwd (a worktree's dir, not the grouping key), for opening a terminal there.
 export function activeCwd(): string | null {
-  // A dashboard is about a repo, not a checkout, so its root is both answers at once.
   const dm = dashMirror();
   if (dm) return dm.root;
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); return e ? e.cwd : null; }
@@ -1057,22 +819,15 @@ export function activeCwd(): string | null {
   const s = activeId ? sessions.get(activeId) : null;
   return s ? s.workdir : null;
 }
-// Open a plain (non-Claude) terminal at the active project's cwd for running shell
-// commands alongside a session. When the launch engine is "embedded" it opens an
-// in-app shell pane (like a session); otherwise it opens the external terminal app.
+// A plain terminal at the active cwd: an in-app shell pane when embedded, else the external app.
 export function openPlainTerminal() {
   const wd = activeCwd();
   if (!wd) { toast("No active session"); return; }
   if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: wd, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
-  // Inherit the active session's repo grouping so a shell opened in a worktree nests
-  // under its repo (as a worktree cluster) rather than appearing as its own project.
-  // The active session/external always shares the shell's cwd, so it labels the cluster.
+  // Inherit the stage's repo grouping so a shell opened in a worktree nests under its repo.
   const s = activeId ? sessions.get(activeId) : null;
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
-  // A dormant session can also own the stage; it already stores the repo key.
   const d = pastMirrorId() ? dormants.find((x) => x.id === pastMirrorId()) : undefined;
-  // …and so can a dashboard, whose root is the repo key and whose name is the label
-  // the sidebar already uses — better than basename(), which is what the fallback gives.
   const dm = dashMirror();
   const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : d ? d.colorKey : wd;
   const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : d ? d.worktree : null;
@@ -1080,7 +835,7 @@ export function openPlainTerminal() {
   launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch });
 }
 
-// terminal and put the command on the clipboard — honest about the extra paste.
+// Prefill a command into a shell pane, or open the external terminal with it on the clipboard.
 export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}) {
   if (termEngine === "embedded") {
     const id = await launchShell(project, workdir, opts);
@@ -1089,17 +844,13 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
     toast("Prefilled in a shell. Press Enter to run");
     return;
   }
-  try { await navigator.clipboard.writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
+  try { await writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
   invoke("open_terminal_here", { workdir, engine: termEngine })
     .then(() => toast("Terminal opened, command copied: " + cmd))
     .catch((e) => toast("terminal: " + e));
 }
 
-// ▶ Run and ❯ Terminal both act on the active project's directory, so with no
-// session, shell or mirrored external there is nothing for them to act on. Greying
-// them says so up front; a live button whose only response is an error toast reads
-// as if the click failed. The guards in openRunPicker/openPlainTerminal stay, since
-// ⌘⇧R and ⌘T bypass the button entirely.
+// Greyed with no active project: a live button whose only answer is an error toast reads as a failed click.
 export function syncStageButtons() {
   const wd = activeCwd();
   const set = (id: string, enabled: string, disabled = "Start a session first; this runs in the active project") => {
@@ -1109,26 +860,18 @@ export function syncStageButtons() {
   };
   set("btnRun", "Run a task or script from this project");
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
-  // ◷ History belongs to the same set — it opens scoped to the project on screen.
-  // Its disabled reason is different in kind, though: the whole-machine view is
-  // always one click away in the top bar, so say where it went rather than
-  // "start a session".
+  // ◷ History's disabled reason differs: the whole-machine view is one click away up top.
   set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
       "No project selected. The ◷ button up top opens history for every project");
 }
 
-// Which session (if any) has a git action in flight — the buttons grey out while
-// it runs, since fetch/pull/push can take seconds against a slow remote.
-// Run fetch/pull/push for a session's workdir. A refusal is not an error: the
-// backend declines the cases it can't finish safely and names the command that
-// would work, which we offer as a terminal handoff rather than a dead end.
+// fetch/pull/push. A refusal is not an error: the backend names the command that would
+// work, and that is handed to a terminal.
 export async function runGit(sessionId: string, op: string) {
   const s = sessions.get(sessionId);
   if (!s || gitBusy) return;
   setGitBusy(sessionId);
-  // Only ever paint the inspector when this session still owns it: the palette can
-  // fire a git action at a background session, and a terminal handoff switches the
-  // active session to the new shell mid-run.
+  // The palette can fire this at a background session, and a handoff switches the stage mid-run.
   const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
   repaint();
   try {
@@ -1137,7 +880,6 @@ export async function runGit(sessionId: string, op: string) {
     if (r.ok) {
       toast(`${op}: ${r.summary}`);
     } else if (r.suggest) {
-      // Keep the toast clickable-adjacent: say what blocked it, then hand it over.
       toast(`${op}: ${r.summary} → opening a terminal`);
       await handToTerminal(s.project, s.workdir, r.suggest, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch });
     } else {
@@ -1148,8 +890,7 @@ export async function runGit(sessionId: string, op: string) {
     toast(`git ${op}: ${e}`);
   } finally {
     setGitBusy(null);
-    // ahead/behind moved — force the dirty poll to re-read this folder now (the
-    // working set rides its map), then pick the fresh value up into the inspector.
+    // ahead/behind moved: force the dirty poll to re-read this folder now.
     dirtyStale.add(s.workdir);
     void refreshDirtyStates().then(() => refreshSessionStats(s));
     void refreshBranch(s).then((changed) => { if (changed) renderAll(); });

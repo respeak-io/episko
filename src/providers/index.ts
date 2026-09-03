@@ -1,7 +1,6 @@
-// Frontend provider registry. Shared UI modules ask this boundary for normalized
-// events and durable history; they never import a vendor adapter or branch on a
-// provider id. Adding an integrated provider means adding one entry here, its native
-// adapter beside this file, and its backend control plane in agent.rs.
+// Frontend provider registry: shared UI asks here for normalized events and history and
+// never imports a vendor adapter or branches on a provider id. Adding a provider means one
+// entry here, an adapter beside this file, and a control plane in agent.rs (docs/providers.md).
 
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentEvent, ProviderEvent } from "../agents";
@@ -138,12 +137,8 @@ export async function readProviderHistory(
   return history.read(sessionId, cwd, limit);
 }
 
-/**
- * Refresh restore rows through each provider's durable history. An unavailable
- * control plane retains its rows: a temporary PATH/auth failure must not erase the
- * user's restore roster. Providers without history are retained for compatibility
- * with rosters written by older builds.
- */
+// A provider whose history call fails keeps its rows (a transient PATH/auth failure must not erase
+// the roster); so does one without history, for rosters written by older builds.
 export async function reconcileProviderRestorables(entries: Restorable[]): Promise<Restorable[]> {
   const grouped = new Map<string, Restorable[]>();
   for (const entry of entries) {

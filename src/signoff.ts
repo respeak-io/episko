@@ -1,29 +1,6 @@
-// Sign off: shelve the whole fleet at the end of a session of work.
-//
-// The bulk half of shelving (./panes `shelveSession`). One button in the top bar,
-// beside caffeinate — which is the other control about the machine rather than about
-// any one pane, and the one you turned on when the fleet started.
-//
-// **It opens a sheet rather than doing it.** This is the single most destructive
-// button in the app by count: it stops every agent you have running. So the sheet is
-// the confirmation, and it is a sheet rather than an `ask()` because the answer is not
-// yes/no — two of the three things it is about are exceptions the user has to be able
-// to change before pressing it:
-//
-//   • Sessions still working. Shelving one kills the turn it is in the middle of, and
-//     "sign off, but let those two finish" is a thing people actually mean at the end
-//     of a day. The switch defaults to KEEPING them, because the cost of leaving a
-//     session up is what this feature exists to reduce, while the cost of stopping a
-//     turn mid-flight is work you have to redo.
-//   • Shells, tasks and external panes. None can be shelved — nothing to resume — but
-//     a dev server and three login shells are exactly the processes still eating the
-//     machine after every agent has gone. So they are listed by name and offered for
-//     CLOSING, which is the only thing that can honestly be done to them, with the
-//     switch on: signing off with a `pnpm dev` still up is usually an oversight.
-//
-// Neither switch is remembered. Both are answers about tonight's fleet — which
-// sessions happen to be mid-turn, which servers happen to be up — and a remembered
-// "yes, close my shells" would silently kill a dev server three weeks later.
+// Sign off: shelve the whole fleet at once (docs/sessions.md). A sheet rather than an
+// `ask()`, because two answers must be changeable first: working sessions default to KEPT
+// (a killed turn is redone work), shells/tasks/externals to CLOSED. Neither is remembered.
 
 import { $, toast } from "./dom";
 import { esc } from "./format";
@@ -31,14 +8,8 @@ import { dlog } from "./debug";
 import { sessions } from "./state";
 import { canShelve, midWork, phaseText, taskStateText, type Sess } from "./types";
 
-// What it needs from layers it does not own: the top bar's one-menu-at-a-time rule,
-// the repaint, and the two verbs it is made of. One host object rather than four
-// setters, as ./settings and ./palui do at this many callees.
-//
-// The two verbs are here **because a direct import would be a cycle**: ./footer has to
-// close this popover (it owns `closeFootMenus`), ./panes imports ./footer to repaint,
-// and importing ./panes here would close the ring footer → signoff → panes → footer.
-// ./serversui reaches `closeSession` the same way, for the same reason.
+// One host object rather than four setters. The two verbs cannot be imported: ./panes
+// imports ./footer, which closes this popover, so a direct import would be a cycle.
 let host: {
   closeFootMenus: (keep?: string) => void;
   renderAll: () => void;
@@ -47,21 +18,15 @@ let host: {
 } = { closeFootMenus: () => {}, renderAll: () => {}, shelveSession: () => false, closeSession: () => {} };
 export function setSignoffHost(h: typeof host) { host = h; }
 
-// The switches, reset every time the sheet opens (see the module note above).
+// Reset every time the sheet opens.
 let keepWorking = true;
 let closeRest = true;
 
-/// What sign-off is about, in the three groups the sheet shows. Split here rather than
-/// inside the markup so the button label, the action and the list can never disagree
-/// about which sessions are in — the bug shape where a dialog says "shelve 6" and
-/// shelves 4.
+// Split here rather than in the markup, so the label, the action and the list cannot disagree.
 interface SignoffPlan {
-  /// Shelvable and idle: shelved whatever the switches say.
-  idle: Sess[];
-  /// Shelvable but mid-turn or running a fan-out — in only when `keepWorking` is off.
-  working: Sess[];
-  /// Shells, tasks and external panes: closed only when `closeRest` is on.
-  rest: Sess[];
+  idle: Sess[]; // shelvable; shelved whatever the switches say
+  working: Sess[]; // shelvable but mid-turn or in a fan-out; in only when keepWorking is off
+  rest: Sess[]; // shells, tasks, externals; closed only when closeRest is on
 }
 function plan(): SignoffPlan {
   const p: SignoffPlan = { idle: [], working: [], rest: [] };
@@ -75,9 +40,7 @@ function plan(): SignoffPlan {
 const toShelve = (p: SignoffPlan) => (keepWorking ? p.idle : [...p.idle, ...p.working]);
 const toClose = (p: SignoffPlan) => (closeRest ? p.rest : []);
 
-/// How a pane is named in the sheet's lists. The project first, because at sign-off
-/// you are reading down a list of everything you have open and the project is what
-/// tells them apart; the title is what tells two panes of one project apart.
+// Project first: at sign-off you read down everything open, and the project tells rows apart.
 function rowLabel(s: Sess): string {
   const what = s.kind === "task" ? (s.run?.label ?? "task")
     : s.kind === "shell" ? "shell"
@@ -91,9 +54,7 @@ function stateLabel(s: Sess): string {
   return phaseText(s);
 }
 function listHtml(list: Sess[], cls: string): string {
-  // Capped, and the overflow is counted rather than dropped: a fleet of twenty would
-  // push the button off the bottom of the screen, and a list that silently stops at
-  // six reads as "that is all of them".
+  // Capped, with the overflow counted: a list that stops silently reads as "that is all".
   const shown = list.slice(0, 6);
   const more = list.length - shown.length;
   return `<div class="so-list ${cls}">`
@@ -103,17 +64,13 @@ function listHtml(list: Sess[], cls: string): string {
     + `</div>`;
 }
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
-/// Name the un-shelvable group by what is actually in it. "2 shells and tasks" when
-/// there is no task in the list is the kind of small lie that makes a reader stop
-/// trusting the counts beside it — and this is the group whose switch closes things
-/// for good, so it is the last one that can afford to be approximate.
+// Named by what is in it: "2 shells and tasks" with no task is a lie beside a count that closes things.
 function restLabel(rest: Sess[]): string {
   const n = { shell: 0, task: 0, other: 0 };
   for (const s of rest) n[s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : "other"]++;
   const parts = [
     n.shell ? plural(n.shell, "shell") : "",
     n.task ? plural(n.task, "task") : "",
-    // Everything else that cannot be shelved: an external pane, a terminal-only agent.
     n.other ? plural(n.other, "other pane") : "",
   ].filter(Boolean);
   return parts.length > 1 ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1] : parts[0];
@@ -127,9 +84,7 @@ function fillSoPop() {
     $("soPop").innerHTML = `<div class="so-empty">Nothing is open.<br>Sign off shelves your agent sessions so they keep their place in the sidebar.</div>`;
     return;
   }
-  // The headline counts what the switches have actually left selected, so it and the
-  // button below can never disagree — the shape where a dialog says "shelve 6" and
-  // shelves 4 because a switch above it said otherwise.
+  // The headline counts what the switches left selected, so it and the button cannot disagree.
   const head = shelve.length
     ? `<div class="so-head"><b>Shelve ${plural(shelve.length, "session")}</b>`
       + `<span>They stop, and stay in the sidebar under their project. ⟲ picks each one back up where it left off.</span></div>`
@@ -137,8 +92,6 @@ function fillSoPop() {
       + `<span>${p.working.length ? "Every session here is still working, and the switch below is keeping them."
         : "No session here can be resumed later, so none can be shelved."}</span></div>`;
   const idle = p.idle.length ? listHtml(p.idle, "so-ok") : "";
-  // The working group leads with its switch, because that switch is the decision the
-  // group exists to put in front of you.
   const working = p.working.length
     ? `<div class="so-grp so-warn"><div class="so-sw-row">`
       + `<span class="so-sw-lbl">Keep ${plural(p.working.length, "session")} still working</span>`
@@ -152,8 +105,7 @@ function fillSoPop() {
       + `<div class="so-note">${closeRest ? "These have no conversation to resume, so closing is the only thing that stops them." : "These keep running after you sign off."}</div>`
       + listHtml(p.rest, closeRest ? "so-cut" : "so-kept") + `</div>`
     : "";
-  // The button says the whole outcome. "Sign off" alone would be the one control in
-  // the app whose effect you have to reconstruct from two switches above it.
+  // The button says the whole outcome, not "Sign off" alone.
   const parts = [shelve.length ? `shelve ${shelve.length}` : "", close.length ? `close ${close.length}` : ""].filter(Boolean);
   const go = parts.length
     ? `<button class="so-go" data-sogo="1">Sign off · ${esc(parts.join(", "))}</button>`
@@ -174,29 +126,16 @@ export function openSignoffPop() {
 }
 export function closeSignoffPop() { $("soPop").classList.remove("show"); }
 
-/// Do it. Shelve first, then close: shelving re-enters `setActive` through
-/// `closeSession` (the stage hands over to a surviving neighbour on every removal), so
-/// running the two groups in one interleaved pass would hand the stage to a shell that
-/// is about to be closed anyway. Ids are snapshotted for the same reason the run-group
-/// close snapshots them — both loops mutate the map they would otherwise iterate.
+// Shelve first, then close: closing re-enters `setActive`, and an interleaved pass would
+// hand the stage to a shell about to be closed. Ids are snapshotted: both loops mutate the map.
 function runSignoff() {
   const p = plan();
   const shelveIds = toShelve(p).map((s) => s.id);
   const closeIds = toClose(p).map((s) => s.id);
   closeSignoffPop();
-  // Each pane is closed inside its own try, and this is the one loop in the app where
-  // that earns its keep. Closing re-enters the render layer (the stage hands over to a
-  // neighbour, which repaints the header and the inspector for it), so a single pane
-  // whose state paints badly throws *out of the loop* — and the visible result is a
-  // sign-off that silently did half the fleet and said it did all of it. The counts
-  // below are what actually happened rather than what was asked for, so a partial run
-  // reads as one.
-  //
-  // What counts as done is **"is this pane still open?"**, never "did the call return
-  // normally". The throw lands after the pane has already been removed (the map is
-  // emptied first, and the stage hands over after), so counting returns reported a
-  // failure for a session that had in fact gone — a toast that invents a problem is
-  // worse than one that misses it.
+  // Each pane in its own try: closing re-enters the render layer, and one pane that paints
+  // badly must not throw out of the loop. Done means "is the pane gone?", never "did the call
+  // return": the throw lands after the map entry is removed, so counting returns invents failures.
   let shelved = 0, closed = 0;
   const gone = (id: string, run: () => void) => {
     try { run(); } catch (e) { dlog("error", `sign off: ${id.slice(0, 8)} threw on the way out: ${e}`); }
@@ -219,10 +158,8 @@ $("signoffBtn").addEventListener("click", (e) => {
 });
 $("soPop").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  // The two switches rebuild the sheet, which detaches the node that was clicked — so
-  // the event has to stop here or the document's outside-click handler sees a target
-  // that is no longer in the tree and closes the sheet under the switch you just flipped.
-  // (./caffeinate's sub-controls carry the same note, and the same bug.)
+  // The switches rebuild the sheet and detach the clicked node, so stop here or the document's
+  // outside-click handler sees a detached target and closes the sheet (./caffeinate too).
   if (t.closest("[data-sokeep]")) { e.stopPropagation(); keepWorking = !keepWorking; fillSoPop(); return; }
   if (t.closest("[data-soclose]")) { e.stopPropagation(); closeRest = !closeRest; fillSoPop(); return; }
   if (t.closest("[data-sogo]")) { e.stopPropagation(); runSignoff(); }

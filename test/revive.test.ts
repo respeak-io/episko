@@ -10,22 +10,21 @@ import {
 
 const NOW = 1800000000000; // 2027-01-15T08:00:00Z
 
-/// Only the fields any of this reads. Everything in ./revive is pure over a Sess, so a
-/// cast beats hauling in the xterm/DOM handles a real pane carries.
+// Only the fields ./revive reads; it is pure over a Sess, so a cast beats a real pane.
 function sess(o: Partial<Sess> = {}): Sess {
   return {
     id: "s1", kind: "agent", provider: "claude", external: false, phase: "error", attention: null,
     apiErr: { kind: "overloaded", detail: "", at: NOW }, revive: null,
-    agents: new Map(), fanout: null,
+    agents: new Map(), fanout: null, queuedPrompt: false,
     ...o,
   } as Sess;
 }
 const prefs = (o: Partial<RevivePrefs> = {}): RevivePrefs =>
   ({ ...REVIVE_DEFAULTS, enabled: true, ...o });
-/// A schedule already in place for the session's current failure.
+// A schedule already in place for the fixture's current failure (errAt matches apiErr.at).
 const state = (o: Partial<ReviveState> = {}): ReviveState =>
   ({ attempts: 0, errAt: NOW, dueAt: NOW + 30_000, lastAt: 0, gaveUp: false, ...o });
-/// Jitter pinned to the midpoint, so a scheduled `dueAt` is the plain ladder value.
+// Jitter pinned to the midpoint, so a scheduled `dueAt` is the plain ladder value.
 const noJit = () => 0.5;
 
 describe("reviveKind — what kind of failure this was", () => {
@@ -42,8 +41,7 @@ describe("reviveKind — what kind of failure this was", () => {
     expect(reviveKind("server_error")).toBe("server_error");
   });
   it("recognises a network failure by its transport name, which is all we ever get", () => {
-    // The one from the screenshot that started this: DNS stopped resolving overnight.
-    // There is no enum member for it, so the text is the only signal there is.
+    // There is no enum member for a network failure, so the text is the only signal there is.
     expect(reviveKind("ENOTFOUND")).toBe("network");
     expect(reviveKind("ECONNRESET")).toBe("network");
     expect(reviveKind("ETIMEDOUT")).toBe("network");
@@ -52,9 +50,7 @@ describe("reviveKind — what kind of failure this was", () => {
     expect(reviveKind("connection_timeout")).toBe("network");
   });
   it("files a kind it has never met under `other` rather than refusing it", () => {
-    // The denylist direction, and the whole argument is in the module header: a new
-    // failure kind getting a few wasted retries costs a handful of no-op turns; a new
-    // failure kind getting NO retry costs the night it was invented to save.
+    // A denylist: a few wasted retries on a new kind cost less than the night a missed retry loses.
     expect(reviveKind("quantum_flux")).toBe("other");
     expect(reviveKind("")).toBe("other");
   });
@@ -72,8 +68,7 @@ describe("clampRevivePrefs — whatever localStorage held, made safe", () => {
     expect(REVIVE_DEFAULTS.enabled).toBe(false);
   });
   it("needs an explicit `true` to switch on — the opposite of every other switch", () => {
-    // Deliberate asymmetry: this is the one preference that makes Episko type into a
-    // terminal unattended, so a corrupt or half-written blob must decay to silence.
+    // The one preference that makes Episko type unattended, so a corrupt blob must decay to off.
     expect(clampRevivePrefs({ enabled: true }).enabled).toBe(true);
     expect(clampRevivePrefs({ enabled: undefined }).enabled).toBe(false);
     expect(clampRevivePrefs({ enabled: "yes" as unknown as boolean }).enabled).toBe(false);
@@ -93,8 +88,7 @@ describe("clampRevivePrefs — whatever localStorage held, made safe", () => {
   });
   it("keeps only kinds it knows, and keeps an empty list empty", () => {
     expect(clampRevivePrefs({ kinds: ["overloaded", "nonsense"] as never }).kinds).toEqual(["overloaded"]);
-    // "None of these" is a coherent choice — the switch is on, nothing qualifies — and
-    // repairing it to the defaults would silently re-enable retries the user turned off.
+    // An empty list is a choice; repairing it to the defaults would re-enable retries the user turned off.
     expect(clampRevivePrefs({ kinds: [] }).kinds).toEqual([]);
     expect(clampRevivePrefs({ kinds: "all" as never }).kinds).toEqual(REVIVE_DEFAULTS.kinds);
   });
@@ -158,15 +152,12 @@ describe("reviveStep — the things it must never do", () => {
     expect(reviveStep(sess({ external: true }), prefs(), NOW, true)).toEqual({ do: "none", why: "external" });
   });
   it("NEVER types into a session that is asking you something", () => {
-    // The one failure mode here that is destructive rather than merely useless: a
-    // blocking permission sits at a prompt indistinguishable from an idle one, and a
-    // continue typed into it ANSWERS it. Checked before anything that can return `send`.
+    // A continue typed at a blocking permission answers it; checked before anything that can send.
     const s = sess({ attention: "permission: Bash", revive: state({ dueAt: NOW - 1 }) });
     expect(reviveStep(s, prefs(), NOW, true)).toEqual({ do: "none", why: "attention" });
   });
   it("ignores a failed tool call, which reddens the same glyph for a different reason", () => {
-    // `phase: "error"` is set by a failed grep as much as by a 529. Only `apiErr` — which
-    // exclusively StopFailure writes — means the API killed the turn.
+    // A failed grep sets `phase: "error"` as much as a 529 does; only `apiErr` means the API killed the turn.
     expect(reviveStep(sess({ apiErr: null }), prefs(), NOW, true)).toEqual({ do: "none", why: "no-failure" });
   });
   it("ignores a session that is doing fine", () => {
@@ -187,11 +178,8 @@ describe("reviveStep — the things it must never do", () => {
     expect(reviveStep(sess(), prefs({ kinds: [] }), NOW, true)).toEqual({ do: "none", why: "kind" });
   });
   it("is NOT held off by a fan-out counter left high by the same outage", () => {
-    // The guard that was written here first and removed: agents killed alongside their
-    // parent never send `SubagentStop`, so `liveCount` stays high with nothing behind it —
-    // and they never age out either, because the orphan clock starts only when a newer
-    // fan-out inherits them, and a killed turn launches none. Standing down for that would
-    // sleep through the exact scenario this feature is for.
+    // Agents killed with their parent never send `SubagentStop` and never age out (no newer
+    // fan-out inherits them), so `liveCount` stays high through exactly the outage this is for.
     const s = sess({
       agents: new Map(Array.from({ length: 7 }, (_, i) => [`a${i}`, { type: "Explore", since: NOW, orphanedAt: 0 }])),
       fanout: { name: "review", lastAt: NOW, started: 7, done: 0 } as never,
@@ -202,8 +190,7 @@ describe("reviveStep — the things it must never do", () => {
 
 describe("reviveStep — the schedule", () => {
   it("times the first attempt from when the failure happened, not from this tick", () => {
-    // A tick runs every ten seconds, and `apiErr.at` can be most of that in the past.
-    // Timing from `now` would stretch every rung by however late the poll noticed.
+    // A tick runs every ten seconds; timing from `now` would stretch every rung by the poll's lateness.
     const s = sess({ apiErr: { kind: "overloaded", detail: "", at: NOW } });
     const act = reviveStep(s, prefs(), NOW + 7_000, true, noJit);
     expect(act.do).toBe("schedule");
@@ -227,9 +214,7 @@ describe("reviveStep — the schedule", () => {
     expect(act.state.lastAt).toBe(NOW);
   });
   it("moves the next rung out as part of sending, so a wedged session is not hammered", () => {
-    // If the write goes nowhere and no new StopFailure ever arrives, `dueAt` left in the
-    // past would make the next tick send again, and the tick after that — the whole
-    // budget gone inside a minute.
+    // A `dueAt` left in the past would send again on every tick, the whole budget gone in a minute.
     const s = sess({ revive: state({ dueAt: NOW }) });
     const act = reviveStep(s, prefs(), NOW, true, noJit);
     if (act.do !== "send") throw new Error("expected a send");
@@ -239,8 +224,7 @@ describe("reviveStep — the schedule", () => {
     expect(again).toEqual({ do: "none", why: "waiting" });
   });
   it("re-times from the NEW failure when a continue produced another one", () => {
-    // A turn can run for ten minutes before dying. Re-using the old schedule would find
-    // the next attempt already overdue and fire it instantly, skipping a rung.
+    // A turn can run ten minutes before dying; the old schedule would then be overdue and skip a rung.
     const sent = state({ attempts: 1, errAt: NOW, dueAt: NOW + 60_000, lastAt: NOW });
     const later = NOW + 600_000;
     const s = sess({ revive: sent, apiErr: { kind: "overloaded", detail: "", at: later } });
@@ -252,10 +236,8 @@ describe("reviveStep — the schedule", () => {
     expect(act.state.dueAt).toBe(later + 60_000);  // rung 2, timed from the new failure
   });
   it("climbs the ladder across a streak instead of restarting it", () => {
-    // The heart of the backoff. If `attempts` reset per turn — which is what clearing it
-    // in `newTurn` would do — a dead API would fail each new turn in milliseconds, the
-    // streak would restart at rung one every time, and the ladder would flatten into a
-    // fixed 30s hammer for the rest of the night.
+    // If `attempts` reset per turn (clearing it in `newTurn`), a dead API failing each turn in
+    // milliseconds would restart the streak at rung one and flatten the ladder into a 30s hammer.
     const p = prefs();
     const waits: number[] = [];
     let st: ReviveState | null = null;
@@ -277,8 +259,7 @@ describe("reviveStep — the schedule", () => {
 
 describe("reviveStep — being offline", () => {
   it("does not spend an attempt on a request that cannot leave the machine", () => {
-    // For the failure this feature exists for — the laptop's Wi-Fi napping — EVERY
-    // attempt would otherwise be spent while there was no network to spend it on.
+    // Otherwise every attempt is spent while the Wi-Fi naps, the failure this feature exists for.
     const s = sess({ revive: state({ dueAt: NOW - 60_000 }) });
     expect(reviveStep(s, prefs(), NOW, false)).toEqual({ do: "none", why: "offline" });
     expect(s.revive!.attempts).toBe(0);
@@ -309,8 +290,7 @@ describe("reviveStep — giving up", () => {
     expect(reviveStep(s, prefs({ attempts: 2 }), NOW, true).do).toBe("giveup");
   });
   it("still refuses to give up on a session that is asking you something", () => {
-    // `attention` is checked first, so a permission raised after the budget ran out does
-    // not get an "I gave up" noise on top of the one it is already making.
+    // `attention` is checked first, so a permission does not also get an "I gave up" noise on top.
     const s = sess({ attention: "permission: Bash", revive: state({ attempts: 6 }) });
     expect(reviveStep(s, prefs(), NOW, true)).toEqual({ do: "none", why: "attention" });
   });
@@ -323,8 +303,7 @@ describe("what the surfaces read", () => {
   it("counts down to the next try", () => {
     const s = sess({ revive: state({ attempts: 2, dueAt: NOW + 120_000 }) });
     expect(reviveStatus(s, prefs(), NOW)).toBe("Retrying in 2m · try 3 of 6");
-    // Minutes are rounded, not truncated, so a gap reads as the nearer whole minute
-    // rather than always undercounting — 2m30s is "3m", not "2m".
+    // Minutes are rounded, not truncated: 2m30s is "3m", not "2m".
     expect(reviveStatus(sess({ revive: state({ attempts: 2, dueAt: NOW + 150_000 }) }), prefs(), NOW))
       .toBe("Retrying in 3m · try 3 of 6");
   });
@@ -347,6 +326,14 @@ describe("what the surfaces read", () => {
     expect(reviveDeadline([sess()], prefs(), NOW)).toBeNull();
     expect(reviveDeadline([sess({ revive: state({ attempts: 6 }) })], prefs(), NOW)).toBeNull();
   });
+  // The status line and the timer must agree with what `reviveStep` would actually do.
+  it("reports no deadline for a failure whose bucket is unticked", () => {
+    const s = sess({ id: "a", revive: state({ dueAt: NOW + 30_000 }) });   // an `overloaded`
+    expect(reviveDeadline([s], prefs({ kinds: ["rate_limit"] }), NOW)).toBeNull();
+    expect(reviveStep(s, prefs({ kinds: ["rate_limit"] }), NOW, true)).toEqual({ do: "none", why: "kind" });
+    // An external pane holds no PTY to send into, so it has no deadline either.
+    expect(reviveDeadline([sess({ external: true, revive: state() })], prefs(), NOW)).toBeNull();
+  });
   it("writes a gap in the fewest characters that stay unambiguous", () => {
     expect(reviveGap(0)).toBe("0s");
     expect(reviveGap(45_000)).toBe("45s");
@@ -362,16 +349,12 @@ describe("the prompt Episko types", () => {
     expect(REVIVE_PROMPT).not.toMatch(/[\r\n]/);
   });
   it("is pure ASCII, so the Windows write path never has to re-encode it", () => {
-    // `write_pty` sends a non-ASCII character as a win32 input record rather than bytes
-    // (ConPTY delivers it on a key-up record otherwise). That path works, but this is the
-    // one write in the app that happens with nobody awake to notice if it came out wrong.
+    // `write_pty` re-encodes non-ASCII for ConPTY; this is the one write nobody is awake to check.
     expect([...REVIVE_PROMPT].every((c) => c.charCodeAt(0) < 128)).toBe(true);
   });
   it("says the interruption was not the user, and asks it to check before assuming", () => {
-    // Both halves are load-bearing. Without the first the agent reads the message as a
-    // new instruction and tends to summarise instead of resume; without the second it
-    // guesses about the tool call whose response never arrived, which is how a migration
-    // gets applied twice.
+    // Without the first the agent summarises instead of resuming; without the second it
+    // guesses about the tool call whose response never arrived.
     expect(REVIVE_PROMPT).toMatch(/API error/i);
     expect(REVIVE_PROMPT).toMatch(/check/i);
   });

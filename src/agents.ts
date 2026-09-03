@@ -1,7 +1,6 @@
-// Shared agent state reducer. Provider adapters translate their native protocol into
-// this small event vocabulary; everything below mutates the same `Sess` model Claude's
-// hooks feed. A future OpenCode adapter belongs beside ./providers/codex and does not
-// need a second inspector, permission card, roster, or phase machine.
+// Shared agent state reducer: provider adapters translate their protocol into this event
+// vocabulary, and everything below mutates the same `Sess` Claude's hooks feed. A new
+// adapter belongs beside ./providers/codex and needs no second cockpit.
 
 import { absoluteTouchPath, bumpTally, noteTouch } from "./files";
 import {
@@ -37,8 +36,7 @@ export type AgentEvent =
 
 export function applyAgentEvent(s: Sess, event: AgentEvent): void {
   const previousEvent = s.lastEvent;
-  // Quota is account activity, not conversation activity. Sharing one snapshot across
-  // sibling panes must not float every idle session to the top of "latest activity".
+  // Quota is account activity, not the session's; it must not float idle panes to the top.
   if (event.type !== "rate-limits") s.lastActivity = Date.now();
   s.lastEvent = event.type;
   switch (event.type) {
@@ -81,11 +79,10 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       break;
     }
     case "cost": {
-      // Provider totals have the same semantics as Claude's statusLine total: they
-      // survive a pane move/resume. Key the persistent baseline by provider + thread
-      // so reopening one conversation never books its whole estimate a second time.
+      // Totals survive a move/resume (like Claude's statusLine total), so the baseline is
+      // keyed by provider + thread; reopening a conversation must not book it twice.
       const id = `${s.provider || "agent"}:${s.resumeId || s.id}`;
-      addUsage(costDelta(id, event.totalUsd, false), s);
+      addUsage(costDelta(id, event.totalUsd, false, `${s.provider || "agent"}:${s.id}`), s);
       s.cost = event.totalUsd;
       pushHist(s.costHist, event.totalUsd);
       break;
@@ -96,27 +93,19 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       setPhase(s, "error");
       break;
     case "disconnected":
-      // The real TUI remains usable if its observer drops. Preserve its last honest
-      // state and expose the transport loss to diagnostics without pretending the
-      // agent itself ended.
+      // The TUI stays usable if its observer drops; keep its last state, don't pretend it ended.
       s.lastEvent = "integration-disconnected";
       break;
   }
 }
 
-/**
- * Apply one normalized event and fan account-wide quota out to sessions known to share
- * its opaque account scope. No provider id appears here: the integration boundary owns
- * the identity, and unrelated accounts remain isolated because null/unequal scopes do
- * not join.
- */
+// Fans a rate-limit reading out to peers sharing its opaque scope; unrelated accounts never join.
 export function applyAgentEventToFleet(s: Sess, event: AgentEvent, fleet: Iterable<Sess>): void {
   const previousScope = s.rateLimitScope;
   applyAgentEvent(s, event);
   if (event.type !== "rate-limits") return;
-  // A null scope is also meaningful: account/updated clears the old account before
-  // the replacement identity is known. Fan that clear through the panes which shared
-  // the owner's previous scope or one stale sibling could keep displaying it forever.
+  // A null scope is account/updated clearing the old account before the new one is known;
+  // fan that clear through the previous scope, or a stale sibling shows it forever.
   const fleetScope = event.scope ?? previousScope;
   if (!fleetScope) return;
   for (const peer of fleet) {

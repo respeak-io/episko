@@ -68,6 +68,35 @@ The sibling hazard, where a poll compares a *model* rather than a rendered strin
 
 **A turn that died ends in `error`, and only one hook knows which it was**: `StopFailure` (not `Stop`) fires when the API kills a turn, carrying an `error` enum and `error_details`. Everything after looks identical to a clean finish (the same 60s idle `Notification` arrives either way) and unguarded it turned the red ✕ green a minute later (shipped; hence `Sess.apiErr`). Set by `StopFailure`, cleared only when the session genuinely starts another turn (`UserPromptSubmit`/`PreToolUse`/`SessionStart`/`SessionEnd`); **`endTurn` is the single place deciding done vs. error** (both `Stop` and the idle nudge route through it; run-on-stop is skipped while set). Every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]`, so the reason travels with the glyph.
 
+**`endTurn` has a third answer, and `done` is never absorbing.** Claude Code fires
+`UserPromptSubmit` the instant you press Enter — including mid-turn, because a message
+typed then is queued rather than refused — so the outstanding turn's `Stop` lands *after*
+the new prompt. Taken at face value that `Stop` marks the session "your turn" moments
+before it starts the work you just asked for, and the tool guard in `applyHook` used to
+read a bare `s.phase === "done"`, which made the lie permanent: from that `Stop` on, no
+`PreToolUse`/`PostToolUse` could move the session at all, and only a *further*
+`UserPromptSubmit` (already spent) could. The row showed a green tick, chimed, raised the
+badge and fired run-on-stop over a pane that then worked for twenty minutes. Two halves
+fix it, and both matter — 31 of the 36 stuck turns in six days of logs had no queued
+prompt behind them at all, just a turn the model carried on by itself:
+
+- **`Sess.queuedPrompt`** is set when a prompt arrives while the session is `working`,
+  and consumed by exactly one `Stop`, which then reads `thinking` instead of `done` and
+  skips run-on-stop (a run there verifies work about to change under it). A **flag, not a
+  count**: 23 of 25 queued runs in those logs answered two or more prompts in a single
+  turn, so a counter would have been left holding a phantom prompt and would have
+  withheld the badge until the 60s idle nudge — trading a lie for a silence. That nudge
+  clears it either way, which is the repair for the one case that strands it (a queued
+  prompt cancelled with Esc fires no `Stop`).
+- **`STRAGGLER_MS`** (2s) bounds the guard the flag cannot cover. The hooks are
+  fire-and-forget `curl`s spawned concurrently, so a turn's last `PostToolUse` genuinely
+  can land after its `Stop` and must not repaint the pane `working` a moment after the
+  badge was earned — but only by the width of a process spawn. Past that window a tool
+  hook is new work by definition; the logs hold a `PreToolUse` **996 seconds** after the
+  `Stop` that was still suppressing it. Both ways of being wrong here self-correct (too
+  wide: `done` until the turn's next tool call; too narrow: a `working` flicker until the
+  idle nudge). Unbounded was the only version with no correction at all.
+
 **A turn that ended while its agents run on is the background fan-out.** The `Workflow` tool returns a run id in about two seconds and the agent stops talking, so `Stop` fires, the phase goes `done`, and the whole cockpit read "your turn" for the twenty-odd minutes its fleet kept working: a green ✓ in the sidebar, a row in the reactor badge and the tray title, "waiting 17:33" in the inspector, a place in the attention sort, all for the one session that wanted nothing from you. The only trace of thirteen live agents was a `1 subagent` chip.
 
 *Everything it shows comes from telemetry Episko already receives*, which is why there is no backend half and nothing to poll:

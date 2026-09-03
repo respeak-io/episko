@@ -18,14 +18,12 @@ const run = (o: Partial<Runnable> = {}): Runnable => ({
 const inputSpec = (o: Partial<InputSpec> = {}): InputSpec =>
   ({ id: "name", kind: "promptString", description: "Name", default: null, options: [], password: false, optional: false, ...o });
 
-// What the launcher hook recorded, and the toast/debug lines the chain emitted.
 let launched: { id: string; r: Runnable; project: string; opts: TaskLaunchOpts }[] = [];
 let toasts: string[] = [];
 let logs: string[] = [];
 let launchFails: string[] = []; // labels whose launch returns null (a blocked task)
 
-// launchWithDeps is all microtasks — no timers, no I/O — so draining the microtask
-// queue is enough to let a chain advance as far as it can.
+// launchWithDeps is all microtasks, so draining the queue lets a chain advance as far as it can.
 const settle = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); };
 // Finish a started run the way the pty-exit listener does.
 const finish = (id: string, code: number) => { const w = exitWaiters.get(id); exitWaiters.delete(id); w?.(code); };
@@ -69,8 +67,7 @@ describe("stopRuleBlocked — unattended means unattended", () => {
   it("reports background before input when a task is both", () => {
     expect(stopRuleBlocked(run({ background: true, inputs: [inputSpec()] }))).toMatch(/never finishes a turn/);
   });
-  // An input nobody has to answer is not a prompt, so naming one as the reason
-  // would refuse the rule over a dialog that never opens.
+  // An optional input opens no dialog, so it is no reason to refuse the rule.
   it("passes one whose only input is optional", () => {
     expect(stopRuleBlocked(run({ inputs: [inputSpec({ optional: true })] }))).toBe("");
   });
@@ -82,8 +79,7 @@ describe("stopRuleBlocked — unattended means unattended", () => {
   });
 });
 
-// The rule behind the two Run buttons: running a task is the common case and must
-// not cost a dialog, so the dialog opens only for what nothing can answer.
+// A plain run must not cost a dialog; it opens only for what nothing can answer.
 describe("prefillInputs — what a plain Run can start without asking", () => {
   const withInput = (i: Partial<InputSpec>) =>
     run({ exec: { mode: "shell", line: "just start ${input:services}" }, inputs: [inputSpec({ id: "services", ...i })] });
@@ -121,8 +117,7 @@ describe("prefillInputs — what a plain Run can start without asking", () => {
   });
 });
 
-// The withParams rule lives in one place so Run, ⌘⇧B and re-run cannot drift:
-// the explicit *Run with parameters…* verb always asks, a plain run only when it must.
+// One place for the withParams rule, so Run, ⌘⇧B and re-run cannot drift.
 describe("resolveRunInputs — the attended surfaces' shared first step", () => {
   it("forces the dialog for withParams when there is anything to ask about", () => {
     expect(resolveRunInputs(run({ inputs: [inputSpec({ default: "api" })] }), "epi", true)).toBeNull();
@@ -228,8 +223,7 @@ describe("applyInputs — filling in what only a human knows", () => {
     expect(out.exec).toMatchObject({ line: "cp f f.bak" });
   });
   it("leaves a placeholder intact when nothing answered it", () => {
-    // Better a literal ${input:…} reaching the shell than a silent empty string,
-    // which would turn `deploy --to ${input:env}` into `deploy --to`.
+    // Better a literal ${input:…} reaching the shell than a silent `deploy --to`.
     const out = applyInputs(run({ exec: { mode: "shell", line: "deploy ${input:env}" } }), {});
     expect(out.exec).toMatchObject({ line: "deploy ${input:env}" });
   });
@@ -278,16 +272,12 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
     expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set())?.map((d) => d.label)).toEqual(["b", "a"]);
   });
-  // null and [] are different answers: "I could not resolve these" vs "there are
-  // none". Returning [] for both is what used to run a task whose build had been
-  // renamed away.
+  // null and [] are different answers: "I could not resolve these" vs "there are none".
   it("gives up on the whole list when one label matches nothing, and says so", () => {
     seed(run({ id: "npm:a", label: "a" }));
     expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set())).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
   });
-  // The consequence has to be in the toast: "no task named x" alone reads as a
-  // lookup failure somebody might shrug at, when the whole chain has just stopped.
   it("says the chain will not run, as well as naming the unknown label", () => {
     seed(run({ id: "npm:a", label: "a" }));
     resolveDeps(run({ label: "test", dependsOn: ["ghost"] }), new Set());
@@ -362,7 +352,6 @@ describe("launchWithDeps — the chain", () => {
     await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("still waits for every parallel dependency before giving up", async () => {
-    // Parallel means they all run; the *result* is the conjunction.
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
     const p = launchWithDeps(run({ dependsOn: ["a", "b"] }), "epi", {});
     await settle();
@@ -395,8 +384,7 @@ describe("launchWithDeps — the chain", () => {
     await expect(p).resolves.toEqual({ ok: true, id: "run3" });
   });
   it("does not run a task whose dependency label matches nothing", async () => {
-    // A renamed build is exactly as dangerous as a failed one: testing against
-    // whatever happens to be on disk is the outcome the chain exists to prevent.
+    // A renamed build is as dangerous as a failed one: the test would run against whatever is on disk.
     const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
     await settle();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
@@ -426,11 +414,8 @@ describe("launchWithDeps — the chain", () => {
     expect(dep.focus).toBe(false);            // an unattended run stays unattended…
     expect(dep.colorKey).toBe("/w/epi");
     expect(dep.forSession).toBeUndefined();   // …but the build step isn't verifying a turn
-    // `discoveredIn` IS inherited, and this assertion used to say the opposite. It is
-    // the directory *discovery ran in*, not the parent's cwd, and a dependency comes
-    // out of that same discovery result — so withholding it only made `run.root` fall
-    // back to the repo root, which mis-clustered the pane, pointed reveal-source at
-    // the wrong folder, and let the cwd preference override a declared `options.cwd`.
+    // `discoveredIn` IS inherited: it is the directory discovery ran in, not the parent's
+    // cwd, and withholding it made `run.root` fall back to the repo root.
     expect(dep.discoveredIn).toBe("/w/epi/sub");
   });
   it("keeps the parent's own identity intact", async () => {
@@ -464,10 +449,8 @@ describe("launchWithDeps — the chain", () => {
 });
 
 describe("launchWithDeps — compound tasks and background dependencies", () => {
-  // The shape this exists for, taken from a real tasks.json:
-  //   "Dev: Frontend + Backend" -> dependsOn [vite dev, uvicorn --reload], no command
-  // Both dependencies are servers that never exit. Awaiting them hung the chain
-  // forever; and the compound itself has nothing to spawn.
+  // The shape this exists for, from a real tasks.json: a compound with no command whose
+  // dependencies are servers that never exit. Awaiting them hung the chain forever.
   const server = (label: string) => run({ id: "vscode:" + label, label, background: true });
   const compound = (deps: string[]) =>
     run({ id: "vscode:dev", label: "Dev: Frontend + Backend", compound: true,
@@ -477,7 +460,6 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
     seed(server("vite dev"), server("uvicorn"));
     const p = launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", {});
     await settle();
-    // Nothing has exited and nothing ever will — yet the chain is complete.
     expect(labels()).toEqual(["vite dev", "uvicorn"]);
     await expect(p).resolves.toEqual({ ok: true, id: null });
   });
@@ -509,8 +491,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
   });
 
   it("a NON-background dependency is still waited for", async () => {
-    // The fix must not turn every dependency into fire-and-forget: "build then test"
-    // only means anything if the build's exit code is actually read.
+    // "build then test" only means anything if the build's exit code is actually read.
     seed(run({ id: "npm:build", label: "build" }));
     const p = launchWithDeps(run({ label: "test", dependsOn: ["build"] }), "epi", {});
     await settle();
@@ -522,8 +503,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
   });
 
   it("a compound nested as a dependency satisfies its parent", async () => {
-    // The bug this guards: a compound returns no pane id, and reading that absence
-    // as failure would make any chain that depends on one fail for no reason.
+    // A compound returns no pane id; that absence must not read as failure.
     seed(server("vite dev"), compound(["vite dev"]));
     const p = launchWithDeps(
       run({ label: "smoke", dependsOn: ["Dev: Frontend + Backend"] }), "epi", {});
@@ -539,9 +519,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
 
 describe("launchWithDeps — what a dependency inherits", () => {
   it("passes the discovery directory down, so a dep's root is its checkout", () => {
-    // Clearing this fell back to the repo root, which put reveal-source in the wrong
-    // folder, clustered the pane under the wrong checkout, and let the "run in repo
-    // root" preference override a dependency's own declared cwd.
+    // Falling back to the repo root clusters the pane under the wrong checkout.
     seed(run({ id: "npm:build", label: "build" }));
     void launchWithDeps(run({ dependsOn: ["build"] }), "epi", { discoveredIn: "/w/wt-feat" });
     return settle().then(() => {
@@ -556,7 +534,6 @@ describe("launchWithDeps — what a dependency inherits", () => {
     expect(launched[0].opts.forSession).toBeUndefined();
     finish("run1", 0);
     await settle();
-    // The task that owns the rule keeps it.
     expect(launched[1].opts.forSession).toBe("sess-1");
     await p;
   });
@@ -572,11 +549,8 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
   const NOW = 1_000_000 + 83_000;   // 1m 23s after the start
 
   it("freezes a finished run at its exit, not at now", () => {
-    // The bug: every repaint measured a *completed* step against Date.now(), so four
-    // steps that each took under a second all read the same ever-growing "1m 23s".
     const done = t({ exitCode: 0, endedAt: 1_000_000 + 419 }, "done");
     expect(taskStateText(done, NOW)).toBe("0s");
-    // …and it stays put as the clock moves on.
     expect(taskStateText(done, NOW + 600_000)).toBe("0s");
   });
   it("still counts up while the run is actually going", () => {
@@ -585,7 +559,6 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
   });
   it("reads bg for a background run for as long as it lives, then its duration", () => {
     expect(taskStateText(t({ background: true }), NOW)).toBe("bg");
-    // A server that finally exits is no longer "bg" — it has a real duration.
     expect(taskStateText(t({ background: true, exitCode: 0, endedAt: 1_000_000 + 60_000 }, "done"), NOW))
       .toBe("1m 0s");
   });
@@ -593,17 +566,13 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
     expect(taskStateText(t({ exitCode: 3, endedAt: NOW }, "error"), NOW)).toBe("exit 3");
   });
   it("falls back to now for a run that exited before endedAt was recorded", () => {
-    // A pane restored from an older build has no endedAt; better an approximate
-    // duration than a blank or a crash.
+    // A pane restored from an older build has no endedAt.
     expect(taskStateText(t({ exitCode: 0 }, "done"), NOW)).toBe("1m 23s");
   });
   it("says nothing for a pane that is not a run", () => {
     expect(taskStateText({ phase: "idle", kind: "agent" } as Sess, NOW)).toBe("");
   });
 
-  // The inspector's "Took" row, the sidebar column and a tiled pane's caption each had
-  // their own `Date.now() - startedAt`, and fixing two of the three is how the bug
-  // survived being "fixed". They all call this now, so pin it directly.
   describe("runElapsed — the one source every duration reads", () => {
     const r = (o: Partial<NonNullable<Sess["run"]>>) => t(o).run!;
     it("stops at the exit for a finished run, whatever the clock says", () => {
@@ -622,9 +591,7 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
 });
 
 describe("launchWithDeps — a DAG is walked once, not once per path", () => {
-  // The real shape, from a `Dev: Frontend + Backend` that launched 27 panes for 11
-  // tasks: several tasks name the same dependency, so every path to it started it
-  // again. `uv sync` ran six times, `pnpm install` and `docker compose up` four each.
+  // From a real tasks.json: several tasks name the same dependency.
   const seedDiamond = () => seed(
     run({ id: "vscode:pnpm-install", label: "pnpm install" }),
     run({ id: "vscode:fe-pw", label: "fe playwright", dependsOn: ["pnpm install"] }),
@@ -637,7 +604,6 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
     id: "vscode:dev", label: "Dev", compound: true, dependsOrder: "parallel",
     dependsOn: ["vite dev", "uvicorn"], exec: { mode: "shell", line: "" },
   });
-  // Exit whatever has started under these labels, the way the pty-exit listener does.
   const finishAll = async (...ls: string[]) => {
     for (const l of ls) for (const x of launched.filter((y) => y.r.label === l)) finish(x.id, 0);
     await settle();
@@ -647,8 +613,6 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
     seedDiamond();
     const p = launchWithDeps(dev(), "epi", {});
     await settle();
-    // Both leaves are named by two different dependents. One launch each, and the
-    // dependents wait rather than starting their own copy.
     expect(labels().sort()).toEqual(["pnpm install", "uv sync"]);
     await finishAll("pnpm install", "uv sync");
     expect(labels().sort()).toEqual(["be playwright", "fe playwright", "pnpm install", "uv sync"]);
@@ -661,10 +625,8 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
   });
 
   it("lets both dependents share ONE wait on a shared dependency", async () => {
-    // exitWaiters holds a single resolver per session id, so two dependents each
-    // calling waitForExit on the same pane would clobber one another and one branch
-    // would hang for ever. They await one promise now — if they did not, the chain
-    // below would never reach the servers.
+    // exitWaiters holds one resolver per session id, so two dependents each calling
+    // waitForExit on the same pane would clobber one another and one branch would hang.
     seedDiamond();
     const p = launchWithDeps(dev(), "epi", {});
     await settle();
@@ -682,7 +644,6 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
     await settle();
     await finishAll("uv sync");          // let the other half of the fan-out finish
     await finishAll("be playwright");
-    // The frontend half never got past its install, so no server on that side.
     expect(labels()).not.toContain("vite dev");
     await expect(p).resolves.toEqual({ ok: false, id: null });
   });
@@ -711,7 +672,6 @@ describe("findDepCycle — caught before anything launches", () => {
     expect(findDepCycle(lastRunnableById.get("a")!)).toEqual(["b", "c", "b"]);
   });
   it("does NOT mistake a diamond for a cycle", () => {
-    // The whole point: `d` is reachable by two paths and that is perfectly legal.
     seed(run({ id: "a", label: "a", dependsOn: ["b", "c"] }),
          run({ id: "b", label: "b", dependsOn: ["d"] }),
          run({ id: "c", label: "c", dependsOn: ["d"] }),

@@ -9,29 +9,16 @@
   </head>
   <body>
     <div class="app" id="app">
-      <!--
-        This header IS the title bar — there is no native one behind it (see the
-        window block in lib.rs). `deep` makes the whole strip draggable except its
-        clickable elements, which tauri's drag script excludes for us; the ⌘K bar
-        opts out explicitly because it is a <div> that listens for a click, and a
-        drag would eat the mouseup that click needs.
-      -->
+      <!-- The title bar; there is no native one (see the window block in lib.rs). `deep` makes the whole
+           strip draggable except its clickable children; the ⌘K bar is a <div> and opts out explicitly,
+           since a drag would eat the mouseup its click needs. -->
       <header class="top" data-tauri-drag-region="deep">
         <div class="brand"><div class="logo"></div><b>Episko</b></div>
         <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
-          <!--
-            Running servers. Left of the reactor because it is the calmer of the two:
-            the reactor is "something wants you now", this is "something is still up".
-            Hidden entirely when the count is zero (see renderServers).
-          -->
-          <!--
-            Telemetry down. Left of everything else and hidden unless it is actually
-            broken (see renderTelemetry), because while the local hook server is gone
-            every reading on this screen is stale and the rail says "idle" about it
-            with a straight face. The one condition where a badge has to out-shout the
-            panes it is describing.
-          -->
+          <!-- Hidden unless they have something to say. Telemetry down sits leftmost: with the hook
+               server gone every reading is stale, so it must out-shout the panes. Servers ("still up")
+               sit left of the reactor ("wants you now"). -->
           <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic">⚠</span><span id="telBadgeTxt">telemetry</span></button>
           <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
@@ -51,14 +38,8 @@
             </button>
             <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode"><span class="gl">▾</span></button>
           </div>
-          <!--
-            Sign off. Beside caffeinate because it is the other control about the
-            machine rather than about one pane — and usually the one you press when
-            you turn the cup off. A tray with something being put into it, drawn
-            rather than spelled: a glyph next to the SVG cup would read as a
-            different class of control, and the moon and power symbols that mean
-            "end of day" arrive as full-colour emoji on half the fonts we may land in.
-          -->
+          <!-- Sign off, beside caffeinate as the other machine-level control. Drawn as an SVG
+               tray like the cup: the moon and power glyphs arrive as colour emoji on some fonts. -->
           <button class="ibtn signoff" id="signoffBtn" title="Sign off · shelve your sessions" aria-label="Sign off">
             <svg class="so-ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
               <path class="so-arrow" d="M12 3.5v7.5m0 0 3-3m-3 3-3-3" />
@@ -69,13 +50,9 @@
           <button class="ibtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"><span class="gl">◐</span></button>
           <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings"><span class="gl">⚙</span></button>
         </div>
-        <!--
-          Window controls. Windows only (html.win) — macOS keeps its real traffic
-          lights, which float over this header instead. A child of the header
-          rather than of .top-right, because only there can it stretch to the full
-          40px and sit flush in the corner, which is where a thrown pointer lands.
-          The middle button swaps glyph via .maxed.
-        -->
+        <!-- Window controls, Windows only (html.win); macOS floats its traffic lights over
+             this header. A child of the header, not .top-right, so it can fill the full 40px
+             and sit flush in the corner where a thrown pointer lands. .maxed swaps the middle glyph. -->
         <div class="wctl" id="winCtl">
           <button class="wc" id="winMin" title="Minimize" aria-label="Minimize">
             <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
@@ -98,12 +75,8 @@
         <div class="railmini" id="railmini"></div>
       </aside>
 
-      <!--
-        A sibling of .stage rather than a child of it, so it can own a grid row of its
-        own that spans the stage AND the inspector (see the `head` area in styles.css).
-        The title and the six verbs all act on what is on the stage, so the panel beside
-        it starts underneath — and the row gets the whole width to lay them out in.
-      -->
+      <!-- A sibling of .stage, not a child, so it owns a grid row spanning the stage and the inspector
+           (the `head` area in styles.css): its verbs act on the stage, the inspector starts underneath. -->
       <div class="stage-head">
         <div class="st-title">
           <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
@@ -131,19 +104,11 @@
             </div>
           </div>
           <div class="ext-view" id="extPane" hidden>
-            <!--
-              One bar, two mirrors. `#extPane` shows a session running in someone
-              else's terminal AND a shelved one that is running nowhere at all, so the
-              line is written per opener (renderExtHeader / renderPastHeader in
-              ./mirror) rather than baked in — it used to say "runs in another
-              terminal" over a session that had been stopped.
-            -->
+            <!-- One bar, two mirrors (external and shelved); written per opener in ./mirror. -->
             <div class="ext-view-bar"><span class="ext-view-dot"></span><span id="extViewTxt">Read-only mirror</span></div>
             <div class="ext-body" id="extBody"></div>
           </div>
-          <!-- The project dashboard. Nothing inside it runs until a project is
-               clicked: ./dashboard fills every one of these on open, and the pane
-               stays hidden (and empty) for the whole life of the app otherwise. -->
+          <!-- The project dashboard; empty and hidden until ./dashboard fills it on open. -->
           <div class="dash-view" id="dashPane" hidden>
             <div class="dash" id="dashJotHost">
               <div id="dashPulse"></div>
@@ -162,9 +127,8 @@
       </main>
 
       <aside class="insp">
-        <!-- The 44px rail ⌘I collapses to on the dashboard, where the inspector holds
-             the only copy of History / Terminal / Run. Empty (and display:none) on
-             every other view. -->
+        <!-- The 44px rail ⌘I collapses to on the dashboard, where the inspector holds the
+             only copy of History / Terminal / Run. Empty and display:none on every other view. -->
         <div class="insp-strip" id="dashStrip"></div>
         <div class="insp-head"><span class="label">Session</span><span class="pill idle" id="iPill"><span class="pd"></span><span id="iPillTxt">–</span></span></div>
         <div class="insp-scroll" id="inspector"></div>
@@ -172,11 +136,8 @@
 
       <footer class="foot">
         <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko · open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
-        <!-- Release notes sit to the RIGHT of the version number and hug it: the glyph
-             explains that number, and at the footer's own 15px gap it would read as one
-             more independent segment. Inline SVG rather than a character — no document
-             glyph renders on both macOS and Windows, and ▤ already means "embedded
-             pane" everywhere else in the app. -->
+        <!-- The release-notes glyph hugs the version number it explains. Inline SVG: no document glyph
+             renders on both macOS and Windows, and ▤ already means "embedded pane". -->
         <span class="fvern">
           <span class="fver" id="fVer" title="Installed Episko version · click to check for updates"></span>
           <button class="clbtn" id="clBtn" title="What's new">
@@ -258,12 +219,8 @@
       </div>
     </div>
 
-    <!--
-      New session. Every answer to "where should this session run" is a directory, so
-      every answer is a row: the repo itself, its worktrees, its branches, and whatever
-      you type. One scroll region on the left, the consequences of the highlighted row
-      on the right. Head and foot are pinned — the list is the only thing that scrolls.
-    -->
+    <!-- New session. Every answer to "where should this run" is a directory, so every answer is a row.
+         Head and foot are pinned; the list is the only thing that scrolls. -->
     <div class="wtdlg" id="wtDlg" role="dialog" aria-modal="true" aria-label="New session">
       <div class="wt-head">
         <div class="wt-title"><b id="wtTitle">New session</b><span class="wt-proj" id="wtProj"></span></div>
@@ -298,12 +255,8 @@
       </div>
     </div>
 
-    <!--
-      History. Same shape as the new-session dialog (and the same .wt-* skin): one
-      scrolling list of past conversations on the left, the consequences of the
-      highlighted one — where it ran, what was said, whether it can come back — on
-      the right. Reuses the transcript mirror's .tvmsg markup for the preview.
-    -->
+    <!-- History. Same shape and .wt-* skin as the new-session dialog: the list on the left,
+         the highlighted conversation's detail on the right (reusing the mirror's .tvmsg). -->
     <div class="wtdlg histdlg" id="histDlg" role="dialog" aria-modal="true" aria-label="Session history">
       <div class="wt-head">
         <div class="wt-title"><b>History</b><span class="wt-proj" id="histCount"></span></div>
@@ -335,12 +288,8 @@
       </div>
     </div>
 
-    <!--
-      The project explorer (⌘P). One field: empty it browses the folder in the
-      breadcrumb, typed it finds across the whole project. The scope chips are filters
-      over the same rows — the working set and the Context card's touches, which is why
-      this is one list rather than a fourth idea. Read-only throughout; see ./explorer.
-    -->
+    <!-- The project explorer (⌘P): empty it browses the breadcrumb folder, typed it finds
+         across the project. The scope chips filter the same rows. Read-only; see ./explorer. -->
     <div class="expdlg" id="expDlg" role="dialog" aria-modal="true" aria-label="Project files">
       <div class="exp-top">
         <span class="exp-mag" aria-hidden="true">⌕</span>
@@ -372,8 +321,7 @@
     <div class="diffdlg" id="diffDlg" role="dialog" aria-modal="true">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span>
-          <!-- findings about the change rather than about any one file in it: said once,
-               here, rather than repeated on every source row -->
+          <!-- findings about the change as a whole, said once here rather than on every source row -->
           <span class="diff-sethealth" id="diffSetHealth" hidden></span></div>
         <!-- the findings as text, for handing to a session that can act on them -->
         <button class="diff-fold" id="diffCopy" hidden>copy findings</button>
@@ -381,19 +329,15 @@
         <button class="diff-fold" id="diffFold" hidden>expand all</button>
         <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
       </div>
-      <!-- The index and the stream, the two halves a pull request review has. The rail
-           is hidden for a single-file diff, where there is nothing to index. -->
+      <!-- The index and the stream, as a pull request review has; the rail hides for a single-file diff. -->
       <div class="diff-main">
         <nav class="diff-rail" id="diffRail" hidden aria-label="Changed files"></nav>
         <div class="diff-body" id="diffBody"></div>
       </div>
     </div>
 
-    <!--
-      Project history. Opened from a project's right-click menu, and paged: the list
-      holds the newest 60 commits and asks for the next 60 only when you scroll to the
-      end of it (graphview.ts). Head and detail strip are pinned; the list scrolls.
-    -->
+    <!-- Project history, opened from a project's context menu. Paged: 60 commits, the next 60
+         on scrolling to the end (graphview.ts). Head and detail strip are pinned. -->
     <div class="graphdlg" id="graphDlg" role="dialog" aria-modal="true" aria-label="Commit graph">
       <div class="graph-head">
         <div class="diff-title-wrap"><b id="graphTitle"></b><span class="diff-sub" id="graphSub"></span></div>
@@ -404,17 +348,12 @@
       </div>
       <div class="graph-body" id="graphBody" tabindex="0"></div>
       <div class="graph-detail" id="graphDetail"></div>
-      <!-- One commit, in full. Lives inside the dialog and covers its list, because the
-           strip below can only ever show a subject and a commit message is prose. -->
+      <!-- One commit in full, covering the list: the strip below only ever fits a subject. -->
       <div class="gcommit" id="graphCommit" tabindex="0" hidden></div>
     </div>
 
-    <!--
-      One tool call, in full. Opened from a row in the inspector's Tools timeline,
-      which keeps only the summary: the rail is ~38 characters of mono wide and every
-      payload here is an 80-120 column artifact. List of the whole ring on the left,
-      the selected call on the right (callsheet.ts).
-    -->
+    <!-- One tool call in full (callsheet.ts): the inspector rail is ~38 mono characters wide and every
+         payload is an 80 to 120 column artifact. Ring on the left, the selected call on the right. -->
     <div class="calldlg" id="callDlg" role="dialog" aria-modal="true" aria-label="Tool call">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="callTitle"></b><span class="diff-sub" id="callSub"></span></div>
@@ -449,20 +388,15 @@
       <div class="dbg-body" id="dbgBody"></div>
     </div>
 
-    <!--
-      The app's own confirmation, replacing the OS dialog `ask()` used to draw. Its own
-      backdrop rather than the shared #scrim: it opens *over* the new-session dialog and
-      the task manager, so it must not drop the backdrop those are standing on. See
-      ./confirm for the modality and the key handling.
-    -->
+    <!-- The app's own confirmation, replacing the OS `ask()`. Its own backdrop rather than the
+         shared #scrim: it opens over dialogs that are standing on that one. See ./confirm. -->
     <div class="cfm-scrim" id="cfmScrim"></div>
     <div class="cfm" id="cfmDlg" role="alertdialog" aria-modal="true" aria-labelledby="cfmTitle" aria-describedby="cfmBody">
       <div class="cfm-head"><span class="cfm-ic" id="cfmIc" aria-hidden="true"></span><b id="cfmTitle"></b></div>
       <div class="cfm-body" id="cfmBody"></div>
       <div class="cfm-foot">
-        <!-- Generic verbs, not the button labels: ⏎ always fires the right-hand button
-             and esc the left, the two are named an inch away, and "⏎ Terminate & retry ·
-             esc Leave it" is wider than the footer has. Same wording as #inDlg's. -->
+        <!-- Generic verbs, not the button labels: ⏎ always fires the right-hand button and esc the left,
+             and the labels are named an inch away. Same wording as #inDlg's. -->
         <span class="cfm-hint"><kbd>⏎</kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
         <button class="cfm-btn ghost" id="cfmNo" type="button"></button>
         <button class="cfm-btn go" id="cfmYes" type="button"></button>
@@ -481,12 +415,10 @@
     <div class="menupop costpop" id="costPop"></div>
     <div class="menupop iopop" id="ioPop"></div>
     <div class="menupop shortpop" id="shortPop"></div>
-    <!-- branch chooser for the new-session dialog (worktree base / root switch target).
-         Lives out here with its siblings, not inside #wtDlg: that dialog is
-         overflow:hidden, so an in-dialog popover would be clipped. -->
+    <!-- branch chooser for the new-session dialog (worktree base / root switch target). Out here, not
+         inside #wtDlg: that dialog is overflow:hidden and would clip it. -->
     <div class="menupop bpop" id="bPop"></div>
-  <!-- What's new. Content comes from CHANGELOG.md, bundled at build time — this
-       reaches no network, and a build can only ever describe itself. -->
+  <!-- What's new, from CHANGELOG.md bundled at build time: no network, and a build describes only itself. -->
   <div class="cl-dlg" id="clDlg">
     <div class="cl-head">
       <h3>What's new</h3><span class="cl-sub" id="clSub"></span>
@@ -502,11 +434,8 @@
     </div>
   </div>
 
-  <!-- The guided tour (src/tourui.ts). Its own z-index tier, deliberately NOT the shared
-       #scrim: it lights controls INSIDE the launcher, the project context menu and the
-       settings window, so it has to sit above all three and coexist with them. The veil
-       is pointer-events:none and the dark is one box-shadow spreading out of #tourHole,
-       so the lit control is the LIVE control. -->
+  <!-- The guided tour (src/tourui.ts). Its own z-index tier, never the shared #scrim; the veil is
+       pointer-events:none, so the lit control is the live one (docs/tour.md). -->
   <div class="tour-veil" id="tourVeil"><div class="tour-hole" id="tourHole"></div></div>
   <div class="tour-card" id="tourCard" role="dialog" aria-label="Guided tour"></div>
   </body>

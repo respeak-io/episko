@@ -10,15 +10,13 @@ import {
   usageWindow, uSum, type DayUsage, type UDay,
 } from "../src/usage";
 
-// Local wall-clock, not an epoch: every key here is a *calendar* day in the user's
-// own timezone, so the fixtures are built the same way the code reads them.
+// Local wall-clock: every key is a calendar day in the user's own timezone.
 const noon = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12, 0, 0);
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(noon(2027, 3, 14));
-  // The two rollup records are module-level state the app keeps for its whole run;
-  // tests reset them in place, since the exported binding is the live object.
+  // usage and usageDetail are the live module bindings, so they are emptied in place.
   for (const k of Object.keys(usage)) delete usage[k];
   for (const k of Object.keys(usageDetail)) delete usageDetail[k];
   setTokenDays([]);
@@ -47,8 +45,7 @@ describe("todayKey / uDkey — the calendar-day key both stores are keyed by", (
     expect(uDkey(new Date(2027, 0, 5))).toBe("2027-01-05");
   });
   it("agrees with uDkey, so the rollup and the day window join at all", () => {
-    // usageWindow looks costs up by uDkey; addUsage files them under todayKey. If
-    // these two ever disagreed, today's spend would silently vanish from the panel.
+    // usageWindow reads by uDkey and addUsage files by todayKey; a disagreement drops today's spend.
     expect(todayKey()).toBe(uDkey(new Date()));
   });
   it("reads the local day, not UTC's", () => {
@@ -73,31 +70,51 @@ describe("costDelta — what a running total owes the day", () => {
     expect(costDelta("a", 12)).toBeCloseTo(2, 10);
   });
   it("survives the relaunch that resume performs — the pane changes, the total doesn't", () => {
-    // The regression: a drift `Move session` kills the pane and relaunches it seconds
-    // later, and Claude carries its running total across. Keyed by the pane this read
-    // as $28 of fresh spend; keyed by the conversation it reads as the $2 it was.
+    // A drift Move session relaunches the pane seconds later and Claude carries its total across.
     costDelta("conv", 28);
     expect(costDelta("conv", 30)).toBeCloseTo(2, 10);
   });
+  it("lets two live panes share a conversation without booking each other's totals", () => {
+    // Two live panes on one conversation report independent counters; each must measure
+    // against its own last reading, or every lower reading re-books the whole total.
+    expect(costDelta("conv", 10, true, "p1")).toBe(10);
+    expect(costDelta("conv", 0.5, true, "p2")).toBe(0.5); // p2's own counter from ~0, not a reset of p1's
+    expect(costDelta("conv", 10.2, true, "p1")).toBeCloseTo(0.2, 10); // p1 unmoved by p2's lower reading
+    expect(costDelta("conv", 0.7, true, "p2")).toBeCloseTo(0.2, 10);
+  });
+  it("hands a conversation's tip to a pane it has never met — the restore path", () => {
+    // A restored pane has a new id but Claude carries the total across; measure from the tip.
+    costDelta("conv", 100, true, "p1");
+    expect(costDelta("conv", 100.2, true, "p2")).toBeCloseTo(0.2, 10);
+  });
+  it("keeps the per-pane split across a reboot, and sheds a corrupt one to the tip", async () => {
+    costDelta("conv", 10, true, "p1");
+    costDelta("conv", 0.5, true, "p2");
+    vi.resetModules();
+    const { costDelta: booted } = await import("../src/usage");
+    expect(booted("conv", 0.7, true, "p2")).toBeCloseTo(0.2, 10); // p2's baseline, not p1's tip
+    // And an entry whose `o` was hand-mangled still boots, seeding from `t` alone.
+    store.set("cc-cost-base", JSON.stringify({ conv: { t: 28, at: Date.now(), o: "junk" } }));
+    vi.resetModules();
+    const { costDelta: rebooted } = await import("../src/usage");
+    expect(rebooted("conv", 30, true, "p3")).toBeCloseTo(2, 10);
+  });
   it("treats a drop as the counter restarting, and follows it down", () => {
-    // /clear, /compact, or a cold start: the new reading is all fresh spend, and the
-    // next increment must be measured from there rather than from the stale high.
+    // /clear, /compact or a cold start: the new reading is all fresh spend.
     costDelta("conv", 40);
     expect(costDelta("conv", 0.5)).toBe(0.5);
     expect(costDelta("conv", 1.5)).toBeCloseTo(1, 10);
   });
   it("persists the baseline, so quitting and restoring doesn't re-book the total", () => {
-    // The half a run-scoped map couldn't cover. `cc-usage` is localStorage and survives
-    // the quit; a baseline that didn't meant the restored pane's first reading met an
-    // empty map and paid the day twice — the same bug, by the commonest route to it.
+    // cc-usage survives the quit; a run-scoped baseline met an empty map on restore and
+    // paid the day twice.
     costDelta("conv", 28);
     expect(store.get("cc-cost-base")).toContain("conv");
     const fresh = new Map(Object.entries(JSON.parse(store.get("cc-cost-base")!)));
     expect((fresh.get("conv") as { t: number }).t).toBe(28);
   });
   it("re-reads a persisted baseline on the next boot", async () => {
-    // A real restart, as far as a unit test can stage one: seed the key, then evaluate
-    // the module again. `conv` owes the increment, not the carried-over total.
+    // A restart, as far as a unit test can stage one: seed the key and evaluate the module again.
     store.set("cc-cost-base", JSON.stringify({ conv: { t: 28, at: Date.now() } }));
     vi.resetModules();
     const { costDelta: booted } = await import("../src/usage");
@@ -139,8 +156,7 @@ describe("modelFamily — collapsing display names to a tier", () => {
 
 describe("addUsage — the daily $ rollup", () => {
   it("ignores anything that isn't a positive delta", () => {
-    // The caller passes cost - (s.cost ?? 0); a repeated statusLine gives 0, and a
-    // session whose cost resets would give a negative. Neither is new spend.
+    // A repeated statusLine gives a delta of 0 and a reset a negative one; neither is new spend.
     addUsage(0, sess({}));
     addUsage(-1, sess({}));
     addUsage(NaN, sess({}));
@@ -165,8 +181,7 @@ describe("addUsage — the daily $ rollup", () => {
     expect(usageDetail).toEqual({});
   });
   it("counts the total but records no split for a non-agent pane", () => {
-    // Shell and task panes have no telemetry and no model — attributing their
-    // (nonexistent) cost to a model family would be an invention.
+    // Shell and task panes have no model; attributing to a family would be an invention.
     addUsage(2, sess({ kind: "shell" }));
     addUsage(3, sess({ kind: "task" }));
     expect(usage["2027-03-14"]).toBe(5);
@@ -198,8 +213,7 @@ describe("addUsage — the daily $ rollup", () => {
       expect(usageDetail["2027-03-14"].sess!.b.usd).toBe(1);
     });
     it("re-stamps the title, because a session earns its first dollar before it has one", () => {
-      // Claude names the conversation from its content, so the pane starts untitled and
-      // is already spending. Write-once here left the busiest rows permanently unnamed.
+      // Claude names a conversation from its content, so the pane is spending before it has a title.
       addUsage(1, sess({ id: "a", title: "" }));
       addUsage(1, sess({ id: "a", title: "Fix the router" }));
       expect(usageDetail["2027-03-14"].sess!.a.title).toBe("Fix the router");
@@ -229,9 +243,8 @@ describe("addUsage — the daily $ rollup", () => {
     });
 
     it("does NOT rewrite the 25KB split on every delta", () => {
-      // Measured on a real store: `cc-usage-detail` is 24,586 chars against
-      // `cc-usage`'s 980, and both were written on the same trigger — a statusLine per
-      // session every 3s. Attribution can lag by a minute; money cannot.
+      // cc-usage-detail is ~25x the size of cc-usage and both landed on every statusLine;
+      // attribution can lag by a minute, money cannot.
       addUsage(1, sess({}));            // the first write establishes the key
       store.clear();
       addUsage(2, sess({}));
@@ -264,8 +277,7 @@ describe("addUsage — the daily $ rollup", () => {
     });
 
     it("caps both rollups by day, so a daily key cannot grow forever", () => {
-      // 33 days after two months and unbounded; the Usage panel's widest range is 12
-      // months, so a year and a bit is everything anything reads.
+      // The Usage panel's widest range is 12 months, so a year and a bit is all anything reads.
       for (let i = 0; i < 425; i++) {
         vi.setSystemTime(new Date(2027, 0, 1 + i, 12, 0, 0));
         addUsage(1, sess({}));
@@ -288,9 +300,8 @@ describe("costDelta — what it persists, and when", () => {
   });
 
   it("writes NOTHING when a repeated statusLine reports the same total", () => {
-    // The statusLine fires every 3s per session whether or not anything was spent, so
-    // this used to write the whole map to disk once a second on an idle fleet — the
-    // same bytes, for a change of `at` alone, which only orders eviction.
+    // The statusLine fires every 3s per session whether or not anything was spent;
+    // a change of `at` alone only orders eviction.
     costDelta("conv", 5);
     store.clear();
     expect(costDelta("conv", 5)).toBe(0);
@@ -320,17 +331,15 @@ describe("daySpend — where today's money went", () => {
   });
 
   it("names what the split cannot account for rather than dropping it", () => {
-    // The whole reason this row exists: a list that summed lower than the footer segment
-    // it opened from would read as money going missing.
+    // A list summing lower than the footer segment it opened from reads as money going missing.
     const d = daySpend(detail({ projects: { epi: 2 } }), "2027-03-14", 5);
     expect(d.projects.at(-1)).toEqual({ key: "", label: "unattributed", sub: "", usd: 3 });
     expect(d.split).toBe(2);
   });
 
   it("gives the SESSION list its own remainder — the two splits fall short separately", () => {
-    // The day you upgrade, exactly: the day's total is already banked and the projects
-    // split with it, while a per-session split introduced by that build starts from
-    // whatever is spent after it. Covering only projects left this list quietly short.
+    // The day a build introduces the session split: the project split is already whole,
+    // the session split starts from that moment.
     const d = daySpend(detail({
       projects: { epi: 5 },
       sess: { a: { usd: 2, title: "late starter", project: "epi" } },
@@ -341,16 +350,14 @@ describe("daySpend — where today's money went", () => {
   });
 
   it("does not invent a remainder out of floating-point dust", () => {
-    // Both figures are sums of the same deltas in a different order, so a fully
-    // attributed day still differs in the last place. A "$0.00 unattributed" row is
-    // noise that reads as a bug.
+    // Both figures sum the same deltas in a different order, so a fully attributed day
+    // still differs in the last place.
     const d = daySpend(detail({ projects: { epi: 0.1 + 0.2 } }), "2027-03-14", 0.3);
     expect(d.projects.map((r) => r.label)).toEqual(["epi"]);
   });
 
   it("leaves a split with nothing in it empty rather than adding a lone mystery row", () => {
-    // A day that predates the record entirely. One anonymous row claiming the whole day
-    // reads as a session nobody can identify; the reader says so in words instead.
+    // A day that predates the record: one anonymous row would read as a session nobody can identify.
     const d = daySpend({}, "2027-03-14", 12);
     expect(d.projects).toEqual([]);
     expect(d.sessions).toEqual([]);
@@ -368,8 +375,7 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
   });
 
   it("clamps a drop to zero instead of booking a negative day", () => {
-    // Not an edge case — every Episko launch is one. The counters belong to processes
-    // this run spawned, so they start near zero and the reading goes *down*.
+    // Every launch is one: the counters belong to processes this run spawned and start near zero.
     expect(ioDelta({ r: 1, w: 0 }, { r: 900, w: 400 })).toEqual({ r: 0, w: 0 });
   });
 
@@ -377,14 +383,13 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     addIo({ r: 10, w: 4 });
     addIo({ r: 25, w: 9 });
     expect(dayIo["2027-03-14"]).toEqual({ r: 25, w: 9 });
-    flushIo(); // the second reading is inside the write floor — see the tests below
+    flushIo(); // the second reading is inside the write floor
     expect(JSON.parse(store.get("cc-io")!)["2027-03-14"]).toEqual({ r: 25, w: 9 });
   });
 
   it("spreads an increment measured across a midnight over both days", () => {
-    // noon → noon is 24h, half either side of midnight, so the 20/6 increment splits
-    // evenly. Booking all of it to the 15th (what this did before) is the bug: the
-    // bytes were churned across both days and only the *poll* happened on the second.
+    // noon → noon is 24h, half either side of midnight, so the increment splits evenly;
+    // the bytes were churned across both days and only the poll landed on the second.
     addIo({ r: 10, w: 4 });
     vi.setSystemTime(noon(2027, 3, 15));
     addIo({ r: 30, w: 10 });
@@ -407,8 +412,7 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     expect(store.get("cc-io")).toBeUndefined();
   });
 
-  // The poll behind this runs every 4s for as long as a session is on stage. Persisting
-  // every reading would make a *disk-I/O meter* one of the app's heaviest writers.
+  // The poll runs every 4s while a session is on stage; a disk-I/O meter must not be a heavy writer.
   it("keeps accumulating in memory but does not write on every poll", () => {
     addIo({ r: 10, w: 4 });   // the first write establishes the key
     store.clear();
@@ -429,8 +433,7 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
   });
 
   it("writes across a midnight regardless of the floor", () => {
-    // Nothing adds to yesterday again, so a throttled write would drop its last minutes
-    // permanently rather than merely late.
+    // Nothing adds to yesterday again, so a throttled write would drop its last minutes for good.
     addIo({ r: 10, w: 4 });
     store.clear();
     vi.setSystemTime(noon(2027, 3, 15));
@@ -451,10 +454,8 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
     expect(store.get("cc-io")).toBeUndefined();
   });
 
-  // The constraint the heartbeat has to meet: a disk meter must not become a heavy
-  // writer. Sampling more often must not persist more often — the floor decides that,
-  // not the caller — so adding a 60s sampler cannot cost more than the 4s poll already
-  // does, and on an idle fleet costs nothing at all.
+  // The floor decides persistence, not the caller: a 60s sampler must not write more than
+  // the 4s poll, and nothing at all on an idle fleet.
   it("does not write more often at the heartbeat's cadence than at the on-stage poll's", () => {
     const HOUR = 3600_000;
     const writesOver = (stepMs: number) => {
@@ -485,8 +486,7 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
   });
 
   it("sums every recorded day, and answers NULL when nothing is recorded", () => {
-    // Not `{r:0,w:0}`: an empty rollup means we did not keep this, and a confident zero
-    // would claim the disk sat idle. The row renders the two differently.
+    // Not `{r:0,w:0}`: a confident zero would claim the disk sat idle; the row renders the two apart.
     expect(ioTotal()).toBeNull();
     addIo({ r: 10, w: 4 });
     vi.setSystemTime(noon(2027, 3, 15));
@@ -496,12 +496,8 @@ describe("ioDelta / addIo — banking a counter that restarts", () => {
   });
 });
 
-// A Claude Code self-update writes a whole new ~290 MiB binary, and the process that does
-// it is one of ours — so the kernel charges those bytes to a session and the day reads as
-// 300 MiB of agent churn, thirty times a hard day's real work, on the first launch after a
-// few days away. Measured on this machine (2026-08-16): 292.8 MiB written by the session's
-// own pid within a minute of app start, its counter still afterwards, while Episko's own
-// process wrote 0.8 MiB. The size of the binary on disk is exactly how much to take back.
+// A Claude Code self-update writes a ~290 MiB binary from a pid the kernel charges to a
+// session; the binary's size on disk is what to take back (docs/architecture.md).
 describe("addIo — a claude self-update is not session churn", () => {
   const KEY = "2027-03-14";
   const INSTALLED = [{ name: "2.1.232", mb: 292 }];
@@ -510,9 +506,7 @@ describe("addIo — a claude self-update is not session churn", () => {
   it("counts a binary that arrived or grew, and nothing else", () => {
     expect(installGrown(UPDATED, new Map([["2.1.232", 292]]))).toBe(293);   // arrival
     expect(installGrown([{ name: "a", mb: 10 }], new Map([["a", 4]]))).toBe(6); // in place
-    // A pruned version frees space; it never wrote anything. And the first reading of a
-    // run is a baseline, never a credit: what was installed before Episko started was
-    // never charged to a process we measure.
+    // A pruned version never wrote anything, and a run's first reading is a baseline, never a credit.
     expect(installGrown([{ name: "a", mb: 10 }], new Map([["a", 10], ["old", 280]]))).toBe(0);
     expect(installGrown(UPDATED, null)).toBe(0);
   });
@@ -527,8 +521,7 @@ describe("addIo — a claude self-update is not session churn", () => {
   });
 
   it("takes the bytes back out of the day when they were booked before the binary appeared", () => {
-    // The flush of a 290 MiB file and its appearance in the directory need not land in the
-    // same four-second window, and write-then-rename puts them in this order.
+    // Write-then-rename: the bytes can land a poll before the version appears in the directory.
     addIo({ r: 1, w: 1 }, INSTALLED);
     vi.advanceTimersByTime(4000);
     addIo({ r: 3, w: 300 }, INSTALLED);
@@ -555,9 +548,8 @@ describe("addIo — a claude self-update is not session churn", () => {
   });
 
   it("bounds the discount by what this run actually reported", () => {
-    // The update was installed by a claude running *outside* Episko: those bytes were
-    // never charged to a session of ours, so there is next to nothing to give back — and
-    // an earlier run's real churn must not be handed over to pay for it.
+    // An update installed by a claude outside Episko was never charged to a session;
+    // an earlier run's real churn must not pay for it.
     dayIo[KEY] = { r: 0, w: 500 };
     addIo({ r: 1, w: 1 }, INSTALLED);
     vi.advanceTimersByTime(4000);
@@ -566,9 +558,7 @@ describe("addIo — a claude self-update is not session churn", () => {
   });
 
   it("drops a credit nothing ever claims instead of discounting later work", () => {
-    // Otherwise a foreign update leaves a standing 290 MiB discount against whatever a
-    // session writes next — which is exactly the failure a size threshold would have had
-    // all the time, and it would hide the runaway agent this meter exists to show.
+    // A standing 290 MiB discount would hide the runaway agent this meter exists to show.
     addIo({ r: 1, w: 1 }, INSTALLED);
     vi.advanceTimersByTime(4000);
     addIo({ r: 1, w: 1 }, UPDATED);
@@ -582,16 +572,14 @@ describe("addIo — a claude self-update is not session churn", () => {
     vi.advanceTimersByTime(4000);
     const bank = addIo({ r: 1, w: 294 }, UPDATED);
     expect(bank).toEqual({ credited: 293, windowMs: 4000 });
-    // 293 MiB over 4s is the ~73 MiB/s bar the meter would otherwise draw — beside a
-    // total that has already disowned those bytes.
+    // 293 MiB over 4s is a ~73 MiB/s bar beside a total that has already disowned those bytes.
     expect(ioCreditBps(bank)).toBeCloseTo((293 * 1024 * 1024) / 4, 0);
     expect(ioCreditBps({ credited: 5, windowMs: 0 })).toBe(0); // a run's first reading
   });
 
   it("does not write on every poll while a 290 MiB binary is still landing", () => {
-    // The discount must not become the heavy writer the floor exists to prevent. A credit
-    // spent on the current window takes nothing out of a stored day, so it earns no early
-    // write — only the retro half does, and that happens once.
+    // A credit spent on the current window takes nothing out of a stored day, so it earns
+    // no early write; only the retro half does, once.
     addIo({ r: 1, w: 1 }, INSTALLED);
     store.clear();
     const spy = vi.spyOn(localStorage, "setItem");
@@ -605,9 +593,7 @@ describe("addIo — a claude self-update is not session churn", () => {
   });
 
   it("leaves an install it cannot see alone", () => {
-    // npm and Homebrew have no versions directory, and their updates are charged to the
-    // package manager rather than to a session, so the backend sends an empty list and
-    // every figure is the raw reading.
+    // npm and Homebrew installs have no versions directory, so the backend sends an empty list.
     addIo({ r: 1, w: 1 }, []);
     vi.advanceTimersByTime(4000);
     addIo({ r: 1, w: 300 }, []);
@@ -630,8 +616,7 @@ describe("splitIo — which day an increment belongs to", () => {
   });
 
   it("weights each day by its share of the window, not by which one the poll landed in", () => {
-    // 18:00 → 06:00: six hours before midnight, six after. This is the shape of the real
-    // failure — an evening of churn read for the first time the next morning.
+    // 18:00 → 06:00, six hours either side of midnight: an evening of churn read the next morning.
     expect(splitIo({ r: 100, w: 40 }, at(2027, 3, 14, 18), at(2027, 3, 15, 6)))
       .toEqual([["2027-03-14", { r: 50, w: 20 }], ["2027-03-15", { r: 50, w: 20 }]]);
   });
@@ -643,8 +628,7 @@ describe("splitIo — which day an increment belongs to", () => {
   });
 
   it("sums to exactly the increment, so the rollup cannot drift from the counter", () => {
-    // A share that does not divide cleanly: the remainder rides on the last bucket
-    // rather than being shed a float at a time, once per poll, forever.
+    // The remainder rides on the last bucket rather than being shed a float at a time, every poll.
     const d = { r: 1 / 3, w: 7 };
     const parts = splitIo(d, at(2027, 3, 14, 5), at(2027, 3, 16, 19));
     const r = parts.reduce((a, [, p]) => a + p.r, 0);
@@ -654,8 +638,7 @@ describe("splitIo — which day an increment belongs to", () => {
   });
 
   it("refuses to smear across a window no polling gap explains", () => {
-    // A clock jump or a machine that slept for a month. Spreading over it would invent
-    // activity on days the app was not running; the end day is where the doubt goes.
+    // A clock jump or a month asleep: spreading would invent activity; the doubt goes on the end day.
     const parts = splitIo({ r: 10, w: 5 }, at(2027, 1, 1), at(2027, 3, 14, 12));
     expect(parts.length).toBeLessThanOrEqual(8);
     expect(parts[parts.length - 1][0]).toBe("2027-03-14");
@@ -667,17 +650,14 @@ describe("splitIo — which day an increment belongs to", () => {
   });
 });
 
-// Why the I/O row can be clicked and not appear to change. The three windows really do
-// coincide early on, and the note is the only thing standing between "correct" and
-// "this button is broken".
+// The three I/O windows really do coincide early on; the note is what separates "correct"
+// from "this button is broken".
 describe("ioSameNote — the three I/O windows reading alike", () => {
   const A = "1.0 MB read · 2.0 MB written";
   const B = "9.0 MB read · 3.0 MB written";
 
   it("explains a first day, where all three are the same by construction", () => {
-    // `all` == `today` because one day is recorded; `run` == `today` because ioDelta
-    // banks the whole counter on the first poll. Both are right, and together they make
-    // every position of the control read identically.
+    // One recorded day makes all == today; ioDelta banking the whole first poll makes run == today.
     const n = ioSameNote(A, A, A, 1);
     expect(n).toMatch(/only day recorded/);
     expect(n).toMatch(/this run/);
@@ -700,8 +680,7 @@ describe("ioSameNote — the three I/O windows reading alike", () => {
   });
 
   it("compares what is rendered, so a sub-unit difference is still 'the same'", () => {
-    // The reader sees `fmtMb` output, not floats. Two figures that round together are
-    // one figure as far as "why didn't it change?" is concerned.
+    // The reader sees `fmtMb` output, not floats; two figures that round together are one figure.
     expect(ioSameNote(A, A, A, 2)).not.toBeNull();
   });
 });
@@ -751,12 +730,9 @@ describe("usageWindow — joining the rollup to the scanned tokens", () => {
     expect(uSum(w, (d) => d.tok)).toBe(1);
   });
 
-  // A calendar walk (setDate) and a 24h-millisecond walk agree everywhere except
-  // across a DST transition, where subtracting 86400000ms from local midnight lands
-  // at 23:00 the day *before* — so the short day drops out of the window and its
-  // neighbour appears twice. Node honours a mid-run TZ change, so we can pin a zone
-  // that actually observes DST; where it doesn't take, the case is unobservable and
-  // the test says "skipped" rather than passing on nothing.
+  // A 24h-millisecond walk lands at 23:00 the day before across a DST spring-forward, so
+  // the short day drops out of the window. Node honours a mid-run TZ change; where the
+  // zone does not take, the case is unobservable and the test skips rather than passing.
   const dstZoneTakes = (() => {
     const was = process.env.TZ;
     process.env.TZ = "America/New_York";
@@ -789,8 +765,7 @@ describe("uSum / uModels — the two summaries the panel builds on", () => {
     expect(uSum([], (d) => d.cost)).toBe(0);
   });
   it("uModels sums per family across days and keeps all four keys present", () => {
-    // The bar chart indexes by a fixed key set, so a family with no tokens must
-    // read 0 rather than be missing.
+    // The bar chart indexes by a fixed key set; a family with no tokens must read 0, not be missing.
     const w: UDay[] = [
       { key: "a", cost: 0, tok: 0, u: day("a", { opus: 1, sonnet: 2 }) },
       { key: "b", cost: 0, tok: 0, u: day("b", { opus: 4, other: 8 }) },

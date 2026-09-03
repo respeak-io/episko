@@ -1,43 +1,24 @@
-// Shared notes — `.episko/notes.toml`, the committable half of the dashboard's jot box.
-//
-// WHY BOTH HALVES EXIST. A note starts as a half-formed thought, and half-formed
-// thoughts are not a teammate's business — so capture is personal (`localStorage`, see
-// ./notes.ts) and stays that way until you decide otherwise. Promoting one writes it
-// here, where it is committed, diffable, and readable by a colleague who never opens
-// Episko. That is the same split the app draws everywhere else: **personal preference
-// in `cc-*`, project fact in `.episko/`.**
-//
-// Sharing needs *git*, not GitHub — this is a file, and a file only means anything to
-// a team if it can be committed. A repo with a GitLab remote, or no remote at all,
-// shares exactly as well as one on GitHub.
-//
-// `toml_edit` rather than a serialize-the-whole-file round trip, like `tasks.rs`: the
-// file is meant to be hand-editable, and a colleague's comment or ordering must
-// survive Episko touching it.
+//! Shared notes: `.episko/notes.toml`, the committable half of the dashboard's jot box. Written
+//! through `toml_edit` so a colleague's hand edits survive; capture stays personal (./notes.ts).
+//! Shared through git, not GitHub: a committed file works on any remote or none.
 
 use std::path::{Path, PathBuf};
 
-/// One shared note. `id` is the frontend's own id, so promoting and demoting the same
-/// note is idempotent rather than producing a duplicate on the second try.
+/// One shared note. `id` is the frontend's own, so promoting and demoting the same note is idempotent.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct SharedNote {
     pub id: String,
     pub text: String,
-    /// Who wrote it. The list is a team artifact, so an unattributed row would raise
-    /// "whose is this?" on every read.
     pub who: String,
-    /// ISO-8601, day resolution — an hour adds nothing and churns the diff.
-    pub at: String,
+    pub at: String,  // ISO-8601, day resolution; an hour only churns the diff
 }
 
 fn notes_path(root: &str) -> PathBuf {
     Path::new(root).join(".episko").join("notes.toml")
 }
 
-/// Everything in the project's shared list. A missing or malformed file is an empty
-/// list, never an error: the same forgiving-on-read stance `tasks.rs` takes with a
-/// broken `tasks.toml`, and for the same reason — one bad edit must not take a
-/// feature away from the whole team.
+/// A missing or malformed file reads as an empty list, never an error: one bad edit must
+/// not take the feature away from the whole team (the stance `tasks.rs` takes too).
 #[tauri::command]
 pub(crate) fn list_shared_notes(root: String) -> Vec<SharedNote> {
     let Ok(text) = std::fs::read_to_string(notes_path(&root)) else { return vec![] };
@@ -59,18 +40,22 @@ pub(crate) fn list_shared_notes(root: String) -> Vec<SharedNote> {
         .collect()
 }
 
-/// Promote a note into the project (`share = true`) or take it back out.
-///
-/// `create` gates the very first write, because a new committable file in someone's
-/// repo is a real side effect — the same stance `tasks.rs` takes with `tasks.toml` and
-/// `summarize.rs` with `digest.md`.
+/// Promote a note into the project (`share = true`) or take it back out. `create` gates
+/// the first write: a new committable file in someone's repo is a real side effect.
 #[tauri::command]
 pub(crate) fn set_shared_note(
     root: String, id: String, text: String, who: String, at: String, share: bool, create: bool,
 ) -> Result<(), String> {
     let path = notes_path(&root);
-    if !path.is_file() && !create {
-        return Err("no .episko/notes.toml yet".into());
+    if !path.is_file() {
+        // Only sharing can want the file created. Un-sharing what no file records is
+        // already true, so it succeeds as a no-op rather than reporting a missing file.
+        if !share {
+            return Ok(());
+        }
+        if !create {
+            return Err("no .episko/notes.toml yet".into());
+        }
     }
     if share && text.trim().is_empty() {
         return Err("an empty note is not worth sharing".into());
@@ -81,8 +66,7 @@ pub(crate) fn set_shared_note(
         doc["note"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
     }
     let arr = doc["note"].as_array_of_tables_mut().ok_or("note is not an array of tables")?;
-    // Drop any existing entry for this id first: sharing twice must update rather than
-    // duplicate, and un-sharing is simply the removal.
+    // Sharing twice must update rather than duplicate; un-sharing is simply the removal.
     arr.retain(|t| t.get("id").and_then(|x| x.as_str()) != Some(id.as_str()));
     if share {
         let mut t = toml_edit::Table::new();
@@ -97,8 +81,7 @@ pub(crate) fn set_shared_note(
     }
     let dir = path.parent().ok_or("bad root")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    // Temp-then-rename: a crash mid-write must not truncate a file under version
-    // control.
+    // Temp-then-rename: a crash mid-write must not truncate a file under version control.
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
@@ -144,9 +127,16 @@ mod tests {
     }
 
     #[test]
+    fn unsharing_with_no_file_is_a_no_op_rather_than_an_error() {
+        let d = scratch_dir();
+        let r = root_of(&d);
+        set_shared_note(r.clone(), "n1".into(), String::new(), String::new(), String::new(), false, false).unwrap();
+        assert!(!d.join(".episko").join("notes.toml").exists(), "and it creates nothing to say so");
+    }
+
+    #[test]
     fn a_hand_written_comment_survives_a_write() {
-        // The file is meant to be hand-editable. toml_edit is what keeps that true —
-        // a serialize-the-whole-struct round trip would eat this.
+        // toml_edit is what keeps the file hand-editable; a whole-struct round trip would eat this.
         let d = scratch_dir();
         let r = root_of(&d);
         std::fs::create_dir_all(d.join(".episko")).unwrap();
