@@ -224,6 +224,22 @@ export function anchoredPrompts(s: Sess): Set<string> {
   return out;
 }
 
+// The line is marked whether or not the viewport moved: `scrollToLine` clamps at `ybase`, so a
+// question already on screen scrolls nowhere and the click reads as dead (docs/sessions.md).
+// A selection, not `registerDecoration`: that is proposed API and throws without
+// `allowProposedApi`. This one is stable and every renderer draws it.
+const FLASH_MS = 1600;
+let flash: number | undefined;
+function flashLine(term: Terminal, line: number) {
+  clearTimeout(flash);
+  term.selectLines(line, line);
+  const ours = JSON.stringify(term.getSelectionPosition() ?? null);
+  // Only clear what we made: by now the pointer may have selected something to copy.
+  flash = window.setTimeout(() => {
+    if (JSON.stringify(term.getSelectionPosition() ?? null) === ours) term.clearSelection();
+  }, FLASH_MS);
+}
+
 export function scrollToPrompt(s: Sess, id: string): boolean {
   let m = liveMark(s, id);
   const p = s.prompts.find((x) => x.id === id);
@@ -233,7 +249,12 @@ export function scrollToPrompt(s: Sess, id: string): boolean {
     if (y == null) p.lost = true; else m = anchorAt(s, id, y);
   }
   if (!s.term || !m) return false;
+  const before = s.term.buffer.active.viewportY;
   s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
+  // Never let the marking take the navigation down with it, whatever the renderer is doing.
+  try { flashLine(s.term, m.line); } catch (e) { dlog("warn", `outline: could not mark the line (${e})`); }
+  // One line per click, and the one that would have answered "why did nothing happen".
+  dlog("info", `outline jump · line ${m.line} · view ${before} → ${s.term.buffer.active.viewportY}`);
   return true;
 }
 
