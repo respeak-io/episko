@@ -172,6 +172,43 @@ export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
   }, true);
 }
 
+// ---------- outline anchors ----------
+// Where in the scrollback a question was asked. A marker rather than a line number: xterm
+// tracks it as the buffer trims and disposes it when that line finally scrolls out, which
+// is the only honest way to know a jump has expired.
+
+// The marker lands on the input box's cursor row, and the REPL then redraws the message
+// over it, so the jump aims a little above rather than exactly at the line.
+const JUMP_LEAD = 3;
+
+export function markPrompt(s: Sess, id: string) {
+  if (!s.term) return;
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  const live = new Set(s.prompts.map((p) => p.id));
+  for (const [k, m] of marks) if (m.isDisposed || !live.has(k)) marks.delete(k);
+  const m = s.term.registerMarker(0);
+  if (m) marks.set(id, m);
+}
+
+const liveMark = (s: Sess, id: string) => {
+  const m = s.promptMarks?.get(id);
+  return m && !m.isDisposed && m.line >= 0 ? m : null;
+};
+
+/** The prompts still reachable in this pane's buffer; the rest render as out of reach. */
+export function anchoredPrompts(s: Sess): Set<string> {
+  const out = new Set<string>();
+  if (s.term) for (const p of s.prompts) if (liveMark(s, p.id)) out.add(p.id);
+  return out;
+}
+
+export function scrollToPrompt(s: Sess, id: string): boolean {
+  const m = liveMark(s, id);
+  if (!s.term || !m) return false;
+  s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
+  return true;
+}
+
 // ---------- clickable links ----------
 // The one surface where a path or URL is only text (the Context card cannot see what Bash did), so
 // wired on every pane. OSC 8 goes to `options.linkHandler` and stays http(s)-only, since a program

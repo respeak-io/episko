@@ -5,7 +5,7 @@
 import { absoluteTouchPath, bumpTally, noteTouch } from "./files";
 import {
   abbr, beginAgentTurn, closeActivity, finishAgentTurn, noteAgentTouch,
-  openActivity, pushHist, setPhase,
+  openActivity, pushHist, recordPrompt, setPhase,
 } from "./phase";
 import { addAgentTokenUsage, addUsage, costDelta } from "./usage";
 import { queuePermission, removePermission } from "./permissions";
@@ -22,6 +22,9 @@ export type AgentEvent =
   | { type: "thread"; id: string; model?: string; title?: string }
   | { type: "thread-status"; status: string; waiting: boolean }
   | { type: "turn-started" }
+  // Your own message. Separate from turn-started: a turn can open without one (a resume,
+  // a retry), and the outline lists questions rather than turns.
+  | { type: "prompt"; text: string }
   | { type: "turn-completed"; failed: boolean; detail: string; durationMs: number | null }
   | { type: "activity-started"; id: string; tool: string; arg: string; input: string; desc: string }
   | { type: "activity-completed"; id: string; tool: string; input: string; inputData: any; output: string; failed: boolean; files: AgentFileTouch[] }
@@ -50,6 +53,7 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       else if (event.status === "idle" && (s.phase === "ended" || !previousEvent)) setPhase(s, "idle");
       break;
     case "turn-started": beginAgentTurn(s); break;
+    case "prompt": recordPrompt(s, event.text); break;
     case "turn-completed":
       if (event.durationMs != null) s.durMs = event.durationMs;
       finishAgentTurn(s, event.failed, event.detail);

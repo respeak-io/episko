@@ -573,6 +573,13 @@ html.win .wctl { display: flex; }
 
 /* --- vital signs header (state · dwell · current tool) --- */
 .vital { display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
+/* The context ring rides in this card rather than one of its own (see ./inspectorview). */
+.vital .vrow { display: flex; align-items: center; gap: 10px; }
+.vital .vmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.vital .vgauge { flex: none; display: grid; grid-template-columns: 34px; grid-template-rows: 34px auto; justify-items: center; gap: 3px; }
+.vital .vgauge .mini-ring { grid-area: 1 / 1; }
+.vital .vgauge .gnum { grid-area: 1 / 1; align-self: center; font: 700 11px var(--font-mono); letter-spacing: -.03em; }
+.vital .vgauge .glab { grid-area: 2 / 1; font: 9px var(--font-mono); letter-spacing: .03em; text-transform: uppercase; color: var(--muted-2); }
 .vital.st-working{--sc:var(--st-working);} .vital.st-thinking{--sc:var(--st-working);} .vital.st-done{--sc:var(--st-done);}
 .vital.st-attention{--sc:var(--st-attention);} .vital.st-error{--sc:var(--st-error);} .vital.st-idle{--sc:var(--st-idle);} .vital.st-ended{--sc:var(--muted-2);}
 .vital.st-background{--sc:var(--st-bg);}
@@ -592,12 +599,7 @@ html.win .wctl { display: flex; }
 .chip-s { font: 9.5px var(--font-mono); letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hair); color: var(--muted); }
 .chip-s.hot { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 14%, transparent); border-color: color-mix(in srgb, var(--st-done) 30%, transparent); }
 
-/* --- inspector gauge: selected conversation's context and sparkline --- */
-.gauges { display: grid; grid-template-columns: 1fr; gap: 8px; }
-.gauge { border-radius: var(--radius); padding: 10px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 7px; }
-.gauge .grow { display: flex; align-items: center; gap: 9px; min-height: 34px; }
-.gauge .gnum { font: 700 17px var(--font-mono); letter-spacing: -.02em; }
-.gauge .glab { font: 9.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted-2); margin-top: 1px; }
+/* --- context ring + sparkline, hosted by the vital card above --- */
 .mini-ring { width: 34px; height: 34px; flex: none; transform: rotate(-90deg); filter: drop-shadow(0 0 4px var(--accent-glow)); }
 .mini-ring .trk { fill: none; stroke: var(--hair-strong); stroke-width: 4; }
 .mini-ring .fil { fill: none; stroke: var(--accent-ink); stroke-width: 4.2; stroke-linecap: round; transition: stroke-dasharray .5s cubic-bezier(.4,0,.2,1); }
@@ -608,6 +610,20 @@ html.win .wctl { display: flex; }
 .warn-line { font: 10px var(--font-mono); color: var(--st-working); }
 .warn-line.hot { color: var(--st-attention); }
 .gspark { line-height: 0; }
+
+/* --- the conversation outline: your questions, each an anchor into the scrollback ---
+   The fold is line-clamp, so one wrapped sentence and a five-line prompt cost the same rows. */
+.outline { display: flex; flex-direction: column; }
+.ol { display: flex; flex-direction: column; gap: 1px; }
+.ol-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 7px; padding: 5px 6px; border-radius: 7px; cursor: pointer; }
+.ol-row:hover { background: var(--lift); }
+.ol-n, .ol-t { font: 9.5px var(--font-mono); color: var(--muted-2); padding-top: 2px; font-variant-numeric: tabular-nums; }
+.ol-txt { font-size: 11.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--ol-lines, 3); line-clamp: var(--ol-lines, 3); }
+.ol-row.open .ol-txt { -webkit-line-clamp: unset; line-clamp: unset; }
+/* Its lines have scrolled out of the terminal, so the row still reads but no longer jumps. */
+.ol-row.gone { cursor: default; }
+.ol-row.gone .ol-txt { color: var(--muted); }
+.ol-row.gone:hover { background: none; }
 
 /* --- the background fleet (a Workflow fan-out, or a burst of Task subagents) ---
    Built like .plan, not like a gauge: both answer "how far through is it". The violet separates them. */

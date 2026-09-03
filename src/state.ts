@@ -10,6 +10,7 @@ import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
+import { clampOutlinePrefs, type OutlinePrefs } from "./outline";
 import { clampScrollback, clampVitalsPrefs, type VitalsPrefs } from "./perf";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
@@ -262,6 +263,10 @@ export function setWinFocused(v: boolean) { winFocused = v; }
 
 export let vitalsPrefs: VitalsPrefs = clampVitalsPrefs(safeParse(localStorage.getItem("cc-vitals")));
 export function setVitalsPrefs(p: VitalsPrefs) { vitalsPrefs = clampVitalsPrefs(p); }
+
+// The inspector's conversation outline (./outline); one blob, like cc-peek.
+export let outlinePrefs: OutlinePrefs = clampOutlinePrefs(safeParse(localStorage.getItem("cc-outline")));
+export function setOutlinePrefs(p: OutlinePrefs) { outlinePrefs = clampOutlinePrefs(p); }
 
 export let termScrollback: number = clampScrollback(localStorage.getItem("cc-scrollback"));
 export function setTermScrollback(n: number) { termScrollback = clampScrollback(n); }

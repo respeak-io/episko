@@ -22,11 +22,11 @@ import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
   closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
 } from "./projmenu";
-import { renderInspector, setCtxMode, tickDwell, toggleFileGroup } from "./inspector";
+import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, toggleOutlineAll, wireOutlineHover } from "./inspector";
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
-import { applyFontSize, bumpFont, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
@@ -36,7 +36,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -102,7 +102,7 @@ import {
 } from "./settings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
-  applyHook, applyStatusline, permCmd, riskLevel, setOnSessionTouched, setOnTurnEnd,
+  applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
   setPhase,
 } from "./phase";
 import {
@@ -167,6 +167,9 @@ homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // so each stands alone in a test (the settable-hook rule in CLAUDE.md).
 setRlLogger(dlog);
 setOnTurnEnd((s) => { void maybeRunOnStop(s); });
+// The outline's anchor has to be taken now: the marker records where the pane's buffer was
+// when the question was asked, and a line number found later would have moved.
+setOnPrompt((s, p) => markPrompt(s, p.id));
 // Nothing watches the filesystem: a settled tool call is the only sign that a session
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
@@ -218,7 +221,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setScrollback, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
 });
 setTourHost({
@@ -531,7 +534,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -566,6 +569,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.fmode) setCtxMode(el.dataset.fmode);
   // tlsid rather than activeId: markup outlives the state that produced it.
   else if (el.dataset.tlrow) openCallSheet(el.dataset.tlsid || activeId || "", el.dataset.tlrow);
+  // olsid rather than activeId, for the same reason as tlsid above.
+  else if (el.dataset.oljump) jumpToPrompt(el.dataset.olsid || activeId || "", el.dataset.oljump);
+  else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);
@@ -618,6 +624,7 @@ $("btnTerm").addEventListener("click", openPlainTerminal);
 $("btnHist").addEventListener("click", () => { void openHistory(true); });
 $("histBtn").addEventListener("click", () => { void openHistory(false); });
 initHistoryEvents();
+wireOutlineHover();
 $("btnRun").addEventListener("click", () => { void openRunPicker(); });
 $("setClose").addEventListener("click", closeSettings);
 $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https://github.com/respeak-io/episko").catch(() => {}); });

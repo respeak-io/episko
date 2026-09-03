@@ -8,8 +8,9 @@ import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./f
 import {
   actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState,
   liveCount, liveFanout, orphanAgents, statusKey,
-  type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
+  type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
+import { OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
 import { sessions } from "./state";
 
 export let gitBusy: string | null = null; // session with a fetch/pull/push in flight; its buttons grey out
@@ -82,8 +83,14 @@ export function vitalHtml(s: Sess): string {
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
-    <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
-    ${doing}${meta}</div>`;
+    <div class="vrow">
+      <div class="vmain">
+        <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
+        ${doing}${meta}
+      </div>
+      ${ctxRingHtml(s)}
+    </div>
+    ${ctxFootHtml(s)}</div>`;
 }
 // The background fleet card, directly under the vital. No clock in this markup: the
 // elapsed lives in #iDwell, patched by textContent, or paintInspector's guard never bites.
@@ -108,19 +115,23 @@ export function fanoutHtml(s: Sess): string {
     <div class="fo-bar"><i style="width:${pct}%"></i></div>
     ${carried}${phases}</div>`;
 }
-// Spend and limits describe the account and live in the footer; only context is per-session.
-export function contextGaugeHtml(s: Sess): string {
+// Context rides in the vital card rather than a card of its own: state, model and how full
+// the window is are one glance, and three stacked boxes pushed everything else below the fold.
+// Spend and limits describe the account and stay in the footer.
+function ctxRingHtml(s: Sess): string {
   const ctx = s.ctxPct;
-  const warn = compactWarn(ctx);
-  const ctxSpark = sparkline(s.ctxHist, { lo: 0, hi: 100 });
-  const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k tokens` : "context";
-  const ctxFoot = warn ? `<div class="warn-line ${warn.cls}">${warn.txt}</div>` : (ctxSpark ? `<div class="gspark">${ctxSpark}</div>` : "");
-  return `<div class="gauges">
-    <div class="gauge">
-      <div class="grow"><svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg><div><div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div></div>
-      ${ctxFoot}
-    </div>
-  </div>`;
+  const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k` : "ctx";
+  return `<div class="vgauge" title="Context window used${s.ctxTokens != null ? ` — ${s.ctxTokens.toLocaleString()} tokens` : ""}">
+    <svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg>
+    <div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div>`;
+}
+// The warning wins over the sparkline: "auto-compact imminent" is the one thing the ring
+// alone cannot say, and both together would wrap the card.
+function ctxFootHtml(s: Sess): string {
+  const warn = compactWarn(s.ctxPct);
+  if (warn) return `<div class="warn-line ${warn.cls}">${warn.txt}</div>`;
+  const spark = sparkline(s.ctxHist, { lo: 0, hi: 100 });
+  return spark ? `<div class="gspark">${spark}</div>` : "";
 }
 export function planHtml(s: Sess): string {
   const done = s.todos.filter((t) => t.status === "completed").length, total = s.todos.length;
@@ -204,6 +215,38 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
   </div>`;
+}
+
+// ---------- the conversation outline: what you asked, and where ----------
+// Newest first, like the tool timeline: the jump you want is usually a recent one, and the
+// number carries the chronology the order drops. A row is a click target back into the
+// pane's scrollback, so `anchored` decides which ones can still keep that promise.
+
+const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, lines: number): string {
+  const label = promptLabel(p.text);
+  const tip = anchored ? `${label}\nJump to it in the terminal` : `${label}\nScrolled out of the terminal`;
+  return `<div class="ol-row${anchored ? "" : " gone"}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(tip)}">`
+    + `<span class="ol-n">${n}</span>`
+    + `<div class="ol-txt" style="--ol-lines:${lines}">${esc(p.text)}</div>`
+    + `<span class="ol-t">${promptClock(p.at)}</span></div>`;
+}
+
+export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean): string {
+  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${s.prompts.length || ""}</span></div>`;
+  if (!s.prompts.length) {
+    return `<div class="outline">${head}<div class="insp-empty" style="padding:14px 0">Nothing asked yet.</div></div>`;
+  }
+  const total = s.prompts.length;
+  const shown = all ? total : Math.min(OUTLINE_SHOW, total);
+  const rest = total - shown;
+  const more = rest > 0 ? `<button class="fx-more" data-olmore="1">+${rest} earlier</button>`
+    : all && total > OUTLINE_SHOW ? `<button class="fx-more" data-olmore="1">Show fewer</button>` : "";
+  // Newest first, but numbered from the start of the conversation, so #1 is the first thing asked.
+  const rows = s.prompts.slice(total - shown).reverse()
+    .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs.lines)).join("");
+  return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
 }
 
 // ---------- context: what the session has been into ----------

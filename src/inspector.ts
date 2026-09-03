@@ -3,17 +3,18 @@
 // card's per-button listeners. On renderAll's hot path.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, stageGen } from "./dom";
+import { $, stageGen, toast } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { activeId, revivePrefs, sessions } from "./state";
+import { activeId, outlinePrefs, revivePrefs, sessions } from "./state";
 import { reviveStatus } from "./revive";
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextGaugeHtml, contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml,
+  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, outlineHtml,
   planHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
+import { anchoredPrompts, scrollToPrompt } from "./terminal";
 
 // ---- the Context card's view state ----
 // Which Files groups are unfolded, and files vs tools. App-wide and ephemeral: it is how
@@ -31,6 +32,40 @@ export function toggleFileGroup(g: string) {
 export function setCtxMode(m: string) {
   ctxMode = m === "tools" ? "tools" : "files";
   repaintActive();
+}
+// ---- the outline's view state ----
+// App-wide and ephemeral, like the Context card's fold above.
+let outlineAll = false;
+export function toggleOutlineAll() { outlineAll = !outlineAll; repaintActive(); }
+
+// Click a question, land where you asked it. The row carries its own session id: markup
+// outlives the `activeId` that produced it, as with the tool timeline.
+export function jumpToPrompt(sid: string, promptId: string) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  if (!scrollToPrompt(s, promptId)) toast("That far back has scrolled out of this terminal");
+}
+
+// Hover-to-unfold, ./peek's idea in a single row. The class goes straight on the element and
+// never through a repaint: replacing the node under the pointer is how a click gets dropped.
+const OUTLINE_DWELL_MS = 450;
+let olTimer: number | undefined;
+let olOpen: HTMLElement | null = null;
+function unfold(row: HTMLElement | null) {
+  if (olOpen === row) return;
+  olOpen?.classList.remove("open");
+  olOpen = row;
+  row?.classList.add("open");
+}
+export function wireOutlineHover() {
+  const root = $("inspector");
+  root.addEventListener("mouseover", (e) => {
+    const row = outlinePrefs.hover ? (e.target as HTMLElement).closest<HTMLElement>(".ol-row") : null;
+    clearTimeout(olTimer);
+    if (!row) { unfold(null); return; }
+    if (row !== olOpen) olTimer = window.setTimeout(() => unfold(row), OUTLINE_DWELL_MS);
+  });
+  root.addEventListener("mouseleave", () => { clearTimeout(olTimer); unfold(null); });
 }
 
 export function renderInspector(s: Sess | null) {
@@ -65,10 +100,11 @@ export function renderInspector(s: Sess | null) {
   if (s.drift) html.push(driftHtml(s));
   html.push(vitalHtml(s));
   html.push(fanoutHtml(s));
-  html.push(contextGaugeHtml(s));
-  if (s.todos.length) html.push(planHtml(s));
-  // Any repo session: a clean tree that's behind still matters, and the git buttons live here.
+  // Above the plan and the Context card: what you asked and what the tree looks like are
+  // both read far more often than the file set, which is the card you scroll to.
   if (s.git) html.push(wsetHtml(s));
+  if (outlinePrefs.enabled) html.push(outlineHtml(s, outlinePrefs, anchoredPrompts(s), outlineAll));
+  if (s.todos.length) html.push(planHtml(s));
   html.push(contextHtml(s, openGroups, ctxMode));
   paintInspector(html.join(""));
   // After the assignment, so a fresh #iDwell has its text before the frame paints.

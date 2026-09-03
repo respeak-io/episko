@@ -16,6 +16,12 @@ Markers: `+` new · `~` changed · `!` fixed
 The header's running-server list finally reads the log Claude Code actually writes.
 
 + A row says **where it looked** for its log, and offers Reveal and Copy for that path.
++ The inspector lists **your questions**, newest first; clicking one scrolls that pane's
+  terminal back to where you asked it. Settings › Sessions has the switch, the line count
+  and the hover.
+~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
+~ The inspector's state, model and context share one card, so the working set and the new
+  questions list sit above the fold.
 + Pick which of your GitHub accounts a project reads as, from the project menu or from
   the GitHub card itself. `gh` keeps one active account and switches it globally, so a
   work login and a personal one could not both be right at once — a private repo the
