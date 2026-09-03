@@ -15,6 +15,7 @@ import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
 } from "./history";
+import { askedHtml } from "./inspectorview";
 
 let histAll: HistEntry[] = [];
 let histRows: HistEntry[] = [];   // what's on screen, after scope + search
@@ -133,24 +134,6 @@ const PREVIEW_READ = 60;
 // The ending is the last exchange, not a second copy of the list above it: both roles, so an
 // answer keeps the question it answers, but short enough that the overlap is context.
 const ASK_SHOW = 6, END_SHOW = 4;
-const askClock = (at: string | null | undefined) => {
-  const ms = at ? Date.parse(at) : NaN;
-  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-};
-// What identifies a past conversation is what you asked it, so it goes above how it ended.
-// Newest first, like the inspector's own outline, and unnumbered: this is the tail of the
-// transcript, so a number here would count from nowhere.
-function histAskedHtml(msgs: ProviderMessage[]): string {
-  const asked = msgs.filter((m) => m.role === "user");
-  if (!asked.length) return "";
-  const shown = asked.slice(-ASK_SHOW).reverse();
-  const rest = asked.length - shown.length;
-  const rows = shown.map((m) =>
-    `<div class="ol-row static"><div class="ol-txt" style="--ol-lines:2">${esc(m.text)}</div>`
-    + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
-  return `<div class="wt-dkind">what you asked</div><div class="ol">${rows}</div>`
-    + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
-}
 // Same shape as ./worktree's wtFacts, copied: one dialog exporting a fragment to another is worse.
 function histFacts(pairs: [string, string][]) {
   return `<dl class="wt-facts">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
@@ -180,7 +163,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
   // Envelopes are dropped from both halves: a `Caveat:` preamble is not how a conversation ended.
   const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id)
     ? histPreview.msgs.filter((m) => !isEnvelope(m.text.trim())) : null;
-  const asked = loaded ? histAskedHtml(loaded) : "";
+  const asked = loaded ? askedHtml(loaded, ASK_SHOW) : "";
   const preview = loaded
     ? (loaded.length
         ? `<div class="hist-tv">${loaded.slice(-END_SHOW).map((m) => {
@@ -196,7 +179,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
     </div>
     ${facts}
     ${action}
-    ${asked}
+    ${asked ? `<div class="wt-dkind">what you asked</div>${asked}` : ""}
     <div class="wt-dkind">how it ended</div>
     ${preview}`;
 }

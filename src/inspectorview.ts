@@ -10,7 +10,8 @@ import {
   liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
-import { OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
+import { isEnvelope, OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
+import type { ProviderMessage } from "./providers";
 import { sessions } from "./state";
 
 export let gitBusy: string | null = null; // session with a fetch/pull/push in flight; its buttons grey out
@@ -254,6 +255,28 @@ export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<
   const rows = s.prompts.slice(total - shown).reverse()
     .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs.lines)).join("");
   return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
+}
+
+// The questions half of a conversation, for the surfaces that offer to reopen one: History's
+// detail pane and ./mirror's shelved card. Same rows as the live outline and newest first, but
+// unnumbered — this is the tail of a transcript, so a number would count from nowhere. Each
+// caller adds its own heading; `jump` is for a surface with the transcript beside it.
+const askClock = (at: string | null | undefined) => {
+  const ms = at ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+};
+export function askedHtml(msgs: readonly ProviderMessage[], show: number, jump = false): string {
+  // The index is into the array the caller rendered, envelopes included, or a jump lands elsewhere.
+  const asked = msgs.map((m, i) => ({ m, i })).filter(({ m }) => m.role === "user" && !isEnvelope(m.text.trim()));
+  if (!asked.length) return "";
+  const shown = asked.slice(-show).reverse();
+  const rest = asked.length - shown.length;
+  const rows = shown.map(({ m, i }) =>
+    `<div class="ol-row static${jump ? " jump" : ""}"${jump ? ` data-pastq="${i}" title="${escAttr("Go to it in the transcript")}"` : ""}>`
+    + `<div class="ol-txt" style="--ol-lines:2">${esc(m.text)}</div>`
+    + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
+  return `<div class="ol">${rows}</div>`
+    + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
 }
 
 // ---------- context: what the session has been into ----------

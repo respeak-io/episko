@@ -23,6 +23,8 @@ The header's running-server list finally reads the log Claude Code actually writ
   own transcript, with the times it recorded. Clicking one still jumps: the resume replays
   the conversation into the pane, so Episko goes and finds the line.
 ~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
++ A **shelved session's card** lists what you asked before you resume it, and clicking a
+  question jumps the read-only mirror beside it to that message.
 ~ History's detail pane leads with **what you asked**, above *how it ended*.
 ! *How it ended* was a one-line sliver with its own scrollbar: it shrank to whatever the
   detail column had left over instead of letting the column scroll.

@@ -622,6 +622,10 @@ html.win .wctl { display: flex; }
 /* History's copy of the list: the same rows, but nothing to click through to. */
 .ol-row.static { grid-template-columns: minmax(0, 1fr) auto; cursor: default; padding: 4px 0; }
 .ol-row.static:hover { background: none; }
+/* …unless the transcript is on screen beside it (./mirror's shelved card), where it is a jump. */
+.ol-row.static.jump { cursor: pointer; padding: 4px 6px; margin: 0 -6px; }
+.ol-row.static.jump:hover { background: var(--lift); }
+.ext-qh { padding-top: 3px; }
 .hist-qmore { font: 9.5px var(--font-mono); color: var(--muted-2); padding: 2px 0 0; }
 .wt-detail > .ol, .wt-detail > .hist-qmore { flex: none; } /* same reason as .hist-tv below */
 .ol-txt { font-size: 11.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--ol-lines, 3); line-clamp: var(--ol-lines, 3); }
