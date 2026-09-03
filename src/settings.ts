@@ -11,7 +11,7 @@ import {
   motionPrefs,
   keyPrefs, missingAgents,
   peekPrefs, permissionModeFor, revivePrefs, termScrollback, vitalsPrefs,
-  setTermFontSize,
+  setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
@@ -1173,7 +1173,7 @@ function renderGuideControl(): string {
 }
 
 function setFontFromSettings(cmd: string) {
-  if (cmd === "reset") { setTermFontSize(12.5); host.applyFontSize(); toast("Terminal font 12.5px"); }
+  if (cmd === "reset") { setTermFontSize(TERM_FONT_DEFAULT); host.applyFontSize(); toast(`Terminal font ${TERM_FONT_DEFAULT}px`); }
   else host.bumpFont(parseFloat(cmd));
   renderSettings();
 }

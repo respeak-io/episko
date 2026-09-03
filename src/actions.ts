@@ -134,22 +134,27 @@ export function resolvePermission(id: string, behavior: string) {
   const owner = [...sessions.values()].find((s) => s.pendingPermId === id
     || s.pendingPermissions.some((pending) => pending.id === id));
   if (owner) {
-    resolveProviderPermission(owner, id, behavior).catch(() => {});
+    // The card goes either way (an answer must never look stuck), so a refusal has no other
+    // surface left: say it, or the agent sits at a prompt nobody knows is still open.
+    resolveProviderPermission(owner, id, behavior).catch((e) => {
+      dlog("warn", `permission ${behavior} failed: ${e}`);
+      toast(`the ${behavior} didn't reach the agent: ${e}`);
+    });
   } else {
     // An unrouted Claude hook may still be held open in the backend; release it directly.
-    invoke("resolve_permission", { id, behavior }).catch(() => {});
+    invoke("resolve_permission", { id, behavior }).catch((e) => dlog("warn", `resolve_permission: ${e}`));
   }
   if (owner) removePermission(owner, id);
   renderAll();
 }
 
+// Settings › Sessions owns this now (`data-set="wtgroup"`); the console stopgap that stood
+// in for it before that window shipped is gone.
 export function setWtGroup(m: WtGroup) {
   setWtGroupState(m);
   localStorage.setItem("cc-worktree-group", wtGroup);
   renderAll();
 }
-// Dev affordance: episkoWtGroup("chip") from the console.
-(window as unknown as { episkoWtGroup: typeof setWtGroup }).episkoWtGroup = setWtGroup;
 
 // No repaint: the only reader is the ⑃ dialog, which re-reads git itself afterwards.
 export function setCmpBase(repoDir: string, ref: string) {

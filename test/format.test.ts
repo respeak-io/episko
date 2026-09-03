@@ -216,6 +216,13 @@ describe("tilde — home-dir abbreviation", () => {
     setHome("/Users/ada");
     expect(tilde("/Users/ada/w/Users/ada")).toBe("~/w/Users/ada");
   });
+  it("only abbreviates a real home prefix, on a separator boundary", () => {
+    setHome("/Users/ada");
+    // A backup mount that merely contains the home path is not the home dir.
+    expect(tilde("/Volumes/backup/Users/ada/x")).toBe("/Volumes/backup/Users/ada/x");
+    // Nor is a sibling whose name starts with it.
+    expect(tilde("/Users/ada2/code")).toBe("/Users/ada2/code");
+  });
 });
 
 describe("basename", () => {

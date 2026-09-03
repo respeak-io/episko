@@ -1799,8 +1799,10 @@ fn bg_log_resolve(
     // start and `tasks/` only on the first background shell. `notYet` is the state the
     // frontend retires a row on; `noRoot` is not.
     for (root, cand) in &cands {
+        // The session dir alone: nothing under it can exist unless it does, so the
+        // `scratchpad` probe that used to sit here could never answer on its own.
         let sess = root.join(&slug).join(&uuid);
-        if sess.is_dir() || sess.join("scratchpad").exists() {
+        if sess.is_dir() {
             return Err(BgResolveErr::NotYet(cand.clone(), tried(&cands)));
         }
     }

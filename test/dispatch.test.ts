@@ -92,10 +92,13 @@ describe("the project dashboard's verbs", () => {
       .matchAll(/act === "([a-z]+)"/g)].map((m) => m[1]),
   )];
 
-  it("finds all three surfaces and the if-chain to compare", () => {
+  // Every surface is checked, or one that stopped matching would quietly shrink `offered`
+  // and the two comparisons below would pass over a hole.
+  it("finds all four surfaces and the if-chain to compare", () => {
     expect(rows.length).toBeGreaterThan(5);
     expect(rail.length).toBeGreaterThan(4);
     expect(gcard.length).toBeGreaterThan(3);
+    expect(ghpick.length).toBeGreaterThan(0);
     expect(handled.length).toBeGreaterThan(5);
   });
 

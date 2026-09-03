@@ -42,8 +42,15 @@ fn rebind_telemetry(port: u16) -> (tiny_http::Server, u16) {
         let want = if attempt >= REBIND_GIVE_UP { 0 } else { port }; // 0: any ephemeral port
         match tiny_http::Server::http(("127.0.0.1", want)) {
             Ok(s) => {
-                let got = s.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
-                return (s, got);
+                // Never store a 0: `AppState.port` is what every later instrument file is
+                // written with, so a give-up value there would point new panes at nothing.
+                match s.server_addr().to_ip().map(|a| a.port()) {
+                    Some(got) if got != 0 => return (s, got),
+                    _ => {
+                        log::error!("telemetry: re-bind reported no port; retrying");
+                        attempt = attempt.saturating_add(1);
+                    }
+                }
             }
             Err(e) => {
                 log::warn!("telemetry: re-bind of 127.0.0.1:{want} failed (attempt {attempt}): {e}");
@@ -717,9 +724,10 @@ mod tests {
 
         let claude = resolve_claude();
         // A throwaway dir, never a real session's (`--session-id` on an existing conversation
-        // appends to its transcript). Canonicalized: Claude records the resolved cwd and derives
-        // the project dir from it, and on macOS $TMPDIR is a symlink under /var/folders.
-        let cwd = std::fs::canonicalize(scratch_dir()).expect("resolve the scratch dir");
+        // appends to its transcript). `scratch_dir` already hands back the resolved spelling,
+        // which matters here: Claude records the resolved cwd and derives the project dir from
+        // it, and on macOS $TMPDIR is a symlink under /var/folders.
+        let cwd = scratch_dir();
         let sid = throwaway_uuid();
 
         let (app, port) = mock_telemetry_app();

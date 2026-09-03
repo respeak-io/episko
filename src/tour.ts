@@ -13,7 +13,10 @@ export interface TourWorld {
   permissionCanAsk: boolean;  // the provider's launch policy can raise an approval card
   permPending: boolean;  // in some session, not necessarily the active one
   permAnswered: boolean;  // at least one answered this run
-  permMode: string;  // the mode new sessions start in (Settings › Sessions)
+  // The mode new sessions start in (Settings › Sessions). Deliberately read by NOTHING: what
+  // decides is `permissionCanAsk`, i.e. what the provider actually did, and three tests in
+  // test/tour.test.ts pass this field precisely to pin that it is ignored.
+  permMode: string;
   // What the reactor badge counts (`needsYouSessions`). The active pane never counts, so
   // on a first run only a blocking permission lights it, which is when the tour teaches it.
   attnCount: number;
@@ -26,8 +29,9 @@ export interface TourWorld {
   caffeinated: boolean;  // armed in any mode
 }
 
-// Claude's modes under which a shell command still raises a card. The adapters' `asks`
-// field owns the answer; this stays as the contract test's source-level list.
+// Claude's modes under which a shell command still raises a card. The adapters' `asks` field
+// owns the answer, so this is documentation with a test on it: the contract test checks the
+// list still names modes the app ships, which is what catches a mode renamed out from under it.
 export const ASKING_MODES = ["default", "acceptEdits"] as const;
 export const permAsks = (w: TourWorld): boolean => w.permissionCanAsk;
 

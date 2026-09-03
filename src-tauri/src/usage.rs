@@ -436,10 +436,8 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
         .get("message")
         .and_then(|m| m.get("usage"))
         .or_else(|| v.get("usage"))?;
-    let day = match v.get("timestamp").and_then(|t| t.as_str()) {
-        Some(ts) if ts.len() >= 10 => ts[..10].to_string(),
-        _ => return None,
-    };
+    // `get(..10)`, not `[..10]`: a torn line's timestamp must skip the record, not panic the scan.
+    let day = v.get("timestamp").and_then(|t| t.as_str()).and_then(|ts| ts.get(..10))?.to_string();
     let g = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
     let model = v
         .get("message")
@@ -670,7 +668,9 @@ fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) ->
             continue;
         }
         if text.len() > 4000 {
-            text.truncate(4000);
+            // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
+            let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
+            text.truncate(cut);
             text.push('…');
         }
         msgs.push(TranscriptMsg { role: t.to_string(), text });
@@ -1501,6 +1501,35 @@ mod tests {
         assert_eq!(msgs[0].text.chars().count(), 4001, "4000 chars plus the ellipsis");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn read_transcript_truncates_multibyte_text_without_panicking() {
+        let cwd = "/Users/tim/dev/umlaut";
+        let (base, proj) = fixture(cwd);
+        // "ä" is two bytes, so byte 4000 lands mid-character: `truncate` would panic there.
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "content": "ä".repeat(9000) },
+        });
+        std::fs::write(proj.join("sid.jsonl"), format!("{line}\n")).unwrap();
+
+        let msgs = read_transcript_in(&base, cwd, "sid", 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].text.ends_with('…'));
+        assert_eq!(msgs[0].text.chars().count(), 2001, "2000 two-byte chars plus the ellipsis");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parse_usage_line_skips_a_torn_timestamp_instead_of_panicking() {
+        let line = serde_json::json!({
+            "timestamp": "2026-09-0ä",   // byte 10 is inside the umlaut
+            "message": { "usage": { "input_tokens": 5 } },
+        })
+        .to_string();
+        assert!(parse_usage_line(&line).is_none());
     }
 
     #[test]

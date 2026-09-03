@@ -378,21 +378,7 @@ describe("setChips", () => {
     const got = setChips([], report({ truncated: true }), true);
     expect(got.map((c) => c.text)).toEqual(["findings incomplete"]);
   });
-});
 
-describe("worstSev", () => {
-  it("is null for a file with nothing to say, so the row stays silent", () => {
-    expect(worstSev([])).toBeNull();
-  });
-
-  it("reports the loudest present", () => {
-    const c = (sev: Chip["sev"]): Chip => ({ id: "x", sev, text: "", title: "", places: [], lines: [] });
-    expect(worstSev([c("info"), c("warn")])).toBe("warn");
-    expect(worstSev([c("info")])).toBe("info");
-  });
-});
-
-describe("setChips", () => {
   it("says once that no test moved, rather than once per file", () => {
     const files = [file("src/a.ts", add("x")), file("src/b.ts", add("y"))];
     expect(ids(setChips(files, report()))).toEqual(["notest"]);
@@ -406,6 +392,18 @@ describe("setChips", () => {
 
   it("has nothing to say about a tidy change", () => {
     expect(setChips([file("src/a.ts", add("x")), file("test/a.test.ts", add("y"))], report())).toEqual([]);
+  });
+});
+
+describe("worstSev", () => {
+  it("is null for a file with nothing to say, so the row stays silent", () => {
+    expect(worstSev([])).toBeNull();
+  });
+
+  it("reports the loudest present", () => {
+    const c = (sev: Chip["sev"]): Chip => ({ id: "x", sev, text: "", title: "", places: [], lines: [] });
+    expect(worstSev([c("info"), c("warn")])).toBe("warn");
+    expect(worstSev([c("info")])).toBe("info");
   });
 });
 

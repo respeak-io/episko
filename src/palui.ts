@@ -72,11 +72,12 @@ function sessionActions(s: Sess): PalItem[] {
       a.push(mk(ah ? `Push ${ah} commit${ah === 1 ? "" : "s"}` : "Push", "↑", () => runGit(s.id, "push")));
     }
     a.push(mk("Open a terminal here", "❯", () => { host.setActive(s.id); host.openPlainTerminal(); }));
-  // Every pane kind has a real directory behind it; unlike `reveal`, this names this session's folder.
-  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
     a.push(mk("New session here…", "⑃", () => openWt(s.project, s.colorKey)));
     if (s.worktree) a.push(mk("Remove this worktree…", "⌫", () => removeWorktreeSession(s)));
   }
+  // Outside the isAgent block: every pane kind has a real directory behind it, and unlike
+  // `reveal` this one names *this session's* folder.
+  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
   // Shelve above Close, and only where a resume exists (`canShelve` in ./types).
   if (canShelve(s)) a.push(mk("Shelve session · stop it, keep the row", "⇩", () => host.shelveSession(s.id)));
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));

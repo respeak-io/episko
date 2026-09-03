@@ -2,6 +2,7 @@
 // Reads are the live ESM binding (`activeId`, never `state.activeId`); a `setX` assigns and
 // nothing else. Preferences are read at module scope, so a test imports ./localstorage first.
 import { basename, hslToHex } from "./format";
+import { safeParse } from "./store";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
@@ -79,10 +80,6 @@ export function setRevivePrefs(p: RevivePrefs) { revivePrefs = clampRevivePrefs(
 // later default reaches old installs. Read a chord through `activeBind`, never `keyPrefs.binds[id]`.
 export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")));
 export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p)); }
-function safeParse<T>(raw: string | null): Partial<T> | null {
-  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
-}
-
 // Narrowing reads, declared so they hoist. A bad value is dropped whole: a throw here is a blank window.
 function strMap(raw: string | null): Record<string, string> {
   const v = safeParse<Record<string, string>>(raw);
@@ -158,7 +155,8 @@ export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) =
 export let availEngines: Engine[] = ["embedded"];
 export let diffMode: DiffMode = localStorage.getItem("cc-diff-mode") === "split" ? "split" : "unified";
 export function setDiffMode(m: DiffMode) { diffMode = m; }
-export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || 12.5;
+export const TERM_FONT_DEFAULT = 12.5;
+export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || TERM_FONT_DEFAULT;
 export function setTermFontSize(v: number) { termFontSize = v; }
 export function setAvailEngines(l: Engine[]) { availEngines = l; }
 // --- agent providers ------------------------------------------------------------

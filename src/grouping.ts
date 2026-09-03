@@ -39,7 +39,12 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
     return c;
   };
   for (const s of p.sessions) bucket(checkoutOf(s, p.path), s.branch || s.worktree || "").sessions.push(s);
-  for (const e of p.externals) bucket(e.cwd || p.path, e.branch || "").externals.push(e);
+  // Through the roster like the sessions above: a terminal opened in a subfolder of a
+  // checkout belongs to that checkout, not to a cluster of its own.
+  for (const e of p.externals) {
+    const roster = worktreesByRepo.get(e.repo_root || p.path) ?? [];
+    bucket(checkoutDir(e.cwd || p.path, roster), e.branch || "").externals.push(e);
+  }
   if (withEmpty) {
     const roster = worktreesByRepo.get(p.path) ?? [];
     // Main checkout only: a project pinned at a linked worktree must not sprout its siblings' rows.

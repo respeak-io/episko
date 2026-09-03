@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
@@ -17,6 +18,8 @@ import {
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
 } from "./types";
+import { readList } from "./store";
+import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
@@ -138,8 +141,6 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     if (c !== s.title) { s.title = c; renderSidebar(); updateTray(); if (activeId === id) renderHeader(s); }
   });
   setActive(id);
-  // A restored session replaces its dormant row, or the sidebar lists the conversation twice.
-  if (opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
   // Read here rather than passed as an opt: it is a preference, like termEngine.
@@ -161,6 +162,9 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   }
   // Only a spawn that worked: the failure already toasts, and a chirp under it reads as success.
   if (spawned) playSound("launched");
+  // A restored session replaces its dormant row, or the sidebar lists the conversation
+  // twice — after the spawn, or a resume that failed has thrown its restorable row away.
+  if (spawned && opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
@@ -197,9 +201,7 @@ export function launchWorktree(project: string, root: string, dir: string, branc
 export async function adoptOrphans(): Promise<number> {
   let back: LiveSess[] = [];
   try { back = await invoke<LiveSess[]>("live_sessions"); } catch { return 0; }
-  let roster: Restorable[] = [];
-  try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
-  if (!Array.isArray(roster)) roster = [];
+  const roster = readList<Restorable>("cc-restore");
   const orphans = orphanAdoptions(back, roster);
   for (const o of orphans) await adoptSession(o);
   if (orphans.length) {
@@ -262,7 +264,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     // Most likely the process exited since the listing; no pty-exit reaches a pane that did not exist yet.
     const gone = String(e).includes("no such session");
     if (gone) {
-      s.phase = "ended";
+      setPhase(s, "ended");   // never bare: `phaseSince` is what every "for how long" reads
       term.writeln("\x1b[90m[this session ended while the pane was being reattached]\x1b[0m");
     } else {
       // Degraded: no history, but the live stream still flows from here on.
@@ -836,7 +838,7 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
     toast("Prefilled in a shell. Press Enter to run");
     return;
   }
-  try { await navigator.clipboard.writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
+  try { await writeText(cmd); } catch { /* clipboard denied — the toast still names the command */ }
   invoke("open_terminal_here", { workdir, engine: termEngine })
     .then(() => toast("Terminal opened, command copied: " + cmd))
     .catch((e) => toast("terminal: " + e));

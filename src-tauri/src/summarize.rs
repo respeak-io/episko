@@ -29,6 +29,9 @@ fn read_cache(app: &AppHandle) -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
+/// Serialises the cache's read-modify-write; see `summarize_day`.
+static CACHE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Temp-then-rename: a crash mid-write must not lose every earlier summary.
 fn write_cache(app: &AppHandle, map: &serde_json::Map<String, serde_json::Value>) {
     let Some(path) = cache_path(app) else { return };
@@ -260,6 +263,13 @@ pub(crate) async fn summarize_day(
         }
     }
     if facts.trim().is_empty() {
+        // Under `force` too: a refresh with nothing to summarise keeps the sentence the day
+        // already has rather than reporting a failure over it.
+        if let Some(hit) = read_cache(&app).get(&cache_key).and_then(|v| v.as_str()) {
+            if !hit.is_empty() {
+                return Ok(hit.to_string());
+            }
+        }
         return Err("nothing to summarise".into());
     }
 
@@ -275,9 +285,14 @@ pub(crate) async fn summarize_day(
         return Err("empty summary".into());
     }
 
-    let mut map = read_cache(&app);
-    map.insert(cache_key, serde_json::Value::String(line.clone()));
-    write_cache(&app, &map);
+    // Read-modify-write under a lock: the dashboard asks for both scopes of one day at once,
+    // and two unsynchronised writes leave only the later one's entry in the file.
+    {
+        let _guard = CACHE_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = read_cache(&app);
+        map.insert(cache_key, serde_json::Value::String(line.clone()));
+        write_cache(&app, &map);
+    }
     Ok(line)
 }
 
@@ -364,10 +379,11 @@ mod tests {
 
     #[test]
     fn a_hand_edited_file_keeps_its_prose_out_of_the_keys() {
-        // A hand-added heading must not become a day, nor eat the entry above it.
-        let text = "# Work log\n\n## Notes for the team\nignore me\n\n## 2026-07-31\nReal entry.\n";
+        // A hand-added heading must not become a day, either side of the one real entry:
+        // above it (not a day) or below it (not part of the day it follows).
+        let text = "# Work log\n\n## Notes for the team\nignore me\n\n## 2026-07-31\nReal entry.\n\n## Conventions\nnor this\n";
         let m = parse_digest(text);
-        assert_eq!(m.len(), 1);
+        assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(m.get("2026-07-31").map(String::as_str), Some("Real entry."));
     }
 

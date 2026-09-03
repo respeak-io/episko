@@ -336,7 +336,7 @@ export function initFileDrop() {
     const s = activeId ? sessions.get(activeId) : null;
     if (!s || s.external || !s.term) { toast("Drop files onto an embedded session's console to paste their paths"); return; }
     const text = paths.map(shellEscapePath).join(" ") + " ";
-    invoke("write_pty", { sessionId: s.id, data: text });
+    invoke("write_pty", { sessionId: s.id, data: text }).catch((e) => dlog("warn", `file drop write failed: ${e}`));
     s.term.focus();
     dlog("info", `dropped ${paths.length} path${paths.length === 1 ? "" : "s"} into ${s.id.slice(0, 8)}`);
   }).catch((err) => dlog("error", `onDragDropEvent wiring failed: ${err}`));

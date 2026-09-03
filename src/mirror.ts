@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, takeStage, toast } from "./dom";
+import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
@@ -226,7 +227,7 @@ export function forgetDormant(id: string) {
 export async function loadDormants() {
   try {
     let roster: Restorable[] = [];
-    try { roster = JSON.parse(localStorage.getItem("cc-restore") || "[]") || []; } catch { roster = []; }
+    roster = readList<Restorable>("cc-restore");
     if (!Array.isArray(roster) || !roster.length) return;
     const live = new Set([...sessions.keys()]);
     const candidates: Restorable[] = [];

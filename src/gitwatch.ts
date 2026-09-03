@@ -102,11 +102,16 @@ function collapse(p: string): string {
     if (seg === "..") { if (segs.length > 1) segs.pop(); continue; }
     segs.push(seg);
   }
-  return segs.join("/");
+  const out = segs.join("/");
+  return out === "" && segs.length === 1 ? "/" : out;   // a rooted path collapsed to the root
 }
 
 // Relative against the hook's cwd: `cd ../tour` is how the sibling layout escapes the pin.
+// A target only a shell can expand (`~/x`, `$WT`, `cd ~`) is refused rather than joined onto
+// that cwd: the join lands it INSIDE the session's own checkout, where it reads as a write
+// home and clears a live drift. Refusing one target refuses the whole command (`bashWroteIn`).
 function resolveDir(target: string, cwd: string | null): string | null {
+  if (target.startsWith("~") || target.includes("$")) return null;
   if (isAbs(target)) return collapse(norm(target));
   if (!cwd || !isAbs(cwd)) return null;      // nothing to resolve against
   return collapse(`${norm(cwd)}/${norm(target)}`);

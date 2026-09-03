@@ -435,16 +435,18 @@ html.win .wctl { display: flex; }
 /* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
 .srow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
 .srow.extrow.o3e { grid-template-columns: 14px minmax(0,1fr) auto auto auto; }
-.chip { display: inline-flex; align-items: center; overflow: hidden; font: 600 10px var(--font-mono); color: var(--wtc, var(--muted-2)); }
+/* Scoped to the rail: the stage-header `.chip` below is a second rule at equal specificity,
+   and unscoped this one lost to it — taking the `--wtc` tint sidebarview.ts sets with it. */
+.rail .chip { display: inline-flex; align-items: center; overflow: hidden; font: 600 10px var(--font-mono); color: var(--wtc, var(--muted-2)); }
 /* Both row tags (drift marker, worktree chip) share one grid cell — see sessionRow. */
 .stags { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
 /* the agent is writing in a different checkout than it was launched in; quiet, since nothing is wrong */
 .sdrift { flex: none; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-working); opacity: .85; }
 .srow.drifted .sbranch { color: color-mix(in srgb, var(--st-working) 55%, var(--muted)); }
-.chip .fork { flex: none; }
-.chip .lbl { max-width: 0; opacity: 0; white-space: nowrap; transform: translateX(-3px); transition: max-width .22s ease, opacity .18s ease, transform .22s ease, margin-left .22s ease; }
+.rail .chip .fork { flex: none; }
+.rail .chip .lbl { max-width: 0; opacity: 0; white-space: nowrap; transform: translateX(-3px); transition: max-width .22s ease, opacity .18s ease, transform .22s ease, margin-left .22s ease; }
 .srow.o3:hover .chip .lbl, .srow.o3e:hover .chip .lbl { max-width: 130px; opacity: 1; transform: none; margin-left: 4px; }
-@media (prefers-reduced-motion: reduce) { .chip .lbl { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .rail .chip .lbl { transition: none; } }
 
 /* minified icon-rail */
 .railmini { display: none; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; overflow-y: auto; }
@@ -509,7 +511,7 @@ html.win .wctl { display: flex; }
 #terminals.tiled .term-pane.focused .pane-cap { color: var(--accent-ink); }
 .xterm .xterm-viewport { background: transparent !important; }
 /* Highlight the console while files are dragged over it (see initFileDrop). */
-#terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius-md); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }
+#terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }
 
 .empty, .ext-pane { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
 .ext-pane { padding: 24px; }

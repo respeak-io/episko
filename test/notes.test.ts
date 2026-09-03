@@ -73,6 +73,16 @@ describe("a corrupt store must not take the app down", () => {
     expect(noteList().map((n) => n.text)).toEqual(["keep"]);
   });
 
+  it("gives a note with no timestamp one, because the list sorts on it", () => {
+    store.set("cc-notes", JSON.stringify([
+      { id: "a", text: "old", project: null },            // hand-edited: no `created`
+      { id: "b", text: "new", project: null, created: 9 },
+    ]));
+    reloadNotes();
+    // With NaN in the comparator the pair would come back in stored order.
+    expect(noteList().map((n) => n.text)).toEqual(["new", "old"]);
+  });
+
   it("degrades when the stored value isn't a list at all", () => {
     store.set("cc-notes", JSON.stringify({ nope: true }));
     reloadNotes();

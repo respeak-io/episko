@@ -3,6 +3,7 @@
 // runs until the project menu row is clicked (docs/commit-graph.md).
 
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import {
@@ -315,13 +316,13 @@ for (const id of ["graphBody", "graphDetail", "graphCommit"]) {
     const copy = t.closest<HTMLElement>("[data-gcopy]");
     if (copy) {
       const sha = copy.dataset.gcopy!;
-      navigator.clipboard.writeText(sha).then(() => toast("Sha copied")).catch(() => toast(sha));
+      writeText(sha).then(() => toast("Sha copied")).catch(() => toast(sha));
       return;
     }
     if (t.closest("[data-gcopymsg]")) {
       const c = commits.find((x) => x.sha === open1);
       const text = (open1 && msgs.get(open1)) || c?.subject || "";
-      navigator.clipboard.writeText(text).then(() => toast("Message copied")).catch(() => toast("copy failed"));
+      writeText(text).then(() => toast("Message copied")).catch(() => toast("copy failed"));
       return;
     }
     if (t.closest("[data-gclose1]")) { closeCommit(); return; }

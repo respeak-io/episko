@@ -158,9 +158,11 @@ export async function flushDebug() {
   const { generatedAt: _ts, ...rest } = snap; // a fresh stamp would make every body differ
   const body = JSON.stringify(rest);
   if (body === lastBody && Date.now() - lastWrite < HEARTBEAT_MS) return;
-  lastBody = body;
   try {
     const path = await invoke<string>("write_debug_file", { contents: JSON.stringify(snap) });
+    // Stamped only on the way out: set before the await, a write that failed would still
+    // count as this body's, and the next attempt would be a heartbeat away.
+    lastBody = body;
     lastWrite = Date.now();
     $("dbgPath").textContent = path;
   } catch { /* backend not ready */ }

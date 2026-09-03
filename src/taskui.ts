@@ -544,7 +544,10 @@ export function openInputPrompt(r: Runnable, project: string, opts: TaskLaunchOp
   $("inBody").innerHTML = r.inputs.map((i, n) => {
     // Last typed wins over the file's default; a password is never remembered.
     const remembered = i.password ? undefined : rememberedInput(project, r.id, i.id);
-    const val = remembered ?? i.default ?? "";
+    // A pick the file no longer offers selects nothing, so the browser shows — and submits —
+    // the first option instead: fall back to something the prompt actually displays.
+    const want = remembered ?? i.default ?? "";
+    const val = i.kind === "pickString" && !i.options.includes(want) ? i.options[0] ?? "" : want;
     const field = i.kind === "pickString"
       ? `<select class="in-ctl" data-n="${n}">${i.options.map((o) => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`
       : `<input class="in-ctl" data-n="${n}" type="${i.password ? "password" : "text"}" value="${esc(val)}" placeholder="${esc(i.default ?? (i.optional ? "optional" : ""))}" spellcheck="false" autocomplete="off" />`;

@@ -77,7 +77,9 @@ function candidates(line: string, start: number, tok: string): PathCand[] {
     const r = raws[i];
     for (const v of readings(r.text)) add(v, r.end - (r.text.length - v.length));
   }
-  return out.slice(0, MAX_CANDS);
+  // Trimmed from the FRONT: `out` is longest-first, so slicing the tail would drop the bare
+  // token — the usual winner — on a line with enough readings to reach the cap.
+  return out.length > MAX_CANDS ? out.slice(out.length - MAX_CANDS) : out;
 }
 
 // URLs first, then one proposal per path-shaped token. Proposals may overlap; which candidate

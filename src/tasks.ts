@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import type { Runnable } from "./types";
+import { readList, readObj } from "./store";
 import { FAVORITES } from "./state";
 
 // `discoveredIn` is where discovery ran, which tells a declared cwd from an inherited one.
@@ -32,7 +33,7 @@ export function setTaskRepaint(fn: () => void) { taskRepaint = fn; }
 // hatch for a repo that lies, applied after discovery so the cache never learns of it.
 export const RUNNERS = ["auto", "npm", "pnpm", "yarn", "bun"] as const;
 export type Runner = (typeof RUNNERS)[number];
-export const taskRunner: Record<string, Runner> = JSON.parse(localStorage.getItem("cc-task-runner") || "{}");
+export const taskRunner: Record<string, Runner> = readObj<Runner>("cc-task-runner");
 export function runnerFor(key: string): Runner { return taskRunner[key] || "auto"; }
 export function setRunner(key: string, r: Runner) {
   if (r === "auto") delete taskRunner[key]; else taskRunner[key] = r;
@@ -48,7 +49,7 @@ export function applyRunner(list: Runnable[], key: string): Runnable[] {
 
 // ---------- remembered ${input:…} values ----------
 // Keyed per project + task + input. A password is never stored.
-export const taskInputs: Record<string, string> = JSON.parse(localStorage.getItem("cc-task-inputs") || "{}");
+export const taskInputs: Record<string, string> = readObj<string>("cc-task-inputs");
 const inputKey = (project: string, taskId: string, inputId: string) => `${project}␟${taskId}␟${inputId}`;
 export function rememberInput(project: string, taskId: string, inputId: string, val: string) {
   taskInputs[inputKey(project, taskId, inputId)] = val;
@@ -236,6 +237,8 @@ export async function launchWithDeps(
 // Must list every `source` tasks.rs `discover` emits; a missing one is silently filtered from the picker.
 export const ALL_PROVIDERS = ["episko", "vscode", "launch", "npm", "just", "taskfile", "mise", "make", "cargo"] as const;
 export type Provider = (typeof ALL_PROVIDERS)[number];
+// The three that run the project to enumerate it, and so sit behind the trust gate.
+export const INTROSPECTING: readonly Provider[] = ["just", "taskfile", "mise"];
 export const PROVIDER_LABEL: Record<Provider, string> = {
   episko: ".episko", vscode: "tasks.json", launch: "launch.json", npm: "package.json",
   just: "justfile", taskfile: "Taskfile", mise: "mise", make: "Makefile", cargo: "cargo",
@@ -252,7 +255,10 @@ export interface TaskPrefs {
 const DEFAULT_TASK_PREFS: TaskPrefs = {
   providers: [...ALL_PROVIDERS], known: [...ALL_PROVIDERS], introspect: true, cwd: "session", dismissMs: 20000, attention: true,
 };
-export const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...JSON.parse(localStorage.getItem("cc-task-prefs") || "{}") };
+export const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...readObj<unknown>("cc-task-prefs") as Partial<TaskPrefs> };
+// Both list fields are read on the next lines, so a hand-edited scalar there would throw at import.
+if (!Array.isArray(taskPrefs.providers)) taskPrefs.providers = [...DEFAULT_TASK_PREFS.providers];
+if (!Array.isArray(taskPrefs.known)) taskPrefs.known = [];
 for (const p of ALL_PROVIDERS) {
   if (!taskPrefs.known.includes(p)) taskPrefs.providers = [...taskPrefs.providers, p];
 }
@@ -260,7 +266,7 @@ taskPrefs.known = [...ALL_PROVIDERS];
 export function saveTaskPrefs() { localStorage.setItem("cc-task-prefs", JSON.stringify(taskPrefs)); taskRepaint(); }
 
 // Folders Episko may introspect: adding a project counts as yes; merely holding a session does not.
-const trustedPaths: string[] = JSON.parse(localStorage.getItem("cc-trusted") || "[]");
+const trustedPaths: string[] = readList<unknown>("cc-trusted").filter((x): x is string => typeof x === "string");
 function saveTrusted() { localStorage.setItem("cc-trusted", JSON.stringify(trustedPaths)); }
 function isTrusted(path: string): boolean {
   return FAVORITES.some((f) => f.path === path) || trustedPaths.includes(path);
@@ -277,7 +283,7 @@ export function untrustProject(path: string) {
 export function explicitlyTrusted(): string[] { return [...trustedPaths]; }
 
 // Keyed project root → Runnable ids, which discovery keeps stable across a rescan.
-const taskPins: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-pins") || "{}");
+const taskPins: Record<string, string[]> = readObj<string[]>("cc-task-pins");
 function saveTaskPins() { localStorage.setItem("cc-task-pins", JSON.stringify(taskPins)); }
 export function pinnedIds(key: string): string[] { return taskPins[key] || []; }
 export function togglePin(key: string, id: string) {
@@ -292,7 +298,7 @@ export function togglePin(key: string, id: string) {
 // tests after every turn. One rule per project; the label lets Settings list rules
 // without running discovery first.
 export type StopRule = { id: string; label: string };
-export const stopRules: Record<string, StopRule> = JSON.parse(localStorage.getItem("cc-task-onstop") || "{}");
+export const stopRules: Record<string, StopRule> = readObj<StopRule>("cc-task-onstop");
 function saveStopRules() { localStorage.setItem("cc-task-onstop", JSON.stringify(stopRules)); }
 export function toggleStopRule(key: string, r: Runnable) {
   if (stopRules[key]?.id === r.id) delete stopRules[key];
@@ -304,7 +310,7 @@ export function clearStopRule(key: string) { delete stopRules[key]; saveStopRule
 
 // Hiding is a preference, never an edit: a discovered VS Code task or justfile belongs to another tool.
 
-const taskHidden: Record<string, string[]> = JSON.parse(localStorage.getItem("cc-task-hidden") || "{}");
+const taskHidden: Record<string, string[]> = readObj<string[]>("cc-task-hidden");
 function saveHidden() { localStorage.setItem("cc-task-hidden", JSON.stringify(taskHidden)); }
 export function hiddenIds(key: string): string[] { return taskHidden[key] || []; }
 export function toggleHidden(key: string, id: string) {
@@ -317,7 +323,10 @@ export function toggleHidden(key: string, id: string) {
 // ---------- discovery ----------
 // `trusted` lets the backend run `just --dump`, which evaluates the justfile; all three switches gate it.
 export async function discoverTasks(workdir: string, colorKey = workdir, includeHidden = false): Promise<Runnable[]> {
-  const trusted = taskPrefs.introspect && taskPrefs.providers.includes("just") && (isTrusted(workdir) || isTrusted(colorKey));
+  // Any introspecting provider opens the gate, not `just` alone: the backend takes one bool
+  // for all three, and gating on `just` left `task`/`mise` reporting withheld rows (docs/tasks.md).
+  const wantsIntrospection = INTROSPECTING.some((p) => taskPrefs.providers.includes(p));
+  const trusted = taskPrefs.introspect && wantsIntrospection && (isTrusted(workdir) || isTrusted(colorKey));
   try {
     const raw = (await invoke<Runnable[]>("discover_runnables", { workdir, trusted }))
       .filter((r) => taskPrefs.providers.includes(r.source as Provider));

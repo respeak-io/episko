@@ -5,6 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, takeStage, toast } from "./dom";
+import { readList } from "./store";
+import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
   canShare, clampRange, DASH_RANGE_DEFAULT, dashDays, dashPulse, densePerDay,
@@ -108,7 +110,7 @@ export function setDashSummaries(on: boolean) {
 }
 // Projects that said yes to creating `.episko/digest.md` (asked once, as tasks.rs does for tasks.toml).
 const OK_KEY = "cc-digest-ok";
-const digestOk = (): string[] => { try { return JSON.parse(localStorage.getItem(OK_KEY) || "[]"); } catch { return []; } };
+const digestOk = (): string[] => readList<string>(OK_KEY).filter((x) => typeof x === "string");
 function allowDigest(root: string) {
   const l = digestOk();
   if (!l.includes(root)) localStorage.setItem(OK_KEY, JSON.stringify([...l, root]));
@@ -227,8 +229,10 @@ async function loadDash(): Promise<void> {
     if (wantGit) void loadSync(r); else mainStat = null;   // fired, not awaited: nothing else waits on it
     // The digest is the project's line, never yours: it seeds `teamSummaries` only.
     for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
-    hasDigest = Object.keys(digest).length > 0
+    const anyDigest = Object.keys(digest).length > 0
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
+    if (root() !== r) return;   // a second await, so the stage may have moved again since
+    hasDigest = anyDigest;
     days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
   } finally {
     if (root() === r) loading = false;   // guarded: the next project's load may be running
@@ -839,15 +843,20 @@ async function runLocalClean(): Promise<void> {
     }
     const swept = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
     dlog("info", `branches · ${swept.summary}`);
+    // Guarded on the project throughout: a sweep outlives a stage switch, and its result
+    // and toast belong to the repo it ran in, not to whatever is on screen when it lands.
+    if (root() !== r) return;
     toast(swept.summary);
     branchResult = { swept, wts };
   } catch (e) {
     dlog("error", `branches clean failed: ${e}`);
-    toast("branches: " + e);
+    if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
-    await loadBranches(true);          // re-read: the roster and the branch list both moved
-    await host.refreshGit();
+    if (root() === r) {
+      await loadBranches(true);        // re-read: the roster and the branch list both moved
+      await host.refreshGit();
+    }
     renderDash();
   }
 }
@@ -864,16 +873,17 @@ async function runRemoteClean(): Promise<void> {
   try {
     const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks });
     dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
-    toast(swept.summary);
-    branchResult = { swept, wts: [], remote };
+    // The fetch still runs for the repo that was swept; only the reporting is guarded.
+    const landed = root() === r;
+    if (landed) { toast(swept.summary); branchResult = { swept, wts: [], remote }; }
     // A remote delete leaves refs/remotes alone until a fetch prunes them.
     await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
   } catch (e) {
     dlog("error", `remote clean failed: ${e}`);
-    toast("remote: " + e);
+    if (root() === r) toast("remote: " + e);
   } finally {
     branchBusy = false;
-    await loadBranches(true);
+    if (root() === r) await loadBranches(true);
     renderDash();
   }
 }
@@ -931,11 +941,32 @@ async function doClose(): Promise<void> {
 }
 
 // Committed, so it needs the same create-gate as the digest; reviewable and undoable in the ⤢ view.
+// A new committable file is never created without asking (CLAUDE.md). The backend refuses a
+// missing file when `create` is false, and that refusal is the only "does it exist?" this side
+// can trust; a yes is the write, and a no leaves the repo as it was.
+async function withConsent(write: (create: boolean) => Promise<unknown>, file: string, why: string): Promise<boolean> {
+  try {
+    await write(false);
+    return true;
+  } catch (e) {
+    if (!String(e).includes("no .episko/")) throw e;
+    const ok = await ask(`Create ${file}?\n\n${why}\n\nIt is committed with the project, so your colleagues get it too.`,
+      { title: "A new file in the repo", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+    if (!ok) return false;
+    await write(true);
+    return true;
+  }
+}
+
 async function setKept(number: number, keep: boolean): Promise<void> {
   const r = root();
   const who = gh.viewer || "someone";
   try {
-    await invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create: true });
+    const wrote = await withConsent(
+      (create) => invoke("set_kept", { root: r, number, who, at: isoDay(Date.now()), keep, create }),
+      ".episko/episko.toml",
+      "Keeping an issue out of triage is a decision for the whole team, so it is recorded in the project.");
+    if (!wrote) return;
     kept = await invoke<KeptIssue[]>("list_kept", { root: r }).catch(() => kept);
     toast(keep ? `#${number} kept. Nobody on the team is asked again` : `#${number} back in triage`);
     renderDash();
@@ -968,7 +999,7 @@ async function doDispatch(): Promise<void> {
     }).then((out) => {
       // Record what actually landed, not what was asked for — the release undoes this.
       recordClaim({ threadId: `${r}#${t.number}`, root: r, number: t.number,
-        kind, sessionId: sid, at: Date.now(),
+        kind, sessionId: sid, at: Date.now(), who: gh.viewer || "",
         wrote: { assigned: out.assigned, label: out.labeled ? eff.label.value : "" } });
       if (out.problems.length) {
         dlog("warn", `claim #${t.number} partial: ${out.problems.join("; ")}`);
@@ -1003,7 +1034,9 @@ export function releaseClaimFor(sessionId: string): void {
     root: rec.root, number: rec.number, kind: rec.kind,
     unassign: rec.wrote?.assigned ?? false,
     label: rec.wrote?.label ?? "",
-    body: releaseComment(gh.viewer || "", Date.now()),
+    // The claim's own signature: this runs on `pty-exit`, when `gh.viewer` may belong to
+    // another project's GitHub half, or to none. An older ledger entry has no `who`.
+    body: releaseComment(rec.who ?? (rec.root === root() ? gh.viewer || "" : ""), Date.now()),
   }).then((out) => {
     if (out.problems.length) dlog("warn", `release #${rec.number} partial: ${out.problems.join("; ")}`);
   }).catch((e) => { dlog("warn", `release #${rec.number} failed: ${e}`); });
@@ -1016,10 +1049,11 @@ async function toggleShare(id: string): Promise<void> {
   if (!n) return;
   const on = shared.some((x) => x.id === id);
   try {
-    await invoke("set_shared_note", {
+    const wrote = await withConsent((create) => invoke("set_shared_note", {
       root: r, id, text: n.text, who: gh.viewer || "someone",
-      at: isoDay(Date.now()), share: !on, create: true,
-    });
+      at: isoDay(Date.now()), share: !on, create,
+    }), ".episko/notes.toml", "A shared note is written into the project rather than kept on your machine.");
+    if (!wrote) return;
     shared = await invoke<SharedNote[]>("list_shared_notes", { root: r }).catch(() => shared);
     toast(on ? "Note is yours again" : "Shared. Commit .episko/notes.toml to send it");
     renderDash();

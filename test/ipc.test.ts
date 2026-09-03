@@ -75,6 +75,15 @@ function rustCommands(): Map<string, Cmd> {
 
 interface Site { cmd: string; keys: string[]; file: string; literal: boolean }
 
+/** How far a comment starting at `i` runs, or 0 if none does. Both scanners below skip
+ *  comments: a `// … `pty-exit` …` line above an argument would otherwise open a template
+ *  string that swallows the rest of the object, and the test fails for the wrong reason. */
+function commentEnd(s: string, i: number): number {
+  if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); return nl < 0 ? s.length : nl; }
+  if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); return end < 0 ? s.length : end + 2; }
+  return 0;
+}
+
 /** Read from `from` (an index of `{`) to its matching `}`, ignoring string contents. */
 function braceBody(s: string, from: number): string {
   let depth = 0, quote = "";
@@ -85,6 +94,8 @@ function braceBody(s: string, from: number): string {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(s, i);
+    if (c) { i = c - 1; continue; }
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if (ch === "{") depth++;
     else if (ch === "}") { depth--; if (depth === 0) return s.slice(from + 1, i); }
@@ -103,6 +114,8 @@ function objectKeys(body: string): string[] {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(body, i);
+    if (c) { i = c - 1; cur = ""; continue; }   // a comment names no key
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if ("{([".includes(ch)) { depth++; continue; }
     if ("})]".includes(ch)) { depth--; continue; }
@@ -200,7 +213,18 @@ function declBody(s: string, from: number): string {
   for (let i = from; i < s.length; i++) {
     if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); if (nl < 0) break; i = nl; out += "\n"; continue; }
     if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); if (end < 0) break; i = end + 1; continue; }
-    if (s[i] === '"') { const end = s.indexOf('"', i + 1); if (end < 0) break; i = end; continue; }
+    // `\"` does not close a Rust string, and `'}'` is a char literal rather than a lifetime.
+    if (s[i] === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') j += s[j] === "\\" ? 2 : 1;
+      if (j >= s.length) break;
+      i = j;
+      continue;
+    }
+    if (s[i] === "'" && (s[i + 2] === "'" || (s[i + 1] === "\\" && s[i + 3] === "'"))) {
+      i += s[i + 1] === "\\" ? 3 : 2;
+      continue;
+    }
     if (s[i] === "{") { depth++; if (depth === 1) continue; }
     else if (s[i] === "}" && --depth === 0) return out;
     out += s[i];
@@ -250,8 +274,20 @@ const TYPES = read(SRC, "types.ts");
 
 const bgLogHead = /pub\(crate\)\s+struct\s+BgLog\s*\{/.exec(PTY);
 const bgLogFields = bgLogHead ? rustFields(declBody(PTY, bgLogHead.index + bgLogHead[0].length - 1)) : [];
-// The derives and `#[serde(…)]` attributes above the struct, and nothing else.
-const bgLogAttrs = bgLogHead ? PTY.slice(Math.max(0, bgLogHead.index - 120), bgLogHead.index) : "";
+// The derives and `#[serde(…)]` attributes above the struct: the contiguous run of lines, not
+// a fixed window — a longer doc comment there would push `rename_all` out of view and fail the
+// check below for a reason that has nothing to do with the wire.
+function attrsAbove(src: string, at: number): string {
+  const lines = src.slice(0, at).split("\n");
+  const out: string[] = [];
+  for (let i = lines.length - 2; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (!t || t.endsWith("}") || t.endsWith(";")) break;   // a blank line, or the item before
+    out.unshift(lines[i]);
+  }
+  return out.join("\n");
+}
+const bgLogAttrs = bgLogHead ? attrsAbove(PTY, bgLogHead.index) : "";
 const bgReadFields = tsFields(bodyOf(SERVERS, /export\s+interface\s+BgRead\s*\{/));
 const bgMiss = rustEnum("BgMiss");
 

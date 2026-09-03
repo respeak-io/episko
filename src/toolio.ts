@@ -108,7 +108,10 @@ function patchText(o: Record<string, unknown>): string {
     .join("\n");
   if (body) return `${head}\n${body}`;
   const content = str(o.content);
-  return content ? `${head} · ${content.split("\n").length} lines` : head;
+  // The trailing newline terminates the last line rather than starting an empty one, and
+  // almost every written file has one: counting it made a one-line file "2 lines".
+  const lineCount = content.replace(/\n$/, "").split("\n").length;
+  return content ? `${head} · ${lineCount} line${lineCount === 1 ? "" : "s"}` : head;
 }
 
 // `error` first: a PostToolUseFailure has no `tool_response` and puts the reason in a plain

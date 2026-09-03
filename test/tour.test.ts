@@ -24,7 +24,13 @@ const SET_TABS: Record<string, string> = Object.fromEntries(
 function inHtml(sel: string): boolean {
   let m: RegExpExecArray | null;
   if ((m = /^#([A-Za-z0-9_-]+)$/.exec(sel))) return HTML.includes(`id="${m[1]}"`);
-  if ((m = /^\[([a-z-]+)(?:="[^"]*")?\]$/.exec(sel))) return HTML.includes(m[1]);
+  // The name as a whole attribute (a substring lets `[data-add]` be satisfied by `data-addr`),
+  // and the value too when the selector names one.
+  if ((m = /^\[([a-z-]+)(?:="([^"]*)")?\]$/.exec(sel))) {
+    return m[2] === undefined
+      ? new RegExp(`\\s${m[1]}(?=[\\s=>])`).test(HTML)
+      : HTML.includes(`${m[1]}="${m[2]}"`);
+  }
   if ((m = /^\.([A-Za-z0-9_-]+)$/.exec(sel))) return new RegExp(`class="[^"]*\\b${m[1]}\\b`).test(HTML);
   throw new Error(`tour anchor "${sel}" uses a selector shape this test cannot check — `
     + `keep anchors to #id, [data-x], [data-x="v"] or .class, or teach inHtml() the new shape`);
@@ -357,10 +363,13 @@ describe("the permission modes it plans around", () => {
   });
 
   it("only names modes the app actually ships", () => {
-    // A typo'd mode id makes `permAsks` false for everybody, and nothing else would notice.
+    // Nothing reads ASKING_MODES at runtime, so a mode renamed out from under it would leave
+    // the list quietly describing an app that no longer exists.
     expect(shipped).toEqual(expect.arrayContaining([...ASKING_MODES]));
   });
 
+  // The configured mode is passed in every case and read in none: the answer is what the
+  // provider did (`permissionCanAsk`), never what the setting said it might do.
   it("knows which modes still raise a card", () => {
     expect(permAsks({ ...W0, permMode: "default", permissionCanAsk: true })).toBe(true);
     expect(permAsks({ ...W0, permMode: "acceptEdits", permissionCanAsk: true })).toBe(true);

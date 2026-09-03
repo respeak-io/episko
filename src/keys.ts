@@ -21,6 +21,9 @@ const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt", "AltGraph", "C
 
 // Shift-only characters fold onto the unshifted key, so ⌘+ (Shift+=) matches the stepper's mod+=.
 const SHIFT_ALIAS: Record<string, string> = { "+": "=", _: "-" };
+// What those fold TO. Shift cannot be held on one of these: the press arrives as the other
+// character, so a stored `mod+shift+=` would parse and then never match a real key event.
+const UNSHIFTED = new Set(Object.values(SHIFT_ALIAS));
 
 export interface KeyActionDef {
   id: KeyAction;
@@ -97,7 +100,8 @@ export function parseCombo(s: unknown): Combo | null {
   if (!c.key) return null;
   if (c.key !== "enter" && c.key !== DIGIT_KEY && c.key.length !== 1) return null;
   const alias = SHIFT_ALIAS[c.key];
-  if (alias) { c.key = alias; c.shift = false; }
+  if (alias) c.key = alias;
+  if (UNSHIFTED.has(c.key)) c.shift = false;
   return c;
 }
 

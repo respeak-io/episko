@@ -7,7 +7,10 @@ export function setHome(h: string) { HOME = h; }
 export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 // `esc` leaves `"` alone (right for text nodes); a value in a double-quoted attribute needs this.
 export const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
-export const tilde = (p: string) => (HOME ? p.replace(HOME, "~") : p);
+// Anchored, and only on a separator boundary: an unanchored replace turns
+// `/Volumes/backup/Users/ada/x` into `/Volumes/backup~/x`, and a bare prefix would eat `~2`.
+export const tilde = (p: string) =>
+  HOME && (p === HOME || p.startsWith(`${HOME}/`) || p.startsWith(`${HOME}\\`)) ? `~${p.slice(HOME.length)}` : p;
 
 // A confirmation's plain-text prose → the markup ./confirm paints: a blank line starts a
 // paragraph, a run of bullet-led lines is a list, backticks are code. Escaped first.

@@ -239,7 +239,8 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
   ctxKey = null; // one #ctxMenu, one target
   wtTarget = t;
-  menuX = x; menuY = y;
+  // No `menuX`/`menuY` stamp: those exist for the drill-downs that re-open a menu at its
+  // own coordinates (agents, groups, gh), and this menu has none.
   const live = [...sessions.values()].filter((s) => s.workdir === t.dir && isAgent(s)).length;
   const rows: (CtxRow | null)[] = [
     // No agent row: the override is keyed by repo (`colorKey`), which every checkout of it

@@ -61,9 +61,6 @@ fn walk_index(root: &std::path::Path) -> (Vec<String>, bool) {
     while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
-            if files.len() >= MAX_FILES {
-                return (finish(files), true);
-            }
             let name = e.file_name().to_string_lossy().to_string();
             // A dot-entry is configuration or version control; this is also what keeps `.git` out.
             if name.starts_with('.') {
@@ -85,6 +82,11 @@ fn walk_index(root: &std::path::Path) -> (Vec<String>, bool) {
                     truncated = true;
                 }
             } else if let Ok(rel) = e.path().strip_prefix(root) {
+                // Checked here rather than per entry: a dot-entry or a `SKIP_DIRS` folder
+                // after the last file is nothing withheld, and must not say `truncated`.
+                if files.len() >= MAX_FILES {
+                    return (finish(files), true);
+                }
                 files.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
