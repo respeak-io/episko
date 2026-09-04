@@ -314,9 +314,11 @@ And the things that hold however the files are arranged:
   `lineHasPrompt` — a short question must *lead* its row, since `includes` on "go on" matches
   anything, and the key is retried short for a REPL that wrapped the message itself);
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
-  the submit marker it kept as a hint. Bottom-first, a step shorter than a screen so a hit
-  cannot be skipped, and a hunt ends when a wheel stops changing the screen — that is the top
-  of the conversation. Prompts are **in memory only**, like a tool payload, and `/clear`
+  the submit marker it kept as a hint. Bottom-first, and a step shorter than a screen so a hit
+  cannot be skipped — but what a wheel notch is worth is the REPL's business, so the first
+  step **measures** it (./outline's `screenShift`) and the rest are paced to two thirds of a
+  screen, waiting on the redraw itself rather than on a delay. A hunt ends when a wheel stops
+  changing the screen — that is the top of the conversation — or when its time budget does. Prompts are **in memory only**, like a tool payload, and `/clear`
   empties the list while `/compact` and `/resume` do not. A **resumed** pane seeds its list
   from the provider's transcript, once. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
