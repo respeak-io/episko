@@ -8,7 +8,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
-import type { Sess } from "./types";
+import type { Prompt, Sess } from "./types";
+import { lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
@@ -170,6 +171,218 @@ export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
     e.stopPropagation();
     invoke("write_pty", { sessionId: id, data: "\x1bv" });
   }, true);
+}
+
+// ---------- outline anchors ----------
+// The submit hook fires as you press Enter, so its marker sits in the input box while the
+// REPL commits the message above it a frame later: the address is the TEXT, and that marker
+// only says where to look (docs/sessions.md). The line, once found, gets a marker of its
+// own, which xterm disposes as it scrolls out — how a jump is known to have expired.
+
+const JUMP_LEAD = 2; // rows of context above the question, where the viewport can scroll at all
+const SLACK = 2;     // the commit is above the cursor row, give or take a reflow since
+
+export function markPrompt(s: Sess, id: string) {
+  if (!s.term || isAlt(s.term)) return; // a screen row the next frame overwrites is not an anchor
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  const live = new Set(s.prompts.map((p) => p.id));
+  for (const [k, m] of marks) if (m.isDisposed || !live.has(k)) marks.delete(k);
+  const m = s.term.registerMarker(0);
+  if (m) marks.set(id, m);
+}
+
+const liveMark = (s: Sess, id: string) => {
+  const m = s.promptMarks?.get(id);
+  return m && !m.isDisposed && m.line >= 0 ? m : null;
+};
+
+function anchorAt(s: Sess, id: string, line: number) {
+  const buf = s.term!.buffer.active;
+  const m = s.term!.registerMarker(line - (buf.baseY + buf.cursorY)); // the offset is from the cursor
+  if (!m) return null;
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  marks.get(id)?.dispose(); // the submit hint has done its job
+  marks.set(id, m);
+  return m;
+}
+
+// The rows xterm wrapped into one logical line, as prose. Capped: a match needs a key's worth
+// of text, not the paragraph a wall of pasted output wraps into.
+const RUN_MAX = 240;
+function runText(buf: Buf, y: number): string {
+  let t = buf.getLine(y)?.translateToString(false) ?? "";
+  for (let i = y + 1; i < buf.length && t.length < RUN_MAX; i++) {
+    const l = buf.getLine(i);
+    if (!l?.isWrapped) break;
+    t += l.translateToString(false);
+  }
+  return normLine(t);
+}
+
+/**
+ * The question's own line, by its text. `below` is the submit marker's: the message was
+ * committed above it, so the nearest match at or above that is the one you asked, while a
+ * reply quoting you back comes later. Without one (a restored prompt) the first match wins.
+ */
+function findPrompt(term: Terminal, k: PromptKey, below: number | null): number | null {
+  const buf = term.buffer.active;
+  const last = Math.min(below == null ? buf.length : below + SLACK, buf.length - 1);
+  let hit: number | null = null;
+  for (let y = 0; y <= last; y++) {
+    if (buf.getLine(y)?.isWrapped) continue; // a continuation row belongs to the run above it
+    if (!lineHasPrompt(runText(buf, y), k)) continue;
+    if (below == null) return y;
+    hit = y;
+  }
+  return hit;
+}
+
+// One search per question: a scan is the whole scrollback, and a miss stays a miss — either
+// the text was never rendered as typed (a pasted block collapses to a placeholder) or it has
+// gone. The submit marker is what a miss falls back to, so the row stays clickable.
+function resolve(s: Sess, p: Prompt) {
+  const hint = liveMark(s, p.id);
+  if (p.found || p.lost || !s.term) return hint;
+  for (const k of promptKeys(p.text)) { // the whole key first: the short retry is likelier to lie
+    const y = findPrompt(s.term, k, hint && hint.line);
+    if (y == null) continue;
+    const m = anchorAt(s, p.id, y);
+    if (m) { p.found = true; return m; }
+  }
+  p.lost = true;
+  return hint;
+}
+
+/** The prompts still reachable in this pane; the rest render as out of reach. */
+export function anchoredPrompts(s: Sess): Set<string> {
+  const out = new Set<string>();
+  if (!s.term) return out;
+  // A REPL on the alternate screen keeps the conversation itself, so every question is worth
+  // a click and the marker map answers for nothing.
+  for (const p of s.prompts) if (isAlt(s.term) || liveMark(s, p.id)) out.add(p.id);
+  return out;
+}
+
+// ---------- a REPL that owns the screen ----------
+// Claude Code runs on the ALTERNATE screen (`?1049h` at startup, measured) and grabs the
+// mouse with it, so there is no scrollback for xterm to scroll, `scrollToLine` moves nothing,
+// and every marker is a screen row the next frame overwrites. The conversation is the TUI's,
+// so the jump is asked of it in the language it is listening in (docs/sessions.md).
+const isAlt = (t: Terminal) => t.buffer.active.type === "alternate";
+
+// Keys, not the wheel: in this TUI a notch is `scroll:lineUp`, ONE line, while PageUp is a
+// page and Ctrl+Home/End are the two ends (its own key table, each probed against the real
+// CLI). None can put a character in the composer or confirm anything, which is what keeps
+// this outside the two places Episko types at a session (CLAUDE.md).
+const PAGE_UP = "\x1b[5~", PAGE_DOWN = "\x1b[6~", TO_TOP = "\x1b[1;5H", TO_END = "\x1b[1;5F";
+const key = (s: Sess, seq: string) => invoke("write_pty", { sessionId: s.id, data: seq });
+
+const HUNT_PAGES = 120;
+const BUDGET_MS = 6000; // a jump is a click, not an errand
+const SAY_MS = 700;     // before a hunt is worth saying out loud
+const FRAME_MS = 200;   // no change for this long is the end, not a redraw still on its way
+const SETTLE_MS = 16;   // a frame written in two chunks
+
+const onScreen = (t: Terminal, keys: PromptKey[]) => {
+  for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
+  return null;
+};
+
+function screenRows(t: Terminal): string[] {
+  const b = t.buffer.active, out: string[] = [];
+  for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? "");
+  return out;
+}
+
+// The redraw itself, rather than a delay long enough to cover the worst one: resolves on the
+// first write that CHANGED the screen, or after FRAME_MS of none. A write is not a redraw —
+// the footer's clock lands first and read as "the top of the conversation" the first time.
+function frame(t: Terminal, before: string[]): Promise<string[]> {
+  return new Promise((res) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); res(screenRows(t)); };
+    const tid = setTimeout(finish, FRAME_MS);
+    const d = t.onWriteParsed(() => { if (screenShift(before, screenRows(t)) !== 0) setTimeout(finish, SETTLE_MS); });
+  });
+}
+
+/**
+ * On screen already? Then nothing moves: jumping to an end first would undo the reading you
+ * are in. Otherwise from the nearer end, a page at a time — deterministic where a wheel had
+ * to be measured, and never longer than a screen, so a hit cannot be stepped over.
+ */
+async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<number | null> {
+  const t = s.term!;
+  const here = onScreen(t, keys);
+  if (here != null) return here;
+  let rows = screenRows(t);
+  key(s, fromTop ? TO_TOP : TO_END);
+  rows = await frame(t, rows);
+  const t0 = Date.now();
+  let said = false;
+  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS; i++) {
+    const y = onScreen(t, keys);
+    if (y != null) return y;
+    if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
+    key(s, fromTop ? PAGE_DOWN : PAGE_UP);
+    const next = await frame(t, rows);
+    if (screenShift(rows, next) === 0) break;
+    rows = next;
+  }
+  key(s, TO_END); // a hunt that failed must not also lose your place
+  return null;
+}
+
+let hunting = false;
+async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
+  const keys = promptKeys(p.text);
+  if (hunting || !keys.length) return "unfound"; // one at a time: two hunts scroll each other
+  hunting = true;
+  try {
+    // Earlier half of the conversation? Then the top is the nearer end to page in from.
+    const y = await hunt(s, keys, s.prompts.indexOf(p) < s.prompts.length / 2);
+    if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
+    dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
+    return y == null ? "unfound" : "ok";
+  } finally { hunting = false; }
+}
+
+// The line is marked whether or not the viewport moved: `scrollToLine` clamps at `ybase`, so a
+// question already on screen scrolls nowhere and the click reads as dead (docs/sessions.md).
+// A selection, not `registerDecoration`: that is proposed API and throws without
+// `allowProposedApi`. This one is stable and every renderer draws it.
+const FLASH_MS = 1600;
+let flash: number | undefined;
+function flashLine(term: Terminal, line: number) {
+  clearTimeout(flash);
+  const buf = term.buffer.active;
+  let end = line; // a question wrapped over three rows is three rows of answer
+  while (end + 1 < buf.length && buf.getLine(end + 1)?.isWrapped) end++;
+  term.selectLines(line, end);
+  const ours = JSON.stringify(term.getSelectionPosition() ?? null);
+  // Only clear what we made: by now the pointer may have selected something to copy.
+  flash = window.setTimeout(() => {
+    if (JSON.stringify(term.getSelectionPosition() ?? null) === ours) term.clearSelection();
+  }, FLASH_MS);
+}
+
+/** `gone` is the pane's answer, `unfound` the TUI's: one has lost the line, the other looked. */
+export type JumpResult = "ok" | "gone" | "unfound";
+
+export async function scrollToPrompt(s: Sess, id: string): Promise<JumpResult> {
+  const p = s.prompts.find((x) => x.id === id);
+  if (!s.term || !p) return "gone";
+  if (isAlt(s.term)) return huntFor(s, p);
+  const m = resolve(s, p);
+  if (!m) return "gone";
+  const before = s.term.buffer.active.viewportY;
+  s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
+  // Never let the marking take the navigation down with it, whatever the renderer is doing.
+  try { flashLine(s.term, m.line); } catch (e) { dlog("warn", `outline: could not mark the line (${e})`); }
+  // One line per click, and the one that would have answered "why did nothing happen".
+  dlog("info", `outline jump · line ${m.line} · ${p.found ? "matched" : "marker only"}`
+    + ` · view ${before} → ${s.term.buffer.active.viewportY}`);
+  return "ok";
 }
 
 // ---------- clickable links ----------

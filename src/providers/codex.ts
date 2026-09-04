@@ -181,8 +181,19 @@ function itemParts(item: Record<string, any>) {
   }
 }
 
+// A user message is not a tool call, so `itemParts` has no entry for it. Both halves of the
+// pair are accepted: which one Codex sends for a message has moved, and ./outline's repeat
+// guard collapses a started/completed pair into one row.
+function promptEvents(params: any): AgentEvent[] {
+  const item = obj(params?.item);
+  if (item.type !== "userMessage" || params?.episkoChild === true) return [];
+  const parts = Array.isArray(item.content) ? item.content : [];
+  const body = text(item.text) || parts.filter((x: any) => x?.type === "text").map((x: any) => text(x.text)).join("\n");
+  return body.trim() ? [{ type: "prompt", text: body }] : [];
+}
+
 function itemEvents(method: string, params: any): AgentEvent[] {
-  const item = obj(params?.item); const p = itemParts(item); if (!p) return [];
+  const item = obj(params?.item); const p = itemParts(item); if (!p) return promptEvents(params);
   const rawId = text(item.id); if (!rawId) return [];
   const child = params?.episkoChild === true;
   const thread = text(params?.threadId);

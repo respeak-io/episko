@@ -12,73 +12,72 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-
-The header's running-server list finally reads the log Claude Code actually writes.
+The status bar's popovers stop being a dead end.
 
 + Every popover in the status bar has a **quick open** in its top-right corner, to the panel
-  that answers the question it only summarises: today's spend and your limits both open
-  *Usage & spend*, the shortcut sheet opens Settings › Keys, the terminal picker opens
-  Settings › Sessions, and disk I/O opens Settings › Diagnostics.
-+ A row says **where it looked** for its log, and offers Reveal and Copy for that path.
-+ Pick which of your GitHub accounts a project reads as, from the project menu or from
-  the GitHub card itself. `gh` keeps one active account and switches it globally, so a
-  work login and a personal one could not both be right at once — a private repo the
-  other account owns came back as *could not resolve to a Repository*, which named
-  neither the account nor the fix.
-+ Paths and URLs in a pane are clickable — every pane, whatever agent runs in it. A path
-  is only underlined once Episko has found it on disk, so paths with spaces, broken
-  across lines, or printed with a `\n` in them all still open.
-+ A relative path resolves against where the pane's process actually is, so it keeps
-  working after a `cd`, and against the folders the session has already worked in.
-+ A terminal's own OSC 8 hyperlinks now open instead of doing nothing.
-+ Settings › Appearance › *Clean up session names*: the characters stripped off a session's
-  name are yours to add to, so the next spinner frame Claude Code ships doesn't wait for an
-  Episko release. Characters or `a-b` ranges, with a live before/after and an off switch.
-~ The terminal picker names itself, like every other popover in that bar does.
-~ **Usage & spend is its own window**, not a Settings tab. Nothing in it is a setting — it
-  is a report — and it was the one tab that had to widen the Settings dialog to fit. Open
-  it from either money popover, or from `⌘K`. Settings arrives at the top of the tab a link
-  names, rather than wherever you last left the pane scrolled.
-~ The popover splits **Running servers** from **Background jobs**; only something with an
-  address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
-~ The GitHub card names the account a failed read ran as, instead of passing GitHub's
-  own wording through.
-! Background shell logs were never found at all — the path was built from the wrong temp
-  root, so every row sat at "starting…" for the life of the session.
-! A shell whose log never appears now retires instead of staying on the list forever, and
-  a session's rows leave when its pane ends.
-! `[exited with code unknown]` is read as an ending; a truncation notice no longer is.
-! A session no longer sits on a green tick while it works. Typing your next message
-  before the agent has finished submits it right away — Claude answers the queued one
-  next, but its `Stop` arrives after your prompt, and Episko took that as the turn
-  ending. Worse, `done` then swallowed every tool call that followed, so the row claimed
-  *your turn* for the whole of the next turn, however long it ran.
-! Task manager: *Open tasks.toml* was refused by the opener's URL scope and could only
-  ever fail.
-! Day spend: resuming a session whose original pane was still running re-booked the
-  whole running total every ~10s (a $12 session once booked $1,820). Baselines are now
-  kept per pane within a conversation.
-! `gh: Not Found (HTTP 404)` no longer reads as "GitHub CLI (gh) is not installed".
-! History and the token ledger no longer stop dead on a transcript containing an umlaut
-  or an emoji at the wrong byte.
-! An agent that `cd $WT`'d or `cd ~`'d before writing no longer looked like it had come
-  home, which cleared the drift card while it worked somewhere else.
-! A branch sweep that finished after you switched project put its result — and its
-  toast — in the other project's Branches view.
-! *Keep* an issue and *Share* a note now ask before creating a committable file in your
-  repo, as the work log already did.
+  that answers in full what it only summarises: today's spend and your limits open *Usage &
+  spend*, the shortcut sheet Settings › Keys, the terminal picker Settings › Sessions, and
+  disk I/O Settings › Diagnostics.
+~ **Usage & spend is its own window**, not a Settings tab: nothing in it is a setting, and it
+  was the one tab that had to widen the whole dialog to fit. Open it from either money
+  popover or from `⌘K`.
+~ Settings arrives at the top of the tab a link names, rather than wherever you last left the
+  pane scrolled. The terminal picker names itself, as every other popover in that bar does.
+
+## 0.25.0 — 2026-09-04
+The questions you asked, listed and clickable — and the paths your agents print are links.
+
++ **Your questions, in the inspector.** Every prompt you sent a pane, newest first; click
+  one and the session goes back to where you asked it. Settings › Sessions has the switches.
++ **Resume a session and its questions come back**, read from the conversation's own
+  transcript with the times it recorded, and they jump too.
++ **A shelved session's card and History's detail pane lead with what you asked**, and a
+  click there jumps the read-only transcript beside it to that message.
++ **Pick which GitHub account a project reads as**, from the project menu or the GitHub
+  card. `gh` switches accounts globally, so a work and a personal login could not both be
+  right at once.
++ **Paths and URLs in a pane are clickable**, whatever agent runs in it. A path is only
+  underlined once Episko has found it on disk, so spaces and broken lines still open.
++ A relative path resolves against where the pane's process actually is, so it survives a
+  `cd`; a terminal's own OSC 8 hyperlinks open too.
++ A running-server row says **where it looked** for its log, and offers Reveal and Copy.
++ Settings › Appearance › *Clean up session names*: the characters stripped from a session's
+  name are yours to add to, so a new spinner frame needn't wait for an Episko release.
+~ The server popover splits **Running servers** from **Background jobs**; only something with
+  an address counts, so a backgrounded `pytest` no longer inflates the pill.
+~ The inspector's state, model and context share one card, so the working set and the
+  questions sit above the fold.
+~ The GitHub card names the account a failed read ran as, rather than passing GitHub's own
+  wording through.
+! Background shell logs were never found at all: the path was built from the wrong temp root,
+  so every row sat at "starting…" for the life of the session.
+! A shell whose log never appears now retires instead of staying on the list forever, and a
+  session's rows leave when its pane ends.
+! A session no longer sits on a green tick while it works: a prompt typed mid-turn made the
+  running turn's end read as *your turn*, for the whole of the next turn.
+! Day spend: resuming a session whose original pane was still running re-booked the whole
+  running total every ~10s — a $12 session once booked $1,820.
+! History and the token ledger no longer stop dead on a transcript containing an umlaut or an
+  emoji at the wrong byte.
+! An agent that `cd`'d before writing no longer looked like it had come home, which cleared
+  the drift card while it worked somewhere else.
+! A branch sweep that finished after you switched project put its result — and its toast — in
+  the other project's Branches view.
+! *Keep* an issue and *Share* a note now ask before creating a committable file in your repo,
+  as the work log already did.
 ! A permission the backend refused dropped its card and said nothing.
-! The sidebar's worktree chips are tinted by branch again, and the file-drop outline has
-  its rounded corners back.
-! *Reveal folder* is offered on shell and task panes, not just agents.
-! Tasks: a VS Code `npm` task with `dependsOn` ran its dependencies and silently skipped
-  its own script; a Taskfile or mise project came back as withheld unless `just` was
-  also switched on; and an `${input:…}` used only in an `env` value is now asked for.
-! The working-set diff no longer undercounts removed lines in a file whose comments
-  start with `--`.
+! `[exited with code unknown]` is read as an ending; a truncation notice no longer is.
+! *How it ended* in History was a one-line sliver with its own scrollbar.
+! Task manager: *Open tasks.toml* was refused by the opener's URL scope and could only fail.
+! Tasks: a VS Code `npm` task with `dependsOn` skipped its own script, Taskfile and mise
+  projects were withheld unless `just` was on, and an `${input:…}` used only in `env` is asked for.
+! `gh: Not Found (HTTP 404)` no longer reads as "GitHub CLI (gh) is not installed".
+! The sidebar's worktree chips are tinted by branch again, the file-drop outline has its
+  rounded corners back, and *Reveal folder* is offered on shell and task panes too.
+! The working-set diff no longer undercounts removed lines in a file whose comments start
+  with `--`.
 
 ## 0.24.0 — 2026-08-28
-
 Put the fleet down for the night and pick it up in the morning. The hook server
 survives a hiccup instead of going quiet for good, and Episko will now tell you what
 it weighs after a day left open.

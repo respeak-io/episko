@@ -14,7 +14,7 @@ const sess = (id = "pane-1"): Sess => ({
   agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
-  lastEvent: "", activity: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
+  lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],
   pane: {} as HTMLElement,
 });
@@ -94,6 +94,19 @@ describe("Codex provider adapter", () => {
       secondary: { usedPercent: 34, windowDurationMins: 10080, resetsAt: 20 },
     } }))[0];
     expect(limits).toMatchObject({ type: "rate-limits", windows: [{ usedPercent: 12 }, { usedPercent: 34 }] });
+  });
+
+  it("turns a user message into a prompt for the outline, and never a child's", () => {
+    const item = { type: "userMessage", id: "msg-1", content: [{ type: "text", text: "why is it red?" }] };
+    expect(codexEvents(raw("item/completed", { item }))).toEqual([{ type: "prompt", text: "why is it red?" }]);
+    expect(codexEvents(raw("item/started", { item }))).toEqual([{ type: "prompt", text: "why is it red?" }]);
+    expect(codexEvents(raw("item/completed", { item, episkoChild: true }))).toEqual([]);
+    // Both halves of the pair reach the reducer; ./outline collapses them into one row.
+    const s = sess();
+    for (const m of ["item/started", "item/completed"]) {
+      for (const ev of codexEvents(raw(m, { item }))) applyAgentEvent(s, ev);
+    }
+    expect(s.prompts.map((p) => p.text)).toEqual(["why is it red?"]);
   });
 
   it("keeps structured file reads, edits and newer tools visible in Context", () => {

@@ -106,13 +106,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 83 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 84 modules
 
-**No framework, and no longer one file.** 82 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 83 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (forty, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (forty-one, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -154,6 +154,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
+| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 | `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
@@ -165,7 +166,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 83 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 84 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -310,6 +311,39 @@ And the things that hold however the files are arranged:
   reviewing work you did not type, so the fix will not be typed by you either, and a chip you
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
+- **A Claude pane may be on the ALTERNATE screen, and then it has no scrollback to jump.**
+  Claude Code has two renderers, a documented setting: `tui: "fullscreen"` (the flicker-free
+  alt-screen renderer with its own virtualised scrollback; `?1049h` + `2J` at startup, mouse
+  grabbed, never leaves) and `tui: "default"` (the classic main-screen renderer, which prints
+  into the terminal's history like anything else). On the first, `buffer.active` is one
+  screen, `baseY` is always 0, `scrollToLine` moves nothing (every click logged `view 0 → 0`)
+  and a marker is a row the next frame overwrites — the first cut jumped to the prompt bar and
+  the second highlighted whatever happened to be on screen. **So the outline has one path per
+  buffer kind, and requires neither renderer**: it branches on `buffer.active.type`. On a
+  normal buffer (the classic renderer, a shell, a task, any provider that prints) the question
+  is found in the scrollback and xterm jumps to it. On the alternate screen the conversation
+  belongs to the TUI, so ./terminal **asks the TUI to page**, with its own keys (`PageUp`/
+  `PageDown`, `Ctrl+Home`/`Ctrl+End` — its key table, each probed against the real CLI),
+  re-reading the screen after every page until the question is on it. Keys, not the wheel: a
+  notch is `scroll:lineUp`, one line, and had to be measured, while a page is deterministic
+  and never longer than a screen. None of these can put a character in the composer or
+  confirm anything, which is what keeps this off the list of two places Episko types at a
+  session.
+- **The question is found by its TEXT, never by a coordinate taken at the submit.** A marker
+  registered on `UserPromptSubmit` cannot be the answer even on a normal buffer: the hook
+  fires as you press Enter, so it lands on the input box's cursor row while the REPL commits
+  the message *above* it a frame later. ./outline owns the match (`promptKeys`, `normLine`,
+  `lineHasPrompt` — a short question must *lead* its row, since `includes` on "go on" matches
+  anything, and the key is retried short for a REPL that wrapped the message itself);
+  ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
+  the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
+  end** (the outline knows which half of the conversation a question is in) and stops when a
+  page stops changing the screen — that is the far end (`screenShift` reads 0) — or when its
+  time budget does; a write is not a redraw, so "no change" is only believed after the full
+  wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
+  **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
+  and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript,
+  once. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
@@ -499,7 +533,7 @@ And the things that hold however the files are arranged:
   modal. Esc, the cancel button and a backdrop click all resolve `false`; a second
   question raised while one is up **queues** rather than replacing it.
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
-- **Episko presses Enter for you in exactly two places**, and it must stay two: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed, and the dashboard's **dispatch**, where the confirm sheet *is* the reading (docs/dashboard.md) — and where the `\r` must be a `write_pty` of its own, a beat behind the text, or the REPL reads it as a paste. Everything else that puts text in a terminal — `sendOutputToSession`, `handToTerminal`, ./serversui's `TaskStop` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about.
+- **Episko presses Enter for you in exactly two places**, and it must stay two: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed, and the dashboard's **dispatch**, where the confirm sheet *is* the reading (docs/dashboard.md) — and where the `\r` must be a `write_pty` of its own, a beat behind the text, or the REPL reads it as a paste. Everything else that puts text in a terminal — `sendOutputToSession`, `handToTerminal`, ./serversui's `TaskStop` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about. The outline's **paging keys** are not an exception to any of this: `PageUp` and `Ctrl+End` can put nothing in the composer and confirm nothing, and they are exactly what the user's own keyboard would have sent.
 
 ## Deep dives (`docs/`)
 

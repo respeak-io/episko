@@ -13,7 +13,7 @@ import {
   allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   motionPrefs,
   keyPrefs, missingAgents,
-  peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
+  outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
@@ -35,6 +35,7 @@ import {
   driftVerdict, fmtPerHour, fmtSpanShort, leakSuspects, SCROLLBACK_OPTS, VITALS,
   VITALS_EVERY, type VitalsDrift, type VitalsPrefs,
 } from "./perf";
+import { OUTLINE_LINES, type OutlinePrefs } from "./outline";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -87,6 +88,7 @@ export interface SettingsHost {
   setFx: (id: VisualFx) => void;
   setRevivePrefs: (p: RevivePrefs) => void;
   setVitalsPrefs: (p: VitalsPrefs) => void;
+  setOutlinePrefs: (p: OutlinePrefs) => void;
   setScrollback: (lines: number) => void;
   // Not settings, hence no cc- key: an inspector, a reload and a reading of ./debug's ring.
   openDevtools: () => void;
@@ -132,7 +134,7 @@ let host: SettingsHost = {
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
-  setVitalsPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   vitalsDrift: () => null,
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
@@ -330,6 +332,18 @@ const SET_TABS: SetTab[] = [
         segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
       { kind: "attn", label: "When a session wants you",
         hint: "A turn finishing, a turn the API killed, a permission, a failed run. The row lights up in the rail for a few seconds, and the ⌂ badge in the header queues them all up. Hover the preview to see the light." },
+      { kind: "toggle", set: "outline:on", label: "List your questions in the inspector",
+        hint: "Every prompt you send is listed newest first, and clicking one scrolls that pane's terminal back to where you asked it. A question whose lines have fallen out of the scrollback is greyed rather than dropped.",
+        on: () => outlinePrefs.enabled },
+      { kind: "seg", set: "outline:lines", label: "Lines per question",
+        hint: "How much of a long prompt a row shows before it is cut off.",
+        dim: () => !outlinePrefs.enabled,
+        active: () => String(outlinePrefs.lines),
+        segs: () => OUTLINE_LINES.map((n) => ({ value: String(n), label: n === 1 ? "One line" : `${n} lines`, glyph: "≡" })) },
+      { kind: "toggle", set: "outline:hover", label: "Expand a question on hover",
+        hint: "Rest on a row and it unfolds to the whole prompt, the way an idle checkout opens in the sidebar. Off leaves the tooltip.",
+        dim: () => !outlinePrefs.enabled,
+        on: () => outlinePrefs.hover },
       { kind: "revive", label: "Carry on after an API error",
         hint: "A 529 or a dropped Wi-Fi ends the turn, and the session then waits at its prompt — for eight hours, if it happened at midnight. Switched on, Episko waits and types a carry-on for you. It never types into a session that is asking you something, and it never retries a failure that can't be fixed by waiting (bad credentials, billing, a malformed request)." },
     ],
@@ -1150,6 +1164,9 @@ function applySetting(set: string, val: string) {
   // so adding one there means no edit here.
   else if (set.startsWith("foot:")) host.setFootSeg(set.slice(5) as FootSeg);
   else if (set.startsWith("fx:")) host.setFx(set.slice(3) as VisualFx);
+  else if (set === "outline:on") host.setOutlinePrefs({ ...outlinePrefs, enabled: val === "1" });
+  else if (set === "outline:lines") host.setOutlinePrefs({ ...outlinePrefs, lines: +val });
+  else if (set === "outline:hover") host.setOutlinePrefs({ ...outlinePrefs, hover: val === "1" });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
   else if (set === "perf:every") host.setVitalsPrefs({ ...vitalsPrefs, everyMs: +val });
   else if (set === "perf:scroll") host.setScrollback(+val);

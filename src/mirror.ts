@@ -9,11 +9,11 @@ import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
-import { wpeekHtml } from "./inspectorview";
+import { askedHtml, wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
-  providerAdapter, readProviderHistory, reconcileProviderRestorables,
+  providerAdapter, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
 } from "./providers";
 import { dormantBusy, orderedSessions } from "./grouping";
 import {
@@ -171,7 +171,21 @@ export function openDormant(id: string) {
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id);
+  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id, (msgs) => {
+    pastMsgs = { key: d.resumeId, msgs };
+    renderPastInspector(d);
+  });
+}
+
+// The shelved conversation's messages, kept so the card can list its questions beside the
+// mirror that is already showing them. One read: the transcript load above is the same call.
+let pastMsgs: { key: string; msgs: ProviderMessage[] } | null = null;
+const PAST_ASK_SHOW = 5;
+
+/** A question in the shelved card, clicked: the mirror beside it holds the answer. */
+export function jumpPastMessage(index: string) {
+  const row = $("extBody").querySelectorAll(".tvmsg")[Number(index)];
+  row?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 export function renderPastHeader(d: Restorable) {
   ($("btnClose") as HTMLButtonElement).hidden = true;
@@ -184,6 +198,10 @@ export function renderPastHeader(d: Restorable) {
 }
 export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
+  // Above the buttons: it is what the decision to resume is made on. Absent until the
+  // transcript lands, and absent for good on a conversation with no prose in it.
+  const rows = pastMsgs?.key === d.resumeId ? askedHtml(pastMsgs.msgs, PAST_ASK_SHOW, true) : "";
+  const asked = rows ? `<div class="ext-qh"><span class="label">What you asked</span></div>${rows}` : "";
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const action = busy
@@ -198,6 +216,7 @@ export function renderPastInspector(d: Restorable) {
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
+      ${asked}
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
       <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
@@ -269,12 +288,14 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
 
 async function loadProviderTranscriptInto(
   provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean,
+  onLoaded?: (msgs: ProviderMessage[]) => void,
 ) {
   const label = providerAdapter(provider)?.label ?? provider;
   try {
     const msgs = await readProviderHistory(provider, sessionId, cwd, 80);
     if (!stillCurrent()) return;
     renderTranscript(msgs, true, label);
+    onLoaded?.(msgs);
   } catch (err) {
     if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
   }
