@@ -15,7 +15,7 @@ import { updateTray } from "./tray";
 import {
   closeAttnPop, closeCostPop, closeEnginePop, closeFootMenus, closeIoPop, closeShortPop,
   closeUsagePop,
-  refreshTokens, renderAttn, renderFoot, renderTelemetry, setEngine, setFooterCloseColorPop,
+  renderAttn, renderFoot, renderTelemetry, setEngine, setFooterCloseColorPop,
   setFooterSetActive,
 } from "./footer";
 import { closePalette, openPalette, setPaletteHost } from "./palui";
@@ -97,9 +97,9 @@ import {
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
-  closeSettings, keyRecording, openSettings, openSettingsOn, renderSettings, setSettingsHost, setTab,
-  settingsOpen,
+  closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsOpen,
 } from "./settings";
+import { closeUsage, openUsage, renderUsage, usageOpen } from "./usagedlg";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -199,7 +199,7 @@ function openProjectFiles() {
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
-  revealActiveFolder, openProjectFolder, openProjectFiles,
+  revealActiveFolder, openProjectFolder, openProjectFiles, openUsage,
 });
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
@@ -216,7 +216,7 @@ setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
-  setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize, refreshTokens,
+  setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize,
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
   setRevivePrefs,
   startTour: startChapter,
@@ -534,7 +534,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -576,7 +576,16 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);
+  else if (el.dataset.fgo) openFootTarget(el.dataset.fgo);
 });
+
+// A footer popover's quick open. The menu it came from goes first — the panel it opens
+// covers the bar, and a menu left standing under a dialog outlives the click that closes it.
+// "usage" is the one window of its own; every other value is a Settings tab id.
+function openFootTarget(go: string) {
+  closeFootMenus();
+  if (go === "usage") openUsage(); else openSettingsOn(go);
+}
 
 $("kbar").addEventListener("click", openPalette);
 $("themeBtn").addEventListener("click", toggleTheme);
@@ -636,7 +645,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -670,6 +679,7 @@ window.addEventListener("keydown", (e) => {
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
+  else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
@@ -775,7 +785,7 @@ invoke<string[]>("available_terminals").then((ids) => {
 
 // Keep rate-limit countdowns fresh (and a maxed meter flipping back) without new telemetry.
 setInterval(() => {
-  if (settingsOpen() && setTab === "usage") renderSettings(); // keep the forecast countdowns/colours current
+  renderUsage(); // keep the Usage window's forecast countdowns and colours current
   if (mirror) return; // a read-only mirror owns the stage — don't paint over it
   const s = activeId ? sessions.get(activeId) ?? null : null;
   renderInspector(s);

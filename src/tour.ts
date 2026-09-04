@@ -382,9 +382,10 @@ export const CHAPTERS: Chapter[] = [
         done: (w) => isOpen(w, "usage"),
       },
       {
-        anchor: "#setBtn",
+        anchor: "#fCostSeg",
         title: "The whole history",
-        body: "Settings › Usage has every day, per model and per project, back as far as your transcripts go.",
+        body: "Either popover ends on <b>Usage & spend</b>. That window has every day, per model and per "
+          + "project, back as far as your transcripts go.",
       },
     ],
   },
