@@ -297,16 +297,24 @@ And the things that hold however the files are arranged:
   reviewing work you did not type, so the fix will not be typed by you either, and a chip you
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
-- **A Claude pane is on the ALTERNATE screen, so it has no scrollback to jump.** Measured,
-  not inferred: the REPL writes `?1049h` + `2J` at startup, grabs the mouse with it
-  (`?1000h/?1002h/?1003h/?1006h`) and never leaves. So `buffer.active` is one screen, `baseY`
-  is always 0, `scrollToLine` moves nothing (every click logged `view 0 → 0`), and a marker
-  is a row the next frame overwrites — which is why the first cut jumped you to the prompt
-  bar and the second highlighted whatever happened to be on screen. The conversation belongs
-  to the TUI, so the outline **asks the TUI to scroll**: ./terminal writes SGR wheel events
-  to the PTY (what the user's own wheel sends) and re-reads the screen after each step until
-  the question is on it. Mouse bytes are not text and no REPL can read one as a prompt, which
-  is what keeps this off the list of two places Episko types at a session.
+- **A Claude pane may be on the ALTERNATE screen, and then it has no scrollback to jump.**
+  Claude Code has two renderers, a documented setting: `tui: "fullscreen"` (the flicker-free
+  alt-screen renderer with its own virtualised scrollback; `?1049h` + `2J` at startup, mouse
+  grabbed, never leaves) and `tui: "default"` (the classic main-screen renderer, which prints
+  into the terminal's history like anything else). On the first, `buffer.active` is one
+  screen, `baseY` is always 0, `scrollToLine` moves nothing (every click logged `view 0 → 0`)
+  and a marker is a row the next frame overwrites — the first cut jumped to the prompt bar and
+  the second highlighted whatever happened to be on screen. **So the outline has one path per
+  buffer kind, and requires neither renderer**: it branches on `buffer.active.type`. On a
+  normal buffer (the classic renderer, a shell, a task, any provider that prints) the question
+  is found in the scrollback and xterm jumps to it. On the alternate screen the conversation
+  belongs to the TUI, so ./terminal **asks the TUI to page**, with its own keys (`PageUp`/
+  `PageDown`, `Ctrl+Home`/`Ctrl+End` — its key table, each probed against the real CLI),
+  re-reading the screen after every page until the question is on it. Keys, not the wheel: a
+  notch is `scroll:lineUp`, one line, and had to be measured, while a page is deterministic
+  and never longer than a screen. None of these can put a character in the composer or
+  confirm anything, which is what keeps this off the list of two places Episko types at a
+  session.
 - **The question is found by its TEXT, never by a coordinate taken at the submit.** A marker
   registered on `UserPromptSubmit` cannot be the answer even on a normal buffer: the hook
   fires as you press Enter, so it lands on the input box's cursor row while the REPL commits
@@ -314,13 +322,14 @@ And the things that hold however the files are arranged:
   `lineHasPrompt` — a short question must *lead* its row, since `includes` on "go on" matches
   anything, and the key is retried short for a REPL that wrapped the message itself);
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
-  the submit marker it kept as a hint. Bottom-first, and a step shorter than a screen so a hit
-  cannot be skipped — but what a wheel notch is worth is the REPL's business, so the first
-  step **measures** it (./outline's `screenShift`) and the rest are paced to two thirds of a
-  screen, waiting on the redraw itself rather than on a delay. A hunt ends when a wheel stops
-  changing the screen — that is the top of the conversation — or when its time budget does. Prompts are **in memory only**, like a tool payload, and `/clear`
-  empties the list while `/compact` and `/resume` do not. A **resumed** pane seeds its list
-  from the provider's transcript, once. `docs/sessions.md` has all of it.
+  the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
+  end** (the outline knows which half of the conversation a question is in) and stops when a
+  page stops changing the screen — that is the far end (`screenShift` reads 0) — or when its
+  time budget does; a write is not a redraw, so "no change" is only believed after the full
+  wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
+  **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
+  and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript,
+  once. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
@@ -510,7 +519,7 @@ And the things that hold however the files are arranged:
   modal. Esc, the cancel button and a backdrop click all resolve `false`; a second
   question raised while one is up **queues** rather than replacing it.
 - **A sound is raised, never decided at the call site.** Every trigger calls `playSound(ev)` unconditionally and lets `sound.ts` answer; a second "are sounds on?" test anywhere is a switch that turns half the feature off (`docs/sounds.md`).
-- **Episko presses Enter for you in exactly two places**, and it must stay two: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed, and the dashboard's **dispatch**, where the confirm sheet *is* the reading (docs/dashboard.md) — and where the `\r` must be a `write_pty` of its own, a beat behind the text, or the REPL reads it as a paste. Everything else that puts text in a terminal — `sendOutputToSession`, `handToTerminal`, ./serversui's `TaskStop` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about. The outline's **wheel events** are not an exception to any of this: a mouse byte is not text, no REPL can read one as a prompt, and it is exactly what the user's own wheel would have sent.
+- **Episko presses Enter for you in exactly two places**, and it must stay two: `tickRevive` in `actions.ts`, bringing back a session whose turn the API killed, and the dashboard's **dispatch**, where the confirm sheet *is* the reading (docs/dashboard.md) — and where the `\r` must be a `write_pty` of its own, a beat behind the text, or the REPL reads it as a paste. Everything else that puts text in a terminal — `sendOutputToSession`, `handToTerminal`, ./serversui's `TaskStop` — prefills and stops, because a human is there to read it before committing. The revive path exists precisely because nobody is. Every rule about when it may do that lives in `revive.ts` and is tested (`docs/sessions.md`); the driver decides nothing, and a new "should we retry this?" test at a call site would be the same half-off switch the sound rule above warns about. The outline's **paging keys** are not an exception to any of this: `PageUp` and `Ctrl+End` can put nothing in the composer and confirm nothing, and they are exactly what the user's own keyboard would have sent.
 
 ## Deep dives (`docs/`)
 

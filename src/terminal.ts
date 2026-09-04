@@ -270,24 +270,18 @@ export function anchoredPrompts(s: Sess): Set<string> {
 // so the jump is asked of it in the language it is listening in (docs/sessions.md).
 const isAlt = (t: Terminal) => t.buffer.active.type === "alternate";
 
-// SGR 1006, exactly what the user's own wheel sends. Mouse bytes are not text: no REPL can
-// read one as a prompt, which is what keeps this on the right side of the rule that Episko
-// types at a session in only two places (CLAUDE.md).
-const WHEEL_UP = 64, WHEEL_DOWN = 65;
-function wheel(s: Sess, btn: number, notches: number) {
-  if (!s.term) return;
-  const col = Math.max(1, s.term.cols >> 1), row = Math.max(1, s.term.rows >> 1);
-  invoke("write_pty", { sessionId: s.id, data: `\x1b[<${btn};${col};${row}M`.repeat(notches) });
-}
+// Keys, not the wheel: in this TUI a notch is `scroll:lineUp`, ONE line, while PageUp is a
+// page and Ctrl+Home/End are the two ends (its own key table, each probed against the real
+// CLI). None can put a character in the composer or confirm anything, which is what keeps
+// this outside the two places Episko types at a session (CLAUDE.md).
+const PAGE_UP = "\x1b[5~", PAGE_DOWN = "\x1b[6~", TO_TOP = "\x1b[1;5H", TO_END = "\x1b[1;5F";
+const key = (s: Sess, seq: string) => invoke("write_pty", { sessionId: s.id, data: seq });
 
-const STEP0 = 4;        // the opener, until a wheel has been measured
-const STEP_MAX = 40;
-const TARGET = 0.66;    // of a screen per step: quick, and still too short to step over a hit
-const HUNT_STEPS = 120;
+const HUNT_PAGES = 120;
 const BUDGET_MS = 6000; // a jump is a click, not an errand
 const SAY_MS = 700;     // before a hunt is worth saying out loud
-const FRAME_MS = 200;   // no change for this long is the top, not a redraw still on its way
-const SNAP = 40, SNAP_ROUNDS = 8; // notches, and rounds of them, to reach the live end
+const FRAME_MS = 200;   // no change for this long is the end, not a redraw still on its way
+const SETTLE_MS = 16;   // a frame written in two chunks
 
 const onScreen = (t: Terminal, keys: PromptKey[]) => {
   for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
@@ -303,7 +297,6 @@ function screenRows(t: Terminal): string[] {
 // The redraw itself, rather than a delay long enough to cover the worst one: resolves on the
 // first write that CHANGED the screen, or after FRAME_MS of none. A write is not a redraw —
 // the footer's clock lands first and read as "the top of the conversation" the first time.
-const SETTLE_MS = 16; // a frame written in two chunks
 function frame(t: Terminal, before: string[]): Promise<string[]> {
   return new Promise((res) => {
     let done = false;
@@ -313,45 +306,30 @@ function frame(t: Terminal, before: string[]): Promise<string[]> {
   });
 }
 
-// A wheel notch is worth what this REPL says it is worth, so the first step measures it and
-// the rest are paced to two thirds of a screen. Nothing is assumed: an unreadable shift keeps
-// the conservative step, which is only slow, never wrong.
-const pace = (step: number, moved: number, rows: number) =>
-  Math.max(STEP0, Math.min(STEP_MAX, Math.round((step * rows * TARGET) / moved)));
-
-async function snapToEnd(s: Sess) {
-  for (let i = 0; i < SNAP_ROUNDS; i++) {
-    const before = screenRows(s.term!);
-    wheel(s, WHEEL_DOWN, SNAP);
-    if (screenShift(before, await frame(s.term!, before)) === 0) return; // nothing moved: already there
-  }
-}
-
 /**
- * On screen already? Then nothing moves: yanking the view to the bottom first would undo the
- * reading you are in. Otherwise from the live end — the view may be parked where the last
- * jump left it, and a hunt that only walks up would never reach a question below that.
+ * On screen already? Then nothing moves: jumping to an end first would undo the reading you
+ * are in. Otherwise from the nearer end, a page at a time — deterministic where a wheel had
+ * to be measured, and never longer than a screen, so a hit cannot be stepped over.
  */
-async function hunt(s: Sess, keys: PromptKey[]): Promise<number | null> {
+async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<number | null> {
   const t = s.term!;
   const here = onScreen(t, keys);
   if (here != null) return here;
-  await snapToEnd(s);
+  let rows = screenRows(t);
+  key(s, fromTop ? TO_TOP : TO_END);
+  rows = await frame(t, rows);
   const t0 = Date.now();
-  let step = STEP0, up = 0, said = false, rows = screenRows(t);
-  for (let i = 0; i < HUNT_STEPS && Date.now() - t0 < BUDGET_MS; i++) {
+  let said = false;
+  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS; i++) {
     const y = onScreen(t, keys);
     if (y != null) return y;
     if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
-    wheel(s, WHEEL_UP, step);
-    up += step;
+    key(s, fromTop ? PAGE_DOWN : PAGE_UP);
     const next = await frame(t, rows);
-    const moved = screenShift(rows, next);
-    if (moved === 0) break; // a wheel that changes nothing is the top of the conversation
-    if (moved) step = pace(step, moved, t.rows);
+    if (screenShift(rows, next) === 0) break;
     rows = next;
   }
-  wheel(s, WHEEL_DOWN, up + step); // a hunt that failed must not also lose your place
+  key(s, TO_END); // a hunt that failed must not also lose your place
   return null;
 }
 
@@ -361,7 +339,8 @@ async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
   if (hunting || !keys.length) return "unfound"; // one at a time: two hunts scroll each other
   hunting = true;
   try {
-    const y = await hunt(s, keys);
+    // Earlier half of the conversation? Then the top is the nearer end to page in from.
+    const y = await hunt(s, keys, s.prompts.indexOf(p) < s.prompts.length / 2);
     if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
     dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
     return y == null ? "unfound" : "ok";
