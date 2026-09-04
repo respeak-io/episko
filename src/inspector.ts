@@ -40,12 +40,14 @@ export function toggleOutlineAll() { outlineAll = !outlineAll; repaintActive(); 
 
 // Click a question, land where you asked it. The row carries its own session id: markup
 // outlives the `activeId` that produced it, as with the tool timeline.
-export function jumpToPrompt(sid: string, promptId: string) {
+export async function jumpToPrompt(sid: string, promptId: string) {
   const s = sessions.get(sid);
-  if (!s || scrollToPrompt(s, promptId)) return;
+  if (!s) return;
+  const r = await scrollToPrompt(s, promptId);
+  if (r === "ok") return;
   const p = s.prompts.find((x) => x.id === promptId);
-  toast(p?.restored
-    ? "That question is from before this pane, and isn't in its scrollback"
+  toast(r === "unfound" ? "Couldn't find that question — it may be further back than the session shows"
+    : p?.restored ? "That question is from before this pane, and isn't in its scrollback"
     : "That far back has scrolled out of this terminal");
   repaintActive(); // the row has just learned it is out of reach
 }

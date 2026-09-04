@@ -183,7 +183,7 @@ const JUMP_LEAD = 2; // rows of context above the question, where the viewport c
 const SLACK = 2;     // the commit is above the cursor row, give or take a reflow since
 
 export function markPrompt(s: Sess, id: string) {
-  if (!s.term) return;
+  if (!s.term || isAlt(s.term)) return; // a screen row the next frame overwrites is not an anchor
   const marks = s.promptMarks ?? (s.promptMarks = new Map());
   const live = new Set(s.prompts.map((p) => p.id));
   for (const [k, m] of marks) if (m.isDisposed || !live.has(k)) marks.delete(k);
@@ -253,11 +253,89 @@ function resolve(s: Sess, p: Prompt) {
   return hint;
 }
 
-/** The prompts still reachable in this pane's buffer; the rest render as out of reach. */
+/** The prompts still reachable in this pane; the rest render as out of reach. */
 export function anchoredPrompts(s: Sess): Set<string> {
   const out = new Set<string>();
-  if (s.term) for (const p of s.prompts) if (liveMark(s, p.id)) out.add(p.id);
+  if (!s.term) return out;
+  // A REPL on the alternate screen keeps the conversation itself, so every question is worth
+  // a click and the marker map answers for nothing.
+  for (const p of s.prompts) if (isAlt(s.term) || liveMark(s, p.id)) out.add(p.id);
   return out;
+}
+
+// ---------- a REPL that owns the screen ----------
+// Claude Code runs on the ALTERNATE screen (`?1049h` at startup, measured) and grabs the
+// mouse with it, so there is no scrollback for xterm to scroll, `scrollToLine` moves nothing,
+// and every marker is a screen row the next frame overwrites. The conversation is the TUI's,
+// so the jump is asked of it in the language it is listening in (docs/sessions.md).
+const isAlt = (t: Terminal) => t.buffer.active.type === "alternate";
+
+// SGR 1006, exactly what the user's own wheel sends. Mouse bytes are not text: no REPL can
+// read one as a prompt, which is what keeps this on the right side of the rule that Episko
+// types at a session in only two places (CLAUDE.md).
+const WHEEL_UP = 64, WHEEL_DOWN = 65;
+function wheel(s: Sess, btn: number, notches: number) {
+  if (!s.term) return;
+  const col = Math.max(1, s.term.cols >> 1), row = Math.max(1, s.term.rows >> 1);
+  invoke("write_pty", { sessionId: s.id, data: `\x1b[<${btn};${col};${row}M`.repeat(notches) });
+}
+
+const STEP = 4;         // notches a step walks; must stay shorter than a screen, or a hit is skipped
+const HUNT_STEPS = 120; // how far back a jump looks before it admits it cannot find the question
+const FRAME_MS = 70;    // a redraw, before looking again
+const SAY_AFTER = 8;    // steps before a hunt is long enough to be worth saying out loud
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const onScreen = (t: Terminal, keys: PromptKey[]) => {
+  for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
+  return null;
+};
+
+// Every row as one string. The top of the conversation is where a wheel stops changing it,
+// which is what ends a hunt in a young session after a single step.
+function screenSig(t: Terminal): string {
+  const b = t.buffer.active;
+  let out = "";
+  for (let y = 0; y < b.length; y++) out += b.getLine(y)?.translateToString(true) ?? "";
+  return out;
+}
+
+/**
+ * On screen already? Then nothing moves: yanking the view to the bottom first would undo the
+ * reading you are in. Otherwise from the live end — the view may be parked where the last
+ * jump left it, and a hunt that only walks up would never reach a question below that.
+ */
+async function hunt(s: Sess, keys: PromptKey[]): Promise<number | null> {
+  const here = onScreen(s.term!, keys);
+  if (here != null) return here;
+  wheel(s, WHEEL_DOWN, STEP * HUNT_STEPS);
+  await sleep(FRAME_MS);
+  let sig = screenSig(s.term!);
+  for (let i = 0; i < HUNT_STEPS; i++) {
+    const y = onScreen(s.term!, keys);
+    if (y != null) return y;
+    if (i === SAY_AFTER) toast("Looking back through the conversation…");
+    wheel(s, WHEEL_UP, STEP);
+    await sleep(FRAME_MS);
+    const next = screenSig(s.term!);
+    if (next === sig) break;
+    sig = next;
+  }
+  wheel(s, WHEEL_DOWN, STEP * HUNT_STEPS); // a hunt that failed must not also lose your place
+  return null;
+}
+
+let hunting = false;
+async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
+  const keys = promptKeys(p.text);
+  if (hunting || !keys.length) return "unfound"; // one at a time: two hunts scroll each other
+  hunting = true;
+  try {
+    const y = await hunt(s, keys);
+    if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
+    dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
+    return y == null ? "unfound" : "ok";
+  } finally { hunting = false; }
 }
 
 // The line is marked whether or not the viewport moved: `scrollToLine` clamps at `ybase`, so a
@@ -279,11 +357,15 @@ function flashLine(term: Terminal, line: number) {
   }, FLASH_MS);
 }
 
-export function scrollToPrompt(s: Sess, id: string): boolean {
+/** `gone` is the pane's answer, `unfound` the TUI's: one has lost the line, the other looked. */
+export type JumpResult = "ok" | "gone" | "unfound";
+
+export async function scrollToPrompt(s: Sess, id: string): Promise<JumpResult> {
   const p = s.prompts.find((x) => x.id === id);
-  if (!s.term || !p) return false;
+  if (!s.term || !p) return "gone";
+  if (isAlt(s.term)) return huntFor(s, p);
   const m = resolve(s, p);
-  if (!m) return false;
+  if (!m) return "gone";
   const before = s.term.buffer.active.viewportY;
   s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
   // Never let the marking take the navigation down with it, whatever the renderer is doing.
@@ -291,7 +373,7 @@ export function scrollToPrompt(s: Sess, id: string): boolean {
   // One line per click, and the one that would have answered "why did nothing happen".
   dlog("info", `outline jump · line ${m.line} · ${p.found ? "matched" : "marker only"}`
     + ` · view ${before} → ${s.term.buffer.active.viewportY}`);
-  return true;
+  return "ok";
 }
 
 // ---------- clickable links ----------

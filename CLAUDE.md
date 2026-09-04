@@ -297,21 +297,28 @@ And the things that hold however the files are arranged:
   reviewing work you did not type, so the fix will not be typed by you either, and a chip you
   can only look at makes you the courier. Clipboard via `tauri-plugin-clipboard-manager`,
   never `navigator.clipboard` (an OS permission prompt).
-- **The outline's anchor is the question's TEXT, not a coordinate taken at the submit.**
-  A marker registered on `UserPromptSubmit` (or a Codex `userMessage`) cannot be the answer:
-  the hook fires as you press Enter, so it lands on the input box's cursor row and the REPL
-  commits the message *above* it a frame later — which is why the first cut jumped you to
-  the prompt bar. So the submit marker is kept as a **hint** (roughly where, and whether that
-  region is still in the buffer) and the line is **found by matching the text** on the click
-  that needs it: ./outline owns the match (`promptKeys`, `normLine`, `lineHasPrompt` — a short
-  question must *lead* its row, since `includes` on "go on" matches anything, and the whole
-  key is retried short for a REPL that wrapped the message itself), ./terminal
-  walks the buffer up to the hint and takes the nearest hit at or above it, then anchors an
-  xterm marker on that line and never searches again. A miss keeps the hint, so the row still
-  jumps somewhere honest; a disposed marker is what greys it. Prompts are **in memory only**,
-  like a tool payload, and `/clear` empties the list while `/compact` and `/resume` do not.
-  A **resumed** pane seeds its list from the provider's transcript instead, once, and its rows
-  are found the same way (the resume replayed them into the pane). `docs/sessions.md` has both.
+- **A Claude pane is on the ALTERNATE screen, so it has no scrollback to jump.** Measured,
+  not inferred: the REPL writes `?1049h` + `2J` at startup, grabs the mouse with it
+  (`?1000h/?1002h/?1003h/?1006h`) and never leaves. So `buffer.active` is one screen, `baseY`
+  is always 0, `scrollToLine` moves nothing (every click logged `view 0 → 0`), and a marker
+  is a row the next frame overwrites — which is why the first cut jumped you to the prompt
+  bar and the second highlighted whatever happened to be on screen. The conversation belongs
+  to the TUI, so the outline **asks the TUI to scroll**: ./terminal writes SGR wheel events
+  to the PTY (what the user's own wheel sends) and re-reads the screen after each step until
+  the question is on it. Mouse bytes are not text and no REPL can read one as a prompt, which
+  is what keeps this off the list of two places Episko types at a session.
+- **The question is found by its TEXT, never by a coordinate taken at the submit.** A marker
+  registered on `UserPromptSubmit` cannot be the answer even on a normal buffer: the hook
+  fires as you press Enter, so it lands on the input box's cursor row while the REPL commits
+  the message *above* it a frame later. ./outline owns the match (`promptKeys`, `normLine`,
+  `lineHasPrompt` — a short question must *lead* its row, since `includes` on "go on" matches
+  anything, and the key is retried short for a REPL that wrapped the message itself);
+  ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
+  the submit marker it kept as a hint. Bottom-first, a step shorter than a screen so a hit
+  cannot be skipped, and a hunt ends when a wheel stops changing the screen — that is the top
+  of the conversation. Prompts are **in memory only**, like a tool payload, and `/clear`
+  empties the list while `/compact` and `/resume` do not. A **resumed** pane seeds its list
+  from the provider's transcript, once. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
