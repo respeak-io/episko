@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   cleanPrompt, clampOutlinePrefs, clearsOutline, isEnvelope, lineHasPrompt, normLine, notePrompt,
-  OUTLINE_DEFAULTS, promptKeys, promptLabel, PROMPT_CAP, seedPrompts,
+  OUTLINE_DEFAULTS, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -172,5 +172,24 @@ describe("finding the question in the scrollback", () => {
     expect(promptKeys("have another go at it")[0].strict).toBe(false);
     expect(hit("> go on", "go on")).toBe(true);
     expect(hit("> now tell it to go on", "go on")).toBe(false);
+  });
+});
+
+describe("how far a screen moved between two readings", () => {
+  const screen = (...rows: string[]) => rows;
+  const conv = ["one fine morning", "", "we talked about the retry ladder", "and then the backoff",
+    "", "a fifth line with words", "and a sixth", "the seventh"];
+
+  it("reads the shift when the view scrolled back", () => {
+    const before = screen(...conv);
+    const after = screen("earlier", "still earlier", ...conv.slice(0, 6));
+    expect(screenShift(before, after)).toBe(2);
+  });
+  it("says 0 when a wheel changed nothing, which is the top", () => {
+    expect(screenShift(conv, conv)).toBe(0);
+  });
+  it("says nothing at all when too little lines up", () => {
+    expect(screenShift(conv, screen("a", "completely", "different", "screen", "entirely"))).toBeNull();
+    expect(screenShift(["", "  ", ""], ["", "  ", ""])).toBeNull(); // blank rows anchor nothing
   });
 });

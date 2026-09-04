@@ -9,7 +9,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
 import type { Prompt, Sess } from "./types";
-import { lineHasPrompt, normLine, promptKeys, type PromptKey } from "./outline";
+import { lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
@@ -280,24 +280,53 @@ function wheel(s: Sess, btn: number, notches: number) {
   invoke("write_pty", { sessionId: s.id, data: `\x1b[<${btn};${col};${row}M`.repeat(notches) });
 }
 
-const STEP = 4;         // notches a step walks; must stay shorter than a screen, or a hit is skipped
-const HUNT_STEPS = 120; // how far back a jump looks before it admits it cannot find the question
-const FRAME_MS = 70;    // a redraw, before looking again
-const SAY_AFTER = 8;    // steps before a hunt is long enough to be worth saying out loud
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const STEP0 = 4;        // the opener, until a wheel has been measured
+const STEP_MAX = 40;
+const TARGET = 0.66;    // of a screen per step: quick, and still too short to step over a hit
+const HUNT_STEPS = 120;
+const BUDGET_MS = 6000; // a jump is a click, not an errand
+const SAY_MS = 700;     // before a hunt is worth saying out loud
+const FRAME_MS = 140;   // how long to wait for the redraw before looking anyway
+const SNAP = 40, SNAP_ROUNDS = 8; // notches, and rounds of them, to reach the live end
 
 const onScreen = (t: Terminal, keys: PromptKey[]) => {
   for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
   return null;
 };
 
-// Every row as one string. The top of the conversation is where a wheel stops changing it,
-// which is what ends a hunt in a young session after a single step.
-function screenSig(t: Terminal): string {
-  const b = t.buffer.active;
-  let out = "";
-  for (let y = 0; y < b.length; y++) out += b.getLine(y)?.translateToString(true) ?? "";
+function screenRows(t: Terminal): string[] {
+  const b = t.buffer.active, out: string[] = [];
+  for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? "");
   return out;
+}
+
+// The redraw itself, rather than a delay long enough to cover the worst one. The timeout is
+// the answer for a wheel the REPL ignored; the settle is for a frame written in two chunks.
+const SETTLE_MS = 16;
+function frame(t: Terminal): Promise<void> {
+  return new Promise((res) => {
+    const tid = setTimeout(() => { d.dispose(); res(); }, FRAME_MS);
+    const d = t.onWriteParsed(() => {
+      d.dispose();
+      clearTimeout(tid);
+      setTimeout(res, SETTLE_MS);
+    });
+  });
+}
+
+// A wheel notch is worth what this REPL says it is worth, so the first step measures it and
+// the rest are paced to two thirds of a screen. Nothing is assumed: an unreadable shift keeps
+// the conservative step, which is only slow, never wrong.
+const pace = (step: number, moved: number, rows: number) =>
+  Math.max(STEP0, Math.min(STEP_MAX, Math.round((step * rows * TARGET) / moved)));
+
+async function snapToEnd(s: Sess) {
+  for (let i = 0; i < SNAP_ROUNDS; i++) {
+    const before = screenRows(s.term!);
+    wheel(s, WHEEL_DOWN, SNAP);
+    await frame(s.term!);
+    if (screenShift(before, screenRows(s.term!)) === 0) return; // nothing moved: already there
+  }
 }
 
 /**
@@ -306,22 +335,26 @@ function screenSig(t: Terminal): string {
  * jump left it, and a hunt that only walks up would never reach a question below that.
  */
 async function hunt(s: Sess, keys: PromptKey[]): Promise<number | null> {
-  const here = onScreen(s.term!, keys);
+  const t = s.term!;
+  const here = onScreen(t, keys);
   if (here != null) return here;
-  wheel(s, WHEEL_DOWN, STEP * HUNT_STEPS);
-  await sleep(FRAME_MS);
-  let sig = screenSig(s.term!);
-  for (let i = 0; i < HUNT_STEPS; i++) {
-    const y = onScreen(s.term!, keys);
+  await snapToEnd(s);
+  const t0 = Date.now();
+  let step = STEP0, up = 0, said = false, rows = screenRows(t);
+  for (let i = 0; i < HUNT_STEPS && Date.now() - t0 < BUDGET_MS; i++) {
+    const y = onScreen(t, keys);
     if (y != null) return y;
-    if (i === SAY_AFTER) toast("Looking back through the conversation…");
-    wheel(s, WHEEL_UP, STEP);
-    await sleep(FRAME_MS);
-    const next = screenSig(s.term!);
-    if (next === sig) break;
-    sig = next;
+    if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
+    wheel(s, WHEEL_UP, step);
+    up += step;
+    await frame(t);
+    const next = screenRows(t);
+    const moved = screenShift(rows, next);
+    if (moved === 0) break; // a wheel that changes nothing is the top of the conversation
+    if (moved) step = pace(step, moved, t.rows);
+    rows = next;
   }
-  wheel(s, WHEEL_DOWN, STEP * HUNT_STEPS); // a hunt that failed must not also lose your place
+  wheel(s, WHEEL_DOWN, up + step); // a hunt that failed must not also lose your place
   return null;
 }
 

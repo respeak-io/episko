@@ -121,3 +121,21 @@ export function promptKeys(text: string): PromptKey[] {
 
 export const lineHasPrompt = (line: string, k: PromptKey): boolean =>
   k.strict ? line.startsWith(k.key) : line.includes(k.key);
+
+// How far a screen moved between two readings, in rows: 0 when nothing did (the top of the
+// conversation, or a wheel the REPL ignored) and null when too little lines up to say — a
+// rewritten screen, or a jump longer than the screen itself. Scrolling back moves content
+// DOWN, so a hit is `after[i + shift] === before[i]`.
+const ANCHORS = 4; // matching rows before a shift is a reading rather than a coincidence
+
+export function screenShift(before: readonly string[], after: readonly string[]): number | null {
+  let best = 0, bestAt: number | null = null;
+  for (let d = 0; d < after.length; d++) {
+    let n = 0;
+    for (let i = 0; i + d < after.length && i < before.length; i++) {
+      if (before[i].trim() && before[i] === after[i + d]) n++;
+    }
+    if (n > best) { best = n; bestAt = d; }
+  }
+  return best >= ANCHORS ? bestAt : null;
+}
