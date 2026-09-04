@@ -286,7 +286,7 @@ const TARGET = 0.66;    // of a screen per step: quick, and still too short to s
 const HUNT_STEPS = 120;
 const BUDGET_MS = 6000; // a jump is a click, not an errand
 const SAY_MS = 700;     // before a hunt is worth saying out loud
-const FRAME_MS = 140;   // how long to wait for the redraw before looking anyway
+const FRAME_MS = 200;   // no change for this long is the top, not a redraw still on its way
 const SNAP = 40, SNAP_ROUNDS = 8; // notches, and rounds of them, to reach the live end
 
 const onScreen = (t: Terminal, keys: PromptKey[]) => {
@@ -300,17 +300,16 @@ function screenRows(t: Terminal): string[] {
   return out;
 }
 
-// The redraw itself, rather than a delay long enough to cover the worst one. The timeout is
-// the answer for a wheel the REPL ignored; the settle is for a frame written in two chunks.
-const SETTLE_MS = 16;
-function frame(t: Terminal): Promise<void> {
+// The redraw itself, rather than a delay long enough to cover the worst one: resolves on the
+// first write that CHANGED the screen, or after FRAME_MS of none. A write is not a redraw —
+// the footer's clock lands first and read as "the top of the conversation" the first time.
+const SETTLE_MS = 16; // a frame written in two chunks
+function frame(t: Terminal, before: string[]): Promise<string[]> {
   return new Promise((res) => {
-    const tid = setTimeout(() => { d.dispose(); res(); }, FRAME_MS);
-    const d = t.onWriteParsed(() => {
-      d.dispose();
-      clearTimeout(tid);
-      setTimeout(res, SETTLE_MS);
-    });
+    let done = false;
+    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); res(screenRows(t)); };
+    const tid = setTimeout(finish, FRAME_MS);
+    const d = t.onWriteParsed(() => { if (screenShift(before, screenRows(t)) !== 0) setTimeout(finish, SETTLE_MS); });
   });
 }
 
@@ -324,8 +323,7 @@ async function snapToEnd(s: Sess) {
   for (let i = 0; i < SNAP_ROUNDS; i++) {
     const before = screenRows(s.term!);
     wheel(s, WHEEL_DOWN, SNAP);
-    await frame(s.term!);
-    if (screenShift(before, screenRows(s.term!)) === 0) return; // nothing moved: already there
+    if (screenShift(before, await frame(s.term!, before)) === 0) return; // nothing moved: already there
   }
 }
 
@@ -347,8 +345,7 @@ async function hunt(s: Sess, keys: PromptKey[]): Promise<number | null> {
     if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
     wheel(s, WHEEL_UP, step);
     up += step;
-    await frame(t);
-    const next = screenRows(t);
+    const next = await frame(t, rows);
     const moved = screenShift(rows, next);
     if (moved === 0) break; // a wheel that changes nothing is the top of the conversation
     if (moved) step = pace(step, moved, t.rows);
