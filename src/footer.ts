@@ -2,31 +2,26 @@
 // (here because `closeFootMenus` is the one-open-menu rule and the badge's dropdown is one
 // of them). `renderFoot` is on renderAll's hot path; a popover paints on open.
 
-import { invoke } from "@tauri-apps/api/core";
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { closeServersPop } from "./serversui";
-import { dlog, toggleDbg } from "./debug";
+import { toggleDbg } from "./debug";
 import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecastWin, type Forecast } from "./rl";
 import { hasAgentCapability, isAgent, phaseText, statusKey, type AgentRateLimit, type Engine, type Sess } from "./types";
-import { costPopHtml, ioFigures, ioPopHtml, liveIo, setTokenScanning, tokenScanning, usageRow } from "./usageview";
+import { costPopHtml, ioFigures, ioPopHtml, liveIo, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
 import { closeSignoffPop } from "./signoff";
-import { renderSettings, setTab, settingsOpen } from "./settings";
 import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
 import { keyActionDef, shortcutRows } from "./keys";
-import { enginePopHtml, shortPopHtml, type ShortcutRow } from "./footerview";
+import { enginePopHtml, popGoHtml, shortPopHtml, type ShortcutRow } from "./footerview";
 import { FOOT_SEGS, footShown } from "./footprefs";
 import {
   activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, telemetryUp, termEngine,
 } from "./state";
 import { providerAdapter } from "./providers";
-import {
-  daySpend, setTokenDays, todayKey, tokenDays, tokenScanAt, usage, usageDetail,
-  type DayUsage,
-} from "./usage";
+import { daySpend, todayKey, usage, usageDetail } from "./usage";
 
 // Owned by main.ts: the colour popover (project rows) and putting a pane on the stage.
 let closeColorPop: () => void = () => {};
@@ -136,7 +131,9 @@ function renderUsagePop() {
     const [title, sub] = limitName(window.windowMins);
     return usageRow(title, sub, window.forecast);
   }).join("") ?? "";
-  const html = `<div class="up-h">${esc(limits ? `${limits.label} usage limits` : "Usage limits")}</div>
+  const html = `<div class="up-h">${esc(limits ? `${limits.label} usage limits` : "Usage limits")}${
+    popGoHtml({ go: "usage", label: "Usage & spend", sub: "the burn rate behind these, and every day so far" })
+  }</div>
     ${rows}
     <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live${limits ? ` · ${esc(limits.label)} account` : ""}</span></div>
     ${!limits ? `<div class="up-note">Select an integrated agent session to see its account limits.</div>`
@@ -197,19 +194,6 @@ function openIoPop() {
 }
 export function closeIoPop() { $("ioPop").classList.remove("show"); }
 
-
-// A full read of the recent corpus, so at most once per 10 min unless forced; the tab
-// paints from localStorage first and repaints when fresh numbers land.
-export async function refreshTokens(force = false) {
-  if (tokenScanning) return;
-  if (!force && tokenDays.length && Date.now() - tokenScanAt < 6e5) return;
-  setTokenScanning(true);
-  if (settingsOpen() && setTab === "usage") renderSettings(); // surface the "scanning…" hint
-  try {
-    setTokenDays(await invoke<DayUsage[]>("token_usage_by_day", { days: 400 }));
-  } catch (e) { dlog("warn", "token scan failed: " + e); }
-  finally { setTokenScanning(false); if (settingsOpen() && setTab === "usage") renderSettings(); }
-}
 
 // Only one floating menu may be open at a time: every open* closes the rest first (the
 // footer triggers stopPropagation, so the document-level outside-click close skips them).

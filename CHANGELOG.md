@@ -15,6 +15,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 The header's running-server list finally reads the log Claude Code actually writes.
 
++ Every popover in the status bar has a **quick open** in its top-right corner, to the panel
+  that answers the question it only summarises: today's spend and your limits both open
+  *Usage & spend*, the shortcut sheet opens Settings › Keys, the terminal picker opens
+  Settings › Sessions, and disk I/O opens Settings › Diagnostics.
 + A row says **where it looked** for its log, and offers Reveal and Copy for that path.
 + Pick which of your GitHub accounts a project reads as, from the project menu or from
   the GitHub card itself. `gh` keeps one active account and switches it globally, so a
@@ -30,6 +34,11 @@ The header's running-server list finally reads the log Claude Code actually writ
 + Settings › Appearance › *Clean up session names*: the characters stripped off a session's
   name are yours to add to, so the next spinner frame Claude Code ships doesn't wait for an
   Episko release. Characters or `a-b` ranges, with a live before/after and an off switch.
+~ The terminal picker names itself, like every other popover in that bar does.
+~ **Usage & spend is its own window**, not a Settings tab. Nothing in it is a setting — it
+  is a report — and it was the one tab that had to widen the Settings dialog to fit. Open
+  it from either money popover, or from `⌘K`. Settings arrives at the top of the tab a link
+  names, rather than wherever you last left the pane scrolled.
 ~ The popover splits **Running servers** from **Background jobs**; only something with an
   address counts, so a `pytest` an agent backgrounded no longer inflates the pill.
 ~ The GitHub card names the account a failed read ran as, instead of passing GitHub's

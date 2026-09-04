@@ -1,8 +1,10 @@
-// The usage surfaces as markup: the forecast rows the footer popup and Settings › Usage share,
-// the analytics panel and the disk I/O popover. The data lives in ./usage and ./rl.
-// `refreshTokens` stays in the wiring layer and owns `tokenScanning` via setTokenScanning.
+// The usage surfaces as markup: the forecast rows the footer popup and the Usage & spend
+// window share, the analytics panel that window draws, and the disk I/O popover. The data
+// lives in ./usage and ./rl; ./usagedlg owns the window and drives `tokenScanning` through
+// setTokenScanning.
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
+import { popGoHtml } from "./footerview";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
@@ -70,7 +72,9 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
       : !d.sessions.length
         ? "No per-session split for this day: it predates the record."
         : "";
-  return `<div class="up-h">Today's spend</div>
+  return `<div class="up-h">Today's spend${
+    popGoHtml({ go: "usage", label: "Usage & spend", sub: "every day, per model and per project" })
+  }</div>
     <div class="cp-tot">${uUsd2(d.total)}</div>
     ${rows ? `<div class="cp-lbl">By project</div>${rows}` : ""}
     ${sess ? `<div class="cp-lbl">By session</div><div class="cp-sess">${sess}</div>` : ""}
@@ -383,7 +387,9 @@ export function ioPopHtml(d: IoPop): string {
     `<div class="io-rate"><span class="io-k">${k}</span><span class="io-bar${m.cls}"><i style="width:${m.pct}%"></i></span><span class="io-v">${esc(m.txt)}</span></div>`;
   const wins = d.windows.map((w) =>
     `<div class="io-w" title="${esc(w.tip)}"><span class="io-wk">${esc(w.label)}</span><span class="io-wv">${esc(w.text)}</span></div>`).join("");
-  return `<div class="up-h">Disk I/O</div>
+  return `<div class="up-h">Disk I/O${
+    popGoHtml({ go: "diag", label: "Diagnostics", sub: "what the interface itself is holding" })
+  }</div>
     ${meter("read", rate(d.readBps))}${meter("write", rate(d.writeBps))}
     <div class="io-wins">${wins}</div>
     ${d.note ? `<p class="up-note">${esc(d.note)}</p>` : ""}

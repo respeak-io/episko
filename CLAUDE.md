@@ -106,7 +106,7 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 82 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 83 modules
 
 **No framework, and no longer one file.** 82 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
@@ -159,13 +159,13 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
-**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `usagedlg` (the Usage & spend window: a report rather than a setting, so its own dialog, and the target of the money and limits popovers' quick opens), `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 82 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 83 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -217,6 +217,20 @@ And the things that hold however the files are arranged:
   out. That is how the dashboard shipped in 0.13.0 with its entry point disconnected.
   `test/dispatch.test.ts` now compares the two halves in both directions (an unlisted
   branch is unreachable; a listed attribute with no branch silently swallows clicks).
+- **Every status-bar popover carries a quick open, and its destination is checked.** The
+  popovers summarise; the panel that answers in full is one click away (`popGoHtml` in
+  ./footerview, `data-fgo`, `openFootTarget` in main.ts). It is **one icon in the header's
+  right corner, never a row of its own** — these are menus, and a full-width button at the
+  foot read as the main event rather than the way out; the name an icon owes you is its
+  tooltip. That corner is why the header is one rule for the whole family
+  (`.menupop .up-h, .menupop .sc-h`) and why the engine picker grew a header at all.
+  `"usage"` is the Usage & spend window; **every other value is a Settings tab id**, and a
+  misspelt one is silent — `renderSettings` falls back to `SET_TABS[0]`, so the link opens
+  *Appearance* and looks like it worked. `test/dispatch.test.ts` holds the two lists
+  together. The previews in Settings › Footer paint it with the same renderer (they are
+  inert: `.fpv-pop` kills pointer events), and nothing inside one may shrink to fit that
+  preview's height cap — a scroll region gets `min-height: 0` for free and collapsed to
+  nothing, taking rows out of the *middle*, where the mask exists to fade the tail.
 - **Read every shortcut from its binding.** `keyPrefs` (./state, from `keys.ts`) is the
   one table; `matchAction` dispatches it in main.ts, Settings › Keys rebinds it, and the
   footer popover, the palette hints and the sidebar's button titles all *read* it. Never
@@ -311,7 +325,7 @@ And the things that hold however the files are arranged:
   one-off.** Each pins the WebView2 compositor to the monitor's refresh rate for as long
   as it exists — 144Hz on a Windows desktop against the 60 this was designed at, which is
   why the complaint arrived from Windows and not from the Mac. Two rules follow. **A
-  dialog that stays mounted at `opacity: 0` must not keep its blur**: seventeen do (that
+  dialog that stays mounted at `opacity: 0` must not keep its blur**: eighteen do (that
   is what lets them fade), and each was a live render surface for a panel nobody can see,
   so the blur is gated on `:not(.show)`. And **the switches are ./motion's table and
   nothing else** — `fx-still` (cancel), `fx-flat` (no blur) and `fx-idle` (paused while

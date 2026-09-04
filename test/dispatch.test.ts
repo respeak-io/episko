@@ -55,6 +55,41 @@ describe("the delegated click dispatcher", () => {
   });
 });
 
+// A footer popover's quick open writes `data-fgo="<target>"`, and main.ts's `openFootTarget`
+// resolves anything but "usage" as a Settings tab id. A misspelt id is silent: `renderSettings`
+// falls back to `SET_TABS[0]`, so the link opens Appearance and looks like it worked.
+
+const SETTINGS_SRC = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
+const FOOTERVIEW = readFileSync(new URL("../src/footerview.ts", import.meta.url), "utf8");
+// Every module that composes a popGoHtml() row. The target is read off the call, like the
+// dashboard's verbs below: in the helper the attribute is `data-fgo="${l.go}"` and carries
+// no literal of its own.
+const GO_FILES = ["footer.ts", "footerview.ts", "usageview.ts", "settings.ts"];
+
+describe("the footer popovers' quick opens", () => {
+  const tabs = [...SETTINGS_SRC.matchAll(/id: "(\w+)", label: "[^"]+"/g)].map((m) => m[1]);
+  const targets = [...new Set(GO_FILES.flatMap((f) =>
+    [...readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8")
+      .matchAll(/\{ go: "([a-z]+)", label:/g)].map((m) => m[1])))];
+
+  it("finds the tabs and the links to compare", () => {
+    expect(tabs.length).toBeGreaterThan(5);
+    expect(targets.length).toBeGreaterThan(1);
+    // The one place the target becomes the attribute; if this moves, the scan above is blind.
+    expect(FOOTERVIEW).toContain('data-fgo="${esc(l.go)}"');
+  });
+
+  it("opens a Settings tab that exists, or the one window of its own", () => {
+    const bad = targets.filter((t) => t !== "usage" && !tabs.includes(t));
+    expect(bad, `data-fgo target(s) naming no Settings tab: ${bad.join(", ")}`).toEqual([]);
+  });
+
+  it("no longer sends anyone to a Usage tab — that panel is its own dialog", () => {
+    expect(tabs).not.toContain("usage");
+    expect(SETTINGS_SRC).not.toContain("usagePanelHtml");
+  });
+});
+
 // The same join one level down: `dashview.ts` writes `data-dashact="<verb>"` and
 // `dashboard.ts`'s `dashAction` is an if-chain over the string; only the spelling joins them.
 

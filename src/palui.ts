@@ -37,12 +37,14 @@ let host: {
   revealActiveFolder: () => void;
   openProjectFolder: (key: string) => void;
   openProjectFiles: () => void;
+  openUsage: () => void;
 } = {
   setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, shelveSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   toggleTheme: () => {}, requestLaunch: () => {},
   revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
+  openUsage: () => {},
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -98,6 +100,7 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: () => host.cycleSort() },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
+  { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▦", run: () => host.openUsage() },
   { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
 // The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
