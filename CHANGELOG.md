@@ -16,6 +16,26 @@ Markers: `+` new · `~` changed · `!` fixed
 The header's running-server list finally reads the log Claude Code actually writes.
 
 + A row says **where it looked** for its log, and offers Reveal and Copy for that path.
++ The inspector lists **your questions**, newest first; clicking one scrolls that pane's
+  terminal back to where you asked it. Settings › Sessions has the switch, the line count
+  and the hover.
++ **Resume a session and the questions come back with it**, read out of the conversation's
+  own transcript, with the times it recorded. Clicking one still jumps: the resume replays
+  the conversation into the pane, so Episko goes and finds the line.
+~ Clicking a question marks the line it lands on, so it says where you asked it even when
+  the terminal was already showing it and had nowhere to scroll.
+! Clicking a question actually takes you to it. Claude Code's fullscreen renderer keeps
+  the conversation to itself, so there is no scrollback for Episko to scroll — it now pages
+  the session back with its own keys, from whichever end is nearer, until what you typed is
+  on screen. The classic renderer, shells and tasks keep the direct jump.
+~ A question whose lines have scrolled out of the terminal is greyed, not dropped.
++ A **shelved session's card** lists what you asked before you resume it, and clicking a
+  question jumps the read-only mirror beside it to that message.
+~ History's detail pane leads with **what you asked**, above *how it ended*.
+! *How it ended* was a one-line sliver with its own scrollbar: it shrank to whatever the
+  detail column had left over instead of letting the column scroll.
+~ The inspector's state, model and context share one card, so the working set and the new
+  questions list sit above the fold.
 + Pick which of your GitHub accounts a project reads as, from the project menu or from
   the GitHub card itself. `gh` keeps one active account and switches it globally, so a
   work login and a personal one could not both be right at once — a private repo the

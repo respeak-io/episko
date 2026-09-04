@@ -1,6 +1,6 @@
 // The shared data model and the one-line discriminants that read it; no DOM, no Tauri.
 
-import type { Terminal } from "@xterm/xterm";
+import type { IMarker, Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 
@@ -58,6 +58,12 @@ export interface BgServer {
   endReason?: BgEnd;
 }
 export interface Todo { content: string; status: string }
+
+// One prompt you sent (./outline); `id` keys ./terminal's marker, `at` is 0 when nothing said.
+export interface Prompt {
+  id: string; text: string; at: number; restored?: boolean;
+  found?: boolean; lost?: boolean; // ./terminal's: the line was located, or its one search missed
+}
 export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number; // as of the last fetch (upstream_state in git.rs)
@@ -378,10 +384,13 @@ export interface Sess {
   curTool: string; curArg: string; todos: Todo[];
   ctxHist: number[]; costHist: number[]; git: DiffStat | null;
   lastEvent: string; activity: Act[];
+  prompts: Prompt[]; // your side of the conversation, in memory only (./outline)
   // from PostToolUse, display-only, empty after a restart (./files)
   files: FileTouch[]; tally: Record<string, number>;
   servers: BgServer[]; // background shells still up, from PostToolUse; display-only like files
   kind: SessKind; external: boolean; term?: Terminal; fit?: FitAddon; gl?: WebglAddon; pane: HTMLElement;
+  // ./terminal's; xterm disposes an entry when its line scrolls out, so a jump expires here.
+  promptMarks?: Map<string, IMarker>;
   // Only while a reload orphan's pane is rebuilt (#47): output queues here until the scrollback snapshot
   // is written, and a chunk at or below its seq is dropped on flush (adoptSession in ./panes).
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;

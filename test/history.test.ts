@@ -24,7 +24,7 @@ const sess = (o: Partial<Sess> = {}): Sess => ({
   pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
-  git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
+  git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {},
   kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
 } as Sess);
 const dorm = (o: Partial<Restorable> = {}): Restorable =>

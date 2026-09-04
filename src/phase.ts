@@ -1,8 +1,9 @@
 // Telemetry → session state: applyHook and applyStatusline turn Claude's hooks and
 // statusLines into what the cockpit displays. No DOM, no renderAll; see test/phase.test.ts.
 
-import { liveCount, liveFanout, ORPHAN_DEAD_MS, type Agent, type Fanout, type Phase, type Risk, type Sess } from "./types";
+import { liveCount, liveFanout, ORPHAN_DEAD_MS, type Agent, type Fanout, type Phase, type Prompt, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
+import { clearsOutline, notePrompt } from "./outline";
 import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
@@ -18,6 +19,18 @@ export function setOnTurnEnd(fn: (s: Sess) => void) { onTurnEnd = fn; }
 // half reads `tool_input.command`, the drift half `file_path` and `cwd` (see ./gitwatch).
 let onSessionTouched: (s: Sess, tool: string, data: any) => void = () => {};
 export function setOnSessionTouched(fn: typeof onSessionTouched) { onSessionTouched = fn; }
+
+// The outline's anchor is a marker in the pane's scrollback, which only ./terminal can
+// register; wired by main.ts like the two seams above.
+let onPrompt: (s: Sess, p: Prompt) => void = () => {};
+export function setOnPrompt(fn: typeof onPrompt) { onPrompt = fn; }
+
+// Every provider's prompts enter here, so the anchor is taken at the one moment the pane
+// is showing the question; adapters reach it through ./agents rather than pushing directly.
+export function recordPrompt(s: Sess, raw: unknown) {
+  const p = notePrompt(s.prompts, raw, Date.now());
+  if (p) onPrompt(s, p);
+}
 
 // A tool hook this soon after `Stop` is the ended turn's straggler, not the next turn:
 // hooks are unwaited curls, so a turn's last PostToolUse can land after its Stop.
@@ -213,10 +226,14 @@ export function applyHook(s: Sess, data: any) {
   const bg = () => liveCount(s) > 0 || (s.phase === "done" && nowMs - s.phaseSince < STRAGGLER_MS);
   switch (ev) {
     // A fresh REPL loses everything in flight, including the SubagentStops still owed.
-    case "SessionStart": setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false; break;
+    case "SessionStart":
+      setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false;
+      if (clearsOutline(data.source)) s.prompts = [];
+      break;
     // A prompt typed mid-turn is queued, so the next Stop is the old turn's; read before setPhase.
     case "UserPromptSubmit":
       if (s.phase === "working") s.queuedPrompt = true;
+      recordPrompt(s, data.prompt);
       setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {
       const tool = data.tool_name || "tool";

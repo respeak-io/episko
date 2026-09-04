@@ -8,7 +8,7 @@ import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
-  permCmd, pushHist, riskLevel, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg,
+  permCmd, pushHist, riskLevel, setOnPrompt, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg,
 } from "../src/phase";
 import { DETAIL_CAP } from "../src/toolio";
 
@@ -31,7 +31,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
-    git: null, res: null, lastEvent: "", activity: [], files: [], tally: {}, servers: [],
+    git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [],
     kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
   } as Sess;
 }
@@ -744,6 +744,29 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
     });
     it("is a no-op by default, so the module stands alone", () => {
       expect(() => hook(sess(), "Stop")).not.toThrow();
+    });
+  });
+
+  // The outline (./outline) is fed from the same hook, and its anchor has to be taken as the
+  // prompt lands rather than looked up later.
+  describe("the conversation outline", () => {
+    afterEach(() => { setOnPrompt(() => {}); });
+    it("lists what you asked and offers it for anchoring, once", () => {
+      const anchored: string[] = [];
+      setOnPrompt((_s, p) => anchored.push(p.id));
+      const s = sess();
+      hook(s, "UserPromptSubmit", { prompt: "why is the badge red?" });
+      hook(s, "UserPromptSubmit", { prompt: "  " });
+      expect(s.prompts.map((p) => p.text)).toEqual(["why is the badge red?"]);
+      expect(anchored).toEqual([s.prompts[0].id]);
+    });
+    it("survives a compact but not a /clear", () => {
+      const s = sess();
+      hook(s, "UserPromptSubmit", { prompt: "first" });
+      hook(s, "SessionStart", { source: "compact" });
+      expect(s.prompts).toHaveLength(1);
+      hook(s, "SessionStart", { source: "clear" });
+      expect(s.prompts).toEqual([]);
     });
   });
 

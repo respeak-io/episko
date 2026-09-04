@@ -19,6 +19,8 @@ import {
   type WtHead,
 } from "./types";
 import { readList } from "./store";
+import { seedPrompts } from "./outline";
+import { readProviderHistory } from "./providers";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
@@ -143,7 +145,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
-    lastEvent: "", activity: [],
+    lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
     capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
   };
@@ -174,11 +176,27 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // A restored session replaces its dormant row, or the sidebar lists the conversation
   // twice — after the spawn, or a resume that failed has thrown its restorable row away.
   if (spawned && opts.resume) setDormants(dormants.filter((d) => d.resumeId !== opts.resume));
+  if (spawned && opts.resume) void seedOutline(s, opts.resume);
   invoke<string | null>("git_branch", { workdir }).then((b) => {
     if (b && !s.branch) { s.branch = b; renderSidebar(); if (activeId === id) renderHeader(s); }
   });
   renderAll();
   return spawned ? id : null;
+}
+
+// A resumed pane starts blind: its questions are in the provider's transcript, not in the
+// hooks it is about to receive. Both roles are read, so the window is generous; ./outline
+// keeps the user turns and refuses a second seeding.
+const SEED_READ = 240;
+async function seedOutline(s: Sess, resumeId: string) {
+  if (!s.provider) return;
+  try {
+    const msgs = await readProviderHistory(s.provider, resumeId, s.workdir, SEED_READ);
+    if (sessions.get(s.id) !== s) return; // closed while we read
+    if (seedPrompts(s.prompts, msgs).length) renderAll();
+  } catch (e) {
+    dlog("info", `outline: no transcript to restore for ${resumeId.slice(0, 8)} (${e})`);
+  }
 }
 
 // Offer a worktree when launching into a repo that already has a session. Synchronous on
@@ -248,7 +266,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
-    lastEvent: "", activity: [],
+    lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider,
     capabilities: [...capabilities], external: false, term, fit, pane,
     adopt: { pending: [] },
@@ -312,7 +330,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
-    lastEvent: "", activity: [],
+    lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     kind: "shell", provider: null, capabilities: [], external: false, term, fit, pane,
   };
@@ -344,7 +362,7 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
-    lastEvent: "", activity: [],
+    lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     kind: "agent", provider: agent.id, capabilities: [...agent.capabilities], external: false, term, fit, pane,
   };
@@ -355,7 +373,10 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   let spawned = true;
   try {
     await invoke("spawn_agent", { sessionId: id, workdir, agent: agent.id, rows: term.rows || 24, cols: term.cols || 80, resume: opts.resume ?? null, mode: permission.mode });
-    if (opts.resume) setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
+    if (opts.resume) {
+      setDormants(dormants.filter((d) => d.provider !== agent.id || d.resumeId !== opts.resume));
+      void seedOutline(s, opts.resume);
+    }
   } catch (e) {
     spawned = false;
     dlog("error", `${agent.id} launch failed: ${e}`);
@@ -406,7 +427,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
-    lastEvent: "", activity: [],
+    lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },

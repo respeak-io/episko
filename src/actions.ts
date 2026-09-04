@@ -30,6 +30,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
+  outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
@@ -41,6 +42,7 @@ import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
+import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
   renameGroup, setCollapsed, type GroupStore,
@@ -186,6 +188,14 @@ export function setTitlePrefs(p: TitlePrefs, repaintSettings = true) {
   renderAll();
   // Off for the keystroke path only: a repaint under a live <input> takes the caret with it.
   if (repaintSettings) renderSettings();
+}
+
+// renderAll rather than renderInspector: the card is on renderAll's path like every other.
+export function setOutlinePrefs(p: OutlinePrefs) {
+  setOutlinePrefsState(p);
+  localStorage.setItem("cc-outline", JSON.stringify(outlinePrefs));
+  renderAll();
+  renderSettings();
 }
 
 // Full renderAll: the badge, the tray title, group glyphs and rail highlights all read these.
