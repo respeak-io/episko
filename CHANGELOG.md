@@ -13,6 +13,7 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 
 + **Your questions, in the inspector.** Every prompt you sent a pane, newest first; click
@@ -66,7 +67,6 @@ The questions you asked, listed and clickable — and the paths your agents prin
   with `--`.
 
 ## 0.24.0 — 2026-08-28
-
 Put the fleet down for the night and pick it up in the morning. The hook server
 survives a hiccup instead of going quiet for good, and Episko will now tell you what
 it weighs after a day left open.
