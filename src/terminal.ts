@@ -1,85 +1,49 @@
-// The xterm side of a pane: creating a terminal, sizing it, and the two small
-// translations between what Claude Code sends and what the UI wants.
-//
-// Everything here is shared by all three spawners (`spawn_claude`, `spawn_shell`,
-// `spawn_task`), which is why it sits below them rather than inside any one — a font
-// stack copied per spawner, or a second `fitSession`, is a drift bug waiting to
-// happen. Nothing here reaches upward, so it needs no hook.
-//
-// Two rules worth not rediscovering: `fitSession` must only ever run on the *active*
-// pane (an inactive one is display:none, so fit() would measure a zero-size box and
-// resize the PTY to garbage), and the font atlas has to be dropped once the bundled
-// Nerd Font arrives — the WebGL renderer bakes tofu boxes into it otherwise.
+// The xterm side of a pane: creating, sizing and keying a terminal, shared by every spawner.
+// Nothing here reaches upward.
 
 import { invoke } from "@tauri-apps/api/core";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
-import type { Sess } from "./types";
+import type { Prompt, Sess } from "./types";
+import { lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
+import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
-// Leads with the bundled Nerd Font (see @font-face in styles.css) so the terminal
-// draws powerline / devicon glyphs on every OS; the rest stay as graceful fallbacks.
+// The bundled Nerd Font first (@font-face in styles.css) so icon glyphs draw on every OS.
 export const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 
-// WebGL contexts come from a small LRU pool over the recently-staged panes — never
-// one per pane for life, and never a create per pane switch either. Both extremes
-// were tried and both are wrong, for reasons worth keeping:
-//
-// - Per pane for life: webviews cap a page at 16 live WebGL contexts and evict LRU
-//   past it, so a fleet that ever crossed 16 panes silently downgraded its *oldest*
-//   terminals — exactly the long-lived sessions you keep returning to — onto xterm's
-//   slow DOM renderer, permanently.
-// - Attach on activate / dispose on deactivate: every switch then creates a context,
-//   and **JS cannot destroy one — only unreference it**. The browser frees the slot
-//   at GC time; Chromium's GC keeps up, WKWebView's does not, so ~16 switches in
-//   every attach logged "too many active WebGL contexts" and leaned on WebKit
-//   force-losing a disposed zombie (observed in the dev build). Nor is
-//   `WEBGL_lose_context.loseContext()` a release — a lost-but-referenced context
-//   STAYS in WebKit's budget (it must remain restorable), and eviction then trips
-//   over it with INVALID_OPERATION. Also observed.
-//
-// So: a pane keeps its addon when it leaves the stage, while it stays among the
-// GL_POOL_MAX most recently staged. Flipping between warm panes costs nothing and
-// creates nothing; only a cold pane creates a context, and the pool bounds the live
-// count comfortably under the 16 budget. Exited and closed panes free their slot at
-// once (see setActive / closeSession). A context lost anyway — a GPU reset, a
-// degenerate >16-tile mosaic — costs one dlog and heals on the pane's next
-// activation instead of downgrading it for good.
+// WebGL contexts come from a small LRU pool: a context per pane for life hits the webview's
+// 16-context cap, and dispose-per-switch leaks under WKWebView's GC. Full story: docs/architecture.md.
 const glPool: Sess[] = []; // panes holding a live addon, most recently staged last
-const GL_POOL_MAX = 8;     // live-context bound; the 16-slot budget keeps headroom for
-                           // disposed contexts the browser has not collected yet
+const GL_POOL_MAX = 8;     // headroom under the 16-slot budget for contexts not yet collected
 export function attachWebgl(s: Sess) {
   if (!s.term) return;
   const i = glPool.indexOf(s);
   if (i >= 0) glPool.splice(i, 1);
-  if (s.gl) { glPool.push(s); return; } // warm — just refresh its recency
+  if (s.gl) { glPool.push(s); return; }
   let w: WebglAddon | undefined;
   try {
     w = new WebglAddon();
     w.onContextLoss(() => {
-      // dispose() is the documented recovery for a lost context; detach also clears
-      // `s.gl`, which is what lets the next setActive re-attach a fresh one.
+      // dispose() is the documented recovery; clearing `s.gl` lets the next setActive re-attach.
       dlog("warn", `webgl context lost · ${s.id.slice(0, 8)} · DOM renderer until reactivated`);
       detachWebgl(s);
     });
     s.term.loadAddon(w);
     s.gl = w;
     glPool.push(s);
-    // Evict the coldest *hidden* pane past the cap. Everything visible is exempt —
-    // a tiled group larger than the pool keeps its tiles and accepts the browser's
-    // own eviction (which the loss handler above turns into a heal, not a downgrade).
+    // Evict the coldest hidden pane past the cap; visible tiles are exempt (they heal on loss).
     while (glPool.length > GL_POOL_MAX) {
       const victim = glPool.find((x) => !x.pane.classList.contains("active"));
       if (!victim) break;
       detachWebgl(victim);
     }
   } catch (e) {
-    // WebGL unavailable (GPU blocklist, RDP, acceleration off): the DOM renderer is
-    // the honest fallback. Warn once per run, not once per pane switch — the retry
-    // itself stays, since a crashed GPU process can come back.
+    // No WebGL (GPU blocklist, RDP): warn once per run but keep retrying, a GPU process can come back.
     try { w?.dispose(); } catch { /* half-activated addon */ }
     if (!webglWarned) { webglWarned = true; dlog("warn", `webgl unavailable, so terminals use the DOM renderer (${e})`); }
   }
@@ -88,37 +52,23 @@ let webglWarned = false;
 export function detachWebgl(s: Sess) {
   const w = s.gl;
   if (!w) return;
-  s.gl = undefined; // clear first — dispose() must not re-enter through onContextLoss
+  s.gl = undefined; // clear first: dispose() must not re-enter through onContextLoss
   const i = glPool.indexOf(s);
   if (i >= 0) glPool.splice(i, 1);
-  // Capture the addon's canvases before dispose() takes them out of the pane, then
-  // zero them: the context slot itself is the browser's to reclaim (see above), but
-  // the multi-MB backing stores are freeable right now.
+  // Zero the canvases dispose() removes so their backing stores can be freed now.
   const canvases = [...s.pane.querySelectorAll("canvas")];
   try { w.dispose(); } catch { /* already disposed with its terminal */ }
   for (const c of canvases) { c.width = 0; c.height = 0; }
 }
 
-// An ended resumable agent pane keeps a full buffer of scrollback it can never grow
-// again, tens of MB across a day — while provider history can reopen the conversation.
-// So the buffer is reclaimed once the pane is done: immediately
-// when it ends off stage, and on the way *off* the stage when you watched it end (the
-// visible screen keeps its final output either way). Provider-backed panes only: a
-// shell has no history, and a failed task's scrollback IS the log you open it to read.
+// For ended provider-backed panes only: history can reopen those, a shell has no history, and a
+// failed task's scrollback is the log you open it to read.
 export function trimScrollback(s: Sess) {
   if (!s.term || s.term.options.scrollback === 0) return;
   try { s.term.options.scrollback = 0; } catch { /* pane already disposed */ }
 }
 
-// Push a changed scrollback setting onto the panes already open. The setting exists for
-// a fleet that has been up for hours, so applying it only to *new* terminals would mean
-// the one thing it can help never gets it.
-//
-// **A pane already trimmed to 0 is left alone**, which is the whole subtlety here: that
-// zero is `trimScrollback`'s deliberate reclaim on an ended pane, not a value anybody
-// chose, and handing it 4000 back would refill the buffer this app just freed. Lowering
-// the limit drops the oldest lines at once (xterm applies it on assignment); raising it
-// only sets the new ceiling, since the lines it would have kept are already gone.
+// A pane already at 0 is `trimScrollback`'s reclaim; handing it lines back would refill the buffer.
 export function applyScrollback(list: Iterable<Sess>, lines: number) {
   for (const s of list) {
     if (!s.term || s.term.options.scrollback === 0) continue;
@@ -126,35 +76,20 @@ export function applyScrollback(list: Iterable<Sess>, lines: number) {
   }
 }
 
-// The whole custom key rule for a shell pane, in one handler — xterm keeps only the
-// *last* `attachCustomKeyEventHandler`, so a second call anywhere silently discards
-// the first. Task panes take `clipboardKeys` alone: the ⌥/⌘ word-nav below is a login
-// shell's business, and a task pane is running a program, not a prompt.
+// xterm keeps only the last custom key handler; task panes take `clipboardKeys` alone (no prompt).
 export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boolean {
   const clip = clipboardKeys(term), nav = macShellKeys(id);
   return (e) => clip(e) && nav(e);
 }
 
-// Ctrl+Shift+C / Ctrl+Shift+V — copy and paste for the panes that cannot have the
-// plain chords. Ctrl+C is the interrupt a shell or task pane exists to send, and xterm
-// turns Ctrl+V into a dead ^V (see `winClaudePaste`), so the shifted pair is the only
-// copy/paste a terminal has left — which is exactly why Windows Terminal, GNOME
-// Terminal and VS Code's terminal all use it. Unshifted ⌘C/⌘V on macOS are untouched:
-// xterm passes them to the WebView, which copies and pastes natively.
-//
-// Both halves go through the Tauri clipboard plugin rather than `navigator.clipboard`.
-// Writing would work either way, but `readText()` in the WebView sits behind the
-// `clipboard-read` permission — a WebView2 prompt on Windows, WKWebView's paste-
-// confirmation button on macOS — because Tauri does not build the webview with wry's
-// `enable_clipboard_access()`. The host side has no such gate, so paste stays silent
-// and immediate on both.
+// Ctrl+Shift+C/V (Ctrl+C is an interrupt, xterm turns Ctrl+V into ^V; ⌘C/⌘V work natively on macOS).
+// Tauri's clipboard plugin, never `navigator.clipboard`: its read prompts.
 export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
   return (e) => {
     if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
     const k = e.key.toLowerCase();
     if (k !== "c" && k !== "v") return true;
-    // Returning false only stops *xterm* from handling the key; the WebView still gets
-    // its own default (devtools' inspect-element on Ctrl+Shift+C), hence both.
+    // Returning false only stops xterm; the WebView's own Ctrl+Shift+C (devtools) needs this too.
     e.preventDefault();
     if (k === "c") void copySelection(term);
     else void pasteClipboard(term);
@@ -164,17 +99,13 @@ export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
 
 async function copySelection(term: Terminal) {
   const sel = term.getSelection();
-  if (!sel) return; // nothing selected — a no-op, as in every other terminal
+  if (!sel) return;
   try { await writeText(sel); toast("Copied"); }
   catch (e) { dlog("error", `clipboard write failed: ${e}`); toast("Couldn't copy: clipboard unavailable"); }
 }
 
-// `term.paste` rather than a direct `write_pty`: it is xterm's own paste path, so the
-// text gets \r\n→\r normalisation and bracketed-paste wrapping when the program asked
-// for it, then leaves through `onData` — the same route typing takes, whichever spawner
-// owns the pane. A read that throws is nearly always an empty clipboard or one holding
-// something that isn't text (arboard reports both as unavailable), so the toast says
-// that rather than crying failure; the real error still reaches the debug console.
+// `term.paste`, never `write_pty`: xterm's own path applies \r\n→\r and bracketed paste.
+// A read that throws is nearly always an empty or non-text clipboard (arboard reports both as errors).
 async function pasteClipboard(term: Terminal) {
   let text = "";
   try { text = await readText(); }
@@ -182,12 +113,8 @@ async function pasteClipboard(term: Terminal) {
   if (text) term.paste(text);
 }
 
-// macOS terminal key conventions for the embedded shell. xterm.js emits xterm's
-// modified-arrow sequences (Option+Left = \e[1;3D etc.), which a plain login zsh
-// doesn't bind by default — so word-nav keys self-insert garbage like ";3D".
-// Terminal.app instead maps them to the Meta/emacs sequences zsh binds out of the
-// box; we do the same here so the embedded shell navigates like a normal terminal.
-// Only plain-shell PTYs get this (Claude's REPL handles its own key input).
+// xterm emits modified-arrow sequences (Option+Left = \e[1;3D) a plain login zsh does not bind,
+// so word-nav keys self-insert ";3D". Send the Meta/emacs sequences Terminal.app sends instead.
 function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
   const send = (data: string, e: KeyboardEvent): boolean => { e.preventDefault(); invoke("write_pty", { sessionId: id, data }); return false; };
   return (e: KeyboardEvent) => {
@@ -205,32 +132,17 @@ function macShellKeys(id: string): (e: KeyboardEvent) => boolean {
   };
 }
 
-// A claude pane's keystrokes are NOT raw pass-through — this is the one input path
-// that filters. Ctrl+C must stay an *interrupt*, never an exit: Claude's REPL quits on
-// a second ^C inside its own double-press window, and in an embedded pane that reads
-// as Episko losing a session rather than a terminal doing what terminals do — the pane
-// is left behind as a dead `·` row. So a claude pane forwards the first ^C (cancel the
-// turn / clear the prompt) and swallows whatever follows inside the guard window; press
-// again a moment later and it interrupts normally. Ending a session stays an explicit
-// act: ✕, ⌘K → Close, or `/exit` typed into Claude.
-//
-// Only claude panes get this — ^C in a shell or task pane is the whole point of those
-// panes, and killing the process there is the expected outcome. Those two wire
-// `term.onData` straight to `write_pty` (see ./panes).
-//
-// The window is deliberately a little longer than Claude's own (~2s): too long merely
-// delays a repeat interrupt, too short lets the exit through.
-const INTR_GUARD_MS = 3000;
+// Claude's REPL quits on a second ^C inside its ~2s double-press window, which in an embedded pane
+// reads as Episko losing the session, so repeats within INTR_GUARD_MS are swallowed.
+const INTR_GUARD_MS = 3000; // must stay longer than Claude's own window, or the exit gets through
 export function claudeInput(id: string): (d: string) => void {
   let lastIntr = 0, warned = false;
   return (d) => {
-    // Exactly ^C and nothing else: a paste arrives wrapped in bracketed-paste
-    // sequences, so pasted text containing \x03 never lands here as a lone byte.
+    // Exactly ^C: a paste arrives in bracketed-paste sequences, so a pasted \x03 never lands here alone.
     if (d === "\x03") {
       const now = Date.now();
       if (now - lastIntr < INTR_GUARD_MS) {
-        // One toast per burst — key repeat would otherwise fire it continuously.
-        if (!warned) {
+        if (!warned) { // one toast per burst, or key repeat fires it continuously
           warned = true;
           toast("Ctrl+C interrupts. Use ✕ or /exit to end the session");
           dlog("info", `guarded repeat ^C · ${id.slice(0, 8)}`);
@@ -244,26 +156,15 @@ export function claudeInput(id: string): (d: string) => void {
   };
 }
 
-// Windows image paste for Claude panes. Claude Code's only default binding for
-// chat:imagePaste on native Windows is alt+v (ctrl+v joins it only under WSL) —
-// and xterm makes Ctrl+V a dead key on top: it swallows the browser paste and
-// sends ^V, which Claude ignores there. Net effect: Ctrl+V did *nothing* in an
-// embedded pane on Windows. Route by clipboard content instead: tell xterm to
-// leave Ctrl+V to the browser, then on the resulting paste event send ESC v
-// (Claude's own alt+v chord) when an image is aboard — Claude reads the bitmap
-// through its native clipboard path and shows its own feedback — while plain
-// text falls through to xterm's normal bracketed paste.
-//
-// NOTE: xterm keeps only **one** custom key-event handler per terminal, so a new key
-// rule for a claude pane belongs in here or in `claudeInput` above — never in a second
-// `attachCustomKeyEventHandler` call. (`shellKeys` is safe: it is the *shell* pane's
-// one handler, and no pane is both.)
+// Windows image paste for Claude panes. Claude binds chat:imagePaste to alt+v on native Windows and
+// xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and the paste event sends ESC v
+// when an image is aboard; text falls through to xterm's own paste. xterm keeps ONE custom key
+// handler per pane: a new claude key rule goes here or in `claudeInput`, never in a second handler.
 export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
   if (!IS_WIN) return;
   term.attachCustomKeyEventHandler((e) =>
     !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
-  // Capture phase: runs before xterm's textarea paste handler, so an image paste
-  // never double-fires as a (empty) text paste.
+  // Capture phase: beats xterm's textarea paste handler, so an image paste never double-fires as text.
   pane.addEventListener("paste", (e) => {
     if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;
     e.preventDefault();
@@ -272,13 +173,376 @@ export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
   }, true);
 }
 
-// Fit one terminal to its pane, push the new size to its PTY, and force a full
-// repaint. The repaint is not cosmetic: on a resize the WebGL renderer only redraws
-// cells its damage tracker flagged, so a cell that went glyph→blank can keep a stale
-// glyph in the GL framebuffer (the "floating chars" past a shrunk table). refresh()
-// re-rasterizes every visible row straight from the buffer, clearing those ghosts.
-// Only ever call this on the *active* pane — an inactive one is display:none, so
-// fit() would measure a zero-size box and resize the PTY to garbage.
+// ---------- outline anchors ----------
+// The submit hook fires as you press Enter, so its marker sits in the input box while the
+// REPL commits the message above it a frame later: the address is the TEXT, and that marker
+// only says where to look (docs/sessions.md). The line, once found, gets a marker of its
+// own, which xterm disposes as it scrolls out — how a jump is known to have expired.
+
+const JUMP_LEAD = 2; // rows of context above the question, where the viewport can scroll at all
+const SLACK = 2;     // the commit is above the cursor row, give or take a reflow since
+
+export function markPrompt(s: Sess, id: string) {
+  if (!s.term || isAlt(s.term)) return; // a screen row the next frame overwrites is not an anchor
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  const live = new Set(s.prompts.map((p) => p.id));
+  for (const [k, m] of marks) if (m.isDisposed || !live.has(k)) marks.delete(k);
+  const m = s.term.registerMarker(0);
+  if (m) marks.set(id, m);
+}
+
+const liveMark = (s: Sess, id: string) => {
+  const m = s.promptMarks?.get(id);
+  return m && !m.isDisposed && m.line >= 0 ? m : null;
+};
+
+function anchorAt(s: Sess, id: string, line: number) {
+  const buf = s.term!.buffer.active;
+  const m = s.term!.registerMarker(line - (buf.baseY + buf.cursorY)); // the offset is from the cursor
+  if (!m) return null;
+  const marks = s.promptMarks ?? (s.promptMarks = new Map());
+  marks.get(id)?.dispose(); // the submit hint has done its job
+  marks.set(id, m);
+  return m;
+}
+
+// The rows xterm wrapped into one logical line, as prose. Capped: a match needs a key's worth
+// of text, not the paragraph a wall of pasted output wraps into.
+const RUN_MAX = 240;
+function runText(buf: Buf, y: number): string {
+  let t = buf.getLine(y)?.translateToString(false) ?? "";
+  for (let i = y + 1; i < buf.length && t.length < RUN_MAX; i++) {
+    const l = buf.getLine(i);
+    if (!l?.isWrapped) break;
+    t += l.translateToString(false);
+  }
+  return normLine(t);
+}
+
+/**
+ * The question's own line, by its text. `below` is the submit marker's: the message was
+ * committed above it, so the nearest match at or above that is the one you asked, while a
+ * reply quoting you back comes later. Without one (a restored prompt) the first match wins.
+ */
+function findPrompt(term: Terminal, k: PromptKey, below: number | null): number | null {
+  const buf = term.buffer.active;
+  const last = Math.min(below == null ? buf.length : below + SLACK, buf.length - 1);
+  let hit: number | null = null;
+  for (let y = 0; y <= last; y++) {
+    if (buf.getLine(y)?.isWrapped) continue; // a continuation row belongs to the run above it
+    if (!lineHasPrompt(runText(buf, y), k)) continue;
+    if (below == null) return y;
+    hit = y;
+  }
+  return hit;
+}
+
+// One search per question: a scan is the whole scrollback, and a miss stays a miss — either
+// the text was never rendered as typed (a pasted block collapses to a placeholder) or it has
+// gone. The submit marker is what a miss falls back to, so the row stays clickable.
+function resolve(s: Sess, p: Prompt) {
+  const hint = liveMark(s, p.id);
+  if (p.found || p.lost || !s.term) return hint;
+  for (const k of promptKeys(p.text)) { // the whole key first: the short retry is likelier to lie
+    const y = findPrompt(s.term, k, hint && hint.line);
+    if (y == null) continue;
+    const m = anchorAt(s, p.id, y);
+    if (m) { p.found = true; return m; }
+  }
+  p.lost = true;
+  return hint;
+}
+
+/** The prompts still reachable in this pane; the rest render as out of reach. */
+export function anchoredPrompts(s: Sess): Set<string> {
+  const out = new Set<string>();
+  if (!s.term) return out;
+  // A REPL on the alternate screen keeps the conversation itself, so every question is worth
+  // a click and the marker map answers for nothing.
+  for (const p of s.prompts) if (isAlt(s.term) || liveMark(s, p.id)) out.add(p.id);
+  return out;
+}
+
+// ---------- a REPL that owns the screen ----------
+// Claude Code runs on the ALTERNATE screen (`?1049h` at startup, measured) and grabs the
+// mouse with it, so there is no scrollback for xterm to scroll, `scrollToLine` moves nothing,
+// and every marker is a screen row the next frame overwrites. The conversation is the TUI's,
+// so the jump is asked of it in the language it is listening in (docs/sessions.md).
+const isAlt = (t: Terminal) => t.buffer.active.type === "alternate";
+
+// Keys, not the wheel: in this TUI a notch is `scroll:lineUp`, ONE line, while PageUp is a
+// page and Ctrl+Home/End are the two ends (its own key table, each probed against the real
+// CLI). None can put a character in the composer or confirm anything, which is what keeps
+// this outside the two places Episko types at a session (CLAUDE.md).
+const PAGE_UP = "\x1b[5~", PAGE_DOWN = "\x1b[6~", TO_TOP = "\x1b[1;5H", TO_END = "\x1b[1;5F";
+const key = (s: Sess, seq: string) => invoke("write_pty", { sessionId: s.id, data: seq });
+
+const HUNT_PAGES = 120;
+const BUDGET_MS = 6000; // a jump is a click, not an errand
+const SAY_MS = 700;     // before a hunt is worth saying out loud
+const FRAME_MS = 200;   // no change for this long is the end, not a redraw still on its way
+const SETTLE_MS = 16;   // a frame written in two chunks
+
+const onScreen = (t: Terminal, keys: PromptKey[]) => {
+  for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
+  return null;
+};
+
+function screenRows(t: Terminal): string[] {
+  const b = t.buffer.active, out: string[] = [];
+  for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? "");
+  return out;
+}
+
+// The redraw itself, rather than a delay long enough to cover the worst one: resolves on the
+// first write that CHANGED the screen, or after FRAME_MS of none. A write is not a redraw —
+// the footer's clock lands first and read as "the top of the conversation" the first time.
+function frame(t: Terminal, before: string[]): Promise<string[]> {
+  return new Promise((res) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); res(screenRows(t)); };
+    const tid = setTimeout(finish, FRAME_MS);
+    const d = t.onWriteParsed(() => { if (screenShift(before, screenRows(t)) !== 0) setTimeout(finish, SETTLE_MS); });
+  });
+}
+
+/**
+ * On screen already? Then nothing moves: jumping to an end first would undo the reading you
+ * are in. Otherwise from the nearer end, a page at a time — deterministic where a wheel had
+ * to be measured, and never longer than a screen, so a hit cannot be stepped over.
+ */
+async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<number | null> {
+  const t = s.term!;
+  const here = onScreen(t, keys);
+  if (here != null) return here;
+  let rows = screenRows(t);
+  key(s, fromTop ? TO_TOP : TO_END);
+  rows = await frame(t, rows);
+  const t0 = Date.now();
+  let said = false;
+  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS; i++) {
+    const y = onScreen(t, keys);
+    if (y != null) return y;
+    if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
+    key(s, fromTop ? PAGE_DOWN : PAGE_UP);
+    const next = await frame(t, rows);
+    if (screenShift(rows, next) === 0) break;
+    rows = next;
+  }
+  key(s, TO_END); // a hunt that failed must not also lose your place
+  return null;
+}
+
+let hunting = false;
+async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
+  const keys = promptKeys(p.text);
+  if (hunting || !keys.length) return "unfound"; // one at a time: two hunts scroll each other
+  hunting = true;
+  try {
+    // Earlier half of the conversation? Then the top is the nearer end to page in from.
+    const y = await hunt(s, keys, s.prompts.indexOf(p) < s.prompts.length / 2);
+    if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
+    dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
+    return y == null ? "unfound" : "ok";
+  } finally { hunting = false; }
+}
+
+// The line is marked whether or not the viewport moved: `scrollToLine` clamps at `ybase`, so a
+// question already on screen scrolls nowhere and the click reads as dead (docs/sessions.md).
+// A selection, not `registerDecoration`: that is proposed API and throws without
+// `allowProposedApi`. This one is stable and every renderer draws it.
+const FLASH_MS = 1600;
+let flash: number | undefined;
+function flashLine(term: Terminal, line: number) {
+  clearTimeout(flash);
+  const buf = term.buffer.active;
+  let end = line; // a question wrapped over three rows is three rows of answer
+  while (end + 1 < buf.length && buf.getLine(end + 1)?.isWrapped) end++;
+  term.selectLines(line, end);
+  const ours = JSON.stringify(term.getSelectionPosition() ?? null);
+  // Only clear what we made: by now the pointer may have selected something to copy.
+  flash = window.setTimeout(() => {
+    if (JSON.stringify(term.getSelectionPosition() ?? null) === ours) term.clearSelection();
+  }, FLASH_MS);
+}
+
+/** `gone` is the pane's answer, `unfound` the TUI's: one has lost the line, the other looked. */
+export type JumpResult = "ok" | "gone" | "unfound";
+
+export async function scrollToPrompt(s: Sess, id: string): Promise<JumpResult> {
+  const p = s.prompts.find((x) => x.id === id);
+  if (!s.term || !p) return "gone";
+  if (isAlt(s.term)) return huntFor(s, p);
+  const m = resolve(s, p);
+  if (!m) return "gone";
+  const before = s.term.buffer.active.viewportY;
+  s.term.scrollToLine(Math.max(0, m.line - JUMP_LEAD));
+  // Never let the marking take the navigation down with it, whatever the renderer is doing.
+  try { flashLine(s.term, m.line); } catch (e) { dlog("warn", `outline: could not mark the line (${e})`); }
+  // One line per click, and the one that would have answered "why did nothing happen".
+  dlog("info", `outline jump · line ${m.line} · ${p.found ? "matched" : "marker only"}`
+    + ` · view ${before} → ${s.term.buffer.active.viewportY}`);
+  return "ok";
+}
+
+// ---------- clickable links ----------
+// The one surface where a path or URL is only text (the Context card cannot see what Bash did), so
+// wired on every pane. OSC 8 goes to `options.linkHandler` and stays http(s)-only, since a program
+// chooses that URI; plain text goes to a link provider: ./termlinks proposes, disk decides.
+
+// The joined rows as one string; `cells[i]` is the buffer cell of `text[i]`.
+interface JoinedRow { text: string; cells: { x: number; y: number }[] }
+// Structural: xterm does not re-export `ILink` from the package root.
+interface TermLink {
+  range: { start: { x: number; y: number }; end: { x: number; y: number } };
+  text: string;
+  activate: () => void;
+}
+type Buf = Terminal["buffer"]["active"];
+
+const MAX_JOIN = 4000; // past this the joined text is a paragraph, and every hover walks it
+// Two, not one: an agent breaks a long path at its own spaces, so a path with two spaces spans three
+// rows, and from the middle one a single run reaches only one end.
+const EXTRA_RUNS = 2;
+// Hover answers; the same row is re-asked on every re-entry. Cleared wholesale: a miss is one stat sweep.
+const RESOLVED_MAX = 300;
+const resolved = new Map<string, [number, string] | null>();
+
+const runStart = (buf: Buf, y: number): number => { while (y > 0 && buf.getLine(y)?.isWrapped) y--; return y; };
+const runEnd = (buf: Buf, y: number): number => { while (y + 1 < buf.length && buf.getLine(y + 1)?.isWrapped) y++; return y; };
+
+// The hovered row's wrap-run plus `EXTRA_RUNS` either side, as one string. Rows xterm wrapped join
+// with nothing between them; a hard break (the agent broke the path at a space) joins with ONE space,
+// since the row's padding is an artifact of the window and the path on disk has a single space there.
+// Over-joining is safe: a candidate spanning unrelated lines never resolves, so it is never underlined.
+function joinRows(term: Terminal, y: number): JoinedRow {
+  const buf = term.buffer.active;
+  let first = runStart(buf, y);
+  for (let n = 0; n < EXTRA_RUNS && first > 0; n++) first = runStart(buf, first - 1);
+  let last = runEnd(buf, y);
+  for (let n = 0; n < EXTRA_RUNS && last + 1 < buf.length; n++) last = runEnd(buf, last + 1);
+  const text: string[] = [];
+  const cells: { x: number; y: number }[] = [];
+  const cell = buf.getNullCell();
+  for (let ly = first; ly <= last && cells.length < MAX_JOIN; ly++) {
+    // Hard break: one space. Never a candidate endpoint (`\S+` runs), so its cell is only passed over.
+    if (ly > first && !buf.getLine(ly)?.isWrapped) {
+      text.push(" ");
+      cells.push(cells[cells.length - 1] ?? { x: 0, y: ly });
+    }
+    const line = buf.getLine(ly);
+    if (!line) continue;
+    for (let x = 0; x < line.length; x++) {
+      line.getCell(x, cell);
+      if (cell.getWidth() === 0) continue; // right half of a wide glyph, already counted
+      const ch = cell.getChars() || " ";
+      // One `cells` entry per UTF-16 unit keeps `text` and `cells` index-aligned across surrogate pairs.
+      for (let i = 0; i < ch.length; i++) cells.push({ x, y: ly });
+      text.push(ch);
+    }
+    // Drop the row's trailing blanks, so the hard-break space above is the whole gap.
+    while (text.length && text[text.length - 1] === " " && cells[cells.length - 1].y === ly) {
+      text.pop();
+      cells.pop();
+    }
+  }
+  return { text: text.join(""), cells };
+}
+
+// `[start, end)` in the joined string → the 1-based buffer range xterm underlines.
+function mkRange(row: JoinedRow, start: number, end: number): TermLink["range"] | null {
+  const a = row.cells[start];
+  const b = row.cells[Math.min(end, row.cells.length) - 1];
+  if (!a || !b) return null;
+  return { start: { x: a.x + 1, y: a.y + 1 }, end: { x: b.x + 1, y: b.y + 1 } };
+}
+
+// Where each pane's process is now. A shell's `Sess.workdir` says nothing after a `cd`, so the live cwd
+// is asked and goes first among the bases; a short TTL rather than events, since nothing reports a `cd`.
+const CWD_TTL_MS = 3000;
+const cwds = new Map<string, { at: number; dir: string }>();
+async function liveCwd(id: string): Promise<string> {
+  const hit = cwds.get(id);
+  if (hit && Date.now() - hit.at < CWD_TTL_MS) return hit.dir;
+  let dir = "";
+  try { dir = (await invoke<string | null>("session_cwd", { sessionId: id })) ?? ""; }
+  catch { /* the pane exited between the hover and the ask */ }
+  cwds.set(id, { at: Date.now(), dir });
+  return dir;
+}
+
+// Ask disk which proposal is real; cached against the bases, since the file set grows as the session works.
+async function resolvePath(s: Sess | undefined, cands: PathCand[]): Promise<{ abs: string; end: number } | null> {
+  // Most authoritative first: live cwd, drift dir, launch dir. `linkBases` drops empties and duplicates.
+  const dirs = s ? [await liveCwd(s.id), s.drift?.dir ?? "", s.workdir] : [];
+  const bases = linkBases(dirs, (s?.files ?? []).map((f) => f.path));
+  if (!bases.length) return null;
+  const texts = cands.map((c) => c.text);
+  const key = `${bases.join("\u0002")}\u0000${texts.join("\u0001")}`;
+  let hit = resolved.get(key);
+  if (hit === undefined) {
+    try { hit = await invoke<[number, string] | null>("resolve_link_path", { bases, cands: texts }); }
+    catch (e) { dlog("warn", `resolve_link_path failed: ${e}`); hit = null; }
+    if (resolved.size > RESOLVED_MAX) resolved.clear();
+    resolved.set(key, hit);
+    // Once per line (the miss is cached); the bases are what answer "that is a file, why is it not blue?".
+    if (!hit) dlog("info", `link: nothing on disk for "${texts[texts.length - 1] ?? ""}" · ${bases.length} base(s), first ${bases[0] ?? "none"}`);
+  }
+  if (!hit) return null;
+  const cand = cands[hit[0]];
+  return cand ? { abs: hit[1], end: cand.end } : null;
+}
+
+async function openHref(url: string) {
+  // OSC 8 payloads are program-chosen; http(s)-only here as well as via `allowNonHttpProtocols`.
+  if (!/^https?:\/\//i.test(url)) { dlog("warn", `link ignored · not http(s) · ${url.slice(0, 80)}`); return; }
+  try { await openUrl(url); }
+  catch (e) { toast("Couldn't open the link: " + e); }
+}
+
+// A copy of ./actions' `openTouchedFile`, since ./actions imports this module; the error is surfaced.
+async function openFilePath(path: string) {
+  try { await invoke("open_file", { path }); }
+  catch (e) { toast(String(e)); }
+}
+
+async function provide(id: string, term: Terminal, y: number, cb: (links: TermLink[] | undefined) => void) {
+  const row = joinRows(term, y - 1); // provideLinks counts rows 1-based; the buffer does not
+  const hits = row.text.trim() ? findLinks(row.text) : [];
+  if (!hits.length) { cb(undefined); return; }
+  const s = sessions.get(id);
+  const out: TermLink[] = [];
+  // ./termlinks proposes overlapping candidates and only disk says how far a path reaches; two links
+  // over the same cells would let xterm pick either, so a clash is settled after resolution: first wins.
+  const taken: [number, number][] = [];
+  const claim = (a: number, b: number) => {
+    if (taken.some(([x, y]) => a < y && x < b)) return false;
+    taken.push([a, b]);
+    return true;
+  };
+  for (const h of hits) {
+    if (h.kind === "url") {
+      const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
+      if (range) out.push({ range, text: h.text, activate: () => { void openHref(h.text); } });
+      continue;
+    }
+    const won = await resolvePath(s, h.cands);
+    if (!won || !claim(h.start, won.end)) continue;
+    const range = mkRange(row, h.start, won.end);
+    if (range) out.push({ range, text: won.abs, activate: () => { void openFilePath(won.abs); } });
+  }
+  cb(out.length ? out : undefined);
+}
+
+// Called by every spawner after `term.open`; xterm keeps every link provider, so this composes.
+export function wireLinks(id: string, term: Terminal) {
+  term.options.linkHandler = { activate: (_e, text) => { void openHref(text); } };
+  term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
+}
+
+// Fit, push the size to the PTY, and force a full repaint: on resize the WebGL renderer redraws only
+// damage-flagged cells, so a cell gone glyph→blank keeps a ghost until refresh() re-rasterizes the rows.
+// Active pane only: an inactive one is display:none, so fit() would resize the PTY to garbage.
 export function fitSession(s: Sess) {
   if (!s.term || !s.fit) return;
   try {
@@ -287,10 +551,7 @@ export function fitSession(s: Sess) {
     s.term.refresh(0, s.term.rows - 1);
   } catch { /* pane not measurable yet */ }
 }
-/// Re-measure whatever the stage is currently showing. With a run group tiled that is
-/// several panes, not one — a window resize reflows the grid, so every visible pane's
-/// cell changed size, and refitting only the focused one leaves the rest at the wrong
-/// geometry (a wrapped, misaligned build log next to a correct one).
+// Everything the stage shows: a tiled run group is several panes, and a window resize reflows them all.
 export function refit() {
   if (stageGroup) {
     for (const s of sessions.values()) if (s.run?.groupId === stageGroup) fitSession(s);
@@ -303,11 +564,8 @@ export function refit() {
 export function applyFontSize() { for (const s of sessions.values()) if (s.term) s.term.options.fontSize = termFontSize; refit(); localStorage.setItem("cc-term-font", String(termFontSize)); }
 export function bumpFont(d: number) { setTermFontSize(Math.max(8, Math.min(28, termFontSize + d))); applyFontSize(); toast(`Terminal font ${termFontSize}px`); }
 
-// The WebGL/canvas renderer bakes a glyph texture atlas on first paint. If the
-// bundled Nerd Font (font-display:block) isn't ready yet, that atlas caches tofu
-// boxes for the icon glyphs and never repaints them on its own. So force the font
-// to load, then drop every open terminal's atlas once it's ready — the next frame
-// re-rasterizes with real glyphs. Terminals opened after this point are already fine.
+// The WebGL renderer bakes a glyph atlas on first paint; if the bundled Nerd Font is not ready it caches
+// tofu for the icon glyphs and never repaints. Force the load, then drop every open terminal's atlas.
 void (async () => {
   try {
     await Promise.all([
@@ -315,11 +573,9 @@ void (async () => {
       document.fonts.load(`bold ${termFontSize}px "JetBrainsMono Nerd Font"`),
     ]);
     await document.fonts.ready;
-  } catch { /* Font Loading API unavailable — the browser still applies the @font-face */ }
+  } catch { /* no Font Loading API; the @font-face still applies */ }
   for (const s of sessions.values()) s.term?.clearTextureAtlas();
-  // A session opened before the font arrived had its cell width measured against
-  // the *fallback* metrics, so its column count (and the size we spawned Claude at)
-  // is slightly off and stays off until the next resize. Re-fit now that the real
-  // font's metrics are in, so the PTY width matches what we actually render.
+  // A pane opened before the font arrived measured its cells against fallback metrics, so its PTY width
+  // is slightly off; re-fit now that the real ones are in.
   refit();
 })();

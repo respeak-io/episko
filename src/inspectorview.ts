@@ -1,19 +1,6 @@
-// The inspector's markup: everything the right-hand panel shows about an agent
-// session — the vital header, the context gauge, the plan, the working set
-// and its git buttons, the activity timeline — plus the diff viewer's hunk rows.
-//
-// The disk-I/O card used to be pinned to the bottom of this panel and is now a footer
-// segment (./usageview's `ioPopHtml`): it was app-wide rather than per-session, so it
-// read identically whichever pane was on stage while costing ~120px of a 296px column.
-//
-// Same boundary as ./usageview: every function here takes a Sess (or a plain
-// value) and returns a string. It touches no DOM and calls no renderer, so it
-// needs no seam back into main.ts. renderInspector itself stays there, because
-// its job is to decide which of these to paint and to put the result in the page.
-//
-// It owns `gitBusy` for the same reason it owns the buttons: which session has a
-// git operation in flight is only ever read to grey them out. main.ts's runGit
-// sets it through setGitBusy — the state.ts convention, a live binding to read.
+// The inspector's markup: every card the right-hand panel shows about an agent session.
+// Every function takes a Sess (or a plain value) and returns a string; no DOM, no renderer.
+// It owns `gitBusy` because the git buttons are its only reader.
 
 import { basename, elidePath, esc, escAttr, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
 import { FILE_MANAGER } from "./dom";
@@ -21,13 +8,13 @@ import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./f
 import {
   actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState,
   liveCount, liveFanout, orphanAgents, statusKey,
-  type Act, type DiffStat, type FileTouch, type Risk, type Sess, type TouchKind,
+  type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
+import { isEnvelope, OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
+import type { ProviderMessage } from "./providers";
 import { sessions } from "./state";
 
-// Which session has a fetch/pull/push in flight, if any — the git buttons are
-// disabled while one is.
-export let gitBusy: string | null = null;
+export let gitBusy: string | null = null; // session with a fetch/pull/push in flight; its buttons grey out
 export function setGitBusy(id: string | null) { gitBusy = id; }
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
@@ -37,7 +24,6 @@ function toolVerb(tool: string): string {
   if (tool.startsWith("mcp__")) return "Calling tool";
   return TOOL_VERB[tool] || "Working";
 }
-// Maps a tool to the CSS colour class that tints its dot / name / verb.
 export function toolClass(tool: string): string {
   if (!tool) return "";
   if (tool === "Read" || tool === "Grep" || tool === "Glob") return "t-read";
@@ -49,7 +35,7 @@ export function toolClass(tool: string): string {
 }
 export const RISK_LABEL: Record<Risk, string> = { low: "low risk", med: "review", high: "high risk" };
 export function verbFor(s: Sess): string {
-  // Ahead of the phase, because the phase is `done` and saying so is the bug.
+  // Before the phase checks: a fleet still running leaves the phase at "done".
   if (bgWaiting(s)) return fanoutText(s);
   if (s.phase === "thinking") return "Thinking";
   if (s.phase === "working") return toolVerb(s.curTool);
@@ -58,13 +44,10 @@ export function verbFor(s: Sess): string {
   if (s.phase === "ended") return "Ended";
   return "Idle";
 }
-// Live text under the state name — recomputed each second by tickTimers().
+// Patched into #iDwell once a second by tickDwell; never part of the compared markup.
 export function dwellText(s: Sess): string {
   if (s.phase === "ended") return "session ended";
-  // The fan-out's clock, not the phase's: `phaseSince` was stamped when the turn ended,
-  // which is the moment the fleet *started* and therefore says nothing about the wait.
-  // It is also the only live clock the fan-out has — the card below carries no time, so
-  // that the inspector's innerHTML guard keeps biting (see paintInspector).
+  // The fan-out's own clock: `phaseSince` is when the turn ended, i.e. when the fleet started.
   const f = bgWaiting(s) ? liveFanout(s) : null;
   if (f) return `${fmtDwell(Date.now() - f.since)} in background`;
   const d = fmtDwell(Date.now() - s.phaseSince);
@@ -73,11 +56,8 @@ export function dwellText(s: Sess): string {
   if (s.phase === "error") return `${d} ago`;
   return `${d} in state`;
 }
-// True when this is the "your turn" session that's been blocked longest — the one
-// to jump to first. Only meaningful when several are waiting.
-// A session whose fleet is still running is not in the queue at all — it is not blocked
-// on you, so crowning it "longest waiting" would point you at the one row with nothing
-// to answer.
+// The "your turn" session that has waited longest; only meaningful when several are waiting.
+// A session whose fleet still runs is not blocked on you, so it is not in the queue.
 function isLongestWaiting(s: Sess): boolean {
   const waiting = [...sessions.values()].filter((x) => x.phase === "done" && hasSessionState(x) && !x.attention && !bgWaiting(x));
   return waiting.length > 1 && waiting.every((x) => x.id === s.id || x.phaseSince >= s.phaseSince);
@@ -93,36 +73,29 @@ function compactWarn(pct: number | null): { txt: string; cls: string } | null {
 export function vitalHtml(s: Sess): string {
   const sk = statusKey(s);
   const fan = fanoutTally(s);
-  // The heartbeat is "something is happening here", not "the model is talking" — a fleet
-  // of thirteen agents is the busiest this app ever gets, and a still heart over it read
-  // as an idle session.
+  // The heartbeat means "something is happening here", so a live fleet beats too.
   const live = (s.phase === "working" || s.phase === "thinking" || bgWaiting(s)) && !s.attention;
   const verb = s.attention ? "Needs you" : verbFor(s);
   const tcls = (!s.attention && s.phase === "working") ? toolClass(s.curTool) : "";
   const doing = (!s.attention && s.phase === "working" && s.curTool)
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
-  // While a fleet is up, the split of it — done vs still running — says more than the
-  // bare "N subagents" chip this replaces, which only ever showed the live half.
   const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${liveCount(s)} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
-    <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
-    ${doing}${meta}</div>`;
+    <div class="vrow">
+      <div class="vmain">
+        <div class="vtop"><span class="heart ${live ? "" : "still"}"></span><span class="vstate ${tcls}">${verb}</span><span class="dwell" id="iDwell"></span></div>
+        ${doing}${meta}
+      </div>
+      ${ctxRingHtml(s)}
+    </div>
+    ${ctxFootHtml(s)}</div>`;
 }
-/// The background fleet: what it is, how much of it has landed, and what it set out to
-/// do. Sits directly under the vital, because while it is up it *is* the state of the
-/// session — the gauges below it describe a conversation that stopped talking.
-///
-/// **No clock in this markup.** The elapsed lives in `#iDwell`, which main.ts patches by
-/// `textContent` once a second; a time in here would make the string differ on every
-/// repaint and permanently defeat `paintInspector`'s guard, on the surface that guard
-/// exists to protect (see its comment — a lost *Allow* is how that was learned).
-///
-/// The phases are listed, never ticked off. No hook says which phase a workflow has
-/// reached, and a progress bar drawn over the agent counts is the only claim the
-/// telemetry actually supports.
+// The background fleet card, directly under the vital. No clock in this markup: the
+// elapsed lives in #iDwell, patched by textContent, or paintInspector's guard never bites.
+// Phases are listed, never ticked off; no hook says which one a workflow has reached.
 export function fanoutHtml(s: Sess): string {
   const f = liveFanout(s), t = fanoutTally(s);
   if (!f || !t) return "";
@@ -131,11 +104,8 @@ export function fanoutHtml(s: Sess): string {
   const detail = f.detail ? `<div class="fo-detail">${esc(f.detail)}</div>` : "";
   const phases = f.phases.length
     ? `<div class="fo-phases">${f.phases.map((p) => `<span class="fo-ph">${esc(p)}</span>`).join("")}</div>` : "";
-  // The leftovers a newer fan-out inherited, named apart from this run's own agents
-  // instead of being folded into its total in silence — which is how "34 / 36" managed
-  // to look like arithmetic rather than a bug. They are counted (the total above is
-  // `done + running`, and a second workflow launched over a live one is real work), but
-  // they say whose they are, and they take themselves off this card when they expire.
+  // Agents a newer fan-out inherited are counted in the total but named apart, so "34 / 36"
+  // says whose they are; they leave the card when they expire (docs/architecture.md).
   const orph = orphanAgents(s);
   const kinds = [...new Set(orph.map((a) => a.type).filter(Boolean))].slice(0, 3).join(", ");
   const carried = orph.length
@@ -146,21 +116,23 @@ export function fanoutHtml(s: Sess): string {
     <div class="fo-bar"><i style="width:${pct}%"></i></div>
     ${carried}${phases}</div>`;
 }
-// Spending and account limits deliberately live in the footer: they describe the
-// active account, while this panel describes the selected session. Keep only context
-// here, where its pressure affects the conversation the user is inspecting.
-export function contextGaugeHtml(s: Sess): string {
+// Context rides in the vital card rather than a card of its own: state, model and how full
+// the window is are one glance, and three stacked boxes pushed everything else below the fold.
+// Spend and limits describe the account and stay in the footer.
+function ctxRingHtml(s: Sess): string {
   const ctx = s.ctxPct;
-  const warn = compactWarn(ctx);
-  const ctxSpark = sparkline(s.ctxHist, { lo: 0, hi: 100 });
-  const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k tokens` : "context";
-  const ctxFoot = warn ? `<div class="warn-line ${warn.cls}">${warn.txt}</div>` : (ctxSpark ? `<div class="gspark">${ctxSpark}</div>` : "");
-  return `<div class="gauges">
-    <div class="gauge">
-      <div class="grow"><svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg><div><div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div></div>
-      ${ctxFoot}
-    </div>
-  </div>`;
+  const tokTxt = s.ctxTokens != null ? `${Math.round(s.ctxTokens / 1000)}k` : "ctx";
+  return `<div class="vgauge" title="Context window used${s.ctxTokens != null ? ` — ${s.ctxTokens.toLocaleString()} tokens` : ""}">
+    <svg class="mini-ring" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="15"></circle><circle class="fil" cx="20" cy="20" r="15" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, ctx ?? 0))} 100"></circle></svg>
+    <div class="gnum">${ctx != null ? Math.round(ctx) + "%" : "–"}</div><div class="glab">${tokTxt}</div></div>`;
+}
+// The warning wins over the sparkline: "auto-compact imminent" is the one thing the ring
+// alone cannot say, and both together would wrap the card.
+function ctxFootHtml(s: Sess): string {
+  const warn = compactWarn(s.ctxPct);
+  if (warn) return `<div class="warn-line ${warn.cls}">${warn.txt}</div>`;
+  const spark = sparkline(s.ctxHist, { lo: 0, hi: 100 });
+  return spark ? `<div class="gspark">${spark}</div>` : "";
 }
 export function planHtml(s: Sess): string {
   const done = s.todos.filter((t) => t.status === "completed").length, total = s.todos.length;
@@ -172,16 +144,9 @@ export function planHtml(s: Sess): string {
   const more = total > 5 ? `<div class="todo-more">+${total - 5} more</div>` : "";
   return `<div class="plan"><div class="ph"><span class="lab">Plan</span><span class="frac">${done} / ${total}</span></div><div class="pbar"><i style="width:${pct}%"></i></div>${rows}${more}</div>`;
 }
-// "This session is somewhere else." Sits at the top of the inspector because it
-// reframes every figure below it: the working set, the branch and the fetch/pull/push
-// buttons all read the *launch* folder, and while a drift is showing, that is not where
-// the work is going.
-//
-// The copy and the button differ by `via`, because the two drifts are genuinely
-// different situations rather than one situation with two causes — one is Episko being
-// behind (free to fix), the other is a relocation only Episko can perform. Saying
-// "move" for the first would overstate what happens; saying "follow" for the second
-// would understate it.
+// "This session is somewhere else": sits above every figure that reads the launch folder.
+// Copy and button differ by `via`: a cwd drift is Episko being behind (follow, free); a
+// write drift is a relocation only Episko can perform (move). See docs/worktrees.md.
 export function driftHtml(s: Sess): string {
   const d = s.drift!;
   const here = esc(s.branch || basename(s.workdir));
@@ -196,35 +161,16 @@ export function driftHtml(s: Sess): string {
     <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">${cwdMove ? "Follow it here" : "Move session here"}</button></div>
   </div>`;
 }
-/// The clickable half of the working-set card — the counts, the churn bar, and the cue
-/// saying that both of them open the diff. Exported because ./mirror paints the same
-/// block for an external session's folder: the two were copies, and copies of a card
-/// this small drift in exactly the way the two bugs below did.
-///
-/// Two things it must never do again, both of which shipped:
-///
-/// - **Never split the bar when there is no churn.** `added + removed || 1` gave the
-///   deletion half 100% of the width whenever both were zero, so a tree whose only
-///   change is one new file drew a full-width red bar: the loudest possible rendering
-///   of nothing having been deleted. No churn, no split — the empty track says it.
-/// - **Never count only the tracked files.** `files` comes from `diff --numstat HEAD`,
-///   which a never-committed file is not in, so the card read `0 files` directly above
-///   a `1 new` chip and the two argued with each other. There is now one count, of
-///   everything git calls dirty, with the new ones named as a share of it rather than
-///   as a separate figure somewhere else in the card.
-///
-/// The `+N −M` pair is dropped entirely when nothing tracked changed, rather than
-/// printed as `+0 −0`: an untracked file has no line counts until it is added, and a
-/// pair of zeroes reads as "nothing happened" beside a count saying something did.
+// The clickable half of the working-set card; ./mirror paints the same block for an
+// external session's folder. No churn, no split bar. Count everything git calls dirty,
+// not only numstat's tracked files, and drop the `+N −M` pair rather than print `+0 −0`.
 export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
   const churn = g.added + g.removed;
   const aw = churn ? Math.round((g.added / churn) * 100) : 0;
-  // `dirty` is git's own porcelain line count, so it covers the entries numstat misses
-  // (untracked, unmerged, mode-only); the sum is the fallback for a stat that predates it.
+  // git's porcelain count covers what numstat misses; the sum is for a stat that predates it.
   const touched = g.dirty || g.files + g.untracked;
   const plural = touched === 1 ? "" : "s";
-  // "1 file · 1 new" is true and still silly. When every dirty entry is a new file there
-  // is no share to name, so the count says what they are instead of what they aren't.
+  // When every dirty entry is new, say so instead of "1 file · 1 new".
   const count = g.untracked >= touched
     ? `${touched} new file${plural}`
     : `${touched} file${plural}${g.untracked ? ` · ${g.untracked} new` : ""}`;
@@ -239,30 +185,21 @@ export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
 export function wsetHtml(s: Sess): string {
   const g = s.git!;
   const dirty = g.files || g.untracked;
-  // The diff half is only worth drawing when something is actually uncommitted —
-  // a clean tree that's 5 behind still needs the branch/sync row below.
+  // Only draw the diff half when something is uncommitted; the branch row is always needed.
   const diff = dirty ? wpeekHtml(s.workdir, s.project + (s.branch ? " · " + s.branch : ""), g) : "";
   const sync = g.upstream
     ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
-  // The branch row is about the branch and nothing else. The untracked count used to
-  // sit on its right, where "1 new" a few pixels from a branch name and an ahead/behind
-  // pair reads as a new *commit* or a new *branch*; it belongs with the other file
-  // counts, and that is where `wpeekHtml` now puts it.
+  // The branch row is about the branch only; file counts belong in wpeekHtml.
   return `<div class="wset">${diff}
     <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span></div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
-// Fetch / pull / push for the session's workdir.
-//
-// A button is only greyed out when there is genuinely *nothing to do* — never for
-// the awkward states. A diverged branch, or one with no upstream, keeps its button
-// live precisely because that's where the backend refuses with a suggestion and we
-// hand the user a prefilled terminal; disabling those would amputate the useful
-// half. "Nothing to do" needs a known upstream, since without one ahead/behind are
-// both 0 and would otherwise read as "nothing to push".
+// Fetch / pull / push. Only grey a button when there is nothing to do, never for the
+// awkward states: diverged or no-upstream keeps it live, since the backend then refuses
+// with a suggestion and hands over a prefilled terminal. "Nothing to do" needs an upstream.
 function gitBtnsHtml(s: Sess, g: DiffStat): string {
   const busy = gitBusy === s.id;
   const up = !!g.upstream;
@@ -281,34 +218,84 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
   </div>`;
 }
 
+// ---------- the conversation outline: what you asked, and where ----------
+// Newest first, like the tool timeline: the jump you want is usually a recent one, and the
+// number carries the chronology the order drops. A row is a click target back into the
+// pane's scrollback, so `anchored` decides which ones can still keep that promise.
+
+const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+// Three states, two classes. A restored row nobody has clicked yet is NOT greyed: it has no
+// marker because Episko never watched it, and the resume usually replayed it into the pane,
+// so the click is what settles it (./terminal searches once and stamps `lost` on a miss).
+// `lost` on a live row means only that the search missed; its submit marker still jumps.
+function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, lines: number): string {
+  const gone = !anchored && (!p.restored || !!p.lost);
+  const why = anchored ? "Jump to it in the terminal"
+    : !p.restored ? "Scrolled out of the terminal"
+    : p.lost ? "Asked before this pane, and not in its scrollback"
+    : "Asked before this pane — click to look for it in the scrollback";
+  const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
+  return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(`${promptLabel(p.text)}\n${why}`)}">`
+    + `<span class="ol-n">${n}</span>`
+    + `<div class="ol-txt" style="--ol-lines:${lines}">${esc(p.text)}</div>`
+    + `<span class="ol-t">${back}${p.at ? promptClock(p.at) : ""}</span></div>`;
+}
+
+export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean): string {
+  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${s.prompts.length || ""}</span></div>`;
+  if (!s.prompts.length) {
+    return `<div class="outline">${head}<div class="insp-empty" style="padding:14px 0">Nothing asked yet.</div></div>`;
+  }
+  const total = s.prompts.length;
+  const shown = all ? total : Math.min(OUTLINE_SHOW, total);
+  const rest = total - shown;
+  const more = rest > 0 ? `<button class="fx-more" data-olmore="1">+${rest} earlier</button>`
+    : all && total > OUTLINE_SHOW ? `<button class="fx-more" data-olmore="1">Show fewer</button>` : "";
+  // Newest first, but numbered from the start of the conversation, so #1 is the first thing asked.
+  const rows = s.prompts.slice(total - shown).reverse()
+    .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs.lines)).join("");
+  return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
+}
+
+// The questions half of a conversation, for the surfaces that offer to reopen one: History's
+// detail pane and ./mirror's shelved card. Same rows as the live outline and newest first, but
+// unnumbered — this is the tail of a transcript, so a number would count from nowhere. Each
+// caller adds its own heading; `jump` is for a surface with the transcript beside it.
+const askClock = (at: string | null | undefined) => {
+  const ms = at ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+};
+export function askedHtml(msgs: readonly ProviderMessage[], show: number, jump = false): string {
+  // The index is into the array the caller rendered, envelopes included, or a jump lands elsewhere.
+  const asked = msgs.map((m, i) => ({ m, i })).filter(({ m }) => m.role === "user" && !isEnvelope(m.text.trim()));
+  if (!asked.length) return "";
+  const shown = asked.slice(-show).reverse();
+  const rest = asked.length - shown.length;
+  const rows = shown.map(({ m, i }) =>
+    `<div class="ol-row static${jump ? " jump" : ""}"${jump ? ` data-pastq="${i}" title="${escAttr("Go to it in the transcript")}"` : ""}>`
+    + `<div class="ol-txt" style="--ol-lines:2">${esc(m.text)}</div>`
+    + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
+  return `<div class="ol">${rows}</div>`
+    + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
+}
+
 // ---------- context: what the session has been into ----------
-//
-// The card that replaced the activity timeline as the inspector's default. The timeline
-// is still here, one click away under `Tools`, because the two answer different
-// questions and only one of them is worth the space by default — see ./files for why
-// a set of files beats a log of tool calls, and `contextHtml` for the split.
+// The default card; the tool timeline is one click away under `Tools` (./files for why).
 
 const KIND_META: Record<TouchKind, { label: string; glyph: string }> = {
   created: { label: "Created", glyph: "✦" },
   edited: { label: "Edited", glyph: "◆" },
   read: { label: "Read", glyph: "○" },
 };
-/// Rows a group shows before it folds. Created and Edited are the answer to "what did
-/// this agent change", they are short in practice, and folding them would hide the
-/// point of the card; Read is routinely hundreds of files and gets the tight fold.
+// Rows a group shows before it folds. Read is routinely hundreds of files; the others are the point.
 const GROUP_SHOW: Record<TouchKind, number> = { created: 10, edited: 10, read: 6 };
 
-/// One file. The whole row is the open target and the ⌂ is a target inside it, which is
-/// why main.ts's if-chain has to test `freveal` **before** `fopen` — same inner-wins
-/// rule as the run group's twisty.
+// The row is the open target and ⌂ a target inside it, so main.ts must test `freveal` before `fopen`.
 function fileRow(f: FileTouch, workdir: string): string {
   const { name, dir, outside } = fileLabel(f.path, workdir);
-  // An in-project folder is a couple of segments and shows whole. An outside one is a
-  // full absolute path, and it is shortened *here* rather than by CSS: `text-overflow`
-  // can only drop the tail, which is the half that identifies it — and the obvious
-  // fix (`direction: rtl`, so the ellipsis lands at the front) reorders the neutral
-  // separators at the string's edges, printing `/Users/Tim/.claude` as
-  // `Users/Tim/.claude/`. `elidePath` is the house answer to the same problem.
+  // An outside path is shortened here, not by CSS: `text-overflow` drops the tail (the half
+  // that identifies it) and `direction: rtl` reorders the separators at the edges.
   const where = outside ? elidePath(tilde(dir), 34) : dir;
   const times = f.n > 1 ? `<i class="fx-x">×${f.n}</i>` : "";
   const tip = `${tilde(f.path)}\nOpen it · ⌂ reveals it in ${FILE_MANAGER}`;
@@ -324,8 +311,7 @@ function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: b
   const lim = GROUP_SHOW[kind];
   const shown = open ? files : files.slice(0, lim);
   const rest = files.length - shown.length;
-  // "Show fewer" only appears on a group that was folded in the first place — an
-  // expanded group of four would otherwise offer to collapse itself to four.
+  // "Show fewer" only on a group that was folded, so a group of four never offers to collapse.
   const more = rest > 0 ? `<button class="fx-more" data-fgroup="${kind}">+${rest} more</button>`
     : open && files.length > lim ? `<button class="fx-more" data-fgroup="${kind}">Show fewer</button>` : "";
   return `<div class="fx-grp k-${kind}">`
@@ -333,16 +319,8 @@ function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: b
     + shown.map((f) => fileRow(f, workdir)).join("") + more + `</div>`;
 }
 
-/// The card's two modes share one header, so the toggle sits still when you flip it.
-/// The Files mode carries no count line: every group already states its own, and the
-/// two together only competed for the width the toggle needs.
-///
-/// `hint` is the line under it — what a row in this mode *does*, in the same small grey
-/// the I/O panel's note uses. Both modes are lists of unremarkable-looking rows that are
-/// all click targets, and neither said so: Files opens a file in your editor, and since
-/// the Tools row stopped unfolding it has no disclosure chevron left to imply anything
-/// either. Passed empty when there is nothing to click, because a card whose body says
-/// "No tool calls yet" should not also be offering advice about clicking one.
+// Both modes share one header so the toggle sits still. `hint` says what a row does (both
+// lists are click targets that don't look it); empty when there is nothing to click.
 function ctxHead(mode: CtxMode, sub: string, hint: string): string {
   const tab = (m: CtxMode, t: string) => `<button class="${m === mode ? "on" : ""}" data-fmode="${m}">${t}</button>`;
   return `<div class="fx-head"><span class="label">Context</span><span class="fx-sub">${esc(sub)}</span>`
@@ -352,14 +330,8 @@ function ctxHead(mode: CtxMode, sub: string, hint: string): string {
 
 export type CtxMode = "files" | "tools";
 
-/// The inspector's Context card: every file the session has touched, grouped by what it
-/// did to them, plus a one-line tally of everything that touched no file.
-///
-/// `open` is which of the Files groups is unfolded — ephemeral view state owned by
-/// ./inspector and passed in rather than read, so this stays a pure function of its
-/// arguments like every other card here. Tools has no fold of its own any more: a row
-/// opens ./callsheet instead of unfolding, which is what retired the second set this
-/// used to need.
+// The Context card. `open` is the unfolded Files groups, view state owned by ./inspector
+// and passed in so this stays a pure function. A Tools row opens ./callsheet; no fold.
 export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): string {
   if (mode === "tools") {
     const hint = s.activity.length ? "Click a row to see what ran and what came back." : "";
@@ -372,8 +344,7 @@ export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): 
     ? `<div class="fx-foot">${others.map((o) => `<span class="fx-t ${toolClass(o.tool)}">${esc(shortTool(o.tool))}<i>×${o.n}</i></span>`).join("")}</div>`
     : "";
   if (!s.files.length) {
-    // A session that has run tools but opened no file is a real and readable state
-    // (a long `Bash` sweep, a research turn) — say so, and still show what it did run.
+    // Tools but no files (a Bash sweep, a research turn) is a real state: say so, keep the tally.
     const note = others.length ? "No files opened yet." : "Nothing touched yet.";
     return ctxHead(mode, "", "") + `<div class="insp-empty" style="padding:14px 0">${note}</div>` + foot;
   }
@@ -381,26 +352,15 @@ export function contextHtml(s: Sess, open: ReadonlySet<string>, mode: CtxMode): 
   return ctxHead(mode, "", "Click a file to open it.") + `<div class="fx">${body}</div>` + foot;
 }
 
-/// The one line of a failure worth putting on a collapsed row.
-///
-/// A `PostToolUseFailure` reason is the single highest-value thing this card carries and
-/// it has no surface anywhere else in the app, so it is the one payload that does not
-/// wait to be asked for. Only the first line, though: the rest is a stack trace or a
-/// compiler's second opinion, and both want the sheet's width rather than the rail's.
+// The first line of a failure's reason: the one payload put on the row unasked, since it
+// has no other surface in the app. The rest wants the sheet's width.
 function failLine(a: Act): string {
   const first = (a.out || "").split("\n").find((l) => l.trim()) || "";
   return first.length > 84 ? `${first.slice(0, 84)}…` : first;
 }
 
-/// The Tools timeline: the last eight calls, one line each, opening the call sheet.
-///
-/// **A row no longer expands in place.** It used to unfold two `<pre>` blocks into a
-/// 296px column, which is ~38 characters of 10.5px mono — so a diff hunk arrived with
-/// its `+`/`-` markers broken off the lines they belong to, a `Read` response was a
-/// whole file rendered a third of a line at a time, and the block pushed everything
-/// under it down the panel while it was open. ./callsheet holds all of that now, at
-/// ~1120px, and what stays here is the summary a rail is actually good at: which call,
-/// how long, and whether it failed.
+// The Tools timeline: the last eight calls, one line each, opening ./callsheet. A row
+// never expands in place; a 296px rail cannot hold a payload (CLAUDE.md, Context card).
 export function timelineHtml(s: Sess): string {
   const acts = s.activity.slice(0, 8);
   if (!acts.length) return `<div class="insp-empty" style="padding:14px 0">No tool calls yet.</div>`;
@@ -411,9 +371,7 @@ export function timelineHtml(s: Sess): string {
     const w = running ? 100 : Math.max(6, Math.round(((a.durMs ?? 0) / maxDur) * 100));
     const ms = running ? "···" : fmtLatency(a.durMs!);
     const why = a.failed ? failLine(a) : "";
-    // `data-tlsid` rides along rather than being looked up from `activeId` at the click:
-    // the row is markup, and markup outlives the state that produced it by however long
-    // it takes somebody to move the pointer.
+    // The sid rides on the row: markup outlives the `activeId` that produced it.
     return `<div class="tl2i${a.failed ? " bad" : ""}">`
       + `<div class="row" data-tlrow="${escAttr(actKey(a))}" data-tlsid="${escAttr(s.id)}" title="${escAttr(`${a.tool} · ${a.arg}\nOpen what ran and what came back`)}">`
       + `<span class="dot ${cls}"></span><span class="nm ${cls}">${esc(a.tool)}</span>`

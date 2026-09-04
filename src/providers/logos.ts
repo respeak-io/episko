@@ -1,7 +1,5 @@
-// Provider-owned visual identity for the shared agent selectors. Vendor ids stay at
-// this boundary; menus/settings ask only for a trusted SVG fragment. Lobe Icons is a
-// version-pinned, source-controlled dependency, while the four newer CLI marks come
-// from their first-party sites (Factory, maki.sh, omp.sh and Pi's press kit).
+// Provider-owned visual identity for the agent selectors: vendor ids stop here, callers
+// get a trusted SVG fragment. Lobe Icons is pinned; the four local marks are first-party.
 
 import amp from "@lobehub/icons-static-svg/icons/amp-color.svg?raw";
 import antigravity from "@lobehub/icons-static-svg/icons/antigravity-color.svg?raw";
@@ -32,8 +30,8 @@ const LOGOS: Readonly<Record<string, string>> = {
   qodercli, qwen,
 };
 
-// A new backend catalogue entry should still render as an agent, never regress to an
-// inferred pair of letters. The contract test below makes missing known mappings fail.
+// An unmapped id still renders as an agent; provider-contract.test.ts fails if a known one is unmapped.
+
 const FALLBACK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>`;
 
 export const agentLogo = (id: string): string => LOGOS[id] ?? FALLBACK;

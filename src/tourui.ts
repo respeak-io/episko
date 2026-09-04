@@ -1,28 +1,6 @@
-// The guided tour's driver: the veil, the card, the picker, and the one tick that
-// advances a step. ./tour owns every rule and is tested; this owns the pixels, and is
-// untested by design like every other DOM-owning module here.
-//
-// THREE THINGS THIS HAS TO GET RIGHT.
-//
-// 1. **The hole is real.** The veil is `pointer-events: none` and the dark is a single
-//    `box-shadow: 0 0 0 9999px` spreading out of one small rounded div, so the lit
-//    control is the *live* control — the user genuinely presses `＋ Session` and
-//    genuinely answers the permission. Nothing is simulated, which is the whole reason
-//    the interactive half teaches anything.
-//
-// 2. **It is not on the shared #scrim.** The tour lights things *inside* the
-//    new-session dialog, the project context menu and Settings, so it has to sit above
-//    all three and coexist with them. It gets its own z-index tier and never joins
-//    SCRIM_DLGS, so `dropScrim()` stays a question only dialogs answer.
-//
-// 3. **Nothing can strand the user.** A step whose anchor is missing (or is present but
-//    has no box, which is what a hidden pane looks like) is stepped over and logged
-//    rather than lighting a hole over nothing — this feature's version of the dead
-//    `[data-*]` branch. And a waiting step grows a quiet "Skip this step" after
-//    STUCK_MS, because a predicate can always be unsatisfiable on somebody's machine.
-//
-// It never binds a chord and never takes Escape: Escape backs out of whichever dialog
-// is open — nine bindings, not one action — and those dialogs are *under* the tour.
+// The guided tour's driver: the veil, the card, the picker and the tick that advances a
+// step. ./tour owns the rules (tested); this owns the pixels. It sits above every dialog
+// on its own z-index tier, never joins SCRIM_DLGS, and never takes Escape (docs/tour.md).
 
 import { $, IS_MAC } from "./dom";
 import { dlog } from "./debug";
@@ -38,19 +16,9 @@ import {
 
 /** Things the tour triggers but does not own. Set from main.ts; see setTourHost. */
 export interface TourHost {
-  /** Type a prompt into the active pane, as though the user had. */
-  pasteToActive: (text: string) => void;
-  /** Open the settings window on a given tab (the Guide tab's Replay lands back here). */
+  pasteToActive: (text: string) => void;  // type a prompt into the active pane
   openSettingsAt: (tab: string) => void;
-  /**
-   * Make sure a collapsed panel is open before a step lights something inside it.
-   *
-   * The tour lights *real* controls, so a control the user has collapsed away is not a
-   * missing anchor to step over — the permission buttons and every Context card live in
-   * the inspector (⌘I), the project rows and their ＋ live in the rail (⌘B). Opening the
-   * panel is what a user would do; skipping the step would teach nothing.
-   */
-  ensure: (need: TourNeed) => void;
+  ensure: (need: TourNeed) => void;       // open a collapsed panel before a step lights something in it
   renderAll: () => void;
 }
 let host: TourHost = {
@@ -58,10 +26,8 @@ let host: TourHost = {
 };
 export function setTourHost(h: TourHost) { host = h; }
 
-/** How long a waiting step goes unsatisfied before it offers a way past itself. */
-const STUCK_MS = 20_000;
-/** Breathing room around a lit element, in px. */
-const PAD = 6;
+const STUCK_MS = 20_000;       // a waiting step offers "Skip this step" after this
+const PAD = 6;                 // px around a lit element
 const CARD_W = 300;
 const CARD_W_WIDE = 366;
 const GAP = 14;
@@ -69,26 +35,15 @@ const GAP = 14;
 // ---------- live position in the tour ----------
 let plan: Chapter[] = [];      // the chapters this run will walk, in order
 let ci = -1;                   // index into `plan`; -1 means nothing is running
-// Index into the chapter's FULL step list, not its visible one. A `when` predicate is
-// evaluated live on every pass (that is the only way "only while the badge is on
-// screen" can work), and an index into the filtered list would silently renumber every
-// step after one that flipped — advancing past a step, or replaying one, with nothing
-// on screen to explain it. The filtered list is for the dots and the count.
+// Indexes the chapter's FULL step list, not the `when`-filtered one: a predicate flipping
+// would silently renumber the filtered list. The filtered list is for the dots and the count.
 let si = 0;
 let waitingSince = 0;          // when the current step started waiting; 0 = not waiting
-/**
- * Has this step been blocked at any point since we arrived at it?
- *
- * A waiting step only advances on the **falling edge**, exactly like the permission
- * latch below. Arriving at a step whose condition is already true (every replay from
- * Settings › Guide, and the badge step when the permission is still up) used to
- * auto-advance on the first tick: the card flashed and the lesson went past unread.
- * Now an already-satisfied step simply shows with Next enabled.
- */
+// Has this step been blocked since we arrived? A waiting step advances only on the falling
+// edge, so a step already satisfied on arrival shows with Next enabled instead of flashing past.
 let armed = false;
 let picked = new Set<string>();
-/** Set the first time a permission is answered while the tour runs; see TourWorld. */
-let sawPermAnswered = false;
+let sawPermAnswered = false;   // latched by tourTick; see TourWorld
 let hadPerm = false;
 
 // ---------- the store ----------
@@ -96,22 +51,17 @@ const read = (): TourState => parseTourState(localStorage.getItem(TOUR_KEY));
 function write(st: TourState) {
   try { localStorage.setItem(TOUR_KEY, JSON.stringify(st)); } catch { /* quota; the tour is not worth a toast */ }
 }
-/** Writing anything at all is what makes this no longer a first run — see shouldOfferPicker. */
+// Writing anything at all ends the first run; see shouldOfferPicker.
 const seed = () => { if (localStorage.getItem(TOUR_KEY) === null) write(read()); };
 
 // ---------- the world a predicate sees ----------
-// Read from the DOM rather than from module state wherever the DOM is the honest
-// source: "is the launcher open" is a class on #wtDlg, and asking the element cannot
-// drift from what the user is looking at.
+// Read from the DOM where it is the honest source: "is the launcher open" is a class on #wtDlg.
 const shown = (id: string) => $(id).classList.contains("show");
 
 function world(): TourWorld {
   const live = [...sessions.values()];
   const act = activeId ? sessions.get(activeId) : null;
   const perm = live.some((s) => !!s.pendingPermId);
-  // Latch the answer: `permPending` going false is not evidence on its own — it is also
-  // false before the first prompt ever appears, which would let the step advance the
-  // instant it opened. See the `hadPerm` transition in tick().
   const open: string[] = [];
   if (shown("wtDlg")) open.push("wt");
   if (shown("setDlg")) open.push("settings");
@@ -134,22 +84,14 @@ function world(): TourWorld {
     projects: FAVORITES.length,
     sessions: live.length,
     phase: act?.phase ?? "",
-    // A shell pane and a task pane are sessions too, and neither has any of the cards
-    // the inspector chapter is about — so this is a capability and stage check, not
-    // "is there a session".
+    // A shell or task pane is a session too, but has none of the inspector's cards.
     agentOnStage: stage === "session" && !!act && hasSessionState(act),
     provider,
     permissionCanAsk: permission?.asks ?? false,
     permPending: perm,
     permAnswered: sawPermAnswered,
-    // The preference new sessions launch with, which is the one the session this
-    // chapter just started is running under. A `Sess` does not carry its own mode, and
-    // this is the honest answer for the only session the tour is ever about.
-    permMode: permission?.id ?? "default",
-    // Straight from the function the badge itself renders off, rather than a second
-    // opinion about what "needs you" means: a step that lights `#attnBadge` has to ask
-    // the same question the element does or it lights a `display:none` box.
-    attnCount: needsYouSessions().length,
+    permMode: permission?.id ?? "default", // what new sessions launch with; a Sess carries no mode
+    attnCount: needsYouSessions().length,  // the same question #attnBadge renders off
     open,
     settingsTab: shown("setDlg")
       ? document.querySelector<HTMLElement>("#setTabs .set-tab.on")?.dataset.settab ?? ""
@@ -162,13 +104,8 @@ function world(): TourWorld {
 
 // ---------- opening ----------
 
-/**
- * Called once at boot: wires the card, then offers the picker on a genuine first run.
- *
- * The wiring lives here rather than at module scope so importing this file touches no
- * DOM — `$` throws on a missing element by design, and an import-time listener would
- * make the module's order in main.ts load-bearing.
- */
+// Called once at boot. Wiring is here rather than at module scope so importing this file
+// touches no DOM (`$` throws on a missing element).
 export function initTour(): boolean {
   wire();
   if (!shouldOfferPicker(localStorage.getItem(TOUR_KEY))) return false;
@@ -185,9 +122,7 @@ export function startChapter(id: string) {
   const c = CHAPTERS.find((x) => x.id === id);
   if (!c) return;
   plan = [c]; ci = 0; beginChapterState(); si = firstIndex();
-  // Left mid-chapter last time? Pick it back up where it stopped. That is the whole
-  // point of `at`, which until now was written on every exit and read by nothing — the
-  // Guide row says "Resume" on the strength of it.
+  // Resume where a previous run of this chapter left off (`at`, written by endTour).
   const at = read().at;
   if (at?.ch === c.id) {
     si = Math.min(Math.max(0, at.step), c.steps.length - 1);
@@ -218,37 +153,18 @@ function beginPlan() {
 
 function chapter(): Chapter | null { return plan[ci] ?? null; }
 
-/**
- * Clear what is per-CHAPTER rather than per-run. Called wherever a chapter begins.
- *
- * Both latches below outlive a chapter otherwise, and both then lie about the next one:
- * `sawPermAnswered` would carry an answer from an earlier chapter into a quickstart
- * replay, so the permission step would arrive already satisfied — and, worse, the
- * mode-aware pair would show the *card* step to someone whose mode raises no cards,
- * because `permAnswered` is one of the three things its `when` accepts. `seenIdx` would
- * keep counting steps a second run of the same chapter no longer shows.
- */
+// Per-chapter state, cleared wherever a chapter begins. Both latches would otherwise carry
+// into the next chapter: a stale `sawPermAnswered` makes its permission step arrive satisfied.
 function beginChapterState() {
   seenCh = chapter()?.id ?? "";
   seenIdx.clear();
   sawPermAnswered = false;
   hadPerm = false;
 }
-/** Every step in the chapter, `when` or no `when` — what `si` indexes. */
 function allSteps(): TourStep[] { return chapter()?.steps ?? []; }
-/**
- * What the dots and the "5 / 8" are drawn from: everything that applies now, **plus
- * anything that applied earlier in this chapter**.
- *
- * A live `when` otherwise moves the denominator both ways — the reactor step appears
- * when the permission lands and leaves again when it is answered, so the counter read
- * "5 / 8" and then "6 / 7", which looks like the tour losing its place rather than a
- * step ending. Remembering what has applied makes the total only ever grow.
- *
- * `beginChapterState` clears this when a chapter starts, which is what makes a REPLAY of
- * the same chapter count itself afresh. The id check here is the other half: `back()`
- * can walk into the previous chapter of a plan without any chapter having begun.
- */
+// What the dots and the "5 / 8" count: every step that applies now, plus any that applied
+// earlier in this chapter, so a live `when` only ever grows the total. The id check covers
+// `back()` walking into a chapter that never began.
 let seenCh = "";
 const seenIdx = new Set<number>();
 function counted(w: TourWorld = world()): TourStep[] {
@@ -260,46 +176,28 @@ function counted(w: TourWorld = world()): TourStep[] {
   return out;
 }
 function step(): TourStep | null { return allSteps()[si] ?? null; }
-/**
- * The next / previous step that applies, or -1.
- *
- * Navigation is what skips a `when` that fails, rather than the index doing it: `si`
- * points into the full list, so a predicate flipping while a step is on screen changes
- * what comes next and never what you are looking at.
- */
+// The next / previous step that applies, or -1. Navigation skips a failed `when`; `si`
+// itself never moves under the step on screen.
 function neighbour(from: number, dir: 1 | -1, w: TourWorld = world()): number {
   const list = allSteps();
   for (let i = from + dir; i >= 0 && i < list.length; i += dir) if (stepApplies(list[i], w)) return i;
   return -1;
 }
 
-/** Enter the current step: reset the wait clock, open what it needs, paint. */
 function enter() {
   waitingSince = 0;
   show();
   const s = step();
   if (!s) { nextChapter(); return; }
-  // Arm HERE, from the state we are arriving in, and not from the first tick that sees
-  // the step blocked — because that tick may never come. A step is usually entered from
-  // inside `tourTick` (the change that satisfied the step before it), and nothing else
-  // then happens until the change that satisfies THIS one, which arrives already
-  // satisfied and would look exactly like "it was satisfied when I got here". Same
-  // no-clock trap as the permission latch below, one level up.
+  // Arm from the state we arrive in, not from a later tick that sees the step blocked:
+  // that tick may never come.
   armed = stepBlocked(s, world());
-  // Before anything is measured: a panel the user has collapsed is not a missing
-  // anchor, it is a panel to open (⌘I takes the whole inspector, and with it the
-  // permission buttons; ⌘B takes the rail, and with it every project row).
+  // A collapsed panel is not a missing anchor; open it before anything is measured.
   for (const n of s.needs ?? []) host.ensure(n);
-  // A missing (or boxless) anchor never freezes the tour. Deferred a frame because
-  // arriving at the step may itself be what causes the element to exist.
-  //
-  // **Only for a step that is not waiting on anything.** A waiting step's anchor is
-  // routinely absent the moment it opens — that is the whole point of it: the
-  // permission step lights `.attn-btns`, which Claude has not raised yet. Skipping it
-  // for "no anchor" would step straight over the single most important card in the
-  // tour, exactly when it is doing its job. (It did, before this condition existed.)
-  // While it waits, `paint()` falls back to a centred dim, and the 20s "Skip this
-  // step" affordance is the way out if the element never appears at all.
+  // A missing or boxless anchor is skipped, deferred a frame because arriving may be what
+  // creates the element. Never for a waiting step: its anchor is routinely absent when it
+  // opens (the permission step lights buttons Claude has not raised yet); paint() dims
+  // centred meanwhile and the STUCK_MS skip is the way out.
   requestAnimationFrame(() => {
     if (ci < 0) return;
     const cur = step();
@@ -326,7 +224,7 @@ function back() {
   openWelcome();
 }
 
-/** The first / last step of a chapter that applies at all — where entering it lands. */
+// The first / last step that applies: where entering a chapter lands.
 function firstIndex(): number {
   const w = world();
   const i = allSteps().findIndex((s) => stepApplies(s, w));
@@ -338,7 +236,6 @@ function lastIndex(): number {
   return 0;
 }
 
-/** Mark the chapter done and move to the next one the user picked. */
 function finishChapter() {
   const c = chapter();
   if (c) { write(recordDone(read(), c)); dlog("info", `tour: finished ${chapterKey(c)}`); }
@@ -351,13 +248,11 @@ function nextChapter() {
   renderDone();
 }
 
-/** Skip the rest of this chapter — it still counts as taken; see recordDone. */
-function skipChapter() { finishChapter(); }
+function skipChapter() { finishChapter(); } // still counts as taken; see recordDone
 
 export function endTour() {
   const c = chapter();
-  // Leaving mid-chapter is not the same as finishing it: remember where, so the next
-  // launch from Settings › Guide can resume rather than restart.
+  // Leaving mid-chapter remembers where, so Settings › Guide can resume it.
   if (c) write({ ...read(), at: { ch: c.id, step: si } });
   else seed();
   ci = -1;
@@ -366,18 +261,9 @@ export function endTour() {
 
 // ---------- the tick ----------
 
-/**
- * Tick after a user gesture the app does not repaint for.
- *
- * `tourTick` hangs off `renderAllNow` because *most* of what the tour reacts to ends in
- * a `renderAll()` — a session, a phase, a permission, a stage change. **A dialog does
- * not**: `openWt`, `openCostPop`, `openCtxMenu` and the Settings tab switch all just add
- * a class, and four steps wait on exactly those. They sat on a satisfied condition until
- * some unrelated poller happened to repaint, which reads as a click doing nothing.
- *
- * Still not a clock: it fires on the gestures the user is making anyway, at most once a
- * frame, and not at all while the tour is idle.
- */
+// Tick after a gesture the app does not repaint for: opening a dialog, a popover or a
+// Settings tab only adds a class, and four steps wait on exactly those. Not a clock: at
+// most once a frame, and never while the tour is idle.
 let tickQueued = false;
 function pokeTick() {
   if (ci < 0 || tickQueued) return;
@@ -385,23 +271,13 @@ function pokeTick() {
   requestAnimationFrame(() => { tickQueued = false; if (ci >= 0) tourTick(); });
 }
 
-/**
- * Called from `renderAllNow`, exactly like `syncAttn()` — and from `pokeTick` above for
- * the gestures that repaint nothing. Either way it needs no clock of its own: a
- * telemetry burst from ten sessions still costs one evaluation, and nothing leaks.
- */
+// Called from `renderAllNow` (like `syncAttn`) and from pokeTick; it needs no clock of its own.
 export function tourTick() {
   if (ci < 0) return;
 
-  // Latch "a permission was answered" on the falling edge, so the step that waits for
-  // it cannot be satisfied by the state that existed before one was ever raised.
-  //
-  // The latch is folded into the snapshot rather than left to the next pass, and that
-  // ordering is the whole of it: `permAnswered` is a field OF the world, so flipping it
-  // after `world()` had already read it would leave this tick's predicate looking at the
-  // previous value. There is no clock here — a pass only happens when something changes
-  // — so "it will be right next tick" can mean a tick that never comes, and the most
-  // important step in the tour would sit on a satisfied condition doing nothing. It did.
+  // Latch "a permission was answered" on the falling edge (`!permPending` is also true before
+  // any prompt was raised) and fold it into THIS pass's world: a pass only happens when
+  // something changes, so "next tick" may never come.
   const snap = world();
   if (snap.permPending) hadPerm = true;
   else if (hadPerm) { hadPerm = false; sawPermAnswered = true; }
@@ -410,19 +286,14 @@ export function tourTick() {
   const s = step();
   if (!s) { nextChapter(); return; }
 
-  // The falling edge, and only the falling edge. A step that is already satisfied when
-  // you arrive at it (a replay from Settings › Guide, the badge step while the
-  // permission it is about is still up) must not advance out from under the card that
-  // has just appeared — it shows with Next enabled instead, and the user leaves it when
-  // they have read it. `armed` is what tells the two apart.
+  // Falling edge only: a step already satisfied on arrival shows with Next enabled rather
+  // than advancing out from under the card. `armed` tells the two apart.
   if (s.wait) {
     if (stepBlocked(s, w)) { armed = true; if (!waitingSince) waitingSince = Date.now(); }
     else if (armed && stepSatisfied(s, w)) { advance(); return; }
   }
-  // Re-render every pass, not just re-measure: the sidebar, the inspector and the
-  // footer are all rebuilt from scratch under us (so the node the hole was measured
-  // against is routinely gone), and the card's own content is live too — a satisfied
-  // wait drops its chip, and the stuck affordance appears on a clock.
+  // Re-render, not just re-measure: the node the hole was measured against is routinely
+  // rebuilt, and the card's own content is live.
   renderStep(w);
 }
 
@@ -436,8 +307,7 @@ function resolve(sel: string): HTMLElement | null {
   try { el = document.querySelector<HTMLElement>(sel); } catch { return null; }
   if (!el) return null;
   const r = el.getBoundingClientRect();
-  // A hidden pane's children are in the DOM with a zero box. Treat that as absent:
-  // a 0×0 hole is a hole over nothing, which is the failure this guards.
+  // A hidden pane's children have a zero box; treat that as absent.
   return r.width > 0 && r.height > 0 ? el : null;
 }
 
@@ -462,10 +332,8 @@ function paint() {
   let cx: number, cy: number;
   if (x + w + GAP + cw <= vw - 10) { cx = x + w + GAP; cy = y + h / 2 - chh / 2; }
   else if (x - GAP - cw >= 10) { cx = x - GAP - cw; cy = y + h / 2 - chh / 2; }
-  // Neither side fits. Below it, above it, or — when the hole is a whole pane and
-  // there is no outside left — *inside* it, near the top. Clamping to the bottom edge
-  // (which is what this did) put the card over the terminal's input line: the one row
-  // the step was asking the user to type into.
+  // Neither side fits: below, above, or inside near the top. Never clamp to the bottom
+  // edge, which covers the terminal's input line.
   else {
     cx = x + w / 2 - cw / 2;
     cy = y + h + GAP + chh <= vh - 10 ? y + h + GAP
@@ -486,23 +354,15 @@ function centreCard(card: HTMLElement) {
   card.style.top = Math.round(Math.max(16, window.innerHeight / 2 - (card.offsetHeight || 190) / 2)) + "px";
 }
 
-// The manifest is a logic module and cannot read `navigator`, so the chords in it are
-// written macOS-style and rewritten here. Display only — every handler already
-// accepts both modifiers.
-// `{tray}` is the same trick for a word rather than a glyph: the thing it names is a
-// menu bar on one OS and a system tray on the other.
+// The manifest cannot read `navigator`, so its chords are written macOS-style and
+// rewritten here for display; `{tray}` is the same trick for a word.
 const KEYS: [RegExp, string][] = [
   [/\{tray\}/g, IS_MAC ? "menu-bar" : "system-tray"],
   ...(IS_MAC ? [] : ([[/⌘/g, "Ctrl"], [/⇧/g, "Shift"]] as [RegExp, string][])),
 ];
 const keys = (t: string) => KEYS.reduce((a, [re, to]) => a.replace(re, to), t);
-/// Guarded, like every other `innerHTML` surface on `renderAll`'s path.
-///
-/// `tourTick` is the last thing `renderAllNow` does, so while a chapter is open this
-/// runs on every paint — and during `quickstart` an agent is live, which means a paint
-/// per telemetry event. An assignment destroys the node under the pointer, so a click
-/// landing between mousedown and mouseup is silently dropped: exactly how a permission
-/// *Allow* was lost once, and here the buttons are Next and the chapter rows.
+// Guarded like every innerHTML surface on renderAll's path: an assignment drops the
+// click under the pointer (docs/architecture.md).
 let cardHtml = "";
 const shell = (cls: string, eyebrow: string, count: string, inner: string) => {
   const card = $("tourCard");
@@ -565,21 +425,15 @@ function renderDone() {
   centreHole($("tourHole"));
 }
 
-/// Takes the pass's world rather than building its own.
-///
-/// Four builds per paint is the obvious cost — each one spreads the session map and
-/// sorts the needs-you set — but the correctness half matters more: `tourTick` folds the
-/// `permAnswered` latch into its snapshot, and a `world()` built here would not carry it.
-/// The chip saying a step is still waiting could then disagree with the tick that had
-/// already decided the step was satisfied.
+// Takes the pass's world: a `world()` built here would not carry the permAnswered latch
+// tourTick folded into its snapshot.
 function renderStep(w: TourWorld = world()) {
   const c = chapter(); const s = step();
   if (!c || !s) return;
   const blocked = stepBlocked(s, w);
   const stuck = blocked && waitingSince > 0 && Date.now() - waitingSince > STUCK_MS;
-  // The dots count the steps that apply, and `si` indexes all of them — so the position
-  // is a lookup, not the index. A step standing on a `when` that has just gone false is
-  // not in the list at all; it keeps the first dot rather than losing the row.
+  // Position is a lookup, not `si`: the dots count only steps that apply. A step whose
+  // `when` has just gone false keeps the first dot.
   const list = counted(w);
   const pos = Math.max(0, list.indexOf(s));
   const dots = list.map((_, i) => `<i class="${i === pos ? "on" : i < pos ? "past" : ""}"></i>`).join("");
@@ -607,9 +461,8 @@ function runAct(id: TourActId) {
 }
 
 // ---------- wiring ----------
-// One delegated handler on the card, mirroring main.ts's own dispatcher: every branch
-// below is reachable only because its `data-tour` value is written above, and the two
-// halves are short enough to read side by side.
+// One delegated handler, like main.ts's dispatcher: a branch is reachable only because
+// its `data-tour` value is written above.
 function wire() {
   $("tourCard").addEventListener("click", (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-tour], [data-tourpick]");
@@ -641,13 +494,11 @@ function wire() {
     e.preventDefault();
     r.click();
   });
-  // Capture phase, and on the document, so a gesture that opens something is seen
-  // however the target handles it — and `contextmenu` is here because the project menu
-  // (a whole chapter's first step) opens on a right-click, which fires no click at all.
+  // Capture phase on the document, so a gesture that opens something is seen however the
+  // target handles it; `contextmenu` because the project menu opens on a right-click.
   for (const ev of ["click", "contextmenu", "keydown"]) {
     document.addEventListener(ev, pokeTick, true);
   }
-  // A window resize is the one thing that moves an anchor without any state changing,
-  // so it is the one case `renderAll` cannot catch for us.
+  // A resize moves anchors with no state change, so renderAll cannot catch it.
   window.addEventListener("resize", () => { if (ci >= 0) paint(); });
 }

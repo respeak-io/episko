@@ -1,46 +1,13 @@
-// Claiming — what Episko writes down when you dispatch an agent at shared work, and
-// who gets to decide. No DOM and no Tauri, so it unit-tests like ./thread and ./trail.
-//
-// THE PROBLEM IT SOLVES. A colleague dispatching an agent is invisible to you and has
-// to be: Episko's telemetry server binds to localhost, live pane state is deliberately
-// never committed, and git only knows what has been *pushed*. So between "Frederic
-// dispatched" and "Frederic pushed" there is a blind window of minutes to hours — and
-// that window is exactly when two people pick up the same issue. A claim collapses it
-// to one fetch interval by writing the dispatch somewhere shared.
-//
-// THREE RULES, and they are what keep this from becoming the annoying-bot problem:
-//
-//   1. **A claim is a hint, never a lock.** Nothing here refuses a dispatch. Someone
-//      else's claim is shown, warned about once, and then you proceed — two people
-//      may well both want a go at a hard bug. Same instinct as `blocked: Some(reason)`
-//      rendering greyed instead of vanishing.
-//   2. **Claims expire.** A claim carries a timestamp and reads as stale after
-//      CLAIM_STALE_MS. A laptop that went to sleep must not block a colleague forever;
-//      skip this and the feature rots into a graveyard of dead claims.
-//   3. **Two levels decide, and the project is a ceiling.** What *you* do on dispatch
-//      is personal (`cc-claim-prefs`). What the *project* permits is committed
-//      (`.episko/episko.toml`). Assignment in particular is a human planning signal in
-//      plenty of teams, so a project must be able to switch it off for everyone while
-//      leaving the rest on — the effective setting is the AND of the two.
+// Claiming: what Episko writes when you dispatch an agent at shared work, and who
+// decides. A claim is a hint, never a lock; it expires; and the project's
+// `.episko/episko.toml` is a ceiling over personal prefs (docs/dashboard.md).
 
-/// What Episko can write when you dispatch. Each is independent: a team may want a
-/// comment and no assignment, or a label and nothing else.
+/** What Episko can write when you dispatch; each is independent. */
 export interface ClaimPolicy {
-  /// `gh issue edit N --add-assignee @me`. The native "I'm on this".
-  assign: boolean;
-  /// One comment per thread, EDITED in place (`--edit-last --create-if-none`), never
-  /// appended. The difference between a useful bot and an annoying one.
-  comment: boolean;
-  // There was a `pushBranch` here — "push the dispatch branch immediately, so the claim
-  // and the presence signal become the same mechanism". It was a switch in the dispatch
-  // sheet, a field in the project ceiling, and a key in the `gh_claim` call, and NONE of
-  // it ever reached a `git push`: the command has never taken the argument, and dispatch
-  // does not create a branch to push in the first place (it starts a session in the
-  // project root — the sheet claimed a worktree it never made). A control that cannot
-  // act is worse than a missing one, because flipping it reads as a decision taken.
-  // Reintroduce it with the worktree half, or not at all.
-  /// A label like `agent: running`. Empty means off. Distinct from `assign` on purpose:
-  /// assignment says a *human* owns this, a label says a *machine* is on it right now.
+  assign: boolean;  // gh issue edit N --add-assignee @me
+  comment: boolean; // one comment per thread, edited in place, never appended
+  // No `pushBranch`: dispatch creates no branch to push, so the switch could never act.
+  // Unlike `assign` (a human owns this), a label says a machine is on it now. Empty is off.
   label: string;
 }
 
@@ -50,9 +17,7 @@ export const DEFAULT_POLICY: ClaimPolicy = {
   label: "",
 };
 
-/// What a project permits, from `.episko/episko.toml`. **Absent means everything is
-/// allowed** — a project that has never heard of Episko must not silently disable
-/// features, and a missing file is not a policy.
+/** What a project permits, from `.episko/episko.toml`. Absent means everything is allowed. */
 export interface ClaimAllow {
   assign: boolean;
   comment: boolean;
@@ -60,8 +25,6 @@ export interface ClaimAllow {
 }
 export const ALLOW_ALL: ClaimAllow = { assign: true, comment: true, label: true };
 
-/// Where an effective value came from — so the settings tab can say *why* something is
-/// off, rather than showing a switch that silently does nothing when you flip it.
 export type PolicySource = "personal" | "project";
 export interface Resolved<T> { value: T; source: PolicySource }
 export interface ResolvedPolicy {
@@ -70,12 +33,7 @@ export interface ResolvedPolicy {
   label: Resolved<string>;
 }
 
-/**
- * The effective policy: your preference, bounded by what the project permits.
- *
- * `source` is "project" only when the project is the reason a value is off — i.e. when
- * you asked for it and were refused. A value you simply left off is yours.
- */
+/** `source` is "project" only when the project refused something you asked for. */
 export function resolveClaim(personal: ClaimPolicy, allow: ClaimAllow = ALLOW_ALL): ResolvedPolicy {
   const bool = (want: boolean, permitted: boolean): Resolved<boolean> =>
     want && !permitted ? { value: false, source: "project" } : { value: want, source: "personal" };
@@ -88,43 +46,28 @@ export function resolveClaim(personal: ClaimPolicy, allow: ClaimAllow = ALLOW_AL
   };
 }
 
-/** Does the effective policy write anything at all? */
 export function policyWritesAnything(r: ResolvedPolicy): boolean {
   return r.assign.value || r.comment.value || !!r.label.value;
 }
 
-/// What `gh_claim` / `gh_release` actually managed to write. Every part is independent
-/// and best-effort — a repo you cannot assign in should still get the comment — so a
-/// *partial* failure is the normal shape of a bad day, not an exception.
-///
-/// This is a return value that has to be **read**. `gh_claim` was invoked for three
-/// releases with a missing `body` argument, so every claim ever attempted was rejected
-/// by Tauri before `gh` ran; the only trace was a `dlog` warning nobody opens, and the
-/// dashboard cheerfully said "Started on #232". A claim that silently wrote nothing is
-/// worse than no claim at all, because the person who dispatched believes the work is
-/// marked and a colleague picks it up anyway — which is the exact blind window this
-/// whole module exists to close.
+// What `gh_claim`/`gh_release` managed to write. Each part is best-effort, so a partial
+// failure is normal; read it, since a claim that silently wrote nothing is worse than none.
 export interface ClaimOutcome {
   assigned: boolean;
   commented: boolean;
   labeled: boolean;
-  /// Everything that did not work, in the user's words rather than gh's.
-  problems: string[];
+  problems: string[]; // in the user's words, not gh's
 }
 
 // ---------- staleness ----------
 
-/// After this long with no refresh a claim is advisory only. Thirty minutes is longer
-/// than a normal turn and far shorter than a working day, which is the window that
-/// makes "someone is on this" true rather than merely recorded.
+/** Advisory-only after this: longer than a turn, far shorter than a working day. */
 export const CLAIM_STALE_MS = 30 * 60_000;
 
 export function claimIsStale(claimedAt: number, now = Date.now()): boolean {
   return now - claimedAt > CLAIM_STALE_MS;
 }
 
-/// How a claim reads on a row. A stale claim says so — presenting a dead claim as live
-/// is the failure that makes people stop trusting the signal.
 export function claimText(who: string, claimedAt: number, now = Date.now()): string {
   const mins = Math.max(0, Math.round((now - claimedAt) / 60_000));
   const ago = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
@@ -132,25 +75,21 @@ export function claimText(who: string, claimedAt: number, now = Date.now()): str
 }
 
 // ---------- the local ledger ----------
-// What *we* claimed, so it can be released when the agent ends. Machine-local by
-// definition — it is a list of this machine's outstanding promises, meaningless to a
-// teammate — so it lives in localStorage rather than in any committed file.
+// What we claimed, to release when the agent ends. Machine-local, so localStorage.
 
 export interface ClaimRecord {
-  /// The thread this claim belongs to, so releasing needs no re-derivation.
   threadId: string;
   root: string;
   number: number;
   kind: "issue" | "pr";
-  /// The session that took it, so an exit can release exactly the right claim.
-  sessionId: string;
+  sessionId: string; // the session that took it; its exit releases the claim
   at: number;
-  /// What the claim actually wrote, so the release undoes exactly that and no more.
-  /// Without it a release unassigns `@me` unconditionally — a write to a colleague's
-  /// issue on the strength of a guess, and one that would silently undo an assignment
-  /// you had made by hand. Optional because a ledger written before this existed is
-  /// still a valid ledger; absent means "we don't know", which reads as "touch nothing".
+  // What the claim actually wrote, so a release undoes exactly that. Absent (a ledger
+  // from before this existed) means "unknown", which reads as "touch nothing".
   wrote?: { assigned: boolean; label: string };
+  // Who signed the claim. Kept here because the release runs on `pty-exit`, long after
+  // the dashboard may have moved to another project's GitHub half.
+  who?: string;
 }
 
 const LEDGER = "cc-claims";
@@ -173,7 +112,6 @@ export function recordClaim(rec: ClaimRecord): void {
   save();
 }
 
-/** The claim a session took, if any — what an exit needs in order to release it. */
 export function claimForSession(sessionId: string): ClaimRecord | null {
   return claims.find((c) => c.sessionId === sessionId) ?? null;
 }
@@ -186,5 +124,5 @@ export function dropClaim(threadId: string): ClaimRecord | null {
   return c;
 }
 
-/// Test seam, matching ./notes: the store is read once at import like its neighbours.
+// Test seam: the store is read once at import.
 export function reloadClaims(): void { claims = readLedger(); }

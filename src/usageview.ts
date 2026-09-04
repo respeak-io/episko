@@ -1,16 +1,6 @@
-// The usage surfaces: the forecast presentation the footer popup and the Usage
-// settings tab share, and the analytics panel itself — tiles, spend heatmap,
-// token bars, model/token mixes, top projects and the forecast card.
-//
-// The data layer — the rollup, the day/token join, the bucketing and the forecast
-// maths — lives in ./usage and ./rl; everything here turns those numbers into
-// markup and nothing else. No DOM is touched: every function returns a string for
-// a caller to paint, which is why the module needs no seam back into main.ts.
-//
-// `refreshTokens` deliberately stayed behind: it is an async backend scan that
-// repaints the settings dialog, so it belongs to the wiring layer. It owns the
-// `tokenScanning` flag below through setTokenScanning, and the panels read it to
-// decide between a skeleton and a "no data" line.
+// The usage surfaces as markup: the forecast rows the footer popup and Settings › Usage share,
+// the analytics panel and the disk I/O popover. The data lives in ./usage and ./rl.
+// `refreshTokens` stays in the wiring layer and owns `tokenScanning` via setTokenScanning.
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
@@ -55,23 +45,9 @@ export function usageRow(label: string, sub: string, f: Forecast): string {
     <div class="up-reset">${resetTxt}</div>
   </div>`;
 }
-/**
- * Today's spend, split by project and by session — the popover behind the footer's
- * `today $x.xx`.
- *
- * Two rules it inherits from the dashboard's cost strip, for the same reasons:
- *
- *   • **A day with no split says so, rather than showing zeros.** `cc-usage-detail`
- *     records from the day it shipped, so an older day legitimately has a total and no
- *     breakdown — "we didn't keep this" and "it was free" are different facts.
- *   • **`unattributed` is a row, not a rounding-away.** `daySpend` puts the difference
- *     between the authoritative total and what the split accounts for on screen, so the
- *     popover can never read lower than the footer segment that opened it.
- *
- * A session still running is a button (jumping to it is the obvious next move); one that
- * has ended is a plain row, because there is nothing to jump to and a dead button that
- * looks live is worse than a line of text.
- */
+// Today's spend by project and session. A day with no split says so rather than showing
+// zeros, and `unattributed` is a row, so this never reads lower than the footer figure.
+// A running session is a button; an ended one is a plain row.
 export function costPopHtml(d: DaySpend, live: Set<string>): string {
   const maxP = d.projects[0]?.usd || 1;
   const rows = d.projects.map((r) => `<div class="cp-row">
@@ -85,10 +61,8 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
       ? `<button class="cp-s on" data-sel="${esc(r.key)}" title="Jump to this session">${inner}</button>`
       : `<div class="cp-s">${inner}</div>`;
   }).join("");
-  // Three different silences, and telling them apart is the whole honesty of this
-  // popover: nothing spent, spent-but-nothing-recorded, and recorded-by-project-only
-  // (the shape of the day you upgrade). One catch-all note would call the second of
-  // those "nothing yet" while a real figure sat above it.
+  // Three silences to tell apart: nothing spent, spent but unrecorded, and by-project only
+  // (the day you upgraded). One catch-all note would call the second "nothing yet".
   const note = !d.total && !d.projects.length
     ? "Nothing recorded today yet. A session's spend appears here as soon as one reports it."
     : !d.projects.length && !d.sessions.length
@@ -259,8 +233,7 @@ function uTokenMix(): string {
 function uProjects(): string {
   const cur = usageWindow(usageRange);
   const proj: Record<string, number> = {};
-  // `projects` can be absent on DayUsage entries written by an older cc-usage-tokens
-  // cache (the field was added after the scan shipped) — guard, or Object.entries throws.
+  // `projects` is absent on DayUsage entries an older cc-usage-tokens cache wrote; guard it.
   for (const d of cur) if (d.u) for (const [p, v] of Object.entries(d.u.projects || {})) proj[p] = (proj[p] || 0) + v;
   const entries = Object.entries(proj).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!entries.length) return `<section class="u-card"><div class="label">Top projects</div><p class="u-hint">${tokenScanning ? "Scanning agent history…" : "No token data in range yet."}</p></section>`;
@@ -270,9 +243,7 @@ function uProjects(): string {
     <table class="u-tbl"><thead><tr><th>Project</th><th class="u-num">Share</th><th class="u-num">Tokens</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
-// One window of the Usage-tab forecast card: current %, verdict, dual-track meter,
-// a timeline with the projected run-out marker, the raw numbers, and a plain-English
-// recommendation. Reads the same forecast()/burnRate() the footer & popup use.
+// One window of the forecast card. Reads the same forecast() the footer and popup use.
 function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | null, len: number, burnUnit: string): string {
   const cls = f.used == null ? "" : "s-" + f.status;
   const pctTxt = f.used == null ? "–" : Math.round(f.used) + "%";
@@ -316,8 +287,7 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
   </div>`;
 }
 function forecastBlockHtml(): string {
-  // Both cards read the rate the forecast ran on (`f.rate`), not the raw recent
-  // slope, so "Burn rate" and "Projected @ reset" always agree with each other.
+  // Both read the rate the forecast ran on (`f.rate`), so burn rate and projection agree.
   const f5 = forecast5h(), f7 = forecast7d();
   return `<div class="fc-block">
     <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?</span></div>
@@ -343,31 +313,19 @@ export function usagePanelHtml(): string {
 
 
 // ---------- disk I/O (footer "disk", and the popover behind it) ----------
-//
-// This used to be a card pinned to the bottom of the inspector, where it cost ~120px of
-// a 296px column to say something that is **not about the session on stage**: `ioAll`
-// sums every embedded process Episko owns, so the card read identically whichever pane you
-// had open. A number that never changes with the panel it sits in does not belong in
-// that panel. It is a status-bar figure, and it is one now.
-//
-// What the bar shows is today's totals. Everything else — the live rates, the other two
-// windows, and why the figures look the way they do — is one click away, which is also
-// what retired the old card's scope-cycling button and its `i` expander: a popover can
-// show all three windows at once, so there is nothing left to cycle through.
+// `ioAll` sums every embedded process Episko owns, so the figure is the same whichever pane is on
+// stage: a status-bar number, not an inspector card. The bar shows today; the rest is a click away.
 
-/// The bar is log-scaled against a 32 MiB/s reference rather than linear: real rates span
-/// idle-KiB/s to burst-MiB/s, and a linear bar would sit at zero for everything short of
-/// a pathological write storm, which is precisely the case it needs to show.
+// Log-scaled against 32 MiB/s: real rates span idle KiB/s to burst MiB/s, and a linear bar
+// would sit at zero for everything short of the write storm it exists to show.
 const IO_REF_BPS = 32 * 1024 * 1024;
 function ioPct(bps: number): number {
   if (bps <= 0) return 0;
   return Math.max(2, Math.min(100, (Math.log10(bps / 1024 + 1) / Math.log10(IO_REF_BPS / 1024 + 1)) * 100));
 }
 
-/// The three windows, and what each honestly covers. `run` is the processes' own
-/// counters; the other two come from the `cc-io` rollup, which only starts the day it
-/// shipped — so a machine that has just updated has a `today` smaller than its `run`,
-/// which is correct rather than a bug, and is what `ioSameNote` explains.
+// `run` is the processes' own counters; the other two come from the `cc-io` rollup, which
+// starts the day it shipped, so a `today` smaller than `run` is correct (see ioSameNote).
 const IO_WINDOWS: ReadonlyArray<[IoWindow, string, string]> = [
   ["today", "today", "Every embedded session Episko has run today."],
   ["run", "this run", "Since Episko started — the processes' own counters, which reset with the app."],
@@ -380,17 +338,13 @@ export function ioFigures(w: IoWindow): { r: number; w: number; known: boolean }
   const v = w === "today" ? dayIo[todayKey()] : ioTotal();
   return { r: v?.r ?? 0, w: v?.w ?? 0, known: !!v };
 }
-/// What one window reads as. `ioSameNote` compares these strings rather than the floats,
-/// because two figures that round to the same text are the same figure to whoever is
-/// looking at the row.
+// ioSameNote compares these strings, not the floats: figures that round alike are alike.
 export function ioText(w: IoWindow): string {
   const f = ioFigures(w);
   return f.known ? `${fmtMb(f.r)} read · ${fmtMb(f.w)} written` : "not recorded";
 }
 
-/// Why the figures look the way they do. All three were measured on a real machine
-/// rather than reasoned about, and all three surprise people enough to be worth the
-/// room. Kept as data so the shape stays obvious and the strings stay greppable.
+// All three measured on a real machine; kept as data so the strings stay greppable.
 const IO_INFO: ReadonlyArray<[string, string]> = [
   ["Writes run far above the conversation",
     "Claude Code appends to its transcript and fsyncs after every message, and each flush commits whole blocks — measured here at ~32× the transcript's own growth. That is Claude Code's own journalling; Episko only reports it."],
@@ -400,19 +354,15 @@ const IO_INFO: ReadonlyArray<[string, string]> = [
     "The git, ripgrep and node work an agent spawns churns invisibly: the OS never adds a child's bytes to its parent when it exits."],
 ];
 
-/// Everything the popover draws, so the markup below is a pure function of its argument
-/// like every other `*view` here. `liveIo()` assembles it from state for the footer;
-/// Settings › Footer passes a fixed sample, which is what lets the preview there be this
-/// renderer rather than a drawing of it.
+// Everything the popover draws. `liveIo()` builds it from state; Settings › Footer passes a
+// fixed sample, so its preview is this renderer rather than a drawing of it.
 export interface IoPop {
   readBps: number; writeBps: number; primed: boolean;
   windows: { label: string; tip: string; text: string }[];
   running: number;
-  /// The "these three coincide because it is day one" line, or null.
-  note: string | null;
+  note: string | null; // "these coincide because it is day one", or null
 }
 
-/// The live reading, for the footer.
 export function liveIo(): IoPop {
   return {
     readBps: ioAll.readBps, writeBps: ioAll.writeBps, primed: ioAll.primed,
@@ -423,8 +373,7 @@ export function liveIo(): IoPop {
 }
 
 export function ioPopHtml(d: IoPop): string {
-  // Before the second sample there is no window to average over, so the rate is unknown
-  // rather than zero — say so instead of showing a confident "0 B/s".
+  // No window to average before the second sample: unknown, not a confident "0 B/s".
   const rate = (bps: number) => {
     const pct = d.primed ? ioPct(bps) : 0;
     const cls = pct >= 80 ? " hot" : pct >= 55 ? " warn" : "";

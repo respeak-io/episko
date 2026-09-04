@@ -15,22 +15,15 @@ describe("the visual-effects table", () => {
     expect(new Set(VISUAL_FX.map((f) => f.id)).size).toBe(VISUAL_FX.length);
   });
   it("exports every class it can produce, so applyFx can clear what it is not setting", () => {
-    // The whole point of ALL_FX_CLASSES is that `applyFx` removes classes it does not
-    // know it set. An effect missing from it would leave its class stuck on <html>
-    // forever after one toggle — switched off with no way back short of a restart.
     for (const f of VISUAL_FX) expect(ALL_FX_CLASSES).toContain(f.cls);
   });
-  // Each class must actually appear in the stylesheet. A pref whose class nothing reads
-  // is a switch that visibly does nothing, and `tsc` has no opinion about a string.
   it("has a stylesheet rule behind every class", () => {
     for (const f of VISUAL_FX) expect(CSS).toContain(`:root.${f.cls}`);
   });
 });
 
 describe("parseMotionPrefs — the store and its repair", () => {
-  // A first run pauses in the background; someone who has switched that on has an empty
-  // list on disk and must not be re-defaulted at every start. The two cases look alike
-  // and are not, which is the only reason this module has a `raw === null` branch.
+  // null is a first run; an empty list on disk is a choice and must not be re-defaulted.
   it("pauses in the background on a first run, and remembers a choice not to", () => {
     expect(parseMotionPrefs(null)).toEqual(DEFAULT_MOTION);
     expect(parseMotionPrefs(null).off).toContain("idle");
@@ -62,7 +55,7 @@ describe("fxOn / toggleFx", () => {
   it("round-trips a flip and never mutates what it was given", () => {
     const p: MotionPrefs = { off: [] };
     const off = toggleFx(p, "blur");
-    expect(p.off).toEqual([]); // the input is untouched
+    expect(p.off).toEqual([]);
     expect(fxOn(off, "blur")).toBe(false);
     expect(fxOn(toggleFx(off, "blur"), "blur")).toBe(true);
   });
@@ -77,7 +70,7 @@ describe("rootFxClasses — the whole truth table", () => {
     expect(rootFxClasses({ off: [] }, true)).toEqual([]);
   });
   it("still adds nothing when everything is on and focus is lost", () => {
-    // `idle` ON is the expensive answer — it means "keep animating in the background".
+    // idle ON means keep animating in the background
     expect(rootFxClasses({ off: [] }, false)).toEqual([]);
   });
   it("pauses only once focus is actually lost", () => {
@@ -94,8 +87,7 @@ describe("rootFxClasses — the whole truth table", () => {
     expect(rootFxClasses({ off: ["motion", "blur", "idle"] }, false))
       .toEqual(["fx-still", "fx-flat", "fx-idle"]);
   });
-  // fx-still cancels and fx-idle pauses, so the two must stay separate classes: folding
-  // the pause into the cancel would restart every session's glyph in lockstep on return.
+  // A pause folded into the cancel would restart every glyph in lockstep on refocus.
   it("keeps the cancel and the pause as different classes", () => {
     expect(rootFxClasses({ off: ["motion", "idle"] }, false)).toContain("fx-still");
     expect(rootFxClasses({ off: ["motion", "idle"] }, false)).toContain("fx-idle");
@@ -103,18 +95,10 @@ describe("rootFxClasses — the whole truth table", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The contract half: this reads styles.css rather than calling anything.
-//
-// `fx-still` is a deliberate superset of `prefers-reduced-motion: reduce`: it flattens
-// every transition where reduce names eight and tames a ninth. The bulk of it is
-// drift-proof by construction — the universal rule ends every animation, including ones
-// added later. What is NOT drift-proof, and what the two modes MUST agree on, is the
-// short list of places where an animation carries a *state* rather than decorating one,
-// where ending it instantly would delete information and a static substitute has to take
-// over. Those exist twice: once in a `reduce` block, once under `fx-still`. Two lists
-// that must agree is exactly the shape this repo keeps getting bitten by.
+// fx-still is a superset of prefers-reduced-motion, and the two must agree on the substitutes:
+// animations that carry a state and get a static stand-in rather than `animation: none`.
 describe("fx-still keeps the substitutes the OS's reduce setting defines", () => {
-  // Selectors whose `reduce` block supplies a substitute value, not just `animation: none`.
+  // Selectors whose `reduce` block supplies a substitute value.
   const SUBSTITUTED = [".srow.lit", ".pgroup.arming .parm", ".wt-sk i", ".u-spin"];
 
   it("gives every substituted selector the same treatment under fx-still", () => {
@@ -124,8 +108,6 @@ describe("fx-still keeps the substitutes the OS's reduce setting defines", () =>
     }
   });
 
-  // The reverse direction: a substitute under fx-still that no reduce block asked for
-  // means the two modes have started to look different, which is the drift this guards.
   it("adds no fx-still substitute the reduce blocks do not have", () => {
     const declared = [...CSS.matchAll(/:root\.fx-still ([^{,]+?) \{/g)]
       .map((m) => m[1].trim())
@@ -137,19 +119,16 @@ describe("fx-still keeps the substitutes the OS's reduce setting defines", () =>
   it("cancels rather than pauses, so nothing is left stranded mid-fade", () => {
     expect(CSS).toContain("animation-iteration-count: 1 !important");
     expect(CSS).toContain(":root.fx-idle *");
-    // The pause must not touch transitions: a dialog caught mid-fade would stay at half
-    // opacity until you clicked back into the window.
+    // the pause must leave transitions alone, or a dialog caught mid-fade stays half open
     const idleBlock = CSS.slice(CSS.indexOf(":root.fx-idle *"));
     expect(idleBlock).not.toContain("transition-duration");
   });
 });
 
-// Seventeen dialogs stay mounted at opacity 0 so they can fade. Each one that keeps a
-// `backdrop-filter` while closed is a live render surface for a panel nobody can see.
+// A dialog mounted at opacity 0 that keeps its blur is a per-frame GPU cost for nothing.
 describe("a closed dialog carries no backdrop", () => {
   it("gates every mounted-but-closed blur on .show", () => {
-    // Every rule that declares a blur, minus the ones that are display:none when closed
-    // (those cost nothing already) and the sub-headers whose parent dialog gates them.
+    // FREE: display:none when closed (no cost) or gated by a parent dialog
     const FREE = ["colorpop", "menupop", "tour-card", "dbg-panel", "gcommit", "run-grp", "bk-h"];
     const blurred = new Set<string>();
     for (const m of CSS.matchAll(/^\.([\w-]+)[^{]*\{[^}]*backdrop-filter/gm)) blurred.add(m[1]);

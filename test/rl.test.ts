@@ -14,8 +14,7 @@ const HOUR = 3600;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW_MS);
-  // Both are module state the app itself resets on a window rotation (onRlUpdate
-  // does exactly this), so tests clear them the same way.
+  // Module state the app itself resets on a window rotation; tests clear it the same way.
   rlSamples.h5 = [];
   rlSamples.d7 = [];
   rl.h5 = rl.h5Reset = rl.d7 = rl.d7Reset = null;
@@ -27,7 +26,6 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); });
 
-// Advance the fake clock by whole minutes.
 const tick = (min: number) => vi.setSystemTime(Date.now() + min * 60_000);
 
 describe("mergeRl — reconciling readings from sessions that lag each other", () => {
@@ -50,7 +48,6 @@ describe("mergeRl — reconciling readings from sessions that lag each other", (
     expect(mergeRl(21, 1000, 13, 940)).toEqual([21, 1000]);   // 60s earlier: same window
   });
   it("lets a genuinely later window supersede, dropping the old peak", () => {
-    // The whole point: after a reset the meter must fall, not cling to 97%.
     expect(mergeRl(97, 1000, 4, 2000)).toEqual([4, 2000]);
   });
   it("discards a reading from an earlier window, however high", () => {
@@ -110,8 +107,7 @@ describe("pushRlSample — the burn-rate sample buffer", () => {
     expect(rlSamples.h5.map((s) => s.pct)).toEqual([10, 20, 40]);
   });
   it("keeps two samples even when the older one has aged out of the look-back", () => {
-    // A session that reports rarely would otherwise trim itself down to one
-    // sample and never have a slope at all.
+    // A session that reports rarely would otherwise never have a slope at all.
     pushRlSample("h5", 10); tick(40);
     pushRlSample("h5", 50);
     expect(rlSamples.h5.map((s) => s.pct)).toEqual([10, 50]);
@@ -201,7 +197,6 @@ describe("forecastWin — will this window run out before it resets?", () => {
       expect(f).toMatchObject({ status: "warn", proj: 85, runsOut: false });
     });
     it("calls a lockout when 100% arrives before the reset does", () => {
-      // The motivating case: 62% burning fast is trouble…
       const f = forecastWin(62, NOW_S + 4 * HOUR, 12);
       expect(f).toMatchObject({ status: "bad", runsOut: true, proj: 110 });
       expect(f.etaSec).toBeCloseTo((100 - 62) / 12 * HOUR, 6);
@@ -219,11 +214,8 @@ describe("forecastWin — will this window run out before it resets?", () => {
     });
   });
 
-  // Extrapolating a burst across hours was the model's one systematic failure: over
-  // 37 logged windows every large error was an over-projection (-80, -51, -41 points)
-  // while under-projection never passed +12. Holding the projected rate down to the
-  // pace the window has actually sustained fixes that without touching the steady
-  // burner, who is the only reason the red alarm exists.
+  // Every large forecast error on record was a burst extrapolated across hours; the cap
+  // fixes that without touching a steady burner, the only reason the red alarm exists.
   describe("the projected rate is capped at the pace the window has sustained", () => {
     // 5h window, 1h left → 4h elapsed.
     const late = NOW_S + HOUR;
@@ -244,8 +236,7 @@ describe("forecastWin — will this window run out before it resets?", () => {
       expect(forecastWin(80, late, 4, H5_LEN).proj).toBeCloseTo(84, 6);
     });
     it("keeps out of the way early on, when the average means nothing", () => {
-      // 6 min into a 5h window there is no sustained pace to speak of, so the
-      // recent slope stands unaltered rather than being judged against noise.
+      // 6 min into a 5h window there is no sustained pace to speak of, so the recent slope stands.
       const f = forecastWin(2, NOW_S + H5_LEN - 360, 30, H5_LEN);
       expect(f.proj).toBeCloseTo(2 + 30 * ((H5_LEN - 360) / 3600), 6);
     });
@@ -253,8 +244,7 @@ describe("forecastWin — will this window run out before it resets?", () => {
       expect(forecastWin(10, late, 60).proj).toBeCloseTo(70, 6);
     });
     it("moves the eta onto the sustained pace too, not just the projection", () => {
-      // Otherwise the red branch would still fire off the uncapped burst rate and
-      // the fix would be cosmetic — the status reads `runsOut`, which reads the eta.
+      // The status reads `runsOut`, which reads the eta; uncapped, the red branch would still fire.
       const f = forecastWin(10, late, 60, H5_LEN);
       expect(f.etaSec).toBeCloseTo((100 - 10) / 2.5 * HOUR, 6);
       expect(f.runsOut).toBe(false);
@@ -263,9 +253,8 @@ describe("forecastWin — will this window run out before it resets?", () => {
 });
 
 describe("maybeMidSnap — the halfway projection the log is later scored against", () => {
-  // Give the window a trustworthy slope, then a reset `secLeft` from *now* (after
-  // the clock has moved). 20 → 30 over 20 minutes = 30 %/hr, which clears both
-  // windows' minimum span.
+  // A trustworthy slope (20 → 30 over 20min clears both windows' minimum span), then a
+  // reset `secLeft` from now, after the clock has moved.
   const withRate = (win: "h5" | "d7", secLeft: number) => {
     pushRlSample(win, 20); tick(20); pushRlSample(win, 30);
     const reset = Math.floor(Date.now() / 1000) + secLeft;
@@ -273,15 +262,13 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
   };
 
   it("holds off until the window is past its halfway mark", () => {
-    // A 5h window with 3h left hasn't reached the middle; projecting there would
-    // measure the model against a much longer extrapolation than intended.
+    // 3h left of a 5h window is before the middle.
     withRate("h5", 3 * HOUR);
     maybeMidSnap("h5", rl.h5Reset);
     expect(midSnap.h5).toBeNull();
   });
   it("takes the projection once past it", () => {
-    // 30% used with 2h left of a 5h window: the recent slope is 30 %/hr but the
-    // window has only sustained 30/3 = 10 %/hr, and the projection uses the latter.
+    // 2h left of a 5h window: the recent slope is 30 %/hr but only 30/3 = 10 %/hr was sustained.
     withRate("h5", 2 * HOUR);
     maybeMidSnap("h5", rl.h5Reset);
     expect(midSnap.h5!.proj).toBeCloseTo(30 + 10 * 2, 6);
@@ -297,8 +284,7 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
     expect(midSnap.h5!.proj).toBe(first);
   });
   it("replaces a flat snapshot until a real slope turns up", () => {
-    // Catching the halfway mark during an idle patch locks in "it will end where it
-    // is", which is a prediction of nothing. Keep looking while the burn reads zero.
+    // A snapshot taken during an idle patch predicts nothing, so keep looking while burn is zero.
     pushRlSample("h5", 30); tick(20); pushRlSample("h5", 30); // flat, but a real span
     rl.h5 = 30; rl.h5Reset = Math.floor(Date.now() / 1000) + 2 * HOUR;
     maybeMidSnap("h5", rl.h5Reset);
@@ -310,7 +296,6 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
     expect(midSnap.h5!.proj).toBeGreaterThan(50);
   });
   it("records nothing without a trustworthy burn rate", () => {
-    // One reading is a level, not a slope; a projection from it would be invented.
     rl.h5 = 30; rl.h5Reset = Math.floor(Date.now() / 1000) + 2 * HOUR;
     pushRlSample("h5", 30);
     maybeMidSnap("h5", rl.h5Reset);
@@ -322,8 +307,7 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
     expect(midSnap.h5).toBeNull();
   });
   it("measures each window's halfway mark against its own length", () => {
-    // 3 days out is well past the middle of a 7-day window, and nowhere near the
-    // middle of a 5-hour one — the two must not share a threshold.
+    // 3 days out is past the middle of a 7-day window and nowhere near a 5-hour one's.
     withRate("d7", 3 * 86400);
     maybeMidSnap("d7", rl.d7Reset);
     expect(midSnap.d7).not.toBeNull();
@@ -332,8 +316,6 @@ describe("maybeMidSnap — the halfway projection the log is later scored agains
 });
 
 describe("onRlUpdate — spotting a window rotation", () => {
-  // Called after every merge with the reset time before and after. A genuinely later
-  // reset (>2min, the same skew tolerance mergeRl uses) means the old window closed.
   it("samples the new reading without rotating when the window is unchanged", () => {
     rl.h5 = 40;
     onRlUpdate("h5", 30, NOW_S + HOUR, NOW_S + HOUR);
@@ -352,8 +334,6 @@ describe("onRlUpdate — spotting a window rotation", () => {
     expect(burnRate("h5")).not.toBeNull();
     rl.h5 = 3;
     onRlUpdate("h5", 90, NOW_S + 600, NOW_S + 600 + 5 * HOUR);
-    // The old samples are gone; only the post-rotation reading remains, which alone
-    // isn't a slope — carrying the old window's burn across would be nonsense.
     expect(rlSamples.h5.map((s) => s.pct)).toEqual([3]);
     expect(burnRate("h5")).toBeNull();
   });
@@ -365,7 +345,6 @@ describe("onRlUpdate — spotting a window rotation", () => {
     expect(JSON.parse(store.get("cc-forecast-log")!)).toHaveLength(1);
   });
   it("scores the halfway projection against the outcome when it took one", () => {
-    // Past the halfway mark of a 5h window with a real slope → midSnap is taken…
     pushRlSample("h5", 20); tick(10);
     pushRlSample("h5", 30);
     const reset = Math.floor(Date.now() / 1000) + HOUR;   // 1h left of a 5h window
@@ -373,7 +352,6 @@ describe("onRlUpdate — spotting a window rotation", () => {
     onRlUpdate("h5", 30, reset, reset);
     expect(midSnap.h5).not.toBeNull();
     const proj = midSnap.h5!.proj;
-    // …and the rotation compares it to what really happened.
     onRlUpdate("h5", 88, reset, reset + 5 * HOUR);
     expect(fcLog[0].midProj).toBeCloseTo(proj, 6);
     expect(fcLog[0].err).toBeCloseTo(88 - proj, 6);
@@ -398,8 +376,7 @@ describe("onRlUpdate — spotting a window rotation", () => {
   });
   it("logs one rotation once, however many sessions report it", () => {
     // Every session's statusLine carries the same account-wide numbers, so a lagging
-    // session announces a rotation the freshest session already announced. The real
-    // log has a pair of h5 closes six minutes apart from exactly this.
+    // session announces a rotation the freshest one already did.
     const closing = NOW_S + 600;
     onRlUpdate("h5", 50, closing, closing + 5 * HOUR);
     tick(6);
@@ -407,21 +384,17 @@ describe("onRlUpdate — spotting a window rotation", () => {
     expect(fcLog).toHaveLength(1);
   });
   it("records the inputs, not just the outcome, so an error can be decomposed", () => {
-    // {final, midProj} alone cannot tell a bad slope from a stale level, which is
-    // why the first 38 entries could not be calibrated against without going back
-    // to the transcripts.
-    // A reset ten minutes gone: `late` is how long the window had really been over
-    // by the time a statusLine told us, which is what separates a mid-window
-    // forecast from one scored against a window that closed while the app was shut.
+    // {final, midProj} alone cannot tell a bad slope from a stale level. `late` is how long
+    // the window had already been over when a statusLine said so, which separates a
+    // mid-window forecast from one scored against a window that closed while the app was shut.
     const reset = NOW_S - 600;
     midSnap.h5 = { proj: 70, used: 55, burn: 6, at: 0.5 };
     onRlUpdate("h5", 62, reset, reset + 5 * HOUR);
     expect(fcLog[0]).toMatchObject({ used: 55, burn: 6, at: 0.5, flat: false, late: 600 });
   });
   it("marks a flat snapshot, which is right for no reason", () => {
-    // An idle moment projects `used` unchanged; if the window stays idle that scores
-    // a perfect zero. Nine of the first 38 entries were this, and averaging them in
-    // flattered the model — so they are labelled rather than silently counted.
+    // An idle window projects `used` unchanged and then scores a perfect zero; averaging
+    // those in flatters the model, so they are labelled rather than silently counted.
     const reset = NOW_S + 600;
     midSnap.h5 = { proj: 40, used: 40, burn: 0, at: 0.5 };
     onRlUpdate("h5", 40, reset, reset + 5 * HOUR);
@@ -463,8 +436,7 @@ describe("forecast5h / forecast7d — each reads its own window", () => {
 
     const f5 = forecast5h(), f7 = forecast7d();
     expect(f5).toMatchObject({ used: 40, secLeft: HOUR, hasRate: true });
-    // 20 points in 30min is a 40 %/hr burst, but 4h of the window has produced only
-    // 40 points — 10 %/hr — so the projection runs on the pace actually sustained.
+    // 20 points in 30min is a 40 %/hr burst, but 4h of the window produced 40 points: 10 %/hr sustained.
     expect(f5.proj).toBeCloseTo(40 + 10 * 1, 6);
     expect(f7).toMatchObject({ used: 90, secLeft: 3 * 86400, hasRate: true });
     expect(f7.status).toBe("bad"); // 90% with days to go and a real slope

@@ -1,27 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 
-// The IPC argument contract, made impossible to break silently.
-//
-// `invoke("gh_claim", {…})` and `#[tauri::command] fn gh_claim(…)` are two halves of one
-// signature with nothing between them that can check the join. Tauri deserializes the
-// argument object at runtime and rejects the WHOLE call on one missing key — so an
-// invoke that forgets an argument does not degrade, it fails completely, and it fails
-// with a rejected promise that a `.catch(() => {})` or a `dlog` warning swallows whole.
-//
-// Nothing else catches this. `tsc` sees `invoke`'s parameter as `InvokeArgs`, an index
-// signature, so every object literal type-checks. Every unit test is happy — the pure
-// modules underneath are fine. `cargo` is happy — the command compiles. The feature is
-// simply dead on arrival, and only running the app and reading a log finds out.
-//
-// That is exactly how claiming shipped: `gh_claim` was invoked without its `body`
-// argument (and with a `pushBranch` the command never took), so for three releases
-// every dispatch was rejected before `gh` ran — no assignee, no label, no comment —
-// while the dashboard said "Started on #232". `gh_release` had the same defect and was
-// even quieter, behind a bare `.catch(() => {})`. This test is why that cannot recur.
-//
-// Same shape as ./dispatch: parse both halves out of the source and compare them, in
-// both directions, because each direction is a different bug.
+// The IPC argument contract: `invoke("x", {…})` and `#[tauri::command] fn x(…)` are two
+// halves of one signature nothing else checks, and Tauri rejects the whole call on one
+// missing key. Both halves are parsed out of source and compared in both directions.
 
 const SRC = new URL("../src/", import.meta.url);
 const RS = new URL("../src-tauri/src/", import.meta.url);
@@ -32,8 +14,7 @@ const rsFiles = readdirSync(RS).filter((f) => f.endsWith(".rs"));
 
 // ---------- the Rust half ----------
 
-/// Tauri injects these by TYPE, not by name — they never appear in the JS argument
-/// object, so requiring them would fail every command that takes state or a window.
+// Injected by Tauri by type, so they never appear in the JS argument object.
 const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Runtime|Request<|Channel<)/;
 
 interface Cmd { name: string; required: string[]; optional: string[]; file: string }
@@ -94,6 +75,15 @@ function rustCommands(): Map<string, Cmd> {
 
 interface Site { cmd: string; keys: string[]; file: string; literal: boolean }
 
+/** How far a comment starting at `i` runs, or 0 if none does. Both scanners below skip
+ *  comments: a `// … `pty-exit` …` line above an argument would otherwise open a template
+ *  string that swallows the rest of the object, and the test fails for the wrong reason. */
+function commentEnd(s: string, i: number): number {
+  if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); return nl < 0 ? s.length : nl; }
+  if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); return end < 0 ? s.length : end + 2; }
+  return 0;
+}
+
 /** Read from `from` (an index of `{`) to its matching `}`, ignoring string contents. */
 function braceBody(s: string, from: number): string {
   let depth = 0, quote = "";
@@ -104,6 +94,8 @@ function braceBody(s: string, from: number): string {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(s, i);
+    if (c) { i = c - 1; continue; }
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if (ch === "{") depth++;
     else if (ch === "}") { depth--; if (depth === 0) return s.slice(from + 1, i); }
@@ -122,6 +114,8 @@ function objectKeys(body: string): string[] {
       else if (ch === quote) quote = "";
       continue;
     }
+    const c = commentEnd(body, i);
+    if (c) { i = c - 1; cur = ""; continue; }   // a comment names no key
     if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
     if ("{([".includes(ch)) { depth++; continue; }
     if ("})]".includes(ch)) { depth--; continue; }
@@ -138,7 +132,6 @@ function invokeSites(): Site[] {
   const sites: Site[] = [];
   for (const f of tsFiles) {
     const src = read(SRC, f);
-    // `invoke("cmd"` and `invoke<T>("cmd"`, wherever they appear.
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>()]*>)?\s*\(\s*"([a-z0-9_]+)"/g)) {
       const cmd = m[1];
       const rest = src.slice(m.index! + m[0].length);
@@ -175,7 +168,6 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("passes EVERY required argument — a missing one rejects the whole call", () => {
-    // The failing case reads: dashboard.ts: gh_claim is missing [body].
     const bad: string[] = [];
     for (const s of checkable) {
       const missing = cmds.get(s.cmd)!.required.filter((k) => !s.keys.includes(k));
@@ -185,8 +177,7 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("passes NO argument the command does not take", () => {
-    // A stray key is not itself fatal, but it is always a sign the two halves have
-    // drifted — `pushBranch` sat in the gh_claim call for a command that never had it.
+    // A stray key is not itself fatal, but it is always a sign the two halves have drifted.
     const bad: string[] = [];
     for (const s of checkable) {
       const c = cmds.get(s.cmd)!;
@@ -198,9 +189,142 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
   });
 
   it("says what it could not check, rather than reading as full coverage", () => {
-    // A non-literal argument object is unverifiable from source. Zero is not required —
-    // this asserts the blind spot stays small enough to know about.
+    // Zero is not required; this keeps the blind spot small enough to know about.
     const opaque = sites.filter((s) => !s.literal).map((s) => `${s.file}: ${s.cmd}`);
     expect(opaque.length).toBeLessThan(5);
+  });
+});
+
+// ---------- what a command RETURNS ----------
+// A return shape has the same two authors: `#[derive(Serialize)] struct BgLog` decides the
+// wire keys, `interface BgRead` what is read back, and serde camelCases a snake_case field
+// only under `rename_all`. Compared in both directions, and against a written-down list.
+
+/** Tauri v2 hands a snake_case field to the frontend camelCased — but only via serde. */
+const camel = (s: string) => s.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
+
+/** Case-insensitive sort: a plain `.sort()` puts `noRoot` before `none`, which nobody can check by eye. */
+const sorted = (xs: string[]) => [...xs].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+/** Read from `from` (an index of `{`) to its matching `}`, dropping comments and strings:
+ *  an apostrophe or a `{` in a doc comment would otherwise end the body early. */
+function declBody(s: string, from: number): string {
+  let depth = 0, out = "";
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === "/" && s[i + 1] === "/") { const nl = s.indexOf("\n", i); if (nl < 0) break; i = nl; out += "\n"; continue; }
+    if (s[i] === "/" && s[i + 1] === "*") { const end = s.indexOf("*/", i + 2); if (end < 0) break; i = end + 1; continue; }
+    // `\"` does not close a Rust string, and `'}'` is a char literal rather than a lifetime.
+    if (s[i] === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') j += s[j] === "\\" ? 2 : 1;
+      if (j >= s.length) break;
+      i = j;
+      continue;
+    }
+    if (s[i] === "'" && (s[i + 2] === "'" || (s[i + 1] === "\\" && s[i + 3] === "'"))) {
+      i += s[i + 1] === "\\" ? 3 : 2;
+      continue;
+    }
+    if (s[i] === "{") { depth++; if (depth === 1) continue; }
+    else if (s[i] === "}" && --depth === 0) return out;
+    out += s[i];
+  }
+  throw new Error("unbalanced braces in a declaration test/ipc.test.ts reads");
+}
+
+/** The comment-free body of the declaration `head` matches, or "" when it is gone. */
+function bodyOf(src: string, head: RegExp): string {
+  const m = head.exec(src);
+  return m ? declBody(src, m.index + m[0].length - 1) : "";
+}
+
+/** `name: Type,` — the field names of a plain Rust struct, attributes and all skipped. */
+const rustFields = (body: string): string[] =>
+  [...body.matchAll(/^[ \t]*(?:pub(?:\([a-z]+\))?[ \t]+)?([a-z_][A-Za-z0-9_]*)[ \t]*:/gm)].map((m) => m[1]);
+
+/** `name: Type;` — the property names of a TS interface, one per line or all on one. */
+const tsFields = (body: string): string[] =>
+  [...body.matchAll(/(?:^|[;,])[ \t]*(?:readonly[ \t]+)?([A-Za-z_$][\w$]*)[ \t]*\??[ \t]*:/gm)].map((m) => m[1]);
+
+/** The members of a `export type X = "a" | "b";` union, in declaration order. */
+const tsUnion = (src: string, name: string): string[] => {
+  const m = new RegExp(`export\\s+type\\s+${name}\\s*=([^;]*);`).exec(src);
+  return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
+};
+
+/** A fieldless Rust enum, wherever in the backend it was declared, plus whether the
+ *  attributes immediately above it rename its variants for the wire. */
+function rustEnum(name: string): { variants: string[]; renamed: boolean } {
+  for (const f of rsFiles) {
+    const src = read(RS, f);
+    const head = new RegExp(`\\benum\\s+${name}\\s*\\{`).exec(src);
+    if (!head) continue;
+    const body = declBody(src, head.index + head[0].length - 1);
+    return {
+      variants: body.split(",").map((p) => p.trim()).filter((p) => /^[A-Z][A-Za-z0-9]*$/.test(p)),
+      renamed: /rename_all\s*=\s*"camelCase"/.test(src.slice(Math.max(0, head.index - 120), head.index)),
+    };
+  }
+  return { variants: [], renamed: false };
+}
+
+const PTY = read(RS, "pty.rs");
+const SERVERS = read(SRC, "servers.ts");
+const TYPES = read(SRC, "types.ts");
+
+const bgLogHead = /pub\(crate\)\s+struct\s+BgLog\s*\{/.exec(PTY);
+const bgLogFields = bgLogHead ? rustFields(declBody(PTY, bgLogHead.index + bgLogHead[0].length - 1)) : [];
+// The derives and `#[serde(…)]` attributes above the struct: the contiguous run of lines, not
+// a fixed window — a longer doc comment there would push `rename_all` out of view and fail the
+// check below for a reason that has nothing to do with the wire.
+function attrsAbove(src: string, at: number): string {
+  const lines = src.slice(0, at).split("\n");
+  const out: string[] = [];
+  for (let i = lines.length - 2; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (!t || t.endsWith("}") || t.endsWith(";")) break;   // a blank line, or the item before
+    out.unshift(lines[i]);
+  }
+  return out.join("\n");
+}
+const bgLogAttrs = bgLogHead ? attrsAbove(PTY, bgLogHead.index) : "";
+const bgReadFields = tsFields(bodyOf(SERVERS, /export\s+interface\s+BgRead\s*\{/));
+const bgMiss = rustEnum("BgMiss");
+
+describe("what a command returns", () => {
+  it("finds both halves to compare", () => {
+    // Floors, not equalities: a field added to both sides at once is the change to let through.
+    expect(bgLogFields.length).toBeGreaterThanOrEqual(9);
+    expect(bgReadFields.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("renames its multi-word fields on the way out", () => {
+    // Without `rename_all`, `root_rank` arrives under that name and every `read.rootRank` is undefined.
+    const unrenamed = /rename_all\s*=\s*"camelCase"/.test(bgLogAttrs)
+      ? []
+      : bgLogFields.filter((f) => f.includes("_"));
+    expect(unrenamed).toEqual([]);
+  });
+
+  it("names in BgRead exactly what BgLog serializes, bar `missing`", () => {
+    // `missing` stays outside `BgRead` and is intersected at the invoke site, so `applyBgLog`
+    // cannot decide what a miss means; that is `applyBgMiss`'s question.
+    expect(sorted(bgLogFields.map(camel).filter((f) => f !== "missing"))).toEqual(sorted(bgReadFields));
+  });
+
+  it("keeps the wire keys written down, so a rename on both sides is still a change", () => {
+    // A rename on both sides passes the join above and breaks every other reader of the shape.
+    expect(sorted(bgLogFields.map(camel))).toEqual(
+      ["discovered", "len", "missing", "path", "reason", "rootRank", "text", "tried", "unchanged"],
+    );
+  });
+
+  it("gives BgMissReason exactly BgMiss's variants", () => {
+    // `reason`'s values are the contract: `bgRetire` fires on `notYet` and never on `noRoot`.
+    // The enum needs its own `rename_all`, or serde puts `BadId` on a wire that says `badId`.
+    expect(bgMiss.renamed).toBe(true);
+    const wire = sorted(bgMiss.variants.map((v) => v[0].toLowerCase() + v.slice(1)));
+    expect(wire).toEqual(sorted(tsUnion(TYPES, "BgMissReason")));
+    expect(wire).toEqual(["ambiguous", "badId", "none", "noRoot", "notYet", "unreadable"]);
   });
 });

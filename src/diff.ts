@@ -1,20 +1,13 @@
-// Parsing for the working-set diff viewer. The backend (git_diff) hands us one
-// combined unified-diff patch; we turn it into per-file records here rather than
-// in Rust, keeping that side thin. Kept in its own module (no DOM/Tauri imports)
-// so it can be unit-tested in isolation — see test/diff.test.ts.
+// Parsing and alignment for the working-set diff viewer: git_diff's combined patch into
+// per-file records, then what a reader needs from a hunk. No DOM; tested in test/diff.test.ts.
 
 export interface DiffLine { kind: "ctx" | "add" | "del"; text: string; oldNo: number | null; newNo: number | null; }
 export interface DiffHunk { header: string; lines: DiffLine[]; }
-/// Which line layout the viewer draws. Here rather than with the markup because the
-/// choice is persisted, so ./state has to name it too, and ./state must not import a
-/// view module.
-export type DiffMode = "unified" | "split";
+export type DiffMode = "unified" | "split"; // ./state persists it and must not import a view
 export interface DiffFile { path: string; oldPath: string | null; status: "modified" | "added" | "deleted" | "renamed"; binary: boolean; added: number; removed: number; hunks: DiffHunk[]; }
 
-// Parse a combined unified diff into per-file records. Robust to spaces in paths
-// (we read the +++/--- headers, which git terminates with a tab, and fall back to
-// the `diff --git`/rename lines), /dev/null sides for adds & deletes, and the
-// "Binary files … differ" marker.
+// Paths come from the ---/+++ headers (tab-terminated by git, so spaces survive), with the
+// `diff --git`/rename lines as fallback; /dev/null sides and "Binary files" are handled.
 export function parsePatch(patch: string): DiffFile[] {
   const files: DiffFile[] = [];
   let cur: DiffFile | null = null;
@@ -37,8 +30,10 @@ export function parsePatch(patch: string): DiffFile[] {
     if (line.startsWith("rename from ")) { cur.oldPath = line.slice(12); cur.status = "renamed"; continue; }
     if (line.startsWith("rename to ")) { cur.path = line.slice(10); cur.status = "renamed"; continue; }
     if (line.startsWith("Binary files")) { cur.binary = true; continue; }
-    if (line.startsWith("--- ")) { const p = line.slice(4); if (p !== "/dev/null") cur.oldPath = strip(p); continue; }
-    if (line.startsWith("+++ ")) { const p = line.slice(4); if (p !== "/dev/null") cur.path = strip(p); continue; }
+    // Both gated on `!hunk`: inside a hunk a removed `-- sql comment` arrives as `--- …` and
+    // would be eaten as a path header, undercounting `removed`.
+    if (!hunk && line.startsWith("--- ")) { const p = line.slice(4); if (p !== "/dev/null") cur.oldPath = strip(p); continue; }
+    if (!hunk && line.startsWith("+++ ")) { const p = line.slice(4); if (p !== "/dev/null") cur.path = strip(p); continue; }
     if (line.startsWith("@@")) {
       const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
       oldNo = m ? +m[1] : 0;
@@ -58,57 +53,31 @@ export function parsePatch(patch: string): DiffFile[] {
 }
 
 // ---------- aligning a hunk, and the word diff inside a changed line ----------
-//
-// Everything below turns a parsed hunk into what a *reader* needs, and it lives here
-// rather than in the view for the same reason `parsePatch` does: it is arithmetic over
-// strings, it has all the edge cases, and it is the half worth testing.
-//
-// Two jobs, one pass, because they are the same question asked twice. A hunk's lines
-// arrive as git wrote them — a run of deletions, then the run of additions that
-// replaced it — and both renderings need those two runs *paired*: side-by-side needs
-// the pairs as rows, and unified needs to know which `-`/`+` lines are two versions of
-// one line so it can mark the words that actually moved. Pairing is positional within
-// a run (git gives no better join), and a pair whose halves have nothing in common is
-// left unmarked — see `wordDiff`'s similarity floor.
+// A hunk's runs of deletions and additions are paired once (alignRuns, by similarity) for
+// both renderings: rows for side-by-side, and which -/+ lines to word-mark for unified.
 
-/// A run of a line, and whether it is part of what changed. `changed:false` spans are
-/// the text both versions share.
-export interface Span { text: string; changed: boolean }
-/// One line as rendered: the line itself, plus the intra-line spans when it was paired
-/// with its other version and the two were close enough to be worth marking.
-export interface DiffCell { line: DiffLine; spans: Span[] | null }
-/// One row of the side-by-side view. A pure insertion has no `left`, a pure deletion no
-/// `right`, and a context line has the same line on both sides.
+export interface Span { text: string; changed: boolean } // changed:false is text both versions share
+export interface DiffCell { line: DiffLine; spans: Span[] | null } // spans null unless worth marking
+// One side-by-side row: a pure insertion has no `left`, a pure deletion no `right`.
 export interface DiffRow { left: DiffCell | null; right: DiffCell | null }
 export interface AlignedHunk { rows: DiffRow[]; unified: DiffCell[] }
 
-/// Split a line into the units a word diff compares: identifiers and numbers as whole
-/// tokens, runs of whitespace as one, and every other character alone. Keeping
-/// punctuation separate is what lets `f(a)` → `f(a, b)` mark only `, b`.
+// Word-diff units: identifiers and numbers whole, whitespace runs as one, every other
+// character alone, so `f(a)` → `f(a, b)` marks only `, b`.
 const TOK = /[A-Za-z0-9_$]+|\s+|[^A-Za-z0-9_$\s]/g;
 export function tokenize(s: string): string[] { return s.match(TOK) ?? []; }
 
-/// Above this many tokens a side, the O(n·m) table below stops being free — and a line
-/// that long is minified or generated, where a word diff tells you nothing anyway. Both
-/// sides then fall back to "the middle changed", which the affix trim has already found.
+// Past this many tokens a side the line is minified or generated; both sides fall back to
+// "the middle changed", which the affix trim has already found.
 const WD_CAP = 160;
-/// How much of the longer line must survive as *common* text before the marks are worth
-/// drawing. Under it the two lines are different lines that happen to sit next to each
-/// other, and highlighting a few incidental brackets in them is noise on top of the
-/// green/red the row already carries. A rewritten comment is the case this exists for:
-/// two prose lines share `the`, `is` and a couple of articles, and marking those lit
-/// nine fragments of one line while saying nothing about what it now says.
+// Share of the longer line that must be common text before marks are drawn; below it the
+// two are different lines that happen to sit together (a rewritten comment, typically).
 const WD_FLOOR = 0.34;
-/// Unchanged runs this short between two changed ones are absorbed into the change.
-/// Without it an edit reads as confetti: `a.foo(x)` → `a.bar(y)` marks `foo` and `x` and
-/// leaves the `(` between them lit differently for no reason a reader can use. Merging
-/// first also makes the floor above decisive, since a confettied line's changed share is
-/// then measured as the one region it really is.
+// Unchanged runs this short between two changed ones are absorbed, or an edit reads as confetti.
 const WD_BRIDGE = 4;
 
-/// The changed-token mask for two token runs, from the classic LCS table. Walks the
-/// table forwards so the *earliest* common token wins a tie, which reads better than
-/// the backwards walk: an edit at the end of a line stays at the end of the line.
+// Changed-token mask from the LCS table, walked forwards so the earliest common token
+// wins a tie: an edit at the end of a line stays at the end.
 function lcsMask(x: string[], y: string[]): [boolean[], boolean[]] {
   const n = x.length, m = y.length, w = m + 1;
   const dp = new Int32Array((n + 1) * w);
@@ -129,9 +98,7 @@ function lcsMask(x: string[], y: string[]): [boolean[], boolean[]] {
   return [cx, cy];
 }
 
-/// Absorb short unchanged runs that sit *between* two changed ones. Leading and
-/// trailing common text is never touched — that is the part the reader is using to line
-/// the two versions up.
+// Absorb short unchanged runs between two changed ones; leading and trailing common text stays.
 function bridge(toks: string[], changed: boolean[]) {
   let last = -1;
   for (let i = 0; i < toks.length; i++) {
@@ -145,7 +112,6 @@ function bridge(toks: string[], changed: boolean[]) {
   }
 }
 
-/// Fold a token list and its mask into the fewest spans that describe it.
 function toSpans(toks: string[], changed: boolean[]): Span[] {
   const out: Span[] = [];
   for (let i = 0; i < toks.length; i++) {
@@ -156,18 +122,11 @@ function toSpans(toks: string[], changed: boolean[]): Span[] {
   return out;
 }
 
-/// What changed *inside* a pair of lines, or `null` when marking it would be noise.
-///
-/// `null` covers three cases that all render better plain: identical text (the pair is
-/// a move, not an edit), a pair with almost nothing in common (two unrelated lines that
-/// happened to line up), and an empty side. The caller draws the line unmarked, and the
-/// row's own +/− colour is left to say what happened.
+// `null` when marking would be noise: identical text (a move), almost nothing in common, or an empty side.
 export function wordDiff(a: string, b: string): { a: Span[]; b: Span[] } | null {
   if (a === b || !a || !b) return null;
   const x = tokenize(a), y = tokenize(b);
-  // Trim the common head and tail first. It is the cheap half of the answer (most code
-  // edits are a change in the middle of a line), and it shrinks what the table below
-  // has to look at — often to nothing.
+  // Trim the common head and tail first: cheap, and it shrinks what the table has to look at.
   let head = 0;
   while (head < x.length && head < y.length && x[head] === y[head]) head++;
   let tail = 0;
@@ -180,29 +139,21 @@ export function wordDiff(a: string, b: string): { a: Span[]; b: Span[] } | null 
   const mask = (toks: string[], mid: boolean[]) =>
     toks.map((_, i) => i >= head && i < toks.length - tail ? mid[i - head] : false);
   const cx = mask(x, cmx), cy = mask(y, cmy);
+  // Bridge before the floor, so a confettied line's changed share is measured as one region.
   bridge(x, cx);
   bridge(y, cy);
-  // The floor is measured in characters, not tokens: one shared 30-character string
-  // literal is real common ground, thirty shared brackets are not.
+  // In characters, not tokens: one shared 30-char literal is common ground, thirty brackets are not.
   let common = 0;
   for (let i = 0; i < x.length; i++) if (!cx[i]) common += x[i].length;
   if (common / Math.max(a.length, b.length) < WD_FLOOR) return null;
   return { a: toSpans(x, cx), b: toSpans(y, cy) };
 }
 
-/// How close two lines must be before they are called two versions of one line rather
-/// than a deletion next to an unrelated insertion.
-const LINE_SIM = 0.35;
-/// Beyond this many lines a side, a replacement is a rewritten block and the O(n·m)
-/// alignment below buys nothing a reader can use, so the runs pair off positionally.
-const RUN_CAP = 60;
+const LINE_SIM = 0.35; // below this, two lines are a deletion beside an unrelated insertion
+const RUN_CAP = 60; // lines a side; past it a replacement is a rewritten block and pairs off positionally
 
-/// A cheap similarity for two lines: how much of them is shared head and shared tail.
-///
-/// Deliberately not the token LCS `wordDiff` runs — this is asked n·m times per
-/// replacement, where that would be n·m token tables. Affixes are the right cheap
-/// answer for code: an edited line almost always keeps its indent and its opening, and
-/// two lines that share neither are not two versions of anything.
+// Shared head + tail, not the token LCS: this runs n·m times per replacement, and an
+// edited line almost always keeps its indent and its opening.
 function lineSim(a: string, b: string): number {
   if (!a.length && !b.length) return 1;
   const n = Math.min(a.length, b.length);
@@ -213,14 +164,8 @@ function lineSim(a: string, b: string): number {
   return (2 * (head + tail)) / (a.length + b.length);
 }
 
-/// Which deletion became which addition, in order.
-///
-/// Positional pairing — the obvious rule, and the one this replaced — is wrong in the
-/// single most common shape an agent's edit has: three explanatory lines added *above*
-/// one changed line. That pairs the changed line with the first new comment, so the
-/// side-by-side rows are offset for the rest of the run and the one pair worth marking
-/// never meets. This is the same order-preserving alignment as a diff itself, one level
-/// down: match where the two lines are close enough, otherwise leave a gap.
+// Which deletion became which addition: order-preserving alignment by similarity, with a
+// gap where nothing matches. Never positional; CLAUDE.md's diff-overlay rule says why.
 function alignRuns(dels: DiffLine[], adds: DiffLine[]): [DiffLine | null, DiffLine | null][] {
   const n = dels.length, m = adds.length;
   const out: [DiffLine | null, DiffLine | null][] = [];
@@ -255,12 +200,8 @@ function alignRuns(dels: DiffLine[], adds: DiffLine[]): [DiffLine | null, DiffLi
   return out;
 }
 
-/// Pair a hunk's deletions with the additions that replaced them, for both renderings.
-///
-/// `unified` keeps git's own order — every deletion, then every addition — so the
-/// familiar reading is unchanged and only the word marks are new; `rows` is the same
-/// pairing laid out as side-by-side rows, where the gaps `alignRuns` left become the
-/// blank half of a one-sided row.
+// `unified` keeps git's order (deletions, then additions) with word marks added; `rows` is
+// the same pairing side by side, alignRuns' gaps becoming one-sided rows.
 export function alignHunk(h: DiffHunk): AlignedHunk {
   const rows: DiffRow[] = [], unified: DiffCell[] = [];
   const lines = h.lines;
@@ -272,13 +213,11 @@ export function alignHunk(h: DiffHunk): AlignedHunk {
       i++;
       continue;
     }
-    // One replacement: the deletions here, then the additions that follow them.
     const dels: DiffLine[] = [];
     while (i < lines.length && lines[i].kind === "del") dels.push(lines[i++]);
     const adds: DiffLine[] = [];
     while (i < lines.length && lines[i].kind === "add") adds.push(lines[i++]);
-    // One cell per line, held by line so both renderings show the same object and a
-    // pair's marks cannot be computed twice or disagree between the two layouts.
+    // One cell per line, shared by both renderings, so a pair's marks are computed once.
     const cells = new Map<DiffLine, DiffCell>();
     const cell = (l: DiffLine) => {
       let c = cells.get(l);

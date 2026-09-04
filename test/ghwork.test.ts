@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports
 import { CLAIM_STALE_MS, type ClaimRecord } from "../src/claim";
 import {
-  bucketOf, bucketed, cardRows, closeComment, holderOf, isoDay, quietFor,
-  staleCandidates, STALE_DAYS, type GhThread, type KeptIssue,
+  bucketOf, bucketed, cardRows, closeComment, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  staleCandidates, STALE_DAYS, type GhAccount, type GhThread, type KeptIssue,
 } from "../src/ghwork";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
@@ -148,5 +148,50 @@ describe("isoDay", () => {
   it("is day resolution — an hour churns a committed diff for nothing", () => {
     expect(isoDay(new Date(2026, 6, 31, 23, 59).getTime())).toBe("2026-07-31");
     expect(isoDay(new Date(2026, 0, 5, 0, 1).getTime())).toBe("2026-01-05");
+  });
+});
+
+// The two-account case. `gh` keeps one ACTIVE account per host and switches it globally, so a
+// work identity and a personal one are only both right with a per-project answer; GitHub's
+// "could not resolve to a Repository" names no account, so every surface says which it used.
+describe("ghWho", () => {
+  const ACCTS: GhAccount[] = [{ login: "octo", active: true }, { login: "octo-work", active: false }];
+
+  it("follows gh's active account when the project pins nothing", () => {
+    expect(ghWho(null, ACCTS)).toEqual({ login: "octo", source: "active", known: true });
+  });
+
+  it("uses the pin over the active account — that is the whole feature", () => {
+    expect(ghWho("octo-work", ACCTS)).toEqual({ login: "octo-work", source: "pinned", known: true });
+  });
+
+  /// The distinction the row underneath the picker is made of: pinning the account that
+  /// is *already* active changes nothing today and everything the day `gh auth switch`
+  /// is run in a terminal, so the two must not read the same.
+  it("tells a pin apart from the same login inherited", () => {
+    expect(ghWho("octo", ACCTS).source).toBe("pinned");
+    expect(ghWho(null, ACCTS).source).toBe("active");
+  });
+
+  /// A pin gh has forgotten (`gh auth logout`) stays in force: the backend refuses the
+  /// read rather than quietly answering as somebody else, which is exactly what the pin
+  /// was set to prevent. So it must still report as pinned, and say it is unknown — a
+  /// silent fall-back would leave the picker ticking an account that is not being used.
+  it("keeps a pin gh no longer knows, and marks it unknown", () => {
+    expect(ghWho("gone", ACCTS)).toEqual({ login: "gone", source: "pinned", known: false });
+  });
+
+  it("has no answer at all when gh has no accounts", () => {
+    expect(ghWho(null, [])).toEqual({ login: null, source: "none", known: false });
+    // …but a pin still stands: gh being unreadable is not a reason to forget a setting.
+    expect(ghWho("octo", [])).toMatchObject({ login: "octo", source: "pinned", known: false });
+  });
+});
+
+describe("ghPickable", () => {
+  it("offers the choice only where there is one", () => {
+    expect(ghPickable([])).toBe(false);
+    expect(ghPickable([{ login: "octo", active: true }])).toBe(false);
+    expect(ghPickable([{ login: "octo", active: true }, { login: "octo-work", active: false }])).toBe(true);
   });
 });

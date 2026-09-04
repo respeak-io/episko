@@ -32,19 +32,18 @@ function sess(o: Partial<Sess> = {}): Sess {
     id: "sid", project: "epi", accent: "#fff", workdir: "/w/epi", colorKey: "/w/epi",
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
-    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, apiErr: null,
+    pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
     model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
-    git: null, res: null, lastEvent: "", activity: [], files: [], tally: {},
+    git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {},
     kind: "agent",
     provider: explicitKind === undefined ? "claude" : explicitKind === "agent" ? "codex" : null,
     capabilities: explicitKind === undefined ? [...CLAUDE_CLI.capabilities] : [],
     external: false, ...o,
   } as Sess;
 }
-/// The `Sess` fields of a session with a background fan-out up — `total` agents
-/// launched, `done` of them landed. Spelled out rather than driven through applyHook,
-/// which lives in a module this suite deliberately does not import.
+// A session with a background fan-out up: `total` agents launched, `done` of them landed.
+// Built by hand rather than through applyHook, which this suite does not import.
 const agentsUp = (n: number, orphanedAt = 0): Map<string, Agent> =>
   new Map(Array.from({ length: n }, (_, i) => [`a${i}${orphanedAt}`, { type: "Explore", since: 0, orphanedAt }]));
 const fleet = (total: number, done: number): Partial<Sess> => ({
@@ -93,11 +92,8 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     expect(ids(cl[0].sessions)).toEqual(["a", "c"]);
     expect(ids(cl[1].sessions)).toEqual(["b"]);
   });
-  /// The bug this exists for: a task's `workdir` is where the *task* runs, and VS Code
-  /// tasks routinely declare a subfolder (`options.cwd: 01_frontend`). Keying clusters
-  /// on that gave one chain three "worktree" headers, all with the same branch on them,
-  /// and — because the run-group fold happens inside a cluster — stopped the members of
-  /// one launch from ever folding into a single row.
+  // A task's `workdir` is where the task runs, and VS Code tasks routinely declare a subfolder
+  // (`options.cwd`); keyed on that, one chain splits into a header per subfolder and never folds.
   it("clusters a task pane by its checkout, not by the subfolder it runs in", () => {
     const wt = "/w/wt-feat";
     const p = grp({ sessions: [
@@ -116,13 +112,9 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     const p = grp({ sessions: [taskSess("t", { workdir: "/w/other" }, { root: "" })] });
     expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/other"]);
   });
-  /// The same bug through a different door, which `run.root` could not close: a task's
-  /// cwd reaches a **shell** too. `❯ Terminal` opens one in `activeCwd()` — the raw
-  /// workdir of whatever owns the stage — so a shell opened while a finished task pane
-  /// is on stage starts in that task's subfolder, and a shell has no `run` to unwrap.
-  /// The roster places it. Spelled as it really arrived on Windows: the checkout in
-  /// backslashes (the folder the user picked), the declared cwd's own forward slashes
-  /// pasted on by `${workspaceFolder}` substitution.
+  // `❯ Terminal` opens a shell in `activeCwd()`, so one opened over a task pane starts in that task's
+  // subfolder with no `run.root` to unwrap; only the roster can place it. Spelled as Windows delivers it:
+  // the checkout in backslashes, the declared cwd's forward slashes pasted on by `${workspaceFolder}`.
   it("clusters a shell started in a subfolder by its checkout", () => {
     const repo = "E:\\w\\epi", wt = "E:\\w\\wt-feat";
     worktreesByRepo.set(repo, [
@@ -138,10 +130,8 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     expect(cl.map((c) => c.key)).toEqual([wt]);
     expect(ids(cl[0].sessions)).toEqual(["agent", "sh"]);
   });
-  /// The roster's spelling must not escape into a cluster key for a checkout the group
-  /// already names: `isMain` compares that key against the project path, and the roster
-  /// side has been through `norm_path` in Rust while the project side is however the
-  /// folder was picked. Only a path genuinely *inside* a checkout is rewritten.
+  // `isMain` compares the key against the project path, spelled as the user picked it, while the
+  // roster has been through `norm_path`; only a path inside a checkout takes the roster's spelling.
   it("keeps the group's own spelling of a checkout the roster spells differently", () => {
     const repo = "E:\\w\\epi";
     worktreesByRepo.set(repo, [{ path: "E:/w/epi", branch: "main", is_main: true, exists: true }]);
@@ -155,6 +145,21 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
       sess({ id: "b", kind: "shell", workdir: "/tmp/scratch" }),
     ] });
     expect(clusterByWorktree(p).map((c) => c.key)).toEqual(["/w/epi", "/tmp/scratch"]);
+  });
+  // An external terminal is listed by its raw cwd; `❯ Terminal` in an iTerm window opened
+  // over a subfolder used to mint a cluster of its own beside the checkout it is in.
+  it("clusters an external started in a subfolder by its checkout too", () => {
+    const repo = "/w/epi", wt = "/w/wt-feat";
+    worktreesByRepo.set(repo, [
+      { path: repo, branch: "main", is_main: true, exists: true },
+      { path: wt, branch: "feat", is_main: false, exists: true },
+    ]);
+    const p = grp({ path: repo,
+      sessions: [sess({ id: "agent", workdir: wt, colorKey: repo, branch: "feat" })],
+      externals: [ext({ session_id: "x", cwd: wt + "/src/deep", repo_root: repo, branch: "feat" })] });
+    const cl = clusterByWorktree(p);
+    expect(cl.map((c) => c.key)).toEqual([wt]);
+    expect(cl[0].externals).toHaveLength(1);
   });
   it("marks only the cluster at the project path as main", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" }), sess({ id: "b", workdir: "/w/wt" })] });
@@ -230,9 +235,8 @@ describe("clusterIsLive", () => {
   });
 });
 
-// The roster half: checkouts that exist on disk with nothing running in them. Off
-// unless asked for, because only the sidebar body wants them — see the note on the
-// parameter for why splitByWorktree must not get them.
+// Checkouts on disk with nothing running in them: off unless asked for, since only the sidebar
+// body wants them and splitByWorktree must not get them.
 describe("clusterByWorktree — session-less checkouts from the worktree roster", () => {
   const roster = (l: WtHead[]) => { worktreesByRepo.set("/w/epi", l); };
   const main = (o: Partial<WtHead> = {}): WtHead =>
@@ -274,9 +278,8 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
     expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
-  // The guard: a project pinned AT a linked worktree resolves to the same repo, and
-  // folding the roster in there would sprout a row for the main checkout and every
-  // sibling — silently redefining what that group means.
+  // A project pinned at a linked worktree resolves to the same repo; folding the roster in there
+  // would sprout a row for the main checkout and every sibling, redefining what the group means.
   it("leaves a group alone when it is not the repo's main checkout", () => {
     worktreesByRepo.set("/w/wt-x", [main(), linked()]);
     const p = grp({ path: "/w/wt-x", sessions: [sess({ id: "b", workdir: "/w/wt-x" })] });
@@ -287,17 +290,13 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
     expect(clusterByWorktree(p, true).map((c) => c.key)).toEqual(["/w/epi"]);
   });
   it("gives a project with NOTHING running every checkout it has", () => {
-    // The reported "the hover bar sometimes doesn't come". This function was always
-    // willing; what was missing is the roster, which `refreshWorktrees` only built for
-    // repos with a live session — so an idle project reached `peekBody` with zero
-    // clusters and rendered no rows at all. Both checkouts are vacant here, which is
-    // exactly what the peek exists to reveal.
+    // Both checkouts are vacant here, which is what the peek exists to reveal; `refreshWorktrees`
+    // must build the roster for an idle repo too, or `peekBody` gets zero clusters.
     roster([main(), linked()]);
     const cl = clusterByWorktree(grp({ sessions: [] }), true);
     expect(cl.map((c) => c.key)).toEqual(["/w/epi", "/w/wt-x"]);
     expect(cl.every((c) => !clusterIsLive(c))).toBe(true);
-    // The main checkout is a launchable row too, and keeps its identity so the sidebar
-    // can give it the ⌂ glyph rather than a branch's.
+    // the main checkout keeps its identity so the sidebar gives it the ⌂ glyph rather than a branch's
     expect(cl[0].isMain).toBe(true);
   });
 });
@@ -322,10 +321,8 @@ describe("splitByWorktree — toplevel mode explodes a multi-checkout project", 
     expect(out[1]).toMatchObject({ name: "epi", accent: "#fff", wtBranch: "feature" });
   });
   it("carries the repo root onto every worktree group, and onto no other", () => {
-    // A checkout is not a project, and splitting is the only thing that severs the two.
-    // The sidebar's project header opens `repoRoot ?? path`, so losing it here keys a
-    // worktree's dashboard by its checkout dir — where `histProject` regrafts every
-    // history row onto the repo root, so the timeline matches no sessions at all.
+    // The project header opens `repoRoot ?? path`; without it a worktree's dashboard is keyed by its
+    // checkout dir, where `histProject` has regrafted every history row onto the repo root instead.
     const p = grp({ sessions: [
       sess({ id: "a", workdir: "/w/epi", branch: "main" }),
       sess({ id: "b", workdir: "/w/wt", branch: "feature" }),
@@ -391,9 +388,7 @@ describe("dashHeads — which sidebar row the open dashboard is marked on", () =
     expect([...dashHeads(list, "/w/epi")]).toEqual(["/w/epi"]);
   });
   it("falls back to the checkouts when the repo has no root row", () => {
-    // splitByWorktree drops the phantom root of a worktree-only repo, and that row is
-    // what would otherwise carry the mark — leaving the click that opened the dashboard
-    // with nothing to show for it.
+    // splitByWorktree drops the phantom root of a worktree-only repo, so no root row can carry the mark.
     const list = [wt("/w/wt-a", "/w/epi"), wt("/w/wt-b", "/w/epi")];
     expect([...dashHeads(list, "/w/epi")]).toEqual(["/w/wt-a", "/w/wt-b"]);
   });
@@ -596,8 +591,7 @@ describe("projectList — worktree grouping", () => {
 });
 
 describe("groupedProjects — the user's named groups folded over that list", () => {
-  // What each slot is, flattened to something an assertion can read: a project by its
-  // path, a group as "Name[member, member]".
+  // A slot flattened for assertions: a project by its path, a group as "Name[member, member]".
   const shape = (l: SidebarSlot[]) =>
     l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${s.projects.map((p) => p.path).join(", ")}]`));
   const threeFavs = () => setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]);
@@ -614,8 +608,7 @@ describe("groupedProjects — the user's named groups folded over that list", ()
   });
 
   it("puts the group where its FIRST member sits, not where the group was made", () => {
-    // The whole reason there is no group order to persist: the position is derived, so
-    // a drag that moves a member moves the group with it and the two cannot disagree.
+    // The position is derived from the first member, which is why there is no group order to persist.
     threeFavs();
     setProjOrder(["/w/b", "/w/c", "/w/a"]);
     setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
@@ -633,25 +626,22 @@ describe("groupedProjects — the user's named groups folded over that list", ()
   });
 
   it("keeps an emptied group, at the end — it has no member to be ranked by", () => {
-    // Dropping it would read as Episko having deleted a heading the user named, and it
-    // is also the only drop target that could ever refill it.
+    // Dropping it would read as a deleted heading, and it is the only drop target that could refill it.
     threeFavs();
     setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: {} });
     expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
   });
 
   it("ignores a membership pointing at a group that is gone", () => {
-    // clampGroups repairs this on load; this is the render side refusing to lose a
-    // project to a fold nothing draws even if one ever got through.
+    // clampGroups repairs this on load; the render side must still not lose a project to it.
     threeFavs();
     setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "ghost" } });
     expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
   });
 
   it("keeps a grouped repo's worktrees together in toplevel mode", () => {
-    // There the repo has exploded into one group per checkout, each keyed by its own
-    // dir — but the user filed the *repo*, so every checkout has to answer with it or a
-    // grouped repo scatters across the rail the moment a second worktree opens.
+    // Toplevel mode keys one group per checkout dir, but the user filed the repo, so every checkout
+    // must answer with the repo or a grouped one scatters the moment a second worktree opens.
     setWtGroup("toplevel");
     open(sess({ id: "a", workdir: "/w/epi", branch: "main" }), sess({ id: "b", workdir: "/w/wt", branch: "feature" }));
     setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/epi": "g1" } });
@@ -711,9 +701,8 @@ describe("urgencyRank — who needs you first", () => {
     expect(urgencyRank(sess({ kind: "shell", attention: "Bash" }))).toBe(6);
   });
   it("never lets a third-party agent demand attention either — same missing telemetry", () => {
-    // The row for a `codex` pane has no hooks behind it, so nothing it shows can be
-    // urgent. `attention` is checked too: it is a field on every Sess, and if the rank
-    // ever consulted it before the kind, a stale value would outrank a real permission.
+    // `attention` is a field on every Sess; if the rank consulted it before the kind, a stale value
+    // on a hookless pane would outrank a real permission.
     for (const phase of ["error", "done", "working", "idle", "ended"] as const) {
       expect(urgencyRank(sess({ kind: "agent", phase }))).toBe(6);
     }
@@ -743,8 +732,7 @@ describe("orderedSessions — the sidebar read as one flat list", () => {
     expect(ids(orderedSessions())).toEqual(["a1"]);
   });
   it("follows the order GROUPS put the sidebar in, not the ungrouped one", () => {
-    // A group physically moves its members, so reading the ungrouped list would make
-    // ⌘4 land on the fourth session in an order nothing on screen is in.
+    // A group moves its members; read ungrouped, ⌘4 would land on a session in an order nothing shows.
     open(
       sess({ id: "a", project: "a", colorKey: "/w/a" }),
       sess({ id: "b", project: "b", colorKey: "/w/b" }),
@@ -794,8 +782,7 @@ describe("nextAfterClose — which pane takes the stage", () => {
     expect(nextAfterClose(a1)).toBe(b1); // nothing above, so the next in sidebar order
   });
   it("goes DOWN the sidebar first when leaving a project, not up", () => {
-    // The in-project rule prefers the row above; once the project is empty the
-    // fallback is the other way round — the nearest row *below* in sidebar order.
+    // In-project the row above wins; once the project is empty, the nearest row below in sidebar order.
     setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]);
     const [, b1, c1] = open(
       sess({ id: "a1", project: "a", colorKey: "/w/a" }),
@@ -817,7 +804,7 @@ describe("nextAfterClose — which pane takes the stage", () => {
     expect(nextAfterClose(a)).toBeNull();
   });
   it("returns null for a session that was already removed from the map", () => {
-    // Documented precondition: call it BEFORE the map delete, or it can't find a home.
+    // Precondition: call it before the map delete, or it cannot find a home.
     const s = sess({ id: "gone" });
     expect(nextAfterClose(s)).toBeNull();
   });
@@ -882,27 +869,21 @@ describe("needsYou — is this pane waiting on the human", () => {
     expect(needsYou(sess({ phase: "error" }))).toBe(true); // an agent is not the switch's business
   });
   it("does not count a session whose background fleet is still running", () => {
-    // The Workflow tool ends the parent's turn in about two seconds and its agents run
-    // for another twenty minutes. Counting that as "your turn" put a workflow in the
-    // reactor badge and the tray title as one more session waiting on a human who had
-    // nothing to answer — for the whole run.
+    // The Workflow tool ends the parent's turn in seconds while its agents run on for minutes;
+    // that is not your turn (docs/architecture.md).
     expect(needsYou(sess({ phase: "done", ...fleet(13, 12) }))).toBe(false);
     expect(urgencyRank(sess({ phase: "done", ...fleet(13, 12) }))).toBe(3); // ranks with the work it is
   });
   it("counts one whose fleet turns out to be a previous run's leftovers", () => {
-    // What the "34 / 36" bug actually cost. `startFanout` restarts the counters when a
-    // new workflow launches but the agents already up carry over, so an interrupted
-    // fleet's ghosts rode a finished run's tally — and `bgWaiting` kept the session out
-    // of the badge, the tray title and the palette's "Needs you" group for hours after
-    // it had finished. They age out on their own window now (`Agent.orphanedAt`).
+    // `startFanout` restarts the counters but the agents already up carry over; a previous run's
+    // ghosts must age out on their own window (`Agent.orphanedAt`), not hold the session out of the badge.
     const ghosts = sess({ phase: "done", ...fleet(34, 34), agents: agentsUp(2, NOW_MS) });
     expect(needsYou(ghosts)).toBe(false);                    // believed, so still busy
     vi.setSystemTime(NOW_MS + ORPHAN_DEAD_MS + 1000);
     expect(needsYou(ghosts)).toBe(true);                     // written off: it is your turn
   });
   it("still counts one that hit a permission or died mid-fleet", () => {
-    // Both outrank the fan-out: Claude is blocked on you now, or the turn is not coming
-    // back on its own. Neither resolves itself when the agents land.
+    // Both outrank the fan-out: neither resolves itself when the agents land.
     expect(needsYou(sess({ phase: "done", attention: "Bash", ...fleet(13, 12) }))).toBe(true);
     expect(needsYou(sess({ phase: "error", ...fleet(13, 12) }))).toBe(true);
   });
@@ -921,16 +902,14 @@ describe("syncAttn — when each pane started wanting you", () => {
     expect(s.attnAt).toBe(0);
   });
   it("does not move a stamp that is already set", () => {
-    // It runs on every paint, and a fleet paints several times a second: a stamp that
-    // re-took `now` each time would leave every highlight one frame long and the
-    // "longest waiting" order meaningless.
+    // It runs on every paint; a stamp that re-took `now` each time would leave every highlight
+    // one frame long and the longest-waiting order meaningless.
     const [s] = open(sess({ id: "a", phase: "done", attnAt: NOW_MS - 5000 }));
     syncAttn();
     expect(s.attnAt).toBe(NOW_MS - 5000);
   });
   it("stamps a permission that never moved the phase", () => {
-    // The reason this is not `phaseSince`: a PermissionRequest arrives mid-tool-call
-    // and leaves the phase exactly where it was.
+    // Not `phaseSince`: a PermissionRequest arrives mid-tool-call and leaves the phase where it was.
     const [s] = open(sess({ id: "a", phase: "working", phaseSince: NOW_MS - 60000 }));
     syncAttn();
     expect(s.attnAt).toBe(0);
@@ -999,9 +978,8 @@ describe("needsYouSessions — the reactor's queue", () => {
     expect(ids(needsYouSessions())).toEqual(["blocked", "broken", "turn"]);
   });
   it("keeps the urgency tier ahead of the order, whichever order is picked", () => {
-    // The badge takes its wording and its colour from list[0]. A permission sorting
-    // below a finished turn because the turn is newer would have it announce "1 your
-    // turn" with Claude sitting blocked — which is the one thing it must never say.
+    // The badge takes its wording and colour from list[0]; a permission sorted below a newer
+    // finished turn would announce "1 your turn" with Claude sitting blocked.
     open(
       sess({ id: "turn", phase: "done", attnAt: 900 }),
       sess({ id: "blocked", phase: "working", attention: "Bash", attnAt: 100 }),
@@ -1038,8 +1016,7 @@ describe("needsYouSessions — the reactor's queue", () => {
     expect(ids(needsYouSessions())).toEqual(["a1", "b1"]); // …the reactor still asks when
   });
   it("does not consult the sidebar order even to break an exact tie", () => {
-    // Same urgency, same stamp: the stable sort falls back to the order the sessions
-    // were opened in, NOT to where the sidebar happens to be showing them.
+    // Same urgency, same stamp: the stable sort falls back to open order, never to the sidebar's.
     setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
     setProjOrder(["/w/b", "/w/a"]);
     open(
@@ -1116,8 +1093,7 @@ describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
   });
 
   it("puts the group where its FIRST member sat, so the caller's sort still decides", () => {
-    // If the fold re-sorted, `solo` could not stay ahead of a group whose first
-    // member follows it — which is exactly what projectList already ordered.
+    // A fold that re-sorted would undo the order projectList already chose.
     const items = foldRunGroups([
       taskSess("solo"),
       taskSess("build", {}, { groupId: "g1", groupLabel: "ship" }),
@@ -1127,8 +1103,7 @@ describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
   });
 
   it("keeps two launches of the same chain apart", () => {
-    // The whole reason groupId is minted per launch: running `fe-check` twice must
-    // give two rows to compare, not one row with six steps.
+    // groupId is minted per launch: running `fe-check` twice must give two rows, not one with six steps.
     const items = foldRunGroups([
       taskSess("a1", {}, { groupId: "g1", groupLabel: "fe-check" }),
       taskSess("a2", {}, { groupId: "g1", groupLabel: "fe-check" }),
@@ -1157,8 +1132,7 @@ describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () 
   const p = (...phases: Sess["phase"][]) => groupPhase(phases.map((ph, i) => taskSess("s" + i, { phase: ph })));
 
   it("lets a failure outrank anything that came after it", () => {
-    // The case worst-of exists for: a failed build stops the chain, so the steps
-    // behind it never run. Last-of would report `done` on a broken chain.
+    // A failed build stops the chain, so the steps behind it never run; last-of would report `done`.
     expect(p("error", "done")).toBe("error");
     expect(p("done", "error", "idle")).toBe("error");
   });
@@ -1181,8 +1155,7 @@ describe("groupPhase — worst-of, so one row answers 'did my chain pass?'", () 
 describe("nextInGroup — closing one tile stays in the mosaic", () => {
   const m = (...ids: string[]) => ids.map((id) => taskSess(id, {}, { groupId: "g1" }));
   it("promotes the tile that FOLLOWS the one closing", () => {
-    // The grid reflows into the gap, so closing the top-left tile makes the next one
-    // top-left — that is the one to look at.
+    // The grid reflows into the gap, so the tile after the closed one takes its place.
     expect(nextInGroup(m("a", "b", "c"), "a")?.id).toBe("b");
     expect(nextInGroup(m("a", "b", "c"), "b")?.id).toBe("c");
   });
@@ -1193,7 +1166,7 @@ describe("nextInGroup — closing one tile stays in the mosaic", () => {
     expect(nextInGroup(m("only"), "only")).toBeNull();
   });
   it("returns null for a session that isn't in the group at all", () => {
-    // The caller then falls back to nextAfterClose, i.e. the sidebar's own answer.
+    // the caller then falls back to nextAfterClose
     expect(nextInGroup(m("a", "b"), "elsewhere")).toBeNull();
   });
 });
@@ -1223,12 +1196,9 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
   it("counts a claude pane only while its turn is actually moving", () => {
     expect(midFlight(sess({ phase: "working" }))).toBe(true);
     expect(midFlight(sess({ phase: "thinking" }))).toBe(true);
-    // A blocking permission is mid-turn too: the tool call fires the instant you allow
-    // it, so the ground must not have moved between the ask and the answer.
+    // A blocking permission is mid-turn too: the tool call fires the instant you allow it.
     expect(midFlight(sess({ phase: "idle", attention: "Bash" }))).toBe(true);
-    // The three ways an agent waits on YOU. None of them is touching the tree, and this
-    // is the whole point of the predicate — one parked conversation used to make a
-    // folder unswitchable.
+    // Waiting on you is not touching the tree; a parked conversation must not make a folder unswitchable.
     expect(midFlight(sess({ phase: "idle" }))).toBe(false);
     expect(midFlight(sess({ phase: "done" }))).toBe(false);
     expect(midFlight(sess({ phase: "error" }))).toBe(false);
@@ -1239,17 +1209,14 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
     expect(midFlight(sess({ kind: "shell", phase: "idle" }))).toBe(false);
   });
   it("never counts a third-party agent — it would block the checkout forever", () => {
-    // Not the shell's reasoning. Nothing reports an agent pane idle, so a `true` here
-    // would mean a checkout holding one could never be switched again for as long as
-    // the pane stayed open — which is most of a working day.
+    // Nothing reports an agent pane idle, so a `true` here would hold the checkout as long as it is open.
     expect(midFlight(sess({ kind: "agent", phase: "idle" }))).toBe(false);
     expect(midFlight(sess({ kind: "agent", phase: "working" }))).toBe(false);
     expect(midFlight(sess({ kind: "agent", attention: "Bash" }))).toBe(false);
   });
   it("counts a task until it exits, whatever phase it is showing", () => {
     expect(midFlight(taskSess("build"))).toBe(true);
-    // A run's done/error are its exit code, not a live state — once it has one, the
-    // build it was verifying is over and the branch under it is free to move.
+    // A run's done/error are its exit code: once it has one, the branch under it is free to move.
     expect(midFlight(taskSess("build", { phase: "done" }, { exitCode: 0 }))).toBe(false);
     expect(midFlight(taskSess("build", { phase: "error" }, { exitCode: 1 }))).toBe(false);
     // A background run is still a run: it holds the tree for as long as it lives.
@@ -1260,8 +1227,7 @@ describe("midFlight — work in flight, the question a branch switch asks", () =
 describe("canShelve — which panes can be stopped and kept", () => {
   it("takes an integrated agent with a resumable conversation", () => {
     expect(canShelve(sess({ phase: "idle" }))).toBe(true);
-    // Phase says nothing about it: an ended pane is the clearest case for shelving,
-    // since the row is all that is left and the terminal buffer is pure cost.
+    // Phase says nothing about it: an ended pane is the clearest case, its buffer being pure cost.
     expect(canShelve(sess({ phase: "ended" }))).toBe(true);
     expect(canShelve(sess({ phase: "working" }))).toBe(true);
   });
@@ -1269,14 +1235,12 @@ describe("canShelve — which panes can be stopped and kept", () => {
   it("refuses a pane with no conversation to come back to", () => {
     expect(canShelve(sess({ kind: "shell" }))).toBe(false);
     expect(canShelve(taskSess("build"))).toBe(false);
-    // A terminal-only agent: `kind: "agent"`, but its adapter advertises nothing, so
-    // the ⟲ on its shelved row would be a button that can only fail.
+    // A terminal-only agent advertises no resume, so ⟲ on its shelved row could only fail.
     expect(canShelve(sess({ kind: "agent" }))).toBe(false);
   });
 
   it("refuses a session running in the user's own terminal", () => {
-    // `kill_session` cannot reach it, so shelving would take the row away and leave
-    // the agent it claims to have stopped running in Ghostty.
+    // `kill_session` cannot reach it, so the row would go while the agent ran on in Ghostty.
     expect(canShelve(sess({ external: true }))).toBe(false);
   });
 
@@ -1295,9 +1259,8 @@ describe("midWork — what a shelve would interrupt", () => {
   });
 
   it("adds the one case midFlight misses: a finished turn whose fan-out runs on", () => {
-    // `Stop` fires while a Workflow's fleet works for another twenty minutes, so the
-    // pane is `done` with no attention — midFlight says no, and stopping it would kill
-    // the run. This is the whole reason the two functions are not one.
+    // `Stop` fires while a Workflow's fleet runs on, so the pane is `done` with no attention;
+    // midFlight says no, and stopping it would kill the run.
     const s = sess({ phase: "done", ...fleet(12, 4), lastActivity: NOW_MS });
     expect(midFlight(s)).toBe(false);
     expect(midWork(s, NOW_MS)).toBe(true);
@@ -1318,14 +1281,11 @@ describe("dormantBusy — a live session must not be offered for restore", () =>
   });
 
   it("is busy while only the BACKEND holds its PTY — a webview reload orphan (#47)", () => {
-    // The reload state: frontend map empty, roster row back on screen, process
-    // alive. `list_external_sessions` excludes owned pids, so without this set the
-    // row would read resumable and a second --resume would interleave the
-    // transcript the live process still owns.
+    // After a reload the map is empty but the process lives, and `list_external_sessions` excludes
+    // owned pids; without this set a second --resume would interleave the transcript it still owns.
     setBackendLive(new Set(["claude:d1"]));
     expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
-    // Rotation before the reload changes nothing: the backend map is keyed by the
-    // launch id, which is exactly what the roster's `id` still holds.
+    // the backend map is keyed by the launch id, which the roster's `id` still holds after a rotation
     expect(dormantBusy(dorm({ id: "d1", resumeId: "rotated-later" }))).toBe(true);
     expect(dormantBusy(dorm({ id: "gone", resumeId: "gone" }))).toBe(false);
   });
@@ -1355,8 +1315,7 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
   });
 
   it("still adopts an orphan the roster forgot, with meta null", () => {
-    // A running conversation is worth more than a tidy label — the caller derives
-    // one from the workdir.
+    // A running conversation is worth more than a tidy label; the caller derives one from the workdir.
     const out = orphanAdoptions([live()], []);
     expect(out).toEqual([{ id: "o1", workdir: "/w/epi", provider: "claude", meta: null }]);
   });
@@ -1378,16 +1337,14 @@ describe("orphanAdoptions — which reload orphans get a pane rebuilt (#47)", ()
 });
 
 describe("adoptIdentity — which project an adopted orphan lists under", () => {
-  // What `worktree_heads` returns for a repo with one linked checkout, in the physical,
-  // normalised spelling Rust hands back.
+  // What `worktree_heads` returns for a repo with one linked checkout, in Rust's normalised spelling.
   const heads: WtHead[] = [
     { path: "/w/epi", branch: "main", is_main: true, exists: true },
     { path: "/w/.cc-worktrees/epi/feat-undo-redo", branch: "feat/undo-redo", is_main: false, exists: true },
   ];
 
   it("takes the roster's identity verbatim and never re-derives over it", () => {
-    // The launch identity beats anything the filesystem could say: a worktree launch
-    // deliberately pins colorKey to the repo, and a renamed project has no other home.
+    // A worktree launch pins colorKey to the repo, and a renamed project has no other home.
     const m = dorm({ project: "Epi!", colorKey: "/w/epi", workdir: "/w/.cc-worktrees/epi/feat-undo-redo", worktree: "feat/undo-redo", branch: "feat/undo-redo" });
     expect(adoptIdentity(m.workdir, m, heads)).toEqual({
       project: "Epi!", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
@@ -1395,8 +1352,6 @@ describe("adoptIdentity — which project an adopted orphan lists under", () => 
   });
 
   it("files a roster-less worktree pane under its REPO, not as a project of its own", () => {
-    // The shipped bug: two fast Ctrl+R emptied the roster, every pane adopted with no
-    // meta, and this one became a top-level project named after its branch folder.
     expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo", null, heads)).toEqual({
       project: "epi", colorKey: "/w/epi", worktree: "feat/undo-redo", branch: "feat/undo-redo",
     });
@@ -1409,15 +1364,13 @@ describe("adoptIdentity — which project an adopted orphan lists under", () => 
   });
 
   it("resolves a folder INSIDE a checkout to that checkout", () => {
-    // A task declares its own cwd and a shell inherits it, so a pane can sit several
-    // folders deep in the checkout it belongs to.
+    // A task declares its own cwd and a shell inherits it, so a pane can sit deep in its checkout.
     expect(adoptIdentity("/w/.cc-worktrees/epi/feat-undo-redo/ui/src", null, heads))
       .toMatchObject({ colorKey: "/w/epi", worktree: "feat/undo-redo" });
   });
 
   it("levels the two spellings the comparison actually gets", () => {
-    // Rust normalises its side (`E:\…`, upper-cased drive); a `Sess.workdir` is however
-    // the user picked it. Compared raw, the repo stops matching its own worktree.
+    // Rust normalises its side (upper-cased drive, backslashes); a `Sess.workdir` is as the user picked it.
     const win: WtHead[] = [
       { path: "E:\\w\\epi", branch: "main", is_main: true, exists: true },
       { path: "E:\\w\\.cc-worktrees\\epi\\feat", branch: "feat/x", is_main: false, exists: true },
@@ -1427,8 +1380,7 @@ describe("adoptIdentity — which project an adopted orphan lists under", () => 
   });
 
   it("fails closed on a folder no repo claims", () => {
-    // No roster, a scratch dir, an unreadable repo — the old answer, deliberately: we
-    // will not file a pane under a repo we could not find.
+    // No roster, a scratch dir, an unreadable repo: never file a pane under a repo we could not find.
     expect(adoptIdentity("/w/scratch/thing", null, [])).toEqual({
       project: "thing", colorKey: "/w/scratch/thing", worktree: null, branch: "",
     });
@@ -1442,8 +1394,7 @@ describe("adoptIdentity — which project an adopted orphan lists under", () => 
 describe("pickAgent — which agent a launch in this project starts", () => {
   const cli = (id: string, label = id): AgentCli =>
     ({ id, label, mark: id.slice(0, 2), bin: id, path: `/usr/local/bin/${id}`, capabilities: [] });
-  /// Known to Episko, absent from this machine — what `list_agents` now returns for
-  /// the twelve you haven't installed, and what the picker greys out.
+  // Known to Episko but not installed here: what `list_agents` returns for these and the picker greys out.
   const gone = (id: string, label = id): AgentCli => ({ ...cli(id, label), path: null });
   const avail = [cli("codex", "Codex"), cli("gemini", "Gemini CLI")];
 
@@ -1456,36 +1407,27 @@ describe("pickAgent — which agent a launch in this project starts", () => {
   });
 
   it("falls back to Claude when a stored id is no longer installed", () => {
-    // The point of the whole function. Both prefs are ids in localStorage and `avail`
-    // is re-probed every startup, so uninstalling an agent must not break ⌘N — the
-    // worst case has to be "it started the wrong one", never "nothing starts".
+    // Both prefs are ids in localStorage and `avail` is re-probed at startup, so uninstalling an
+    // agent must not break ⌘N: the worst case is the wrong agent, never none.
     expect(pickAgent("/repo", "opencode", {}, avail).id).toBe("claude");
     expect(pickAgent("/repo", "codex", {}, []).id).toBe("claude");
-    // A dead override drops to the DEFAULT, not straight to Claude — the plain cascade
-    // every settings system has, and the least astonishing: "my override broke, so I
-    // get my default". Claude is the floor of that cascade, not a special case of it.
+    // A dead override drops to the default, not straight to Claude; Claude is the floor of the cascade.
     expect(pickAgent("/repo", "codex", { "/repo": "opencode" }, avail).id).toBe("codex");
     // …and when the default is dead too, the floor is where it lands.
     expect(pickAgent("/repo", "kiro", { "/repo": "opencode" }, avail).id).toBe("claude");
   });
 
   it("refuses an agent that is listed but not installed", () => {
-    // The rule that arrived with the greyed rows. `list_agents` returns the whole
-    // catalogue now, so being *in* `avail` stopped meaning the binary is there —
-    // without the installed check, a preference naming an uninstalled agent (set on a
-    // machine that had it, synced or carried over) would launch a row the picker draws
-    // as unpickable, and ⌘N would die on a missing binary.
+    // `list_agents` returns the whole catalogue, so being in `avail` does not mean the binary is there;
+    // a preference naming an uninstalled agent must not send ⌘N at a missing binary.
     const mixed = [...avail, gone("opencode", "OpenCode")];
     expect(pickAgent("/repo", "opencode", {}, mixed).id).toBe("claude");
     expect(pickAgent("/repo", "codex", { "/repo": "opencode" }, mixed).id).toBe("codex");
-    // And the installed ones in the same list still resolve, so the filter is not just
-    // rejecting everything.
     expect(pickAgent("/repo", "gemini", {}, mixed).id).toBe("gemini");
   });
 
   it("never needs claude to be in the probed list", () => {
-    // `available_agents` deliberately omits it — claude goes through spawn_claude, not
-    // spawn_agent — so resolving "claude" must work against an empty probe.
+    // `available_agents` omits claude, which goes through spawn_claude, so it must resolve on an empty probe.
     expect(pickAgent("/repo", "claude", {}, [])).toEqual(CLAUDE_CLI);
     expect(pickAgent("/repo", "claude", { "/repo": "claude" }, [])).toEqual(CLAUDE_CLI);
   });

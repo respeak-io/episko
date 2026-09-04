@@ -1,21 +1,6 @@
-// GitHub, through the `gh` CLI — issues and PRs as threads, and the claim Episko
-// writes when you dispatch an agent at one.
-//
-// WHY `gh` AND NOT THE API. Auth. `gh` already holds the user's token, refreshes it,
-// honours enterprise hosts and `GH_TOKEN`, and is the thing they already trust with
-// this repo. Shipping our own OAuth flow to duplicate that would be a worse product
-// and a much larger attack surface, so Episko borrows the credential rather than
-// asking for one. The cost is a process per call, which is why reads are cached.
-//
-// DEGRADE, NEVER FAIL. `gh` may be missing, logged out, or pointed at a folder that
-// is not a GitHub repo. None of those is an error the user needs to see as breakage:
-// every read answers with `available: false` and a reason the UI can show as a single
-// quiet row, exactly like a blocked runnable. Only an explicit *write* the user asked
-// for reports failure loudly.
-//
-// The write half is deliberately small — assign, one edited-in-place comment, an
-// optional label — because a claim is a hint, never a lock. See ./claim.ts for the
-// rules that shape it.
+// GitHub through the `gh` CLI: issues and PRs as threads, plus the claim Episko writes
+// when you dispatch an agent at one (src/claim.ts). `gh` is used for its credential, never
+// the API directly. Every read degrades to `available: false`; only an explicit write fails loudly.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -23,39 +8,29 @@ use std::time::{Duration, Instant};
 
 use crate::platform::{augmented_path, sys_command};
 
-/// How long a read stays fresh. Long enough that opening a board twice costs one
-/// round trip, short enough that a colleague's push shows up on the timescale the
-/// rest of the collaborator signals do.
 const TTL: Duration = Duration::from_secs(60);
 
-/// One issue or PR, flattened to what a thread row needs. Deliberately not the whole
-/// GitHub object: the board shows a title, who has it, and how stale it is.
+/// One issue or PR, flattened to what a thread row needs.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct GhThread {
     pub number: i64,
     pub kind: String, // "issue" | "pr"
     pub title: String,
     pub url: String,
-    /// Login names. Empty means nobody has claimed it.
-    pub assignees: Vec<String>,
+    pub assignees: Vec<String>, // logins; empty means unclaimed
     pub labels: Vec<String>,
-    /// The PR's head branch — the link between a PR and a checkout we can see locally.
-    pub branch: Option<String>,
+    pub branch: Option<String>, // the PR's head branch, the join to a local checkout
     pub author: Option<String>,
     pub draft: bool,
-    /// ISO-8601, straight from gh. Parsed by the frontend, which already formats time.
-    pub updated_at: String,
+    pub updated_at: String, // ISO-8601 as gh gives it; the frontend parses
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct GhResult {
-    /// False when gh is absent, unauthenticated, or this folder is not a GitHub repo.
-    pub available: bool,
-    /// Why not — shown as one quiet row rather than an error dialog.
-    pub reason: Option<String>,
+    pub available: bool, // false: gh absent, unauthenticated, or not a GitHub repo
+    pub reason: Option<String>, // shown as one quiet row, never an error dialog
     pub threads: Vec<GhThread>,
-    /// Who `gh` thinks you are, so the UI can tell your claims from a colleague's.
-    pub viewer: Option<String>,
+    pub viewer: Option<String>, // who gh thinks you are; tells your claims from a colleague's
 }
 
 impl GhResult {
@@ -66,47 +41,47 @@ impl GhResult {
 
 struct Cached { at: Instant, result: GhResult }
 
-// Keyed by repo root. A Mutex rather than a channel because every access is a short
-// map lookup, and the same reasoning as `discover_cached` in tasks.rs: the cheap thing
-// is to remember, not to coordinate.
-static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None);
+static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None); // keyed by repo root
 
-/// Who `gh` thinks you are. **Cached for the life of the process, and deliberately
-/// NOT per repo**: `gh api user` returns the same login whichever folder it is run in,
-/// so keying it by root spent one extra process per project for an answer already in
-/// hand. With a dashboard per project that was a real cost — it is the same call, N
-/// times, for one string that cannot differ.
+/// The active account's login, cached per process rather than per repo: `gh api user`
+/// answers the same in every folder. A project pinned to another account never reaches
+/// this cache; the pin itself is the answer (`viewer_login`). Claims compare against it.
 static VIEWER: Mutex<Option<Option<String>>> = Mutex::new(None);
 
-fn viewer_login(root: &str) -> Option<String> {
+fn viewer_login(root: &str, account: Option<&str>) -> Option<String> {
+    if let Some(login) = account {
+        return Some(login.to_string());
+    }
     if let Ok(g) = VIEWER.lock() {
         if let Some(v) = g.as_ref() {
             return v.clone();
         }
     }
-    let v = gh(root, &["api", "user", "--jq", ".login"])
+    let v = gh(root, None, &["api", "user", "--jq", ".login"])
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    // A failure is cached too: an unauthenticated gh will keep failing, and retrying
-    // it on every project click is a process per click for a known answer.
+    // A failure is cached too: an unauthenticated gh keeps failing, and a retry is a process.
     if let Ok(mut g) = VIEWER.lock() {
         *g = Some(v.clone());
     }
     v
 }
 
-fn gh(root: &str, args: &[&str]) -> Result<String, String> {
-    let out = sys_command("gh")
-        .env("PATH", augmented_path())
-        // gh infers the repo from the working directory; there is no -C equivalent.
-        .current_dir(root)
+/// One `gh` call, run as `account` when the project names one. `GH_TOKEN` is the only
+/// per-call account selector gh has (`gh auth switch` is global), so the pinned account's
+/// own token is handed to this one child and nothing else changes.
+fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = sys_command("gh");
+    cmd.env("PATH", augmented_path())
+        .current_dir(root) // gh has no -C; it infers the repo from cwd
         .args(args)
-        // Never let gh try to open a browser or prompt: this runs with no terminal.
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .output()
-        .map_err(|e| format!("gh not available: {e}"))?;
+        .env("GH_PROMPT_DISABLED", "1") // no terminal here: never prompt or open a browser
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    if let Some(login) = account {
+        cmd.env("GH_TOKEN", account_token(login)?);
+    }
+    let out = cmd.output().map_err(|e| format!("gh not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed");
@@ -115,15 +90,44 @@ fn gh(root: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Map gh's own failure text to something a person can act on.
-///
-/// This is the one place we look at gh's stderr prose, and only to *classify* — the
-/// data paths all parse `--json`. Worth the exception because "gh: command not found"
-/// and "you are not logged in" need very different responses from the user, and gh
-/// gives no distinguishing exit code.
-fn classify(err: &str) -> String {
+/// The token gh holds for one account, read from gh's own keyring. Never cached (gh
+/// refreshes them, and the read is cheap beside the network call it precedes) and never
+/// logged. A pin gh no longer knows is an error, never a fall-back to the active account.
+fn account_token(login: &str) -> Result<String, String> {
+    // The login reaches gh as an argument, so it must not read as a flag.
+    if login.is_empty() || login.starts_with('-') {
+        return Err(format!("{login:?} is not a GitHub account name"));
+    }
+    let out = sys_command("gh")
+        .env("PATH", augmented_path())
+        .args(["auth", "token", "--hostname", "github.com", "--user", login])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .map_err(|e| format!("gh not available: {e}"))?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || token.is_empty() {
+        return Err(format!("gh is not logged in as {login}, which this project is set to use"));
+    }
+    Ok(token)
+}
+
+/// Map gh's stderr prose to something a person can act on: the one place stderr is
+/// read, and only to classify (data paths parse `--json`). `who` is the account the call
+/// ran as. GitHub answers an invisible repo exactly like a nonexistent one, so naming
+/// the account is what turns that message into a fix.
+fn classify(err: &str, who: Option<&str>) -> String {
     let e = err.to_lowercase();
-    if e.contains("not found") && e.contains("gh") { return "GitHub CLI (gh) is not installed".into(); }
+    if e.contains("could not resolve to a repository") {
+        return match who {
+            Some(w) => format!("signed in as {w}, which cannot see this repository"),
+            None => "the signed-in GitHub account cannot see this repository".into(),
+        };
+    }
+    // `gh()` writes "not available" on a spawn failure. The looser "not found" must not
+    // match gh's own HTTP prose (`gh: Not Found (HTTP 404)` is about a resource).
+    let missing = e.contains("not available") || (e.contains("not found") && !e.contains("http"));
+    if missing && e.contains("gh") { return "GitHub CLI (gh) is not installed".into(); }
     if e.contains("auth") || e.contains("logged in") || e.contains("token") {
         return "gh is not authenticated — run `gh auth login`".into();
     }
@@ -133,9 +137,79 @@ fn classify(err: &str) -> String {
     err.to_string()
 }
 
+/// The login to name in a failure: the pin, else the active account's last answer. Never
+/// a fresh probe; this runs on a path that already failed, and a second call can hang.
+fn who_for(account: Option<&str>) -> Option<String> {
+    account
+        .map(str::to_string)
+        .or_else(|| VIEWER.lock().ok().and_then(|g| g.clone().flatten()))
+}
+
+// ---------- which of your accounts ----------
+
+/// One github.com account `gh` is logged in to.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhAccount {
+    pub login: String,
+    pub active: bool, // gh's default when nothing is pinned; the picker marks it as such
+}
+
+static ACCOUNT_CACHE: Mutex<Option<(Instant, Vec<GhAccount>)>> = Mutex::new(None);
+
+/// Every github.com account `gh` is logged in to (github.com only: `parse_remote` mints
+/// slugs for nothing else). `gh auth status` tests each account against the API, so this
+/// is cached, but for TTL rather than per process so a `gh auth login` shows up without a restart.
+#[tauri::command]
+pub(crate) async fn gh_accounts() -> Vec<GhAccount> {
+    tauri::async_runtime::spawn_blocking(|| {
+        if let Ok(g) = ACCOUNT_CACHE.lock() {
+            if let Some((at, v)) = g.as_ref() {
+                if at.elapsed() < TTL {
+                    return v.clone();
+                }
+            }
+        }
+        let out = sys_command("gh")
+            .env("PATH", augmented_path())
+            .args(["auth", "status", "--json", "hosts"])
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .output()
+            .ok();
+        // No gh means no accounts: the picker is simply absent, never an error dialog.
+        let list = out
+            .filter(|o| o.status.success())
+            .map(|o| parse_accounts(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default();
+        if let Ok(mut g) = ACCOUNT_CACHE.lock() {
+            *g = Some((Instant::now(), list.clone()));
+        }
+        list
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The github.com half of `gh auth status --json hosts`:
+/// `{"hosts":{"<host>":[{"login":…,"active":…}]}}`.
+fn parse_accounts(json: &str) -> Vec<GhAccount> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = v.get("hosts").and_then(|h| h.get("github.com")).and_then(|a| a.as_array()) else {
+        return vec![];
+    };
+    arr.iter()
+        .filter_map(|a| {
+            let login = a.get("login")?.as_str()?.trim().to_string();
+            if login.is_empty() {
+                return None;
+            }
+            Some(GhAccount { login, active: a.get("active").and_then(serde_json::Value::as_bool).unwrap_or(false) })
+        })
+        .collect()
+}
+
 // ---------- parsing ----------
-// Split out from the fetch so it can be tested against fixtures without a network,
-// a token, or a repo — the parsing is where the bugs live, not the process spawn.
+// Split from the fetch so it can be tested against fixtures without a network.
 
 pub(crate) fn parse_issues(json: &str) -> Vec<GhThread> {
     parse_list(json, "issue")
@@ -176,13 +250,10 @@ fn parse_list(json: &str, kind: &str) -> Vec<GhThread> {
 
 // ---------- reads ----------
 
-/// Open issues and PRs for the repo at `root`, cached for TTL.
-///
-/// Two `gh` calls, never one per item. `force` bypasses the cache for an explicit
-/// refresh; everything else — opening the board, switching altitude, a repaint — is
-/// served from memory, which is what stops a render loop becoming a network loop.
+/// Open issues and PRs for the repo at `root`, cached for TTL. `force` bypasses the
+/// cache for an explicit refresh only; a repaint must never become a network call.
 #[tauri::command]
-pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
+pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String>) -> GhResult {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = CACHE.lock() {
@@ -194,34 +265,20 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
             }
         }
 
-        // **The three reads run at once.** Each is a process spawn plus a network round
-        // trip, and in sequence they cost the sum: measured against a real repo at 662ms
-        // (issues), 605ms (PRs) and 457ms (the viewer, once per process) — 1.7-2.3s of
-        // wall clock, against 0.7-1.0s for the same three concurrently. Nothing here
-        // depends on anything else here, so the only reason they were sequential was that
-        // `viewer_login` sat inside the issue read's success arm.
-        //
-        // `std::thread::scope` rather than tasks: we are already inside `spawn_blocking`,
-        // so there is no runtime to hand work to, and a scope lets all three borrow `root`
-        // instead of cloning it. A panicking probe is folded into that probe's own failure
-        // — one dead read must not take the other two down.
-        //
-        // The viewer is now probed even when the issue read fails, which the old nesting
-        // never did. That is consistent rather than new: the failure it would cache is the
-        // *same* failure — gh missing or logged out — that `viewer_login` already caches
-        // deliberately, and the one case where the two differ (a folder that is not a
-        // GitHub repo) is exactly the case where `gh api user` still answers correctly,
-        // since it is not repo-scoped.
+        // The three reads are independent and each is a process plus a round trip, so they
+        // run concurrently. A thread scope because this is already inside `spawn_blocking`
+        // with no runtime to hand work to; a panicking probe folds into its own failure only.
+        let acct = account.as_deref();
         let (issues, prs, viewer) = std::thread::scope(|s| {
-            let i = s.spawn(|| gh(&root, &[
+            let i = s.spawn(|| gh(&root, acct, &[
                 "issue", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt",
             ]));
-            let p = s.spawn(|| gh(&root, &[
+            let p = s.spawn(|| gh(&root, acct, &[
                 "pr", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt,headRefName,author,isDraft",
             ]));
-            let v = s.spawn(|| viewer_login(&root));
+            let v = s.spawn(|| viewer_login(&root, acct));
             (
                 i.join().unwrap_or_else(|_| Err("gh issue list panicked".into())),
                 p.join().unwrap_or_else(|_| Err("gh pr list panicked".into())),
@@ -229,7 +286,7 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
             )
         });
         let result = match issues {
-            Err(e) => GhResult::unavailable(classify(&e)),
+            Err(e) => GhResult::unavailable(classify(&e, who_for(acct).as_deref())),
             Ok(issue_json) => {
                 let mut threads = parse_issues(&issue_json);
                 // A PR failure is not fatal: issues alone are still a useful board.
@@ -250,10 +307,22 @@ pub(crate) async fn gh_threads(root: String, force: bool) -> GhResult {
     .unwrap_or_else(|e| GhResult::unavailable(format!("gh task failed: {e}")))
 }
 
-/// Drop a repo's cached reads so the next call goes to the network.
+/// Drop a repo's cached reads so the next call goes to the network. All three caches:
+/// a refresh is one question, and switching the account a project reads as must not
+/// leave a board of the new identity beside a triage list of the old one.
 #[tauri::command]
 pub(crate) fn gh_invalidate(root: String) {
     if let Ok(mut guard) = CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+    if let Ok(mut guard) = EVENT_CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+    if let Ok(mut guard) = MERGED_CACHE.lock() {
         if let Some(m) = guard.as_mut() {
             m.remove(&root);
         }
@@ -262,12 +331,8 @@ pub(crate) fn gh_invalidate(root: String) {
 
 // ---------- writes ----------
 
-/// The marker that makes the sticky comment ours to edit.
-///
-/// `gh issue comment --edit-last` edits the last comment *by you*, which is not
-/// necessarily this one — you may have replied since. The marker lets us check we are
-/// about to overwrite our own note rather than a real reply, and it also tells a
-/// reader on GitHub that a machine wrote it.
+/// Marks the sticky comment as ours: `--edit-last` edits your last comment, which may be
+/// a real reply you wrote since, and a reader on GitHub sees that a machine wrote it.
 const MARKER: &str = "<!-- episko:claim -->";
 
 #[derive(serde::Serialize)]
@@ -275,17 +340,13 @@ pub(crate) struct ClaimOutcome {
     pub assigned: bool,
     pub commented: bool,
     pub labeled: bool,
-    /// Everything that did not work, in the user's words rather than gh's.
-    pub problems: Vec<String>,
+    pub problems: Vec<String>, // in the user's words rather than gh's
 }
 
-/// Claim a thread: assign yourself, and/or leave one comment that is edited in place.
-///
-/// Every part is independent and best-effort — a repo where you cannot assign (no
-/// write access) should still get the comment, and a failure of either is reported
-/// without undoing the other. Nothing here refuses: this records a claim, it does not
-/// enforce one.
+/// Claim a thread: assign yourself and/or leave one comment that is edited in place.
+/// Every part is independent and best-effort; a claim is recorded, never enforced.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command parameters are the frontend wire format.
 pub(crate) async fn gh_claim(
     root: String,
     number: i64,
@@ -294,37 +355,40 @@ pub(crate) async fn gh_claim(
     comment: bool,
     label: String,
     body: String,
+    account: Option<String>,
 ) -> ClaimOutcome {
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let noun = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
         let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
 
         if assign {
-            match gh(&root, &[noun, "edit", &n, "--add-assignee", "@me"]) {
+            match gh(&root, acct, &[noun, "edit", &n, "--add-assignee", "@me"]) {
                 Ok(_) => out.assigned = true,
-                Err(e) => out.problems.push(format!("assign: {}", classify(&e))),
+                Err(e) => out.problems.push(format!("assign: {}", classify(&e, who.as_deref()))),
             }
         }
         if !label.is_empty() {
-            match gh(&root, &[noun, "edit", &n, "--add-label", &label]) {
+            match gh(&root, acct, &[noun, "edit", &n, "--add-label", &label]) {
                 Ok(_) => out.labeled = true,
-                Err(e) => out.problems.push(format!("label: {}", classify(&e))),
+                Err(e) => out.problems.push(format!("label: {}", classify(&e, who.as_deref()))),
             }
         }
         if comment {
             let text = format!("{MARKER}\n{body}");
-            // --edit-last --create-if-none: ONE comment per thread, updated. Appending
-            // a new comment per dispatch is the behaviour that makes bots unwelcome.
-            let edited = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            // --edit-last --create-if-none: one comment per thread, updated, never appended.
+            let edited = gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
             match edited {
                 Ok(_) => out.commented = true,
-                Err(e) => {
-                    // Older gh has no --create-if-none; fall back to a plain comment so
-                    // the claim still lands rather than being silently skipped.
-                    match gh(&root, &[noun, "comment", &n, "--body", &text]) {
+                Err(_) => {
+                    // Older gh has no --create-if-none; fall back so the claim still lands.
+                    // The FALLBACK's error is the one reported: the first is most likely that
+                    // missing flag, and `classify` cannot see an auth failure through it.
+                    match gh(&root, acct, &[noun, "comment", &n, "--body", &text]) {
                         Ok(_) => out.commented = true,
-                        Err(_) => out.problems.push(format!("comment: {}", classify(&e))),
+                        Err(e) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
                     }
                 }
             }
@@ -337,17 +401,9 @@ pub(crate) async fn gh_claim(
     .unwrap_or(ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec!["claim task failed".into()] })
 }
 
-/// Release a claim — the agent ended without pushing, so the thread is free again.
-///
-/// The failure mode this exists to prevent is a graveyard of dead claims: a claim that
-/// is never released is worse than no claim, because it tells a colleague someone is
-/// working on something nobody is.
-///
-/// **It undoes what the claim wrote, never a blanket reset.** `unassign` and `label`
-/// come from the frontend's ledger record of what actually landed, because the two
-/// failure directions are not symmetrical: leaving a stale claim up costs a colleague
-/// one wasted glance, while stripping an assignment a human made by hand is this app
-/// editing someone else's planning signal on the strength of a guess.
+/// Release a claim once the agent ended without pushing: a claim never released tells a
+/// colleague someone is working on what nobody is. Undoes only what the claim wrote
+/// (`unassign` and `label` come from the frontend's ledger), never a blanket reset.
 #[tauri::command]
 pub(crate) async fn gh_release(
     root: String,
@@ -356,25 +412,37 @@ pub(crate) async fn gh_release(
     unassign: bool,
     label: String,
     body: String,
+    account: Option<String>,
 ) -> ClaimOutcome {
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let noun = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
         let mut out = ClaimOutcome { assigned: false, commented: false, labeled: false, problems: vec![] };
 
         if unassign {
-            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
-                out.problems.push(format!("unassign: {}", classify(&e)));
+            if let Err(e) = gh(&root, acct, &[noun, "edit", &n, "--remove-assignee", "@me"]) {
+                out.problems.push(format!("unassign: {}", classify(&e, who.as_deref())));
             }
         }
         if !label.is_empty() {
-            if let Err(e) = gh(&root, &[noun, "edit", &n, "--remove-label", &label]) {
-                out.problems.push(format!("label: {}", classify(&e)));
+            if let Err(e) = gh(&root, acct, &[noun, "edit", &n, "--remove-label", &label]) {
+                out.problems.push(format!("label: {}", classify(&e, who.as_deref())));
             }
         }
         if !body.is_empty() {
             let text = format!("{MARKER}\n{body}");
-            let _ = gh(&root, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]);
+            // Reported like unassign and label above: a release comment that never landed
+            // leaves the thread saying somebody is still working on this.
+            if gh(&root, acct, &[noun, "comment", &n, "--edit-last", "--create-if-none", "--body", &text]).is_ok() {
+                out.commented = true;
+            } else {
+                match gh(&root, acct, &[noun, "comment", &n, "--body", &text]) {
+                    Ok(_) => out.commented = true,
+                    Err(e) => out.problems.push(format!("comment: {}", classify(&e, who.as_deref()))),
+                }
+            }
         }
         gh_invalidate(root);
         out
@@ -385,8 +453,7 @@ pub(crate) async fn gh_release(
 
 // ---------- what happened, and when ----------
 
-/// One thing that happened to an issue or PR on a given day. The Trail buckets these
-/// by date, so what a day *closed* reads as clearly as what it started.
+/// One thing that happened to an issue or PR; the Trail buckets these by day.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct GhEvent {
     pub number: i64,
@@ -394,17 +461,12 @@ pub(crate) struct GhEvent {
     pub event: String, // "opened" | "closed" | "merged"
     pub title: String,
     pub url: String,
-    /// ISO-8601 — the frontend already owns calendar-day bucketing (`dayKeyOf`), and
-    /// doing it here would risk the two disagreeing about where midnight falls.
-    pub at: String,
+    pub at: String, // ISO-8601; the frontend owns day bucketing (`dayKeyOf`)
 }
 
-/// Derive events from a list that carries `createdAt`, `closedAt` and (for PRs)
-/// `mergedAt`.
-///
-/// One item can produce two events — opened on Monday, merged on Thursday — and both
-/// matter, so this fans out rather than reducing to a current state. `mergedAt` wins
-/// over `closedAt`: GitHub sets both when a PR merges, and "merged" is the true story.
+/// Events from a list carrying `createdAt`, `closedAt` and (for PRs) `mergedAt`. One
+/// item can yield two events (opened, then merged); `mergedAt` wins over `closedAt`,
+/// since GitHub sets both when a PR merges.
 pub(crate) fn parse_events(json: &str, kind: &str) -> Vec<GhEvent> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
     let Some(arr) = v.as_array() else { return vec![] };
@@ -431,13 +493,10 @@ pub(crate) fn parse_events(json: &str, kind: &str) -> Vec<GhEvent> {
 struct CachedEvents { at: Instant, events: Vec<GhEvent> }
 static EVENT_CACHE: Mutex<Option<HashMap<String, CachedEvents>>> = Mutex::new(None);
 
-/// Everything that opened, closed or merged in this repo recently.
-///
-/// `--state all` in two calls rather than one per state: gh has no "changed since"
-/// filter for these, so the window is applied by the caller after bucketing. The limit
-/// is what bounds the work — 120 covers a very busy month and costs two requests.
+/// Everything that opened, closed or merged in this repo recently. gh has no "changed
+/// since" filter, so the caller applies the window after bucketing; the limit bounds the work.
 #[tauri::command]
-pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
+pub(crate) async fn gh_day_activity(root: String, force: bool, account: Option<String>) -> Vec<GhEvent> {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = EVENT_CACHE.lock() {
@@ -448,14 +507,15 @@ pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
                 }
             }
         }
+        let acct = account.as_deref();
         let mut out = Vec::new();
-        if let Ok(j) = gh(&root, &[
+        if let Ok(j) = gh(&root, acct, &[
             "issue", "list", "--state", "all", "--limit", "120",
             "--json", "number,title,url,createdAt,closedAt",
         ]) {
             out.extend(parse_events(&j, "issue"));
         }
-        if let Ok(j) = gh(&root, &[
+        if let Ok(j) = gh(&root, acct, &[
             "pr", "list", "--state", "all", "--limit", "120",
             "--json", "number,title,url,createdAt,closedAt,mergedAt",
         ]) {
@@ -471,25 +531,19 @@ pub(crate) async fn gh_day_activity(root: String, force: bool) -> Vec<GhEvent> {
     .unwrap_or_default()
 }
 
-/// A merged pull request, reduced to the one thing branch cleanup needs: which local
-/// branch it merged *from*, and the receipt to show for it.
+/// A merged pull request, reduced to what branch cleanup needs: the branch it merged from.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct MergedPr {
     pub number: i64,
-    /// The PR's head branch — the join to a local ref of the same name.
-    pub branch: String,
+    pub branch: String, // head branch, the join to a local ref of the same name
     pub title: String,
     pub url: String,
     pub merged_at: String,
 }
 
-/// Merged pull requests, and whether we could ask at all.
-///
-/// `available: false` is not the same answer as an empty list and the difference is the
-/// whole point of the struct: "no PR ever merged from these branches" invites deleting
-/// nothing, while "gh isn't logged in" must not be allowed to *look* like that — a
-/// squash-merged branch is unidentifiable without this data, and silently offering less
-/// cleanup is how a user ends up force-deleting by hand instead.
+/// Merged pull requests, and whether we could ask at all. `available: false` must not
+/// read as an empty list: a squash-merged branch is unidentifiable without this data,
+/// and silently offering less cleanup ends in a force-delete by hand.
 #[derive(serde::Serialize, Clone, Debug, Default)]
 pub(crate) struct MergedPrs {
     pub available: bool,
@@ -503,11 +557,10 @@ pub(crate) fn parse_merged_prs(json: &str) -> Vec<MergedPr> {
     arr.iter()
         .filter_map(|o| {
             let number = o.get("number")?.as_i64()?;
-            // A PR with no head branch name is no use here — the join is the branch.
+            // The join is the branch; a PR without one is no use here.
             let branch = o.get("headRefName").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
-            // `mergedAt` is null for a PR that was closed unmerged; `--state merged`
-            // should never return one, but "closed" and "merged" are one field away in
-            // gh's model and the difference is a branch's whole history.
+            // `mergedAt` is null for a PR closed unmerged. `--state merged` should never
+            // return one, but the difference is a branch's whole history.
             let merged_at = o.get("mergedAt").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
             Some(MergedPr {
                 number,
@@ -523,17 +576,11 @@ pub(crate) fn parse_merged_prs(json: &str) -> Vec<MergedPr> {
 struct CachedMerged { at: Instant, result: MergedPrs }
 static MERGED_CACHE: Mutex<Option<HashMap<String, CachedMerged>>> = Mutex::new(None);
 
-/// Which branches in this repo had their pull request merged.
-///
-/// The evidence behind the deep-clean pane's one force-delete: a **squash**-merged PR
-/// leaves a branch whose commits are ancestors of nothing, so `git branch -d` refuses a
-/// branch whose work demonstrably shipped, and no local read can tell that apart from
-/// work that never shipped at all. GitHub can, and this is the only place that asks.
-///
-/// One call, cached for the same TTL as the board — the pane is opened deliberately, but
-/// it re-reads on every repaint of its list and that must not become a request each time.
+/// Which branches had their pull request merged: the evidence behind the deep-clean
+/// pane's force-delete, since a squash merge leaves commits no local read can tell from
+/// unshipped work. Cached for TTL: the pane re-reads on every repaint of its list.
 #[tauri::command]
-pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
+pub(crate) async fn gh_merged_prs(root: String, force: bool, account: Option<String>) -> MergedPrs {
     tauri::async_runtime::spawn_blocking(move || {
         if !force {
             if let Ok(guard) = MERGED_CACHE.lock() {
@@ -544,11 +591,12 @@ pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
                 }
             }
         }
-        let result = match gh(&root, &[
+        let acct = account.as_deref();
+        let result = match gh(&root, acct, &[
             "pr", "list", "--state", "merged", "--limit", "100",
             "--json", "number,title,url,headRefName,mergedAt",
         ]) {
-            Err(e) => MergedPrs { available: false, reason: Some(classify(&e)), prs: vec![] },
+            Err(e) => MergedPrs { available: false, reason: Some(classify(&e, who_for(acct).as_deref())), prs: vec![] },
             Ok(j) => MergedPrs { available: true, reason: None, prs: parse_merged_prs(&j) },
         };
         if let Ok(mut guard) = MERGED_CACHE.lock() {
@@ -561,27 +609,26 @@ pub(crate) async fn gh_merged_prs(root: String, force: bool) -> MergedPrs {
     .unwrap_or_default()
 }
 
-/// Close an issue, with a comment saying why.
-///
-/// **The only destructive write Episko makes to GitHub**, and the reason the UI never
-/// does it on one click: it is public, it notifies every watcher, and "close" is not a
-/// thing you can quietly undo for other people who already read the notification. The
-/// comment is required rather than optional — a stale-close with no reason is the kind
-/// of bot behaviour that makes a team turn the whole feature off.
-///
-/// The comment goes first: if the close then fails, the issue has a note explaining
-/// what was attempted, which is recoverable. The other order can leave an issue closed
-/// with no explanation at all.
+/// Close an issue, with a comment saying why. The only destructive GitHub write, so the
+/// UI never does it on one click and the comment is required. The comment goes first:
+/// a failed close then leaves an explanation, where the other order leaves a silent close.
 #[tauri::command]
-pub(crate) async fn gh_close_issue(root: String, number: i64, comment: String) -> Result<(), String> {
+pub(crate) async fn gh_close_issue(
+    root: String,
+    number: i64,
+    comment: String,
+    account: Option<String>,
+) -> Result<(), String> {
     let body = comment.trim().to_string();
     if body.is_empty() {
         return Err("a closing comment is required".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let acct = account.as_deref();
+        let who = who_for(acct);
         let n = number.to_string();
-        gh(&root, &["issue", "comment", &n, "--body", &body]).map_err(|e| classify(&e))?;
-        gh(&root, &["issue", "close", &n]).map_err(|e| classify(&e))?;
+        gh(&root, acct, &["issue", "comment", &n, "--body", &body]).map_err(|e| classify(&e, who.as_deref()))?;
+        gh(&root, acct, &["issue", "close", &n]).map_err(|e| classify(&e, who.as_deref()))?;
         gh_invalidate(root.clone());
         Ok(())
     })
@@ -591,23 +638,10 @@ pub(crate) async fn gh_close_issue(root: String, number: i64, comment: String) -
 
 // ---------- the project's own policy ----------
 
-/// What a project permits, from `.episko/episko.toml`:
-///
 /// ```toml
-/// [claim]
+/// [claim]            # in .episko/episko.toml; a ceiling, never a default
 /// assign = false     # this team uses assignment for planning
-/// comment = true
 /// ```
-///
-/// **Absent means everything is allowed.** A repo that has never heard of Episko must
-/// not silently disable features, and a missing file is not a policy. Only keys that
-/// are present and `false` take anything away — the file is a ceiling, never a default.
-///
-/// There was a `push_branch` ceiling here. Nothing ever implemented the thing it
-/// bounded — `gh_claim` never took the argument and dispatch creates no branch — so a
-/// project switching it off was refusing a capability that did not exist. An unknown
-/// key in a hand-written `[claim]` table is ignored on read, so a file still carrying
-/// `push_branch` keeps working; it simply no longer pretends to decide anything.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub(crate) struct ClaimAllow {
     pub assign: bool,
@@ -621,9 +655,8 @@ impl Default for ClaimAllow {
     }
 }
 
-/// Every field is `Option`, and that is the whole design: absent must mean "allowed",
-/// not "false". A serde `Default` on a bool would silently deny everything the file
-/// forgot to mention, turning an incomplete policy into a total lockout.
+/// Every field is `Option`: absent must mean "allowed", never `false`, so a serde default
+/// on a bool would turn an incomplete policy into a lockout. Unknown keys are ignored.
 #[derive(serde::Deserialize, Default)]
 struct RawFile { claim: Option<RawClaim> }
 #[derive(serde::Deserialize, Default)]
@@ -635,8 +668,7 @@ struct RawClaim {
 
 pub(crate) fn parse_allow(toml_text: &str) -> ClaimAllow {
     let mut a = ClaimAllow::default();
-    // A malformed file must not lock a team out of their own claims — the same
-    // forgiving-on-read stance tasks.rs takes with a broken tasks.toml.
+    // A malformed file must not lock a team out of their claims; forgiving on read, as tasks.rs is.
     let Ok(file) = toml::from_str::<RawFile>(toml_text) else { return a };
     let Some(c) = file.claim else { return a };
     if let Some(x) = c.assign { a.assign = x; }
@@ -645,8 +677,7 @@ pub(crate) fn parse_allow(toml_text: &str) -> ClaimAllow {
     a
 }
 
-/// The project's claim policy. Reads `<root>/.episko/episko.toml`; a missing or
-/// unreadable file is "everything allowed", not an error.
+/// The project's claim policy; a missing or unreadable file is "everything allowed".
 #[tauri::command]
 pub(crate) fn claim_policy(root: String) -> ClaimAllow {
     std::path::Path::new(&root)
@@ -658,15 +689,9 @@ pub(crate) fn claim_policy(root: String) -> ClaimAllow {
 }
 
 // ---------- the keep list ----------
-// "We decided #24 stays open" is a project fact, not a personal preference, so it is
-// committed: decide once and nobody on the team is asked about that issue again. The
-// cost of that choice is that it has to be *auditable* — a committed decision nobody
-// can see is worse than no decision — which is why the UI shows the list with who
-// added each entry and an undo, and why this stores a `who` alongside the number.
-//
-// `toml_edit`, not a serialize-the-whole-struct round trip: the file may carry a
-// hand-written `[claim]` block with comments, and rewriting it wholesale would eat
-// them. Same rule tasks.rs follows for tasks.toml.
+// "We decided #24 stays open" is a project fact, so it is committed, with who decided
+// so the list is auditable. Written through `toml_edit` so a hand-written `[claim]`
+// block and its comments survive, as tasks.rs does for tasks.toml.
 
 fn episko_toml(root: &str) -> std::path::PathBuf {
     std::path::Path::new(root).join(".episko").join("episko.toml")
@@ -675,10 +700,8 @@ fn episko_toml(root: &str) -> std::path::PathBuf {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct KeptIssue {
     pub number: i64,
-    /// Who decided, so the list reads as a record rather than an anonymous blocklist.
-    pub who: String,
-    /// ISO-8601 date, day resolution — the hour adds nothing and churns the diff.
-    pub at: String,
+    pub who: String, // who decided; a record, not an anonymous blocklist
+    pub at: String,  // ISO-8601 date, day resolution; the hour only churns the diff
 }
 
 /// Issues this project has decided to keep, so triage stops suggesting them.
@@ -701,15 +724,21 @@ pub(crate) fn list_kept(root: String) -> Vec<KeptIssue> {
         .collect()
 }
 
-/// Add or remove one. `create` gates the very first write for the same reason the
-/// digest's does: a new committable file in someone's repo is a real side effect.
+/// Add or remove one. `create` gates the very first write, as the digest's does: a new
+/// committable file in someone's repo is a real side effect.
 #[tauri::command]
 pub(crate) fn set_kept(
     root: String, number: i64, who: String, at: String, keep: bool, create: bool,
 ) -> Result<(), String> {
     let path = episko_toml(&root);
-    if !path.is_file() && !create {
-        return Err("no .episko/episko.toml yet".into());
+    if !path.is_file() {
+        // Un-keeping what no file records is already true, and must not create one to say so.
+        if !keep {
+            return Ok(());
+        }
+        if !create {
+            return Err("no .episko/episko.toml yet".into());
+        }
     }
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
@@ -721,8 +750,7 @@ pub(crate) fn set_kept(
         tri["keep"] = toml_edit::value(toml_edit::Array::new());
     }
     let arr = tri["keep"].as_array_mut().ok_or("triage.keep is not an array")?;
-    // Remove any existing entry for this number first, so a re-keep updates rather
-    // than duplicating and an un-keep is simply the removal.
+    // Drop any existing entry first, so a re-keep updates and an un-keep is the removal.
     arr.retain(|v| v.as_inline_table().and_then(|t| t.get("number")).and_then(|n| n.as_integer()) != Some(number));
     if keep {
         let mut t = toml_edit::InlineTable::new();
@@ -731,8 +759,7 @@ pub(crate) fn set_kept(
         t.insert("at", at.into());
         arr.push(toml_edit::Value::InlineTable(t));
     }
-    // One entry per line: a single-line array of ten inline tables is unreadable in a
-    // diff, and a diff is the whole point of committing this.
+    // One entry per line; a readable diff is the point of committing this.
     for item in arr.iter_mut() {
         item.decor_mut().set_prefix("\n  ");
     }
@@ -751,8 +778,7 @@ pub(crate) fn set_kept(
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
-/// Tiny helper so the command above reads as one expression.
-trait PipeRead { fn pipe_read(&self) -> Option<String>; }
+trait PipeRead { fn pipe_read(&self) -> Option<String>; } // lets claim_policy read as one expression
 impl PipeRead for std::path::PathBuf {
     fn pipe_read(&self) -> Option<String> { std::fs::read_to_string(self).ok() }
 }
@@ -764,8 +790,7 @@ mod tests {
 
     #[test]
     fn keep_list_round_trips_and_records_who_decided() {
-        // The list is committed, so it has to be auditable: an anonymous blocklist
-        // raises "who decided this?" on every read.
+        // Committed, so auditable: `who` must round-trip.
         let d = scratch_dir();
         let r = d.to_string_lossy().to_string();
         assert!(set_kept(r.clone(), 24, "Tim".into(), "2026-07-31".into(), true, false).is_err());
@@ -774,7 +799,6 @@ mod tests {
         assert_eq!(l.len(), 1);
         assert_eq!(l[0], KeptIssue { number: 24, who: "Tim".into(), at: "2026-07-31".into() });
 
-        // Un-keeping removes it, and the last removal takes the table with it.
         set_kept(r.clone(), 24, String::new(), String::new(), false, false).unwrap();
         assert!(list_kept(r.clone()).is_empty());
         let text = std::fs::read_to_string(d.join(".episko").join("episko.toml")).unwrap();
@@ -794,8 +818,7 @@ mod tests {
 
     #[test]
     fn a_hand_written_claim_policy_survives_a_keep() {
-        // episko.toml is shared with [claim], which a team may have hand-written with
-        // comments. toml_edit is what keeps that true.
+        // [claim] may be hand-written with comments; toml_edit is what keeps them.
         let d = scratch_dir();
         let r = d.to_string_lossy().to_string();
         std::fs::create_dir_all(d.join(".episko")).unwrap();
@@ -841,7 +864,6 @@ mod tests {
         assert_eq!(t[0].kind, "issue");
         assert_eq!(t[0].labels, vec!["performance", "prio: high"]);
         assert!(t[0].assignees.is_empty());
-        // The whole point of reading assignees: knowing a colleague already has it.
         assert_eq!(t[1].assignees, vec!["FAbrahamDev"]);
     }
 
@@ -856,9 +878,8 @@ mod tests {
 
     #[test]
     fn parses_merged_prs_and_drops_the_ones_that_never_merged() {
-        // `--state merged` should never return an unmerged PR, but "closed" and "merged"
-        // are one null field apart in gh's model — and the deep-clean pane force-deletes
-        // on this evidence, so a closed-unmerged PR leaking in would delete real work.
+        // "closed" and "merged" are one null field apart in gh's model, and the deep-clean
+        // pane force-deletes on this evidence.
         let m = parse_merged_prs(r#"[
           {"number":74,"title":"a merged one","url":"u1","headRefName":"feat/one","mergedAt":"2026-08-01T10:00:00Z"},
           {"number":75,"title":"closed unmerged","url":"u2","headRefName":"feat/two","mergedAt":null},
@@ -875,8 +896,7 @@ mod tests {
 
     #[test]
     fn malformed_output_yields_nothing_rather_than_panicking() {
-        // gh can print a warning, an empty body, or HTML from a proxy. None of those
-        // may take the board down — they degrade to "no threads".
+        // gh can print a warning, an empty body, or HTML from a proxy.
         for bad in ["", "not json", "{}", "null", "[{\"no\":\"number\"}]", "<html>"] {
             assert!(parse_issues(bad).is_empty(), "should be empty for {bad:?}");
         }
@@ -884,8 +904,7 @@ mod tests {
 
     #[test]
     fn tolerates_missing_optional_fields() {
-        // Fields differ between issue and pr payloads, and between gh versions; a row
-        // must survive on `number` alone.
+        // Fields differ between issue and pr payloads and gh versions; `number` alone must do.
         let t = parse_issues(r#"[{"number":7}]"#);
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].title, "");
@@ -895,14 +914,11 @@ mod tests {
 
     #[test]
     fn one_item_can_produce_two_events_on_different_days() {
-        // Opened Monday, merged Thursday — both matter to the day they happened on, so
-        // this fans out rather than reducing to a current state.
         let e = parse_events(r#"[{"number":46,"title":"a pr","url":"u",
             "createdAt":"2026-07-31T12:09:32Z","closedAt":"2026-07-31T13:37:35Z","mergedAt":"2026-07-31T13:37:35Z"}]"#, "pr");
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].event, "opened");
-        // mergedAt wins: GitHub sets closedAt too when a PR merges, and "merged" is the
-        // true story — reporting it as merely closed would misread the day.
+        // mergedAt wins: GitHub sets closedAt too when a PR merges.
         assert_eq!(e[1].event, "merged");
     }
 
@@ -931,8 +947,6 @@ mod tests {
 
     #[test]
     fn a_project_with_no_policy_permits_everything() {
-        // The load-bearing default: a repo that never heard of Episko must not
-        // silently disable features.
         assert_eq!(parse_allow(""), ClaimAllow::default());
         assert_eq!(parse_allow("[other]\nkey = 1"), ClaimAllow::default());
         assert_eq!(parse_allow("not { valid toml"), ClaimAllow::default());
@@ -940,7 +954,6 @@ mod tests {
 
     #[test]
     fn a_project_can_withhold_one_thing_without_withholding_the_rest() {
-        // Tim's case exactly: "we don't use assignments for planning, but people might".
         let a = parse_allow("[claim]\nassign = false\n");
         assert!(!a.assign);
         assert!(a.comment && a.label);
@@ -955,10 +968,53 @@ mod tests {
 
     #[test]
     fn classifies_the_failures_that_need_different_answers() {
-        assert!(classify("gh: command not found").contains("not installed"));
-        assert!(classify("error: not logged in to any GitHub hosts").contains("gh auth login"));
-        assert!(classify("fatal: not a git repository").contains("not a GitHub repository"));
-        // Anything unrecognised is passed through rather than mangled into a guess.
-        assert_eq!(classify("API rate limit exceeded"), "API rate limit exceeded");
+        assert!(classify("gh: command not found", None).contains("not installed"));
+        assert!(classify("gh not available: No such file or directory", None).contains("not installed"));
+        assert!(classify("error: not logged in to any GitHub hosts", None).contains("gh auth login"));
+        assert!(classify("fatal: not a git repository", None).contains("not a GitHub repository"));
+        // Anything unrecognised passes through rather than being mangled into a guess.
+        assert_eq!(classify("API rate limit exceeded", None), "API rate limit exceeded");
+    }
+
+    #[test]
+    fn an_invisible_repo_names_the_account_that_could_not_see_it() {
+        let err = "GraphQL: Could not resolve to a Repository with the name 'acme/secret'. (repository)";
+        let said = classify(err, Some("octocat"));
+        assert!(said.contains("octocat"), "{said}");
+        assert!(said.contains("cannot see"), "{said}");
+        // With nothing to name, the sentence must still say an account is involved.
+        assert!(classify(err, None).contains("account"));
+    }
+
+    #[test]
+    fn a_404_is_not_a_missing_cli() {
+        assert_ne!(classify("gh: Not Found (HTTP 404)", None), "GitHub CLI (gh) is not installed");
+    }
+
+    #[test]
+    fn reads_both_accounts_and_which_one_is_active() {
+        let json = r#"{"hosts":{"github.com":[
+            {"state":"success","active":true,"host":"github.com","login":"octocat","tokenSource":"keyring"},
+            {"state":"success","active":false,"host":"github.com","login":"octocat-work","tokenSource":"keyring"}
+        ]}}"#;
+        let a = parse_accounts(json);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0], GhAccount { login: "octocat".into(), active: true });
+        assert!(!a[1].active);
+    }
+
+    #[test]
+    fn other_hosts_are_not_accounts_you_can_pick() {
+        let json = r#"{"hosts":{"github.example.com":[{"active":true,"login":"someone"}]}}"#;
+        assert!(parse_accounts(json).is_empty());
+    }
+
+    /// No gh, a gh too old for `--json`, or a blank login all mean "no picker", never an error.
+    #[test]
+    fn unreadable_account_output_is_no_accounts_rather_than_a_panic() {
+        assert!(parse_accounts("").is_empty());
+        assert!(parse_accounts("not json at all").is_empty());
+        assert!(parse_accounts(r#"{"hosts":{"github.com":[{"active":true,"login":""}]}}"#).is_empty());
+        assert!(!parse_accounts(r#"{"hosts":{"github.com":[{"login":"octocat"}]}}"#)[0].active);
     }
 }

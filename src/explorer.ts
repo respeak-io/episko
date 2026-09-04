@@ -1,26 +1,6 @@
-// The project explorer: ⌘P, one field, two modes.
-//
-// The third of the app's file lists, and the only one that shows a file nothing has
-// happened to. Empty, the field browses the folder you are in; typing turns it into a
-// find across the whole project. Both read one index and render one row shape, so the
-// scope chips (All / Changed / Touched) are filters rather than three separate screens
-// — see ./explore for the rules, which are where the tests are.
-//
-// What keeps this from being an IDE, in the order the temptations arrive:
-//
-//   - It is an overlay. It opens, you do one thing, it dies on Escape, exactly like the
-//     palette and the peek. There is no pane, no persistent tree, no expansion state.
-//   - It is read-only. No create, rename, delete, stage or discard: agents change files
-//     and git records it.
-//   - It never reads a file's contents. ↵ on a changed file opens the diff in the peek
-//     that already exists; anything else is handed to the OS. The app shows you changes;
-//     the OS shows you contents.
-//   - It does not watch anything. The index is read when the overlay opens and cached
-//     for CACHE_MS so reopening is instant; the app has no filesystem watcher by design
-//     and this is not the feature that adds one.
-//
-// DOM-owning and IPC-bound, so untested by design — every rule worth asserting lives in
-// ./explore instead.
+// The project explorer: ⌘P, one field, two modes (browse the folder, or find across the
+// project). An overlay, read-only, never reads file contents, watches nothing; the index is
+// read on open and cached for CACHE_MS. The rules and tests are ./explore's (docs/explorer.md).
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, FILE_MANAGER } from "./dom";
@@ -37,9 +17,8 @@ import type { TouchKind } from "./types";
 interface FileIndex { files: string[]; truncated: boolean; repo: boolean }
 interface ChangedPath { path: string; status: string }
 
-/// How long a project's index is reused. Long enough that closing and reopening the
-/// overlay is instant, short enough that a file an agent created a minute ago is there.
-/// The dirty marks are never cached — they are one cheap git call and they change constantly.
+// Reopening within this is instant; a file an agent made a minute ago still appears. The
+// dirty marks are never cached: one cheap git call, and they change constantly.
 const CACHE_MS = 30_000;
 const indexCache = new Map<string, { at: number; idx: FileIndex }>();
 
@@ -53,9 +32,7 @@ let changed = new Map<string, string>();
 let touched = new Map<string, TouchKind>();
 let cwd = "";
 let scope: ExpScope = "all";
-// The index arrives one await later, and an empty list means four different things
-// (see `emptyText`) — three of which are wrong while it is still being read.
-let loading = false;
+let loading = false; // an empty list means four things (emptyText); three are wrong mid-read
 let rows: ExpRow[] = [];
 let sel = 0;
 
@@ -68,16 +45,14 @@ const TOUCH_GLYPH: Record<TouchKind, string> = { created: "✦", edited: "◆", 
 export async function openExplorer(dir: string, label?: string) {
   if (!dir) return;
   closeFootMenus();
-  // Reopening on a different project resets where you were; reopening on the same one
-  // keeps it, because "⌘P, glance, Escape, ⌘P again" is one thought, not two.
+  // Reopening on a different project resets where you were; on the same one it keeps it.
   if (dir !== root) { cwd = ""; scope = "all"; }
   root = dir;
   rootLabel = label || basename(dir);
   explorerOpen = true;
   sel = 0;
   loading = true;
-  // Reset what belongs to the *previous* project, or its truncation note and its
-  // "not a repo" empty state carry over to this one for a frame.
+  // Reset the previous project's truncation note and "not a repo" state before the first frame.
   truncated = false;
   isRepo = true;
   changed = new Map();
@@ -99,10 +74,8 @@ export async function openExplorer(dir: string, label?: string) {
   if (!explorerOpen || root !== dir) return; // closed, or moved on, while reading
   loading = false;
   if (idx) {
-    // Only a real read restarts the clock. Re-stamping on a cache *hit* would let every
-    // reopen inside the window extend it, so a project you glance at every half-minute
-    // would never be re-read at all and a file an agent made ten minutes ago would stay
-    // missing — the opposite of what CACHE_MS is for.
+    // Only a real read restarts the clock; re-stamping on a cache hit would let a project
+    // glanced at every half-minute never be re-read at all.
     if (idx !== fresh) indexCache.set(dir, { at: Date.now(), idx });
     paths = idx.files;
     truncated = idx.truncated;
@@ -123,8 +96,7 @@ export function closeExplorer() {
   dropScrim();
 }
 
-/// Everything the row shows on its right: what git says, and what an agent did. Both are
-/// the marks their own cards already use, so a path reads the same wherever you meet it.
+// Right-hand marks: git's status and an agent's touch, drawn with the marks their own cards use.
 function marks(r: ExpRow): string {
   if (r.dir) return `<span class="exp-n">${r.n}</span>`;
   const out: string[] = [];
@@ -173,7 +145,7 @@ function render() {
   syncAction();
 }
 
-/// An empty list has four different causes and only one of them is "no match".
+// An empty list has four causes and only one of them is "no match".
 function emptyText(q: string, finding: boolean): string {
   if (loading) return "Reading the project…";
   if (finding) return `Nothing matches “${q}”` + (scope === "all" ? "." : ` in ${scope} files.`);
@@ -181,8 +153,7 @@ function emptyText(q: string, finding: boolean): string {
   return scope === "all" ? "This folder is empty." : `Nothing ${scope} in this folder.`;
 }
 
-/// What ↵ will do, said before it is pressed. The rule is in ./explore, not here, so the
-/// footer and the keypress cannot disagree about it.
+// What ↵ will do; the rule is ./explore's, so the footer and the keypress cannot disagree.
 function syncAction() {
   const a = rowAction(rows[sel], changed);
   const leaf = (p: string) => esc(p.split("/").pop() || p);
@@ -217,8 +188,7 @@ function activate(i: number) {
     return;
   }
   if (a.kind === "diff") {
-    // The peek is the viewer; it opens on the whole working set with this file unfolded,
-    // because "what changed here" is rarely a question about one file in isolation.
+    // The peek is the viewer, opened on the whole working set with this file unfolded.
     closeExplorer();
     void openDiff(root, rootLabel, a.path);
     return;
@@ -228,8 +198,7 @@ function activate(i: number) {
 }
 
 // ---------- wiring ----------
-// The one hint that names an OS app rather than a key, so it is filled in rather than
-// written into the markup.
+// Names an OS app rather than a key, so it is filled in rather than written into the markup.
 $("expReveal").title = `Show it in ${FILE_MANAGER}`;
 $("expClose").addEventListener("click", closeExplorer);
 $("expIn").addEventListener("input", () => { sel = 0; render(); });
@@ -241,8 +210,7 @@ $("expIn").addEventListener("keydown", (e) => {
     e.preventDefault();
     const r = rows[sel];
     if (!r) return;
-    // ⌘↵ and ⌥↵ are the row's other two verbs, and both apply to a folder as well as a
-    // file — revealing a directory is exactly what you want when you are looking at one.
+    // ⌘↵ and ⌥↵ apply to a folder as well as a file.
     if (e.metaKey || e.ctrlKey) { closeExplorer(); void revealTouchedFile(abs(r.path)); }
     else if (e.altKey) { void copyPath(abs(r.path)); }
     else activate(sel);

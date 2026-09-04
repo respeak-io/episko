@@ -11,10 +11,10 @@ const sess = (id = "pane-1"): Sess => ({
   resumeId: id, branch: "main", worktree: null, title: "Codex",
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
   pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], attnAt: 0, seenAt: 0,
-  agents: new Map(), fanout: null, apiErr: null, revive: null, drift: null,
+  agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
   model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
-  lastEvent: "", activity: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
+  lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],
   pane: {} as HTMLElement,
 });
@@ -42,8 +42,7 @@ describe("Codex provider adapter", () => {
   it("normalizes thread identity, commands and approvals", () => {
     expect(codexEvents(raw("thread/started", { thread: { id: "thread-1", name: "Fix it" } }))[0])
       .toEqual({ type: "thread", id: "thread-1", title: "Fix it" });
-    // App Server's generated schema calls this `threadName`; the thread snapshot's
-    // `name` spelling does not carry over to this notification.
+    // App Server's schema spells this one `threadName`, unlike the thread snapshot's `name`.
     expect(codexEvents(raw("thread/name/updated", { threadId: "thread-1", threadName: "Fixed" }))[0])
       .toEqual({ type: "thread", id: "thread-1", title: "Fixed" });
     expect(codexEvents(raw("item/started", { item: { type: "commandExecution", id: "call-1", command: "pnpm test", cwd: "/w/episko", status: "inProgress" } }))[0])
@@ -52,12 +51,8 @@ describe("Codex provider adapter", () => {
       .toMatchObject({ type: "permission", id: "ask-1", tool: "Bash", risk: "high" });
   });
 
-  // A turn you stopped yourself must not look like an outage. The chain this guards is
-  // four modules long and every link already existed: `failed: true` → `finishAgentTurn`
-  // stamps `apiErr {kind:"unknown"}` → ./revive buckets `unknown` as `other` → `other` is
-  // in `REVIVE_DEFAULTS.kinds`, so the watchdog types the prompt back in and presses
-  // Enter. Asserting on `failed` alone would pass against the bug for the wrong reason,
-  // so this asserts the thing that actually matters: no `apiErr` on the session.
+  // Asserts on `apiErr`, not on `failed`: any apiErr is what ./revive's watchdog retries
+  // against, so a stopped turn stamped with one would be typed back in and re-run.
   it("treats a turn somebody stopped as done, not as a failure to be revived", () => {
     for (const status of ["aborted", "cancelled", "canceled", "interrupted", "stopped"]) {
       const s = sess();
@@ -99,6 +94,19 @@ describe("Codex provider adapter", () => {
       secondary: { usedPercent: 34, windowDurationMins: 10080, resetsAt: 20 },
     } }))[0];
     expect(limits).toMatchObject({ type: "rate-limits", windows: [{ usedPercent: 12 }, { usedPercent: 34 }] });
+  });
+
+  it("turns a user message into a prompt for the outline, and never a child's", () => {
+    const item = { type: "userMessage", id: "msg-1", content: [{ type: "text", text: "why is it red?" }] };
+    expect(codexEvents(raw("item/completed", { item }))).toEqual([{ type: "prompt", text: "why is it red?" }]);
+    expect(codexEvents(raw("item/started", { item }))).toEqual([{ type: "prompt", text: "why is it red?" }]);
+    expect(codexEvents(raw("item/completed", { item, episkoChild: true }))).toEqual([]);
+    // Both halves of the pair reach the reducer; ./outline collapses them into one row.
+    const s = sess();
+    for (const m of ["item/started", "item/completed"]) {
+      for (const ev of codexEvents(raw(m, { item }))) applyAgentEvent(s, ev);
+    }
+    expect(s.prompts.map((p) => p.text)).toEqual(["why is it red?"]);
   });
 
   it("keeps structured file reads, edits and newer tools visible in Context", () => {

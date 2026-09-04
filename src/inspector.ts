@@ -1,41 +1,24 @@
-// The right-hand inspector: the one panel whose contents depend entirely on what kind
-// of pane is on stage. renderInspector is the dispatcher — a shell gets a card saying
-// what it is, a task run gets its command, exit code and actions, and an agent gets
-// the full stack of cards ./inspectorview builds.
-//
-// That split is the *view.ts boundary at work: every card's markup is a pure function
-// in ./inspectorview, and what stays here is the element they are painted into, the
-// status pill beside them, and the task card's per-button listeners — which address
-// one specific Sess and so were never part of the global [data-*] dispatcher.
-//
-// It is on renderAll()'s hot path (an agent's inspector repaints on every telemetry
-// event for the session on stage), which is why it is a module of its own rather than
-// something for the bootstrap trim to sweep up.
+// The right-hand inspector: renderInspector dispatches on the kind of pane on stage. The
+// cards' markup is ./inspectorview's; this owns the element, the status pill and the task
+// card's per-button listeners. On renderAll's hot path.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, stageGen } from "./dom";
+import { $, stageGen, toast } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { activeId, revivePrefs, sessions } from "./state";
+import { activeId, outlinePrefs, revivePrefs, sessions } from "./state";
 import { reviveStatus } from "./revive";
-// The task card's three actions. They took a host object while they lived in
-// main.ts; now that they are ./taskrun this module simply imports them.
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextGaugeHtml, contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml,
+  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, outlineHtml,
   planHtml, RISK_LABEL, vitalHtml, wsetHtml,
 } from "./inspectorview";
+import { anchoredPrompts, scrollToPrompt } from "./terminal";
 
 // ---- the Context card's view state ----
-//
-// Which of its Files groups are expanded, and whether it is showing files or the tool
-// timeline. Ephemeral and app-wide rather than per-session: it is how *you* want the
-// card, not something about a conversation, so it survives switching panes and doesn't
-// need persisting. Tools has no fold of its own — a row opens ./callsheet instead.
-// Held here, next to the element it repaints, on the same pattern as ./panes'
-// `collapsedRuns` — the module that owns the state calls the one renderer that reads
-// it, rather than reaching for a global `renderAll`.
+// Which Files groups are unfolded, and files vs tools. App-wide and ephemeral: it is how
+// you want the card, not a fact about a conversation, so it survives switching panes.
 const openGroups = new Set<string>();
 let ctxMode: CtxMode = "files";
 function repaintActive() {
@@ -49,6 +32,46 @@ export function toggleFileGroup(g: string) {
 export function setCtxMode(m: string) {
   ctxMode = m === "tools" ? "tools" : "files";
   repaintActive();
+}
+// ---- the outline's view state ----
+// App-wide and ephemeral, like the Context card's fold above.
+let outlineAll = false;
+export function toggleOutlineAll() { outlineAll = !outlineAll; repaintActive(); }
+
+// Click a question, land where you asked it. The row carries its own session id: markup
+// outlives the `activeId` that produced it, as with the tool timeline.
+export async function jumpToPrompt(sid: string, promptId: string) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  const r = await scrollToPrompt(s, promptId);
+  if (r === "ok") return;
+  const p = s.prompts.find((x) => x.id === promptId);
+  toast(r === "unfound" ? "Couldn't find that question — it may be further back than the session shows"
+    : p?.restored ? "That question is from before this pane, and isn't in its scrollback"
+    : "That far back has scrolled out of this terminal");
+  repaintActive(); // the row has just learned it is out of reach
+}
+
+// Hover-to-unfold, ./peek's idea in a single row. The class goes straight on the element and
+// never through a repaint: replacing the node under the pointer is how a click gets dropped.
+const OUTLINE_DWELL_MS = 450;
+let olTimer: number | undefined;
+let olOpen: HTMLElement | null = null;
+function unfold(row: HTMLElement | null) {
+  if (olOpen === row) return;
+  olOpen?.classList.remove("open");
+  olOpen = row;
+  row?.classList.add("open");
+}
+export function wireOutlineHover() {
+  const root = $("inspector");
+  root.addEventListener("mouseover", (e) => {
+    const row = outlinePrefs.hover ? (e.target as HTMLElement).closest<HTMLElement>(".ol-row") : null;
+    clearTimeout(olTimer);
+    if (!row) { unfold(null); return; }
+    if (row !== olOpen) olTimer = window.setTimeout(() => unfold(row), OUTLINE_DWELL_MS);
+  });
+  root.addEventListener("mouseleave", () => { clearTimeout(olTimer); unfold(null); });
 }
 
 export function renderInspector(s: Sess | null) {
@@ -70,60 +93,34 @@ export function renderInspector(s: Sess | null) {
       : "";
     html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention + queued)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
   } else if (s.phase === "error" && s.apiErr) {
-    // Right behind it: a turn the API killed. Nothing is happening and nothing will,
-    // and the glyph alone can't say whether that means "wait a minute" or "your key
-    // is dead" — so the reason and what to do about it go on the card.
+    // A turn the API killed: the glyph alone can't say "wait a minute" vs "your key is dead".
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
-    // What the watchdog is doing about it, when it is doing anything. It REPLACES the
-    // note rather than sitting beside it: "send the prompt again to pick it back up" and
-    // "retrying in 2m" are contradictory instructions, and the card would be telling you
-    // to do the thing it is about to do for you.
+    // The watchdog's status replaces the note: "retrying in 2m" and "send it again" contradict.
     const rev = reviveStatus(s, revivePrefs, Date.now());
     const note = rev ?? (creds
       ? "The agent can't reach its API with these credentials. Fix them in the terminal, then send the prompt again."
       : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.");
     html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note${rev ? " revive" : ""}">${esc(note)}</div></div>`);
   }
-  // Above the vital, and above the working set it contradicts: everything below reads
-  // the folder the session was launched in, which is not where the work is going.
+  // Above everything that reads the launch folder, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
-  html.push(vitalHtml(s));                                        // state, dwell, current tool
-  html.push(fanoutHtml(s));                                       // the fleet it launched, if any
-  html.push(contextGaugeHtml(s));                                 // TRACK — context
-  if (s.todos.length) html.push(planHtml(s));                     // the plan it's keeping
-  // What's changed on disk, and how the branch sits against its upstream. Shown
-  // for any repo session — a clean tree that's behind is exactly what you want to
-  // see, and it's the only place the fetch/pull/push buttons live.
+  html.push(vitalHtml(s));
+  html.push(fanoutHtml(s));
+  // Above the plan and the Context card: what you asked and what the tree looks like are
+  // both read far more often than the file set, which is the card you scroll to.
   if (s.git) html.push(wsetHtml(s));
-  html.push(contextHtml(s, openGroups, ctxMode));                 // the files it's been into
+  if (outlinePrefs.enabled) html.push(outlineHtml(s, outlinePrefs, anchoredPrompts(s), outlineAll));
+  if (s.todos.length) html.push(planHtml(s));
+  html.push(contextHtml(s, openGroups, ctxMode));
   paintInspector(html.join(""));
-  // The dwell is patched, never rendered — see `paintInspector`. Do this after the
-  // assignment above, so a fresh #iDwell gets its text before the frame is painted.
+  // After the assignment, so a fresh #iDwell has its text before the frame paints.
   tickDwell(s);
 }
 
-/**
- * Assign `#inspector` only when the markup changed — the same guard ./sidebar and
- * ./dashboard use, on the surface that most needed it.
- *
- * **This one is a correctness fix, not a saving.** The inspector rides `renderAll`, so
- * on a busy fleet it was rebuilt several times a second, and it holds the app's most
- * consequential buttons: a pending permission's *Allow / Deny / In terminal*. Replacing
- * a node between mousedown and mouseup means the `click` fires on the container rather
- * than the button, `closest("[data-perm]")` finds nothing, and **the decision is
- * silently dropped** — on a session that is blocked waiting for exactly that answer.
- *
- * The guard only bites because the dwell clock is kept *out* of the compared string.
- * `dwellText` is `m:ss`, so leaving it in made the markup differ every second by
- * construction and no repaint would ever have been skipped. main.ts already patches
- * `#iDwell` by `textContent` once a second for the neighbouring reason (an innerHTML
- * assignment restarts the heartbeat's CSS animation); this makes that the *only* way it
- * is ever written, rather than a second mechanism racing the render.
- */
-/// Keyed by `stageGen` as well as the markup: ./mirror and ./dashboard write this same
-/// element, and every route to them goes through `takeStage`. Without it, leaving a
-/// session for the dashboard and coming back would match a string that is no longer on
-/// screen and skip the repaint that puts it there.
+// Assign #inspector only when the markup changed: replacing a node between mousedown and
+// mouseup drops the click, and this surface holds a permission's Allow/Deny. The dwell
+// clock stays out of the string (#iDwell is patched by textContent) or the guard never
+// bites; stageGen is in the key because ./mirror and ./dashboard write the same element.
 let lastInspHtml: string | null = null;
 let lastInspGen = -1;
 function paintInspector(html: string) {
@@ -132,8 +129,7 @@ function paintInspector(html: string) {
   lastInspGen = stageGen;
   $("inspector").innerHTML = html;
 }
-/// The one field the render path deliberately leaves blank, filled here and by main.ts's
-/// one-second tick. Exported so the tick has a single implementation to call.
+// The one field the render path leaves blank; main.ts's one-second tick calls this too.
 export function tickDwell(s: Sess) {
   const el = document.getElementById("iDwell");
   if (el) el.textContent = dwellText(s);
@@ -152,8 +148,7 @@ function renderShellInspector(s: Sess) {
     </div>`);
 }
 
-// Terminal-only provider fallback. Integrated agents take the rich inspector path;
-// this card says plainly why a provider without a control-plane adapter cannot.
+// Terminal-only provider fallback: says why a provider without an adapter gets no phase or usage.
 function renderAgentInspector(s: Sess) {
   const ended = s.phase === "ended";
   const label = s.title || s.provider || "agent";
@@ -177,26 +172,18 @@ function renderTaskInspector(s: Sess) {
   pill.className = "pill " + (running ? "working" : failed ? "error" : "done");
   $("iPillTxt").textContent = running ? (r.background ? "running · background" : "running") : failed ? `exit ${r.exitCode}` : "passed";
 
-  // Offer the failure to a live agent in the same project — the one thing a plain
-  // terminal can't do. Only agents, and only when the run actually failed.
-  // Embedded panes only: a session running in Ghostty/iTerm has no PTY we can type
-  // into, so offering the handoff there would fail at the click.
+  // Offer the failure to a live agent in the same project; embedded panes only, since an
+  // external session has no PTY to type into.
   const candidates = failed ? [...sessions.values()].filter((x) => hasSessionState(x) && !x.external && x.colorKey === s.colorKey && x.phase !== "ended") : [];
-  // A run-on-stop failure goes back to the session whose turn it was checking — and
-  // *only* that session. If it's gone (ended) or unreachable (external, no PTY to
-  // type into), offer nothing rather than misdirecting the output to an unrelated
-  // agent that happens to sort first. A hand-run task (no forSession) still offers
-  // the first live agent, which is the useful default there.
+  // A run-on-stop failure goes back to the session it was checking and only that one; if it
+  // is gone, offer nothing rather than misdirect. A hand-run task takes the first live agent.
   const target = r.forSession ? candidates.find((x) => x.id === r.forSession) : candidates[0];
   const handoff = target
     ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
     : "";
 
-  // NOT through `paintInspector`: this card wires per-element listeners below, so a
-  // skipped repaint would bind a second set to the same nodes and fire every action
-  // twice. It carries a live "Running 0:12" anyway, so there is nothing to skip — but
-  // the cache must be told, or the next agent repaint could match a string this
-  // assignment has already replaced.
+  // Not through paintInspector: this card binds per-element listeners, so a skipped repaint
+  // would bind them twice. Clear the cache so the next agent repaint can't match stale markup.
   lastInspHtml = null;
   $("inspector").innerHTML = `
     <div class="ext-card">

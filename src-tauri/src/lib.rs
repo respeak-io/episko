@@ -1,11 +1,6 @@
-// cc-launcher — Tauri backend (multi-session)
-//
-// - Manages N concurrent `claude` sessions, each in its own PTY (portable-pty),
-//   keyed by a caller-supplied session UUID (also passed to `claude --session-id`
-//   so every hook/statusline event correlates back to its pane).
-// - Instruments each session per-launch via `claude --settings <file>` so Claude
-//   Code's hooks + statusLine POST live status/cost/context to a local HTTP
-//   server — no global config mutation, no transcript parsing.
+//! Bootstrap: `run()`, `AppState`/`Session`, the window, the tray mirror, the panic hook
+//! and the `invoke_handler!` list. Each session is a PTY keyed by the uuid passed to
+//! `claude --session-id`, instrumented per launch via `--settings` (CLAUDE.md).
 
 mod agent;
 mod external;
@@ -42,82 +37,51 @@ pub(crate) struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    /// OS pid of the spawned `claude` (embedded PTY only). Used to exclude our
-    /// own sessions from `list_external_sessions` by pid rather than session id.
-    pid: Option<u32>,
-    /// Working directory this session runs in. Lets `remove_worktree` refuse to
-    /// delete a worktree that still has a live embedded session inside it.
-    workdir: String,
-    /// Durable pane kind: "agent" | "shell" | "task". Agent identity lives in
-    /// `provider`, so adding a provider never grows another kind discriminator.
-    /// This backend copy exists for reload-orphan adoption (#47 stage 2).
+    pid: Option<u32>, // embedded PTY only; excludes our own sessions from list_external_sessions
+    workdir: String, // lets remove_worktree refuse a worktree with a live session in it
+    /// "agent" | "shell" | "task", kept backend-side so an orphaned PTY stays
+    /// self-describing across a webview reload; agent identity is `provider`.
     kind: &'static str,
-    /// Stable coding-agent provider id ("claude", "codex", ...), or `None` for a
-    /// shell/task. Kept beside kind so an orphaned PTY remains self-describing while
-    /// the frontend session map is being rebuilt.
-    provider: Option<String>,
-    /// The recent raw output of this PTY (see `pty::ScrollBuf`), shared with the
-    /// reader thread. What lets a pane rebuilt after a webview reload start with
-    /// its scrollback instead of blank.
+    provider: Option<String>, // "claude", "codex", ...; None for a shell/task
+    /// Recent raw output, shared with the reader thread; refills a pane after a webview reload.
     scrollback: std::sync::Arc<Mutex<pty::ScrollBuf>>,
-    /// Whether ConPTY has asked this PTY's terminal to send **win32 input records**
-    /// rather than plain VT text — it announces that with `ESC[?9001h` in its first
-    /// output chunk, and the reader thread latches it here. `write_pty` reads it to
-    /// decide how to encode a keystroke; see `pty::win32_input_encode` for why a
-    /// character that goes in as VT text can come out of the child a character short.
-    /// Never set off Windows: a real tty passes bytes through and asks for nothing.
+    /// Latched by the reader when ConPTY asks for win32 input records (`ESC[?9001h`);
+    /// `write_pty` reads it. Never set off Windows. See `pty::win32_input_encode`.
     win32_input: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) struct AppState {
-    /// The port the telemetry server is listening on, and the one baked into every
-    /// instrument file `write_instrument_settings` generates.
-    ///
-    /// Atomic rather than a plain `u16` because the server can be re-bound while the
-    /// app runs: `serve_telemetry` re-binds *this* port after a listener dies, so the
-    /// instrument files already on disk keep working, and only falls back to a fresh
-    /// ephemeral one when the old port stays unavailable — at which point new launches
-    /// have to read the new number rather than the one captured at startup.
+    /// Baked into every instrument file. Atomic because `serve_telemetry` re-binds this
+    /// port after a listener dies and only falls back to a fresh one if it stays taken.
     port: std::sync::atomic::AtomicU16,
     sessions: Mutex<HashMap<String, Session>>,
-    /// Provider sidecars and control channels keyed by Episko's stable pane id.
-    /// A Codex pane owns one loopback app-server beside its PTY; terminal-only
-    /// providers have no entry. Kept outside `Session` because its lifecycle also
-    /// owns an observer thread and JSON-RPC control plane, not just a child killer.
+    /// Provider sidecars keyed by pane id (Codex's loopback app-server). Not in `Session`
+    /// because each also owns an observer thread and a JSON-RPC control plane.
     agent_runtimes: Mutex<HashMap<String, agent::AgentRuntime>>,
-    /// PIDs of the `claude` processes Episko spawned in an embedded PTY. Matched
-    /// against the on-disk session registry so our own sessions never masquerade
-    /// as "external" — robust to the session id changing under /resume or /clear
-    /// (which rewrites `~/.claude/sessions/<pid>.json` with the new id).
+    /// PIDs of the `claude` processes Episko spawned, so our own sessions never list as
+    /// external; by pid because /resume and /clear rewrite the registry's session id.
     owned_pids: Mutex<HashSet<u32>>,
-    /// Last disk-I/O reading per owned pid: (total_read, total_written, when).
-    /// `all_sessions_resources` differences against this to turn the kernel's lifetime
-    /// byte counters into a rate — see there for why sysinfo's own deltas aren't used,
-    /// and why the differencing is per pid rather than over the summed total.
+    /// Last disk-I/O reading per owned pid: (read, written, when). `all_sessions_resources`
+    /// differences per pid against this (docs/architecture.md).
     io_samples: Mutex<HashMap<u32, (u64, u64, std::time::Instant)>>,
-    /// (read, written) bytes belonging to sessions that have since exited. Their pids
-    /// leave `io_samples` when they stop being owned, and without this their bytes would
-    /// leave the app-wide total with them — so closing a pane would walk the run's churn
-    /// backwards.
+    /// (read, written) of sessions that have exited, so closing a pane does not walk the
+    /// app-wide total backwards.
     io_retired: Mutex<(u64, u64)>,
-    /// Held-open PermissionRequest HTTP requests, keyed by an id we assign.
-    /// Answered later by the `resolve_permission` command.
+    /// Where the last background-shell log resolved, so each poll does not re-walk the
+    /// ladder; `pty::BgRootState` says why the root is remembered and the file never is.
+    bg_root: Mutex<pty::BgRootState>,
+    /// Held-open PermissionRequest HTTP requests, answered by `resolve_permission`.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
     next_perm: std::sync::atomic::AtomicU64,
-    /// The single running `caffeinate` child, if the user has toggled it on.
-    /// Started with `-w <our pid>` so it self-terminates if Episko ever dies
-    /// without a clean stop — no orphaned process keeps the Mac awake forever.
+    /// The `caffeinate` child; started with `-w <our pid>` so it dies with Episko.
     #[cfg(not(windows))]
     caffeinate: Mutex<Option<std::process::Child>>,
-    /// The single live `SetThreadExecutionState` assertion, if the user has
-    /// toggled keep-awake on. Windows' equivalent of the `caffeinate` child.
+    /// Windows' `SetThreadExecutionState` assertion, the `caffeinate` equivalent.
     #[cfg(windows)]
     caffeinate: Mutex<Option<KeepAwake>>,
 }
 
-/// Persist a debug snapshot (JSON built by the frontend) to a fixed, discoverable
-/// path so an external tool — or an LLM agent debugging the running app — can read
-/// live state and the recent event log. Returns the path written.
+/// Write the frontend's debug snapshot to a fixed path so external tools can read live state.
 #[tauri::command]
 fn write_debug_file(contents: String) -> Result<String, String> {
     let mut dir = std::env::temp_dir();
@@ -128,26 +92,15 @@ fn write_debug_file(contents: String) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// Tee a frontend `dlog()` line into the backend rolling log (episko.log), tagged
-/// `[ui]`. The UI's event stream is otherwise only an in-memory ring mirrored to
-/// the *overwritten* episko-debug.json snapshot — so it doesn't survive a crash.
-/// Forwarding it here puts the whole timeline (UI + backend) in one durable,
-/// time-ordered file: after #12 the backend was crash-visible but the UI half
-/// wasn't. Fire-and-forget from the frontend; a dropped line is not worth an error.
-/// Open the webview's own inspector on the main window.
-///
-/// A command rather than a menu item or an accelerator because the inspector is not a
-/// thing to reach by accident in a shipped app: this is only ever called from Settings >
-/// Diagnostics, where the sentence next to the button says what it is for. The `devtools`
-/// Cargo feature (see Cargo.toml) is what makes the call exist in a release build at all
-/// — without it `open_devtools` is compiled out and this would not build.
-///
-/// Idempotent by way of the webview: opening an already-open inspector focuses it.
+/// Only reached from Settings > Diagnostics. The `devtools` Cargo feature is what makes
+/// `open_devtools` exist in a release build; opening an already-open inspector focuses it.
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
 }
 
+/// Tee a frontend `dlog()` line into the rolling episko.log, tagged `[ui]`, so the UI and
+/// backend timelines share one file that survives a crash (the debug snapshot does not).
 #[tauri::command]
 fn log_frontend(level: String, msg: String) {
     match level.as_str() {
@@ -159,11 +112,8 @@ fn log_frontend(level: String, msg: String) {
 
 // ---------- app quit ----------
 
-/// Actually terminate the app. The Cmd+Q accelerator is bound to our own menu
-/// item (see the app menu in `run`), which asks the frontend to confirm instead
-/// of quitting; the frontend calls this once the user (or an empty session list)
-/// has approved the quit. Kept as a command so the *only* immediate-exit paths
-/// are this and the tray's "Quit Episko".
+/// The only immediate-exit paths are this and the tray's Quit: Cmd+Q is bound to our own
+/// menu item (see `run`), which asks the frontend to confirm first.
 #[tauri::command]
 fn confirm_quit(app: AppHandle) {
     app.exit(0);
@@ -171,39 +121,27 @@ fn confirm_quit(app: AppHandle) {
 
 // ---------- macOS menu-bar (tray) ----------
 
-/// One row of the tray menu, as the frontend lays it out. It sends a *rendered
-/// list* rather than a set of sessions because the order and the grouping are the
-/// sidebar's own (`projectList`), and only that side knows them.
-///
-/// `shape` and `rgb` come from the frontend for the same reason: `GCLASS` already
-/// maps a status to a class and `styles.css` gives that class its hue, so choosing
-/// here would be a second copy of the palette — one that would silently part company
-/// with the sidebar the first time a colour is re-stepped for the light theme.
+/// One row of the tray menu as the frontend lays it out: order, grouping, `shape` and
+/// `rgb` are the sidebar's, so the backend keeps no second copy of the palette.
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum TrayRow {
-    /// A clickable session. `id` is the session id the `sid` catch-all in the tray's
-    /// menu handler turns back into a `tray-select`.
+    /// `id` is what the menu handler's `sid` catch-all turns back into a `tray-select`.
     Session {
         id: String,
         label: String,
         shape: String,
         rgb: [u8; 3],
     },
-    /// A project heading, rendered as a *disabled* item — the standard macOS idiom,
-    /// and it keeps every session one click away where a submenu per project would
-    /// cost a hover each. Disabled also means it fires no `MenuEvent`, which matters:
-    /// the handler treats every id it doesn't recognise as a session to select.
+    /// A project heading, as a *disabled* item (the macOS idiom): it fires no `MenuEvent`,
+    /// and the handler treats every unknown id as a session to select.
     Header {
         label: String,
     },
     Sep,
 }
 
-/// Rebuild the tray menu to mirror the sidebar: the sessions grouped under their
-/// projects, each carrying its status as a coloured icon, plus Show / Quit. `title`
-/// is the short text shown next to the menu-bar icon (macOS); `tooltip` is the hover
-/// text.
+/// `title` is the text beside the menu-bar icon (macOS only); `tooltip` the hover text.
 #[tauri::command]
 fn update_tray(
     app: AppHandle,
@@ -235,10 +173,8 @@ fn update_tray(
                     shape,
                     rgb,
                 } => {
-                    // NOT a template image: muda hands the icon to AppKit untouched,
-                    // and a template one would be re-tinted to the menu's text colour,
-                    // which is the exact greyness this replaces. (The *tray* icon in
-                    // `run()` is a template on purpose — it must adapt to the bar.)
+                    // Not a template image: AppKit would re-tint it to the menu's text
+                    // colour. (The tray icon itself in `run()` is a template on purpose.)
                     let icon = tauri::image::Image::new_owned(
                         crate::icons::glyph_rgba(shape, *rgb),
                         32,
@@ -256,9 +192,7 @@ fn update_tray(
     let menu = mb
         .separator()
         .text("show", "Show Episko")
-        // Keep this trio in sync with the initial menu built in `run()` — this
-        // command *replaces* the whole menu, so anything missing here vanishes the
-        // moment the frontend first renders.
+        // Keep this trio in sync with the initial menu in `run()`: this replaces the whole menu.
         .text("check-updates", "Check for Updates…")
         .separator()
         .text("quit", "Quit Episko")
@@ -266,17 +200,12 @@ fn update_tray(
         .map_err(|e| e.to_string())?;
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
     let _ = tray.set_tooltip(Some(&tooltip));
-    // macOS-only: text label rendered next to the menu-bar icon.
     let _ = tray.set_title(Some(&title));
     Ok(())
 }
 
-/// Log every panic — message, location, thread, backtrace — before the process
-/// dies. A panic that unwinds out of `main` terminates a GUI app *cleanly* as far
-/// as the OS is concerned: no crash dump, no WER/CrashReporter entry, the window
-/// just vanishes. This hook is the only on-disk trace of that failure class. It
-/// writes through the `log` facade (→ the rolling episko.log) AND appends raw to
-/// `panic.log` in the same directory, in case the logger itself is what broke.
+/// A panic unwinding out of `main` ends a GUI app with no crash dump, so this is the only
+/// on-disk trace: through `log` (episko.log) and raw to `panic.log` in case the logger broke.
 fn install_panic_hook(log_dir: std::path::PathBuf) {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -324,17 +253,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        // Terminal copy/paste (Ctrl+Shift+C / Ctrl+Shift+V) reads and writes the
-        // clipboard from here rather than through `navigator.clipboard`: reading it
-        // in the WebView needs the `clipboard-read` permission, which wry only
-        // auto-grants when the webview was built with `enable_clipboard_access()`
-        // (Tauri leaves it off), so WebView2 would raise its own permission prompt
-        // and WKWebView its paste-confirmation button. See `clipboardKeys`.
+        // Terminal copy/paste goes through this plugin, not `navigator.clipboard`: wry
+        // leaves `clipboard-read` ungranted, so the webview would raise its own prompt.
         .plugin(tauri_plugin_clipboard_manager::init())
-        // Windows analog of the macOS Cmd+Q catcher in `setup` below: Windows gets
-        // no app menu (see there), so quitting means closing the window. Intercept
-        // the close and run the same frontend confirm flow — only `confirm_quit`
-        // actually exits, and the frontend calls it straight away when idle.
+        // Windows has no app menu, so closing the window is the quit; intercept it and run
+        // the same frontend confirm flow. Only `confirm_quit` actually exits.
         .on_window_event(|window, event| {
             #[cfg(windows)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -348,9 +271,7 @@ pub fn run() {
             // Before anything that can panic: from here on, panics leave a trace.
             install_panic_hook(app.path().app_log_dir()?);
             log::info!("episko v{} starting", app.package_info().version);
-            // Harvest the terminal's PATH now, on a thread of its own: it costs one
-            // interactive shell startup, and whoever calls `augmented_path` first
-            // (a git poll, a task launch) would otherwise pay for it inline.
+            // One interactive shell startup, off the main thread, before anyone needs PATH.
             platform::warm_shell_path();
 
             let server =
@@ -365,49 +286,21 @@ pub fn run() {
                 owned_pids: Mutex::new(HashSet::new()),
                 io_samples: Mutex::new(HashMap::new()),
                 io_retired: Mutex::new((0, 0)),
+                bg_root: Mutex::new(pty::BgRootState::default()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
             });
 
             let handle = app.handle().clone();
-            // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the
-            // first accept error the OS hands tiny_http, and without a supervisor around
-            // it that is permanent and completely silent. See telemetry.rs.
+            // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the first
+            // accept error, silently, and only the supervisor brings it back (telemetry.rs).
             std::thread::spawn(move || telemetry::serve_telemetry(server, handle));
 
             // ---- The window (one title bar, not two) ----
-            // The app draws its own header, so the native title bar above it is a
-            // second one saying less. macOS can hide it and keep the parts worth
-            // keeping: `titleBarStyle: "Overlay"` + `hiddenTitle` in tauri.conf.json
-            // float the real traffic lights over our header (the green one is
-            // *zoom/fullscreen* — no <button> reproduces that), and
-            // `trafficLightPosition` centres them in its 40px. Windows has no such
-            // style, so there the frame goes entirely and the header draws its own
-            // minimize/maximize/close (`#winCtl`).
-            //
-            // `trafficLightPosition.y` is *not* the gap above the buttons, which is
-            // why 14 looked top-heavy for a year: tao resizes the titlebar container
-            // to `button_height + y` and pins it to the window top, but never moves
-            // the button inside it — and AppKit leaves it at `origin.y = 9` of a
-            // 14pt-tall button. So the visible gap is `y - 9`, and centring in a
-            // 40px header wants `9 + (40 - 14) / 2` = **22**. Change `.top`'s height
-            // and this number moves with it.
-            //
-            // Hence this window is built here rather than by the config (`create:
-            // false` above): `decorations` is not a per-platform config key, and a
-            // `tauri.windows.conf.json` would replace the whole `windows` array —
-            // json merge-patch, so every shared key would exist twice and drift.
-            // Flipping it *after* creation is not the same thing either: tauri only
-            // attaches its undecorated-resize child window when the webview is
-            // created over an already-undecorated window, so a late flip yields a
-            // window whose edges cannot be dragged at all (the WebView2 child
-            // swallows the hit test). `from_config` keeps one definition and
-            // cfg-gates the single flag that differs.
-            //
-            // One thing falls out for free: the webview now starts *after*
-            // `app.manage`, so the frontend cannot invoke a command before the
-            // state that command expects exists.
+            // Built here rather than by config (docs/native-ui.md): `decorations` is not a
+            // per-platform key, and flipping it after creation leaves edges that cannot be
+            // dragged. Built after `app.manage`, so no invoke can run before its state exists.
             #[allow(unused_mut)] // `mut` is only used by the windows arm below
             let mut win_cfg = app
                 .config()
@@ -422,16 +315,14 @@ pub fn run() {
             }
             tauri::WebviewWindowBuilder::from_config(app, &win_cfg)?.build()?;
 
-            // macOS menu-bar (tray) icon — its menu mirrors the sidebar and is
-            // rebuilt from the frontend via `update_tray`.
+            // The tray; its menu is rebuilt from the frontend via `update_tray`.
             let tray_menu = MenuBuilder::new(app)
                 .text("show", "Show Episko")
                 .text("check-updates", "Check for Updates…")
                 .separator()
                 .text("quit", "Quit Episko")
                 .build()?;
-            // Monochrome `>_` glyph, rendered as a macOS template image so it
-            // adapts to the light/dark menu bar. Falls back to the app icon.
+            // A template image, so the `>_` glyph adapts to the light/dark menu bar.
             let tray_icon =
                 tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))
                     .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
@@ -440,10 +331,7 @@ pub fn run() {
                 .icon_as_template(true)
                 .tooltip("Episko")
                 .menu(&tray_menu)
-                // Double-click the icon → show the window. NOTE: on macOS the tray
-                // crate never emits DoubleClick (it's Windows/Linux-only), so there
-                // the "Show Episko" menu item is the reliable path; this handler
-                // covers the other platforms.
+                // macOS never emits DoubleClick (Windows/Linux only); there, use the menu item.
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
                         if let Some(w) = tray.app_handle().get_webview_window("main") {
@@ -462,11 +350,8 @@ pub fn run() {
                                 let _ = w.set_focus();
                             }
                         }
-                        // Must be matched before the `sid` arm below, which treats
-                        // any unknown id as a session to select. The window is shown
-                        // first because the check reports itself as a toast/chip in
-                        // the UI — checking from a hidden window would look like a
-                        // menu item that does nothing.
+                        // Before the `sid` catch-all. Shown first: the check reports itself
+                        // as a toast in the UI, and a hidden window would look like a no-op.
                         "check-updates" => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -474,10 +359,8 @@ pub fn run() {
                             }
                             let _ = app.emit("tray-check-updates", ());
                         }
-                        // Cmd+Q is handled by the app menu's own quit item, but that
-                        // MenuEvent also reaches this handler — every menu handler shares
-                        // one global listener list — so swallow it here instead of letting
-                        // it fall through to the session catch-all below.
+                        // Every menu handler shares one listener list, so the app menu's
+                        // Cmd+Q item lands here too; swallow it before the catch-all.
                         "quit-confirm" => {}
                         sid => {
                             if let Some(w) = app.get_webview_window("main") {
@@ -491,25 +374,10 @@ pub fn run() {
                 .build(app)?;
 
             // ---- App menu with a Cmd+Q catcher (macOS only) ----
-            // Cmd+Q is a "special Apple event" that Tauri does not reliably surface
-            // as an app/window event on macOS (tauri-apps/tauri#9198), so
-            // RunEvent::ExitRequested/prevent_exit can't be trusted to intercept it.
-            // Instead we *own* the Quit item: binding our own menu item to Cmd+Q means
-            // the keystroke fires `on_menu_event` (deterministic) rather than the OS
-            // `terminate:`. The handler asks the frontend to confirm; only `confirm_quit`
-            // actually exits. Replacing the default menu means we must re-add the Edit
-            // submenu ourselves, or Cmd+C/X/V/Z/A stop working in the app's inputs.
-            //
-            // Never install this on Windows: `set_menu` would render it as an
-            // in-window menu bar full of mac-only items — and muda's predefined
-            // Hide item there does a raw Win32 ShowWindow(SW_HIDE) behind tao's
-            // visibility flags, after which tao's show() no-ops and the window is
-            // unrecoverable, tray "Show Episko" included (muda 0.19.3
-            // windows/mod.rs:1217 vs tao 0.35.3 window_state.rs apply_diff).
-            // Windows needs no menu at all: WebView2 handles the edit shortcuts
-            // natively, and quitting goes through the CloseRequested hook on the
-            // builder above.
-            #[cfg(target_os = "macos")]
+            // Tauri does not surface Cmd+Q reliably (tauri-apps/tauri#9198), so we own the
+            // Quit item: its handler asks the frontend and only `confirm_quit` exits. The
+            // replaced default menu must get its Edit submenu back, or Cmd+C/V/Z stop working.
+            #[cfg(target_os = "macos")] // on Windows muda's Hide item hides the window for good
             {
                 let quit_item = MenuItemBuilder::with_id("quit-confirm", "Quit Episko")
                     .accelerator("CmdOrCtrl+Q")
@@ -546,8 +414,7 @@ pub fn run() {
                 app.set_menu(menu)?;
                 app.on_menu_event(|app, event| {
                     if event.id().0.as_str() == "quit-confirm" {
-                        // Surface the window so the confirm dialog has context, then let the
-                        // frontend decide (it quits straight away when nothing is running).
+                        // Show the window so the confirm has context; the frontend decides.
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
@@ -599,6 +466,7 @@ pub fn run() {
             git::git_log_days,
             git::project_facts,
             github::gh_threads,
+            github::gh_accounts,
             github::gh_invalidate,
             github::gh_claim,
             github::gh_release,
@@ -644,6 +512,8 @@ pub fn run() {
             platform::reveal_path,
             platform::open_file,
             platform::reveal_file,
+            platform::resolve_link_path,
+            pty::session_cwd,
             write_debug_file,
             log_frontend,
             open_devtools,
@@ -652,8 +522,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        // Record clean shutdowns: a log that ends WITHOUT one of these lines is an
-        // abnormal termination — that alone answers "did it crash or was it quit?".
+        // A log that ends without one of these lines is an abnormal termination.
         .run(|_app, event| match event {
             tauri::RunEvent::ExitRequested { code, .. } => {
                 log::info!(

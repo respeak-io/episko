@@ -1,53 +1,29 @@
-// The Trail's rules — what a day of work *was*. No DOM and no Tauri, so it unit-tests
-// in isolation like ./usage and ./rl; ./trailui owns the markup, the same split as
-// ./history + ./historyui and ./palette + ./palui.
-//
-// WHY THIS EXISTS. "What have I been working on" is a question Episko can already
-// answer from evidence it keeps anyway — Claude's transcripts, the usage rollup and
-// git — so nobody should ever have to write it down. That is the whole design
-// constraint: **the retrospective half is derived and read-only**. If you never open
-// it, it is still correct. A board dies the moment someone stops updating it; a log
-// that writes itself cannot.
-//
-// Everything here is arithmetic over three inputs that already exist:
-//   • `list_session_history` → HistEntry[] (./history), which carries Claude's own
-//     `ai-title` per session — the labels that make a day readable;
-//   • `usageWindow` → UDay[] (./usage), the per-day cost/token join, already tested;
-//   • `git_log_days` → TrailCommit[], the one genuinely new backend call.
-//
-// The only part that is *not* derived is the day summary sentence, and that is
-// deliberately generated elsewhere (./trailui asks the backend) — see `dayFacts`.
+// The Trail's rules: what a day of work was, derived from Claude's transcripts, the usage
+// rollup and git. The retrospective half is read-only by design; nothing here is ever
+// written down by hand. ./trailui owns the markup.
 
 import { histLabel, histProject, type HistEntry } from "./history";
 import { uDkey, type UDay } from "./usage";
 
-/// One commit, as `git_log_days` returns it. `when` is UNIX **seconds**, matching
-/// `HistEntry.last_active` — the backend speaks seconds for both, and every consumer here
-/// converts once, at the boundary, rather than each caller remembering to.
+/** One commit as `git_log_days` returns it; `when` is UNIX seconds, like `HistEntry.last_active`. */
 export interface TrailCommit {
   sha: string; author: string; when: number; subject: string; root: string;
 }
 
-/// A past session, reduced to what a day row shows. Distinct from HistEntry because
-/// the project attribution has already been resolved through `histProject` — the
-/// sidebar's own grouping rule — so the view never re-derives it per render.
+/** A past session with its project already resolved through `histProject`. */
 export interface TrailSession {
   id: string; title: string; project: string; colorKey: string;
   branch: string; cwd: string; when: number; exists: boolean;
 }
 
-/// One calendar day, local. `key` is deliberately `uDkey`'s format so a day here and
-/// a day in the Usage tab are the *same* key — if these two ever disagreed about
-/// where a midnight falls, the Trail's costs would silently stop matching the
-/// analytics the user already trusts.
-/// One issue or PR that opened, closed or merged. `at` is ISO-8601 from gh; the day
-/// bucketing happens here so the Trail and the Usage tab can never disagree about
-/// where midnight falls.
+/** One issue or PR event; `at` is ISO-8601 from gh and is bucketed into a day here. */
 export interface TrailEvent {
   number: number; kind: string; event: "opened" | "closed" | "merged";
   title: string; url: string; at: string;
 }
 
+// One local calendar day. `key` is `uDkey`'s format so the Trail and the Usage tab can
+// never disagree about where midnight falls.
 export interface TrailDay {
   key: string;
   when: number;          // ms at local midnight — for formatting only
@@ -58,12 +34,7 @@ export interface TrailDay {
   events: TrailEvent[];
 }
 
-/// A day's work, split by the project it belonged to.
-///
-/// A day is almost never about one thing, and a flat list of everything that happened
-/// reads as noise the moment two projects are in play — you cannot tell which commits
-/// belong to which sessions. Grouping is the smallest change that makes a mixed day
-/// legible.
+/** A day's work split by project, so a mixed day stays legible. */
 export interface DayProject {
   colorKey: string;
   project: string;
@@ -72,10 +43,8 @@ export interface DayProject {
   events: TrailEvent[];
 }
 
-/// Seconds → ms, once, at the boundary. Both backend timestamps are seconds.
-const ms = (secs: number) => secs * 1000;
+const ms = (secs: number) => secs * 1000; // both backend timestamps are seconds
 
-/** A history row reduced to a trail row, with project attribution already resolved. */
 export function trailSession(h: HistEntry): TrailSession {
   const p = histProject(h);
   return {
@@ -90,18 +59,11 @@ export function trailSession(h: HistEntry): TrailSession {
   };
 }
 
-/// The local calendar day a timestamp falls in. Shared by both groupers so a session
-/// and a commit an hour apart can never land on different days.
+/** The local day a ms timestamp falls in; every grouper here uses this one. */
 export const dayKeyOf = (msWhen: number) => uDkey(new Date(msWhen));
 
-/**
- * The Trail proper: the last `days.length` calendar days, **newest first**, each
- * joined to its sessions, commits and cost.
- *
- * Days with nothing in them are dropped rather than rendered empty. A window is a
- * request for "the last 30 days", not a promise that all 30 had work in them, and a
- * column of blank rows reads as a broken view rather than as a quiet weekend.
- */
+// The last `days.length` days, newest first, each joined to its sessions, commits and
+// cost. A day with nothing in it is dropped rather than rendered empty.
 export function trailDays(
   hist: HistEntry[],
   days: UDay[],
@@ -121,8 +83,6 @@ export function trailDays(
       events: [],
     });
   }
-  // Sessions and commits outside the window are simply not in `byKey` — no day is
-  // invented for them, which is what keeps the window honest.
   for (const h of hist) {
     const day = byKey.get(dayKeyOf(ms(h.last_active)));
     if (day) day.sessions.push(trailSession(h));
@@ -133,9 +93,7 @@ export function trailDays(
   }
   for (const ev of events) {
     const t = Date.parse(ev.at);
-    // A malformed timestamp is dropped rather than bucketed to 1970, where it would
-    // silently vanish from every window anyway.
-    if (!Number.isFinite(t)) continue;
+    if (!Number.isFinite(t)) continue; // malformed: drop rather than bucket to 1970
     const day = byKey.get(dayKeyOf(t));
     if (day) day.events.push(ev);
   }
@@ -149,16 +107,8 @@ export function trailDays(
   return out.sort((a, b) => b.when - a.when);
 }
 
-/**
- * A day split by project, most active first.
- *
- * Commits carry the root they came from and sessions carry a colorKey, so both already
- * know their project — this only has to agree on one key per group. Events are keyed by
- * the repo root `gh_day_activity` was asked about, which is that same colorKey.
- *
- * A project with only an event (a PR merged on a day you touched nothing else) still
- * gets a group: that IS what happened that day.
- */
+// A day split by project, busiest first. Events are keyed by the repo root
+// `gh_day_activity` was asked about, which is the same colorKey.
 export function dayByProject(d: TrailDay, nameOf: (colorKey: string) => string): DayProject[] {
   const groups = new Map<string, DayProject>();
   const at = (colorKey: string): DayProject => {
@@ -180,24 +130,13 @@ export function dayByProject(d: TrailDay, nameOf: (colorKey: string) => string):
   });
 }
 
-/// One line in a project's day, whatever kind of thing it is.
 export type DayItem =
   | { kind: "session"; when: number; session: TrailSession }
   | { kind: "commit"; when: number; commit: TrailCommit };
 
-/**
- * A project's day as ONE time-ordered list, newest first.
- *
- * Not sessions-then-commits. A session at 09:00 and the commit it produced at 09:05
- * are a cause and its effect; listing all the causes and then all the effects breaks
- * the only ordering that explains the day. The kind stays visible on each row, so
- * nothing is lost by mixing them.
- *
- * The two sources speak different units — `TrailSession.when` is already ms, while
- * `TrailCommit.when` is UNIX **seconds**, straight from git. Converting here is the
- * whole reason this is one function rather than a spread at the call site: sorted
- * together unconverted, every commit sorts as 1970 and sinks below everything.
- */
+// A project's day as one time-ordered list, newest first: a session and the commit it
+// produced belong together. `TrailCommit.when` is seconds and is converted here, or
+// every commit would sort as 1970 and sink below everything.
 export function dayItems(g: DayProject): DayItem[] {
   const items: DayItem[] = [
     ...g.sessions.map((session) => ({ kind: "session" as const, when: session.when, session })),
@@ -211,13 +150,9 @@ export function dayItems(g: DayProject): DayItem[] {
       b.kind === "session" ? b.session.id : b.commit.sha));
 }
 
-/// Events are tagged with their repo root when fetched; ./trailui stamps it on so this
-/// module needn't know how the fetch was keyed.
-const eventRoot = (e: TrailEvent & { root?: string }) => e.root ?? "";
+const eventRoot = (e: TrailEvent & { root?: string }) => e.root ?? ""; // stamped by ./trailui at fetch time
 
-/// Which project a day was mostly about, by session count then commit count, or null
-/// when the day was genuinely spread across several. Ties break alphabetically so a
-/// re-render can never reorder a day that hasn't changed.
+// The project a day was mostly about, by session count, or null when it was spread.
 export function dominantProject(d: TrailDay): string | null {
   const n = new Map<string, number>();
   for (const s of d.sessions) n.set(s.project, (n.get(s.project) || 0) + 1);
@@ -230,13 +165,8 @@ export function dominantProject(d: TrailDay): string | null {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-/**
- * The headline shown before (or instead of) a generated one.
- *
- * Always computed, never awaited: a generated summary is asynchronous, can be turned
- * off, and can fail, so every day must already read correctly without one. When the
- * model's sentence arrives it replaces this; until then this is what's on screen.
- */
+// The headline shown before (or instead of) a generated one: always computed, never
+// awaited, because the generated summary is asynchronous, optional and can fail.
 export function deterministicHeadline(d: TrailDay): string {
   const parts: string[] = [];
   const dom = dominantProject(d);
@@ -257,16 +187,8 @@ export function deterministicHeadline(d: TrailDay): string {
   return parts.join(" · ") + ".";
 }
 
-/**
- * The compact, factual description handed to the summariser.
- *
- * Deliberately just the day's own evidence — titles and subjects, no transcript
- * bodies. The summary is a one-line label over work the user already did, so it needs
- * no conversation content, and keeping it out means the Trail never ships prose from
- * inside a session to a model that didn't already have it.
- *
- * Bounded, because a heavy day would otherwise grow the prompt without bound.
- */
+// What the summariser is handed: titles and subjects only, never transcript bodies, so
+// no conversation content reaches a model that did not already have it. Bounded.
 export function dayFacts(d: TrailDay, limit = 12): string {
   const lines: string[] = [];
   if (d.cost > 0) lines.push(`spend: $${d.cost.toFixed(2)}`);
@@ -276,36 +198,23 @@ export function dayFacts(d: TrailDay, limit = 12): string {
   if (d.sessions.length > limit) lines.push(`… and ${d.sessions.length - limit} more sessions`);
   for (const c of d.commits.slice(0, limit)) lines.push(`commit: ${c.subject}`);
   if (d.commits.length > limit) lines.push(`… and ${d.commits.length - limit} more commits`);
-  // What landed, not just what ran — a day is remembered by what it finished.
   for (const e of (d.events ?? []).slice(0, limit)) {
     lines.push(`${e.event} ${e.kind} #${e.number}: ${e.title}`);
   }
   return lines.join("\n");
 }
 
-/// A day is only worth summarising once it can't change again. Today is still being
-/// written, so it re-summarises; every earlier day is final and is cached forever.
+/** Only today can still change; every earlier day is final and cached forever. */
 export const dayIsClosed = (d: TrailDay, now = Date.now()) => d.key !== uDkey(new Date(now));
 
 // ---------- the project's own day, as opposed to yours ----------
-//
-// `dayFacts` above describes a day *as seen from this machine*: session titles read out
-// of the local `~/.claude`, and spend read out of this install's rollup. Neither is
-// reproducible by anybody else, which is what makes that sentence unfit to commit — two
-// people summarising the same day hand the model different records and get different
-// answers, and whoever writes last wins.
-//
-// So the shared artefact is built from the other half only: the commits and the pull
-// requests, which are in the repo and identical for everyone who has it. Same day, same
-// facts, therefore a sentence that means the same thing to the whole team.
+// `dayFacts` reads this machine's sessions and spend, which nobody else can reproduce, so
+// the committed sentence is built from commits and pull requests only.
 
-/// A commit author that is a person. GitHub's own convention is a `[bot]` suffix on the
-/// login, and it is the only marker available here — `git_log_days` returns `%an`, which
-/// carries no account type. Anything cleverer would be guessing at names.
+/** GitHub's `[bot]` login suffix is the only marker `%an` carries. */
 export const isBotAuthor = (name: string) => /\[bot\]$/i.test(name.trim());
 
-/// Everyone who committed that day and isn't a bot, busiest first. Ties break by name so
-/// a repaint of unchanged state can never reorder the byline.
+/** Human committers that day, busiest first; ties by name so a repaint never reorders. */
 export function humanAuthors(d: TrailDay): string[] {
   const n = new Map<string, number>();
   for (const c of d.commits) {
@@ -315,34 +224,13 @@ export function humanAuthors(d: TrailDay): string[] {
   return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x]) => x);
 }
 
-/**
- * Whether the project's own line is worth *showing* on this day.
- *
- * Not whether it is worth writing — every closed day with commits is written, because a
- * colleague reading `digest.md` wants the project's whole history and a file with the
- * solo days missing is not that. This is the narrower display question, and the answer
- * is: only when it would say something your own line doesn't.
- *
- * **The test is more than one human author**, and the limit is deliberate. It cannot ask
- * "did somebody *else* commit", because that needs to know who you are — `%an` matched
- * against `git config user.name` breaks on a second machine, a different spelling of
- * your own name, and every co-authored commit, and a wrong answer here puts the wrong
- * box on screen. One human author means either it was you (your line covers it) or it
- * was one colleague whose commits your line already carries as context. Two means no
- * single narrative is "your day".
- */
+// Whether the project's line is worth showing beside your own: more than one human
+// author. It cannot ask "did somebody else commit", since matching `%an` against
+// `git config user.name` breaks on a second machine, a respelling or a co-authored commit.
 export const sharedDay = (d: TrailDay): boolean => humanAuthors(d).length > 1;
 
-/**
- * The record handed to the summariser for the **project's** line.
- *
- * Commits and pull requests only. No sessions and no spend — not merely because they
- * are noise here, but because they are the two things that differ per machine, and this
- * sentence gets committed. Keeping them out is what makes the output reproducible, and
- * it is also what keeps `spend: $58.23` out of a file that gets pushed.
- *
- * Bounded like `dayFacts`, and for the same reason.
- */
+// The project's record for the summariser: commits and pull requests only, since sessions
+// and spend differ per machine and this sentence gets committed. Bounded like `dayFacts`.
 export function projectDayFacts(d: TrailDay, limit = 16): string {
   const lines: string[] = [];
   const who = humanAuthors(d);

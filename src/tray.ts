@@ -1,21 +1,5 @@
-// The macOS menu-bar (tray) mirror of the sidebar: the fleet's most-urgent state as a
-// title, its session count as a tooltip, and one menu item per pane so a session can
-// be brought to the stage from outside the window.
-//
-// Unlike every other render surface this one is *native*, so a repaint is an IPC call
-// and a menu rebuild rather than an innerHTML assignment. renderAll() calls it on
-// every telemetry event, so it diffs a signature of what it would draw and returns
-// early when nothing changed — the same guarded-invoke pattern reconcileCaf uses.
-//
-// The rows are grouped under disabled project headers, and each session's status
-// rides as a coloured *icon* rather than a character. That is not decoration: a menu
-// item's text is always drawn in the menu's own colour, so `◆` (waiting on you) and
-// `✕` (the turn died) used to arrive the same grey as "Quit" — the two states you
-// open this menu for were the two it could not show. Since the header now carries the
-// project, the row label reads as the session's own summary — the OSC title Claude
-// keeps updated with what the conversation is about — with the branch stepping in
-// only until a title arrives: four panes on `main` all read "main — your turn", which
-// names nothing.
+// The menu-bar (tray) mirror of the sidebar: the most-urgent state as title, the count as tooltip,
+// one item per pane. Native, so a repaint is an IPC call; it diffs a signature and returns early.
 
 import { invoke } from "@tauri-apps/api/core";
 import { hasSessionState, isAgent, phaseText, statusKey, type Sess } from "./types";
@@ -28,9 +12,8 @@ type TrayRow =
   | { kind: "header"; label: string }
   | { kind: "sep" };
 
-// The sidebar's glyph vocabulary as shapes the backend can rasterise. Keyed by the
-// same `statusKey` GLYPH is, so the two cannot drift apart silently — a status added
-// to one without the other falls back to the disc rather than vanishing.
+// GLYPH's vocabulary as shapes icons.rs can rasterise, keyed by `statusKey`. Every status in
+// GLYPH must be here too; a missing one falls back to the disc.
 const SHAPE: Record<string, string> = {
   attention: "diamond", // ◆
   working: "disc",      // ●
@@ -42,12 +25,8 @@ const SHAPE: Record<string, string> = {
   background: "half",   // ◐ — the turn is over, its agents are not
 };
 
-// Resolve a status colour by asking the *stylesheet*, not by restating it here.
-// `GCLASS` names the class and `styles.css` owns the hue, so a hardcoded copy would
-// be a second palette to keep in step — and `g-ended` alone already differs between
-// the themes (it rides `--muted-2`), which is exactly the drift a copy would hide.
-// Cached per theme; the cache is only ever filled on a rebuild, which the signature
-// below makes rare.
+// styles.css owns the status hues (`g-ended` differs per theme), so read the colour off the
+// class rather than restate it. Cached per theme.
 let palTheme: string | null = null;
 const palCache = new Map<string, [number, number, number]>();
 function classRgb(cls: string): [number, number, number] {
@@ -66,11 +45,8 @@ function classRgb(cls: string): [number, number, number] {
   return rgb;
 }
 
-// A shell pane is not a phase, so it gets its own glyph here exactly as it does in
-// the sidebar (`sidebarview.ts` line 62) — the tray used to spell every kind of pane
-// with the phase vocabulary, which drew a live shell as an idle agent. An agent pane
-// is the same argument again: `»` mirrors the sidebar's, and the two tables have to
-// be changed together or the tray silently disagrees with the rail beside it.
+// A shell or agent pane is not a phase: `chevron`/`dchevron` mirror sidebarview's `❯`/`»`,
+// and the two tables must change together or the tray disagrees with the rail beside it.
 function rowIcon(s: Sess): { shape: string; cls: string } {
   const k = statusKey(s);
   const bare = s.kind === "shell" ? "chevron" : isAgent(s) && !hasSessionState(s) ? "dchevron" : "";
@@ -80,13 +56,9 @@ function rowIcon(s: Sess): { shape: string; cls: string } {
   return { shape: SHAPE[k] ?? "disc", cls: GCLASS[k] ?? "g-idle" };
 }
 
-// One line, bounded width: whitespace collapsed (a stray newline would wrap the
-// native item) and cut with an ellipsis. A menu sizes itself to its widest row, so
-// DESC_MAX *is* the menu's width policy — 44 keeps a full row (icon, summary,
-// "— your turn") readable without one long-winded summary stretching every row.
-const DESC_MAX = 44;
+const DESC_MAX = 44; // a menu sizes itself to its widest row, so this is the menu's width policy
 function clip(t: string): string {
-  const x = t.replace(/\s+/g, " ").trim();
+  const x = t.replace(/\s+/g, " ").trim(); // a stray newline would wrap the native item
   return x.length <= DESC_MAX ? x : x.slice(0, DESC_MAX - 1).trimEnd() + "…";
 }
 
@@ -99,7 +71,7 @@ export function updateTray() {
     rows.push({ kind: "header", label: p.name });
     for (const s of p.sessions) {
       const branch = s.worktree ? `⑃ ${s.branch}` : (s.branch || "session");
-      const desc = clip(s.title) || branch;
+      const desc = clip(s.title) || branch; // the OSC title names the work; four panes on `main` read alike
       const status = s.attention ? s.attention : phaseText(s);
       const { shape, cls } = rowIcon(s);
       rows.push({ kind: "session", id: s.id, label: `${desc} · ${status}`, shape, rgb: classRgb(cls) });
@@ -120,19 +92,14 @@ export function updateTray() {
       tooltip = `Episko · ${n} session${n === 1 ? "" : "s"}`;
     }
   }
-  // The icons are part of what is drawn, so shape and colour belong in the signature
-  // — without them a session changing phase without changing its wording (idle → an
-  // ended shell, say) would leave a stale glyph in the menu.
+  // Shape and colour are in the signature: a phase change with the same wording must still repaint.
   const sig = title + "|" + tooltip + "|" + rows.map((r) =>
     r.kind === "session" ? `s${r.id}${r.label}${r.shape}${r.rgb.join()}` : r.kind === "header" ? `h${r.label}` : "-",
   ).join("§");
   if (sig === lastTraySig) return; // avoid rebuilding the native menu on every telemetry tick
   lastTraySig = sig;
-  // Not swallowed: `items` is a tagged union deserialized by serde, so a row shape
-  // that drifts from `TrayRow` in lib.rs is rejected whole — and the only symptom
-  // would be a menu that silently stopped updating, since the signature above has
-  // already been banked. Failing that quietly is how `gh_claim` shipped broken for
-  // three releases.
+  // Not swallowed: `items` is a serde tagged union, so a row shape drifting from lib.rs's
+  // `TrayRow` is rejected whole, and the banked signature would otherwise hide that forever.
   invoke("update_tray", { title, tooltip, items: rows }).catch((e) => {
     lastTraySig = ""; // let the next event retry rather than sit on a menu that never landed
     dlog("warn", `update_tray rejected: ${e}`);
