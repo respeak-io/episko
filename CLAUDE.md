@@ -250,7 +250,10 @@ And the things that hold however the files are arranged:
   scroller. Both exist for one question the old single-column list could not answer
   without scrolling back up: *which file am I in*. So `.dfile` must never regain
   `overflow: hidden` (it would make each section its own scrollport and the sticky header
-  would then stick to a box that never scrolls, i.e. not at all), and the rail's spy
+  would then stick to a box that never scrolls, i.e. not at all), **a fold must address its
+  section by index** (`fileSection`, the lookup the rail and *expand all* already used) rather
+  than by walking up from the header, which since the chips joined it in one sticky box lands
+  on that box and silently folds nothing, and the rail's spy
   allows **one header's height of slack** — "the last header above the top edge" is wrong
   by one file for the whole handoff, while an arriving header is pushing the outgoing one
   out. Everything about what a hunk *means* is ./diff's, not the view's: which deletion

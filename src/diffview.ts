@@ -182,8 +182,13 @@ function paint(truncated: boolean) {
   spy();
 }
 
+// The one way from a file's index to its section. Never walk up from the header: `.dfhead`
+// shares the sticky `.dftop` box with its chips, so `parentElement` is that box rather than
+// the file, and the fold toggle spent a release putting `collapsed` on the wrong element.
+const fileSection = (i: number) => $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${i}"]`);
+
 function revealFile(i: number) {
-  const el = $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${i}"]`);
+  const el = fileSection(i);
   if (!el) return;
   el.classList.remove("collapsed");
   el.scrollIntoView({ block: "start" });
@@ -203,7 +208,7 @@ function selectFinding(fi: number, id: string): number {
   for (const el of body.querySelectorAll(".hchip.on")) el.classList.remove("on");
 
   const chip = chips[fi]?.find((c) => c.id === id);
-  const sec = body.querySelector<HTMLElement>(`.dfile[data-fi="${fi}"]`);
+  const sec = fileSection(fi);
   const key = `${fi}:${id}`;
   const again = activeFinding === key;
   const stops = chip?.places ?? [];
@@ -237,7 +242,7 @@ function nearestLine(sec: HTMLElement, line: number): HTMLElement | null {
 // `line` is a new-file number, so only added and context rows carry `data-ln`. A line
 // outside every hunk is not in the DOM and falls back to the nearest rendered row of the file.
 function gotoFinding(fi: number, id: string, fallback: number) {
-  const sec = $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${fi}"]`);
+  const sec = fileSection(fi);
   if (!sec) return;
   sec.classList.remove("collapsed");
   const line = selectFinding(fi, id) || fallback;
@@ -306,7 +311,7 @@ $("diffMode").addEventListener("click", () => {
     el.classList.toggle("collapsed", shut.has(el.dataset.fi));
   }
   if (here >= 0) {
-    $("diffBody").querySelector<HTMLElement>(`.dfile[data-fi="${here}"]`)?.scrollIntoView({ block: "start" });
+    fileSection(here)?.scrollIntoView({ block: "start" });
     markRail(here);
   }
 });
@@ -327,7 +332,8 @@ $("diffBody").addEventListener("click", (e) => {
   }
   const h = t.closest<HTMLElement>("[data-dtoggle]");
   if (!h) return;
-  const sec = h.parentElement!;
+  const sec = fileSection(+h.dataset.dtoggle!);
+  if (!sec) return;
   sec.classList.toggle("collapsed");
   // Folding from inside a file leaves the pointer over whatever moved up; keep its header on screen.
   if (sec.classList.contains("collapsed")) sec.scrollIntoView({ block: "nearest" });
