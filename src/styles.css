@@ -1450,13 +1450,19 @@ select.in-ctl { cursor: pointer; }
 /* the working-tree fact names its files, so it carries the diff viewer's +/− colours and .dstat letters */
 .wt-facts dd .add { color: var(--st-done); }
 .wt-facts dd .del { color: var(--st-attention); }
-.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
-.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
-.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
-.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
-.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+/* One dirty file, wherever a working set is listed rather than drawn: the fact above and
+   the dashboard's Working set card. A row that is a door says so; the rest are read-only. */
+.fslist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.fslist li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.fslist .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.fslist .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.fslist .from { color: var(--muted-2); text-decoration: line-through; }
+.fslist .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.fslist .add { color: var(--st-done); }
+.fslist .del { color: var(--st-attention); }
+.fslist li[data-diff] { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: 0 -5px; }
+.fslist li[data-diff]:hover { background: var(--surface-2); }
+.fsmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
