@@ -9,7 +9,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_WIN, toast } from "./dom";
 import { dlog } from "./debug";
 import type { Prompt, Sess } from "./types";
-import { lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
+import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 
@@ -275,13 +275,17 @@ const isAlt = (t: Terminal) => t.buffer.active.type === "alternate";
 // CLI). None can put a character in the composer or confirm anything, which is what keeps
 // this outside the two places Episko types at a session (CLAUDE.md).
 const PAGE_UP = "\x1b[5~", PAGE_DOWN = "\x1b[6~", TO_TOP = "\x1b[1;5H", TO_END = "\x1b[1;5F";
-const key = (s: Sess, seq: string) => invoke("write_pty", { sessionId: s.id, data: seq });
+// Swallowed: a pane closed while a hunt is walking it is not an error worth raising.
+const key = (s: Sess, seq: string) => void invoke("write_pty", { sessionId: s.id, data: seq }).catch(() => {});
 
-const HUNT_PAGES = 120;
-const BUDGET_MS = 6000; // a jump is a click, not an errand
-const SAY_MS = 700;     // before a hunt is worth saying out loud
-const FRAME_MS = 200;   // no change for this long is the end, not a redraw still on its way
-const SETTLE_MS = 16;   // a frame written in two chunks
+// Measured against the real CLI: a question nine minutes old in a working pane sat 66 pages up
+// from the live end, and pages redraw in 30-270ms, so the time is the bound and the count a stop.
+const HUNT_PAGES = 400;
+const BUDGET_MS = 15000; // a click that fails is worse than one that takes a moment and says so
+const SAY_MS = 700;      // before a hunt is worth saying out loud
+const FRAME_MS = 400;    // nothing for this long is a still screen, not a redraw on its way
+const CONFIRM_MS = 800;  // before a still screen is the far end rather than a slow redraw
+const SETTLE_MS = 16;    // quiet for this long is the frame finished, not a chunk of it
 
 const onScreen = (t: Terminal, keys: PromptKey[]) => {
   for (const k of keys) { const y = findPrompt(t, k, null); if (y != null) return y; }
@@ -294,56 +298,79 @@ function screenRows(t: Terminal): string[] {
   return out;
 }
 
-// The redraw itself, rather than a delay long enough to cover the worst one: resolves on the
-// first write that CHANGED the screen, or after FRAME_MS of none. A write is not a redraw —
-// the footer's clock lands first and read as "the top of the conversation" the first time.
-function frame(t: Terminal, before: string[]): Promise<string[]> {
+// The redraw itself, rather than a delay long enough to cover the worst one: resolves once the
+// screen has MOVED and the writing has stopped, or after `ms` of neither. A write is not a
+// redraw — the footer's clock lands first and read as "the top of the conversation" once — and
+// nor is half of one, so the settle restarts on every chunk rather than ending the wait.
+function frame(t: Terminal, before: string[], ms = FRAME_MS): Promise<string[]> {
   return new Promise((res) => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); res(screenRows(t)); };
-    const tid = setTimeout(finish, FRAME_MS);
-    const d = t.onWriteParsed(() => { if (screenShift(before, screenRows(t)) !== 0) setTimeout(finish, SETTLE_MS); });
+    let done = false, settle: number | undefined;
+    const finish = () => {
+      if (done) return;
+      done = true; d.dispose(); clearTimeout(tid); clearTimeout(settle); res(screenRows(t));
+    };
+    const tid = window.setTimeout(finish, ms);
+    const d = t.onWriteParsed(() => {
+      if (screenShift(before, screenRows(t)) === 0) return;
+      clearTimeout(settle);
+      settle = window.setTimeout(finish, SETTLE_MS);
+    });
   });
 }
+
+// The row, and — when there is none — how the looking ended, which is what separates "you never
+// asked that here" from "it is further back than one jump reaches" and from a hunt called off.
+type HuntEnd = "found" | "far" | "budget" | "stopped";
+interface Hunted { y: number | null; end: HuntEnd }
+
+let hunting = false, calledOff = false;
 
 /**
  * On screen already? Then nothing moves: jumping to an end first would undo the reading you
  * are in. Otherwise from the nearer end, a page at a time — deterministic where a wheel had
  * to be measured, and never longer than a screen, so a hit cannot be stepped over.
  */
-async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<number | null> {
+async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<Hunted> {
   const t = s.term!;
   const here = onScreen(t, keys);
-  if (here != null) return here;
+  if (here != null) return { y: here, end: "found" };
   let rows = screenRows(t);
   key(s, fromTop ? TO_TOP : TO_END);
   rows = await frame(t, rows);
   const t0 = Date.now();
-  let said = false;
-  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS; i++) {
+  let said = false, end: HuntEnd = "budget";
+  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS && !calledOff; i++) {
     const y = onScreen(t, keys);
-    if (y != null) return y;
+    if (y != null) return { y, end: "found" };
     if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
     key(s, fromTop ? PAGE_DOWN : PAGE_UP);
-    const next = await frame(t, rows);
-    if (screenShift(rows, next) === 0) break;
+    let next = await frame(t, rows);
+    // A page that moves nothing is the far end — but a redraw can outlast a frame (273ms on the
+    // first page, measured), and a hunt that reads one slow page as the end stops at page one.
+    if (screenShift(rows, next) === 0) {
+      next = await frame(t, rows, CONFIRM_MS);
+      if (screenShift(rows, next) === 0) { end = "far"; break; }
+    }
     rows = next;
   }
   key(s, TO_END); // a hunt that failed must not also lose your place
-  return null;
+  return { y: null, end: calledOff ? "stopped" : end };
 }
 
-let hunting = false;
 async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
   const keys = promptKeys(p.text);
-  if (hunting || !keys.length) return "unfound"; // one at a time: two hunts scroll each other
-  hunting = true;
+  if (!keys.length) return "unfound";
+  if (hunting) { calledOff = true; return "busy"; } // two hunts would page each other, so the second calls the first off
+  hunting = true; calledOff = false;
   try {
-    // Earlier half of the conversation? Then the top is the nearer end to page in from.
-    const y = await hunt(s, keys, s.prompts.indexOf(p) < s.prompts.length / 2);
+    // `resumeId` is the pane's own id until it picks up a conversation somebody else started,
+    // so an unequal one says there is talk above anything this list knows about.
+    const fromTop = huntFromTop(s.prompts, p, Date.now(), s.resumeId !== s.id);
+    const { y, end } = await hunt(s, keys, fromTop);
     if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
-    dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
-    return y == null ? "unfound" : "ok";
+    dlog("info", `outline hunt · ${p.id} · from ${fromTop ? "the top" : "the end"}`
+      + ` · ${y != null ? `row ${y}` : end}`);
+    return y != null ? "ok" : end === "far" ? "unfound" : end === "stopped" ? "busy" : "deeper";
   } finally { hunting = false; }
 }
 
@@ -366,8 +393,11 @@ function flashLine(term: Terminal, line: number) {
   }, FLASH_MS);
 }
 
-/** `gone` is the pane's answer, `unfound` the TUI's: one has lost the line, the other looked. */
-export type JumpResult = "ok" | "gone" | "unfound";
+/**
+ * `gone` is the pane's answer; the rest are the TUI's — it read the conversation to its far end
+ * (`unfound`), ran out of budget on the way (`deeper`), or was called off by the next click (`busy`).
+ */
+export type JumpResult = "ok" | "gone" | "unfound" | "deeper" | "busy";
 
 export async function scrollToPrompt(s: Sess, id: string): Promise<JumpResult> {
   const p = s.prompts.find((x) => x.id === id);
