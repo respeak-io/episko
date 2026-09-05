@@ -13,6 +13,21 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Clicking a question in a resumed pane finds it again.** The jump picked which end of the
+  conversation to search from by counting the outline's own rows, so a pane that had resumed
+  one read as *the first question of one* and paged down from the top of a fourteen-hour
+  conversation until it gave up — on a question 66 pages above the live end. It now goes by
+  the question's clock, and only trusts the list when it starts where the conversation does.
+! **A resumed session restores every question it was asked**, not the handful in the last
+  512KB of its transcript. A day of tool traffic buries them many times over, so a long
+  conversation came back with an outline of one.
+! **Your questions are yours again**: the notification a background task finished, a `!`
+  shell line and a pasted image's sidecar are turns Claude submits for you, and each was
+  landing in the outline as a question of its own.
+~ A question the jump could not find says which it was: read to the end of the conversation
+  and not in it, or still further back than one jump reaches.
+~ A hovered outline row no longer has a tooltip repeating the question it has just unfolded.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 

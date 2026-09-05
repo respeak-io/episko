@@ -20,7 +20,7 @@ import {
 } from "./types";
 import { readList } from "./store";
 import { seedPrompts } from "./outline";
-import { readProviderHistory } from "./providers";
+import { readProviderAsked } from "./providers";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
@@ -185,13 +185,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
 }
 
 // A resumed pane starts blind: its questions are in the provider's transcript, not in the
-// hooks it is about to receive. Both roles are read, so the window is generous; ./outline
-// keeps the user turns and refuses a second seeding.
-const SEED_READ = 240;
+// hooks it is about to receive. The questions alone and from the whole file, since a tail read
+// of a day's work holds none of them (docs/sessions.md); ./outline refuses a second seeding.
+const SEED_READ = 200; // what the outline would keep anyway (PROMPT_CAP)
 async function seedOutline(s: Sess, resumeId: string) {
   if (!s.provider) return;
   try {
-    const msgs = await readProviderHistory(s.provider, resumeId, s.workdir, SEED_READ);
+    const msgs = await readProviderAsked(s.provider, resumeId, s.workdir, SEED_READ);
     if (sessions.get(s.id) !== s) return; // closed while we read
     if (seedPrompts(s.prompts, msgs).length) renderAll();
   } catch (e) {

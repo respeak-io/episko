@@ -154,7 +154,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
-| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
+| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, which end of a conversation a hunt pages in from (`huntFromTop`), and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 | `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
@@ -323,13 +323,21 @@ And the things that hold however the files are arranged:
   anything, and the key is retried short for a REPL that wrapped the message itself);
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
   the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
-  end** (the outline knows which half of the conversation a question is in) and stops when a
-  page stops changing the screen — that is the far end (`screenShift` reads 0) — or when its
+  end**, which the list can only name when it starts where the conversation does
+  (`huntFromTop`: a resumed pane's does once the seed has restored what came before, and
+  anything else is hunted from the live end — judging it by list position alone sent every
+  click to the top of a fourteen-hour conversation), and stops when a page stops changing
+  the screen — that is the far end (`screenShift` reads 0) — or when its
   time budget does; a write is not a redraw, so "no change" is only believed after the full
-  wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
+  wait, or the footer's own repaint ends the hunt on step one (that shipped). A turn
+  Claude submits *for* you — a background task's notification, a `!` shell line, a slash
+  command's echo — fires `UserPromptSubmit` like any other and is dropped by `isEnvelope`
+  on **both** paths, or the panel fills with `<task-notification>` where the questions
+  should be (that shipped too). Prompts are
   **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
   and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript,
-  once. `docs/sessions.md` has all of it.
+  once, and from the whole of it: the mirror's 512KB tail read holds none of a long
+  conversation's questions. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so

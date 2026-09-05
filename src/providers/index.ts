@@ -27,6 +27,9 @@ export interface ProviderMessage { role: string; text: string; at?: string | nul
 export interface ProviderHistory {
   list(limit: number): Promise<HistEntry[]>;
   read(sessionId: string, cwd: string, limit: number): Promise<ProviderMessage[]>;
+  // The questions alone, and from the whole conversation rather than the tail `read` answers
+  // with: a day of tool traffic buries them, and an outline seeded from a tail lists none.
+  asked?(sessionId: string, cwd: string, limit: number): Promise<ProviderMessage[]>;
   reconcile(entries: Restorable[]): Promise<Restorable[]>;
 }
 
@@ -46,6 +49,9 @@ const claudeHistory: ProviderHistory = {
   },
   read(sessionId, cwd, limit) {
     return invoke<ProviderMessage[]>("read_transcript", { cwd, sessionId, limit });
+  },
+  asked(sessionId, cwd, limit) {
+    return invoke<ProviderMessage[]>("read_transcript_asked", { cwd, sessionId, limit });
   },
   async reconcile(entries) {
     const byDir = new Map<string, Restorable[]>();
@@ -137,6 +143,15 @@ export async function readProviderHistory(
   const history = providerAdapter(provider)?.history;
   if (!history) throw new Error(`history is not integrated for ${provider}`);
   return history.read(sessionId, cwd, limit);
+}
+
+/** The questions a conversation holds; a provider with no reader of its own answers from `read`. */
+export async function readProviderAsked(
+  provider: string, sessionId: string, cwd: string, limit: number,
+): Promise<ProviderMessage[]> {
+  const history = providerAdapter(provider)?.history;
+  if (!history) throw new Error(`history is not integrated for ${provider}`);
+  return history.asked ? history.asked(sessionId, cwd, limit) : history.read(sessionId, cwd, limit);
 }
 
 // A provider whose history call fails keeps its rows (a transient PATH/auth failure must not erase
