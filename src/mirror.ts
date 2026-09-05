@@ -21,9 +21,9 @@ import {
   type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
-  setExternals, setMirror,
+  setExternals, setMirror, worktreesByRepo,
 } from "./state";
 
 let setActive: (id: string) => void = () => {};
@@ -113,6 +113,11 @@ export async function refreshDirtyStates(force = false) {
   // An agent pane counts, a shell does not: each folder here costs a git_diffstat per sweep.
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
+  // The dashboard's Checkouts card asks about folders nothing is running in, and an
+  // unmeasured one must never read as clean. Scoped to the project on the stage, so the
+  // prune below drops them again as soon as it closes.
+  const dash = dashMirror();
+  if (dash) for (const w of worktreesByRepo.get(dash.root) ?? []) if (w.exists) folders.add(w.path);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f);
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
   if (sweep) dirtySweptAt = Date.now();

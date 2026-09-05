@@ -387,7 +387,9 @@ And the things that hold however the files are arranged:
 
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
 - **The app has three lists of files, and they must describe a path the same way.** The
-  working set (git, `wpeekHtml` → the peek), the Context card (the hook stream, `files.ts`)
+  working set (git, `wpeekHtml` → the peek — drawn in every host that asks about one: the
+  inspector, the external mirror, the ⑃ dialog's fact and the dashboard's Working set card,
+  but one list, one row (./patchview's `fileSetHtml`) and one viewer), the Context card (the hook stream, `files.ts`)
   and the explorer (`explore.ts`, the project index). The explorer is the superset: its
   scope chips are *filters* over the other two rather than a fourth idea, it reuses their
   marks and colours, and a row's ↵ hands a changed file to the peek rather than growing a

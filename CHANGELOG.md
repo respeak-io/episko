@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **What's uncommitted, on the project dashboard.** A *Working set* card names the main
+  checkout's changed files; the card opens the review overlay, a row opens it on that file.
+! **A checkout with no session no longer claims to be clean.** Those folders had never been
+  measured; the Checkouts card says `—` until they are, and a dirty row opens its own diff.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 

@@ -125,6 +125,46 @@ describe("the project dashboard's verbs", () => {
   });
 });
 
+// One level wider than the verbs above: `data-dashact` is only one of thirty attributes
+// `dashview.ts` writes, and the pane's listener probes for each of the others by name. An
+// attribute nobody probes for is a row that looks clickable and is not — which is exactly
+// how `data-dashwt` sat there, styled `cursor: pointer`, dispatching nothing.
+
+describe("the project dashboard's own dispatcher", () => {
+  // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
+  // are deliberately not verbs. Adding one here should be a decision, not an oversight.
+  const KEYS = new Set(["br", "day", "note", "sha"]);
+  const emitted = [...new Set([...DASHVIEW.matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
+    .map((m) => m[1]);
+
+  it("finds both halves", () => {
+    // A regex that has stopped matching would pass every assertion below vacuously.
+    expect(emitted.length).toBeGreaterThan(20);
+    expect(probed.length).toBeGreaterThan(15);
+  });
+
+  it("emits no attribute it never probes for — that is a row that does nothing", () => {
+    const dead = emitted.filter((k) => !probed.includes(k) && !KEYS.has(k));
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a checkout's two buttons BEFORE the row that contains them", () => {
+    // ＋ and ❯ are nested inside the row, so a row-level probe placed first would open the
+    // diff instead of launching a session — and `return` does not stop the propagation.
+    expect(probed).toContain("wt");
+    for (const inner of ["wtadd", "wtterm"]) {
+      expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashwt`)
+        .toBeLessThan(probed.indexOf("wt"));
+    }
+  });
+});
+
 // The same join in the one popover that does not route through main.ts: `serversui.ts` owns its
 // own `#svrPop` listener, a chain of `closest()` probes. `.sv-head` is the row's whole background,
 // so `closest("[data-svtoggle]")` matches a click on ANY control there; it must stay probed last.
