@@ -324,7 +324,8 @@ And the things that hold however the files are arranged:
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
   the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
   end** (the outline knows which half of the conversation a question is in) and stops when a
-  page stops changing the screen — that is the far end (`screenShift` reads 0) — or when its
+  page stops changing the screen — that is the far end (`screenShift` reads 0, and it reads a
+  move in **either** direction, or the rows that never move outvote a page forward) — or when its
   time budget does; a write is not a redraw, so "no change" is only believed after the full
   wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
   **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`

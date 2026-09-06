@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Jumping to an early question works again.** The outline read a page forward as "nothing
+  moved" and gave up, so a question in the first half only resolved from the first screen.
+! **A background task reporting back is not one of your questions.** Its notification comes
+  in through the same hook as a keystroke and was listed as one.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 
