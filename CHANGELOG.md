@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.25.1 — 2026-09-06
+Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
+
 ! **Jumping to an early question works again.** The outline read a page forward as "nothing
   moved" and gave up, so a question in the first half only resolved from the first screen.
 ! **A background task reporting back is not one of your questions.** Its notification comes
