@@ -299,38 +299,49 @@ function screenRows(t: Terminal): string[] {
 // the footer's clock lands first and read as "the top of the conversation" the first time.
 function frame(t: Terminal, before: string[]): Promise<string[]> {
   return new Promise((res) => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); res(screenRows(t)); };
-    const tid = setTimeout(finish, FRAME_MS);
-    const d = t.onWriteParsed(() => { if (screenShift(before, screenRows(t)) !== 0) setTimeout(finish, SETTLE_MS); });
+    let done = false, settle: number | undefined;
+    const finish = () => { if (done) return; done = true; d.dispose(); clearTimeout(tid); clearTimeout(settle); res(screenRows(t)); };
+    const tid = window.setTimeout(finish, FRAME_MS);
+    // Every further write restarts the settle: a page painted in chunks is read whole, or a
+    // half-painted reading makes the NEXT page's comparison say nothing moved.
+    const d = t.onWriteParsed(() => {
+      if (settle == null && screenShift(before, screenRows(t)) === 0) return;
+      clearTimeout(settle); settle = window.setTimeout(finish, SETTLE_MS);
+    });
   });
 }
+
+// What a hunt has to say for itself: the log carries this, and never the text.
+interface Hunt { y: number | null; pages: number; end: "on screen" | "found" | "far end" | "budget" | "pages" }
 
 /**
  * On screen already? Then nothing moves: jumping to an end first would undo the reading you
  * are in. Otherwise from the nearer end, a page at a time — deterministic where a wheel had
  * to be measured, and never longer than a screen, so a hit cannot be stepped over.
  */
-async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<number | null> {
+async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<Hunt> {
   const t = s.term!;
   const here = onScreen(t, keys);
-  if (here != null) return here;
+  if (here != null) return { y: here, pages: 0, end: "on screen" };
   let rows = screenRows(t);
   key(s, fromTop ? TO_TOP : TO_END);
   rows = await frame(t, rows);
   const t0 = Date.now();
-  let said = false;
-  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS; i++) {
+  let said = false, pages = 0, end: Hunt["end"];
+  for (;;) {
     const y = onScreen(t, keys);
-    if (y != null) return y;
+    if (y != null) return { y, pages, end: "found" };
+    if (pages >= HUNT_PAGES) { end = "pages"; break; }
+    if (Date.now() - t0 >= BUDGET_MS) { end = "budget"; break; }
     if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
     key(s, fromTop ? PAGE_DOWN : PAGE_UP);
+    pages++;
     const next = await frame(t, rows);
-    if (screenShift(rows, next) === 0) break;
+    if (screenShift(rows, next) === 0) { end = "far end"; break; }
     rows = next;
   }
   key(s, TO_END); // a hunt that failed must not also lose your place
-  return null;
+  return { y: null, pages, end };
 }
 
 let hunting = false;
@@ -340,10 +351,12 @@ async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
   hunting = true;
   try {
     // Earlier half of the conversation? Then the top is the nearer end to page in from.
-    const y = await hunt(s, keys, s.prompts.indexOf(p) < s.prompts.length / 2);
-    if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
-    dlog("info", `outline hunt · ${p.id} · ${y == null ? "not found" : `row ${y}`}`);
-    return y == null ? "unfound" : "ok";
+    const fromTop = s.prompts.indexOf(p) < s.prompts.length / 2;
+    const r = await hunt(s, keys, fromTop);
+    if (r.y != null) { try { flashLine(s.term!, r.y); } catch { /* renderer between frames */ } }
+    dlog("info", `outline hunt · ${s.id.slice(0, 8)} · ${p.id} · from ${fromTop ? "top" : "end"}`
+      + ` · ${r.pages} pages · ${r.end}${r.y == null ? "" : ` · row ${r.y}`}`);
+    return r.y == null ? "unfound" : "ok";
   } finally { hunting = false; }
 }
 
