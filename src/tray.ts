@@ -19,6 +19,7 @@ const SHAPE: Record<string, string> = {
   working: "disc",      // ●
   thinking: "disc",     // ●
   done: "check",        // ✓
+  donebg: "hourglass",  // ⧗ — your turn, but a shell it backgrounded runs on
   idle: "ring",         // ○
   error: "cross",       // ✕
   ended: "small",       // ·

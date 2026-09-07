@@ -465,6 +465,16 @@ And the things that hold however the files are arranged:
   splits on *evidence* (an address, announced or adopted) rather than on the command
   string, for the same reason ./health has no `.unwrap()` rule: a rule that fires on
   ordinary commands teaches you to ignore the row that matters.
+- **A turn that ended on top of a job says so, and still needs you.** `statusKey` answers
+  **`donebg`** (⧗, in *done's* green) for a `done` pane with a live background shell that
+  announced no address — a CI watcher, a build, a test run. `needsYou` and `urgencyRank` read
+  the phase and are deliberately untouched: unlike a fan-out (◐, which suppresses the badge
+  because its agents report back into the turn), nothing here will continue the conversation,
+  so the agent is waiting on you either way and only the glyph differs. A **server** (`bgKind`:
+  it has a URL) keeps the plain ✓ — infrastructure you left running, already counted by the
+  header pill; a glyph that fires on every pane with a `pnpm dev` behind it teaches you to
+  ignore it. `liveJobs`/`jobWaiting` are spelled in ./types rather than read from ./servers,
+  which imports it.
 - **A task's server URL is latched as its output streams, never rescanned from `tail`.**
   `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
   after the first HMR line — a URL read back off the tail would appear and then silently

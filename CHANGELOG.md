@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **A pane that finished its turn with a background shell still running wears ⧗, not ✓.**
+  "Your turn" and "your turn, and the CI watcher it started is still going" now read apart
+  from across the rail. It still counts as your turn everywhere else, and a dev server that
+  announced an address keeps the plain ✓ — the header pill already counts those.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 

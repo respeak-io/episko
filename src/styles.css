@@ -534,7 +534,7 @@ html.win .wctl { display: flex; }
 .insp-head { padding: 10px 13px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 8px; }
 .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; background: color-mix(in srgb, var(--pc) 14%, transparent); color: var(--pc); border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); }
 .pill .pd { width: 5px; height: 5px; border-radius: 50%; background: var(--pc); }
-.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);}
+.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);} .pill.donebg{--pc:var(--st-done);}
 .insp-scroll { overflow-y: auto; padding: 12px 13px 16px; display: flex; flex-direction: column; gap: 13px; min-height: 0; flex: 1; }
 .insp-empty { color: var(--muted-2); font-size: 11.5px; text-align: center; padding: 30px 10px; }
 
@@ -582,7 +582,7 @@ html.win .wctl { display: flex; }
 .vital .vgauge .glab { grid-area: 2 / 1; font: 9px var(--font-mono); letter-spacing: .03em; text-transform: uppercase; color: var(--muted-2); }
 .vital.st-working{--sc:var(--st-working);} .vital.st-thinking{--sc:var(--st-working);} .vital.st-done{--sc:var(--st-done);}
 .vital.st-attention{--sc:var(--st-attention);} .vital.st-error{--sc:var(--st-error);} .vital.st-idle{--sc:var(--st-idle);} .vital.st-ended{--sc:var(--muted-2);}
-.vital.st-background{--sc:var(--st-bg);}
+.vital.st-background{--sc:var(--st-bg);} .vital.st-donebg{--sc:var(--st-done);}
 .vital .vtop { display: flex; align-items: center; gap: 8px; }
 .vital .heart { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--sc); }
 @media (prefers-reduced-motion: no-preference) { .vital .heart:not(.still) { animation: beat 1.5s ease-in-out infinite; } }

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   actKey, apiErrText, bgWaiting, CLAUDE_CLI, FANOUT_DEAD_MS, FANOUT_GRACE_MS, fanoutTally,
-  liveAgents, liveCount, ORPHAN_DEAD_MS, orphanAgents, phaseText, statusKey, type Sess,
+  jobWaiting, liveAgents, liveCount, liveJobs, ORPHAN_DEAD_MS, orphanAgents, phaseText, statusKey,
+  type BgServer, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
@@ -844,6 +845,41 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       hook(s, "Stop");
       expect(s).toMatchObject({ phase: "done", queuedPrompt: false });
     });
+  });
+});
+
+describe("a finished turn with a background shell still up", () => {
+  // `Bash{run_in_background:true}`, as ./servers records it; a URL is what makes one a server.
+  const job = (o: Partial<BgServer> = {}): BgServer =>
+    ({ taskId: "t1", cmd: "gh run watch", transcript: "/t.jsonl", startedAt: NOW_MS, ...o });
+
+  it("marks the done rather than taking it away", () => {
+    const s = sess({ phase: "done", servers: [job()] });
+    expect(statusKey(s)).toBe("donebg");   // ⧗, not ✓
+    expect(jobWaiting(s)).toBe(true);
+    expect(phaseText(s)).toBe("your turn"); // it still is: needsYou reads the phase
+  });
+  it("leaves a dev server on the plain check", () => {
+    // Infrastructure you left running is not what the turn ended on top of, and the
+    // header pill already counts it.
+    const s = sess({ phase: "done", servers: [job({ url: "http://localhost:5173" })] });
+    expect([statusKey(s), liveJobs(s)]).toEqual(["done", 0]);
+  });
+  it("stands down the moment the job ends, however it ended", () => {
+    const s = sess({ phase: "done", servers: [job({ ended: NOW_MS, exit: 0 })] });
+    expect(statusKey(s)).toBe("done");
+  });
+  it("says nothing mid-turn: `working` is the truer reading", () => {
+    expect(statusKey(sess({ phase: "working", servers: [job()] }))).toBe("working");
+    expect(statusKey(sess({ phase: "idle", servers: [job()] }))).toBe("idle");
+  });
+  it("yields to a permission, a broken turn and a live fleet", () => {
+    expect(statusKey(sess({ phase: "done", attention: "permission: Bash", servers: [job()] }))).toBe("attention");
+    expect(statusKey(sess({ phase: "error", servers: [job()] }))).toBe("error");
+    const fleet = sess({ phase: "done", servers: [job()] });
+    hook(fleet, "SubagentStart");
+    setPhase(fleet, "done");
+    expect(statusKey(fleet)).toBe("background"); // nothing is asked of you yet
   });
 });
 
