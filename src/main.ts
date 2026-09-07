@@ -50,7 +50,7 @@ import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
-  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, runGit,
+  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
 } from "./panes";
@@ -534,7 +534,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -551,6 +551,7 @@ document.addEventListener("click", (e) => {
   // The twisty sits inside the row, so it must be tested before data-rungroup.
   else if (el.dataset.rgtoggle) toggleRunGroup(el.dataset.rgtoggle);
   else if (el.dataset.closerun) void closeRunGroup(el.dataset.closerun);
+  else if (el.dataset.runagain) void rerunRunGroup(el.dataset.runagain);
   else if (el.dataset.rungroup) { openRunGroup(el.dataset.rungroup); closeAttnPop(); }
   // Two popovers emit data-sel rows; both close behind the stage change.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }

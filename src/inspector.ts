@@ -178,8 +178,10 @@ function renderTaskInspector(s: Sess) {
   // A run-on-stop failure goes back to the session it was checking and only that one; if it
   // is gone, offer nothing rather than misdirect. A hand-run task takes the first live agent.
   const target = r.forSession ? candidates.find((x) => x.id === r.forSession) : candidates[0];
+  // The label is clipped to the rail's width, so the whole name lives in the tooltip.
+  const who = esc(target?.title || target?.branch || "session");
   const handoff = target
-    ? `<button class="tact hero" data-send="${target.id}">↩ Send output to “${esc(target.title || target.branch || "session")}”</button>`
+    ? `<button class="tact hero" data-send="${target.id}" title="Paste the failing output into “${who}”">↩ Send output to “${who}”</button>`
     : "";
 
   // Not through paintInspector: this card binds per-element listeners, so a skipped repaint

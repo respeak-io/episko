@@ -378,6 +378,10 @@ html.win .wctl { display: flex; }
 .rgname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
 .rgroup.on .rgname { color: var(--accent-ink); }
 .rgrow:hover .sclose { opacity: 1; }
+/* Both group controls are hover-revealed overlays rather than grid cells, so ⟳ sits left of ✕;
+   they abut rather than clear each other, or the tally shows through the seam on hover. */
+.rgredo { right: 22px; }
+.rgredo:hover { color: var(--accent-ink); }
 /* the negative margin buys click area without widening the column */
 .rgtwist { font-size: 11px; color: var(--muted-2); text-align: center; line-height: 1; transition: transform .12s, color .12s; cursor: pointer; margin: -5px; padding: 5px; border-radius: 4px; }
 .rgtwist:hover { color: var(--text); background: var(--surface-2); }
@@ -1273,7 +1277,7 @@ html.win .wctl { display: flex; }
 .tact { white-space: nowrap; }
 .tact.hero { border-color: var(--accent-line); color: var(--accent-ink); }
 /* full width only in the inspector's stack; in the task panel's footer it sits in a flex row */
-.tacts .tact.hero { width: 100%; }
+.tacts .tact.hero { width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .tact.hero:hover { background: var(--accent-wash); }
 .ext-meta .mono.ok { color: var(--st-done); }
 .ext-meta .mono.bad { color: var(--st-error); }

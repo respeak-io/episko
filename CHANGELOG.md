@@ -13,6 +13,14 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Re-run a whole stack from its sidebar row.** The ⟳ on a run group's header stops every
+  step and starts the chain again from the top; a step's own ⟳ still re-runs just that step,
+  which is what you want when one install flaked after the setup that fed it.
+~ Re-running one step of a run group keeps it in the group instead of dropping a loose row
+  beside the fold it came from.
+! The task inspector's *Send output to …* button no longer overflows the rail when the
+  session it names is long; the full name is in its tooltip.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 

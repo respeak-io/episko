@@ -407,6 +407,7 @@ export interface Sess {
     forSession?: string; // the session a run-on-stop rule was verifying; a failure goes back to it
     groupId?: string; // one dependsOn chain, minted per launch so two runs compare; absent on a lone task
     groupLabel?: string; // the root task's label; not derivable once all are panes
+    groupRoot?: string; // the root task's id, so the group's ⟳ can launch the chain again
   };
 }
 
