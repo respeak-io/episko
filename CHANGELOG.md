@@ -24,6 +24,20 @@ The status bar's popovers stop being a dead end.
 ~ Settings arrives at the top of the tab a link names, rather than wherever you last left the
   pane scrolled. The terminal picker names itself, as every other popover in that bar does.
 
+! **Clicking a question in a resumed pane finds it again.** The jump picked which end of the
+  conversation to search from by counting the outline's own rows, so a pane that had resumed
+  one read as *the first question of one* and paged down from the top of a fourteen-hour
+  conversation until it gave up — on a question 66 pages above the live end. It now goes by
+  the question's clock, and only trusts the list when it starts where the conversation does.
+! **A resumed session restores every question it was asked**, not the handful in the last
+  512KB of its transcript. A day of tool traffic buries them many times over, so a long
+  conversation came back with an outline of one.
+! **A `!` shell line and a pasted image's sidecar are not questions either.** Claude submits
+  both for you, through the same hook as a keystroke, and each was listed as one.
+~ A question the jump could not find says which it was: read to the end of the conversation
+  and not in it, or still further back than one jump reaches.
+~ A hovered outline row no longer has a tooltip repeating the question it has just unfolded.
+
 ## 0.25.1 — 2026-09-06
 Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
 
