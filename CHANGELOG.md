@@ -12,11 +12,30 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+The status bar's popovers stop being a dead end.
+
++ Every popover in the status bar has a **quick open** in its top-right corner, to the panel
+  that answers in full what it only summarises: today's spend and your limits open *Usage &
+  spend*, the shortcut sheet Settings › Keys, the terminal picker Settings › Sessions, and
+  disk I/O Settings › Diagnostics.
+~ **Usage & spend is its own window**, not a Settings tab: nothing in it is a setting, and it
+  was the one tab that had to widen the whole dialog to fit. Open it from either money
+  popover or from `⌘K`.
+~ Settings arrives at the top of the tab a link names, rather than wherever you last left the
+  pane scrolled. The terminal picker names itself, as every other popover in that bar does.
 
 ~ **A pane that finished its turn with a background shell still running wears ⧗, not ✓.**
   "Your turn" and "your turn, and the CI watcher it started is still going" now read apart
   from across the rail. It still counts as your turn everywhere else, and a dev server that
   announced an address keeps the plain ✓ — the header pill already counts those.
+
+## 0.25.1 — 2026-09-06
+Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
+
+! **Jumping to an early question works again.** The outline read a page forward as "nothing
+  moved" and gave up, so a question in the first half only resolved from the first screen.
+! **A background task reporting back is not one of your questions.** Its notification comes
+  in through the same hook as a keystroke and was listed as one.
 
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
