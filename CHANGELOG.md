@@ -12,6 +12,17 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+The status bar's popovers stop being a dead end.
+
++ Every popover in the status bar has a **quick open** in its top-right corner, to the panel
+  that answers in full what it only summarises: today's spend and your limits open *Usage &
+  spend*, the shortcut sheet Settings › Keys, the terminal picker Settings › Sessions, and
+  disk I/O Settings › Diagnostics.
+~ **Usage & spend is its own window**, not a Settings tab: nothing in it is a setting, and it
+  was the one tab that had to widen the whole dialog to fit. Open it from either money
+  popover or from `⌘K`.
+~ Settings arrives at the top of the tab a link names, rather than wherever you last left the
+  pane scrolled. The terminal picker names itself, as every other popover in that bar does.
 
 ! **Clicking a question in a resumed pane finds it again.** The jump picked which end of the
   conversation to search from by counting the outline's own rows, so a pane that had resumed
@@ -21,12 +32,19 @@ Markers: `+` new · `~` changed · `!` fixed
 ! **A resumed session restores every question it was asked**, not the handful in the last
   512KB of its transcript. A day of tool traffic buries them many times over, so a long
   conversation came back with an outline of one.
-! **Your questions are yours again**: the notification a background task finished, a `!`
-  shell line and a pasted image's sidecar are turns Claude submits for you, and each was
-  landing in the outline as a question of its own.
+! **A `!` shell line and a pasted image's sidecar are not questions either.** Claude submits
+  both for you, through the same hook as a keystroke, and each was listed as one.
 ~ A question the jump could not find says which it was: read to the end of the conversation
   and not in it, or still further back than one jump reaches.
 ~ A hovered outline row no longer has a tooltip repeating the question it has just unfolded.
+
+## 0.25.1 — 2026-09-06
+Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
+
+! **Jumping to an early question works again.** The outline read a page forward as "nothing
+  moved" and gave up, so a question in the first half only resolved from the first screen.
+! **A background task reporting back is not one of your questions.** Its notification comes
+  in through the same hook as a keystroke and was listed as one.
 
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.

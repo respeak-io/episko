@@ -374,7 +374,7 @@ export function costDelta(conv: string, total: number, dropsAreReset = true, own
 // Test-only; the app's own copy outlives the run.
 export function resetCostBaselines() { costBaseline.clear(); localStorage.removeItem(COST_BASE_KEY); }
 
-// ---------- Usage analytics (the Usage settings tab) ----------
+// ---------- Usage analytics (the Usage & spend window) ----------
 // One day's tokens by type and model family. Claude's come from the transcript scan
 // (full history); provider deltas record from the first integrated session onward.
 export interface DayUsage {
@@ -454,7 +454,7 @@ export function addAgentTokenUsage(s: Sess, reading: AgentTokenUsage): void {
   localStorage.setItem("cc-agent-usage-tokens", JSON.stringify(liveTokenDays));
   tokenDays = mergeTokenDays(scannedTokenDays.value, liveTokenDays);
 }
-export let usageRange = 30; // days the analytics tab looks back
+export let usageRange = 30; // days the analytics panel looks back
 export function setUsageRange(n: number) { usageRange = n; }
 
 export const U_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

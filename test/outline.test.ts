@@ -65,6 +65,11 @@ describe("notePrompt lists what you asked", () => {
     expect(notePrompt(list, "  ", NOW)).toBeNull();
     expect(list).toEqual([]);
   });
+  it("ignores a background task reporting back, which submits itself like a keystroke", () => {
+    const list: Prompt[] = [];
+    expect(notePrompt(list, "<task-notification>\n<task-id>b36upupvd</task-id>\n<tool-use-id>x</tool-use-id>", NOW)).toBeNull();
+    expect(list).toEqual([]);
+  });
   it("collapses one message reported twice, but not the same question asked twice", () => {
     const list: Prompt[] = [];
     notePrompt(list, "run the tests", NOW);
@@ -196,6 +201,13 @@ describe("how far a screen moved between two readings", () => {
     const before = screen(...conv);
     const after = screen("earlier", "still earlier", ...conv.slice(0, 6));
     expect(screenShift(before, after)).toBe(2);
+  });
+  it("reads a page forward too, however many rows stay put underneath", () => {
+    // Separators, composer, footer: the rows that never move used to outvote the page.
+    const chrome = ["────", "❯", "────", "⏵⏵ auto mode on"];
+    const before = screen(...conv, ...chrome);
+    const after = screen(...conv.slice(2), "later", "later still", ...chrome);
+    expect(screenShift(before, after)).toBe(-2);
   });
   it("says 0 when a wheel changed nothing, which is the top", () => {
     expect(screenShift(conv, conv)).toBe(0);

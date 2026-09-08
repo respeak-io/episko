@@ -126,17 +126,17 @@ export function promptKeys(text: string): PromptKey[] {
 export const lineHasPrompt = (line: string, k: PromptKey): boolean =>
   k.strict ? line.startsWith(k.key) : line.includes(k.key);
 
-// How far a screen moved between two readings, in rows: 0 when nothing did (the top of the
-// conversation, or a wheel the REPL ignored) and null when too little lines up to say — a
-// rewritten screen, or a jump longer than the screen itself. Scrolling back moves content
-// DOWN, so a hit is `after[i + shift] === before[i]`.
+// How far a screen moved between two readings, in rows: positive when content moved DOWN (a
+// page back), negative when it moved UP (a page forward), 0 when nothing did — the far end —
+// and null when too little lines up to say. Both directions, or the rows that never move
+// (separators, composer, footer) outvote a page forward and read as the far end (that shipped).
 const ANCHORS = 4; // matching rows before a shift is a reading rather than a coincidence
 
 export function screenShift(before: readonly string[], after: readonly string[]): number | null {
   let best = 0, bestAt: number | null = null;
-  for (let d = 0; d < after.length; d++) {
+  for (let d = 1 - before.length; d < after.length; d++) {
     let n = 0;
-    for (let i = 0; i + d < after.length && i < before.length; i++) {
+    for (let i = Math.max(0, -d); i < before.length && i + d < after.length; i++) {
       if (before[i].trim() && before[i] === after[i + d]) n++;
     }
     if (n > best) { best = n; bestAt = d; }

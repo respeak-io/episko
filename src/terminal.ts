@@ -311,17 +311,18 @@ function frame(t: Terminal, before: string[], ms = FRAME_MS): Promise<string[]> 
     };
     const tid = window.setTimeout(finish, ms);
     const d = t.onWriteParsed(() => {
-      if (screenShift(before, screenRows(t)) === 0) return;
+      if (settle == null && screenShift(before, screenRows(t)) === 0) return;
       clearTimeout(settle);
       settle = window.setTimeout(finish, SETTLE_MS);
     });
   });
 }
 
-// The row, and — when there is none — how the looking ended, which is what separates "you never
-// asked that here" from "it is further back than one jump reaches" and from a hunt called off.
+// What a hunt has to say for itself — the log carries this and never the text. How the looking
+// ended is what separates "you never asked that here" from "it is further back than one jump
+// reaches" and from a hunt called off.
 type HuntEnd = "found" | "far" | "budget" | "stopped";
-interface Hunted { y: number | null; end: HuntEnd }
+interface Hunted { y: number | null; pages: number; end: HuntEnd }
 
 let hunting = false, calledOff = false;
 
@@ -333,15 +334,15 @@ let hunting = false, calledOff = false;
 async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<Hunted> {
   const t = s.term!;
   const here = onScreen(t, keys);
-  if (here != null) return { y: here, end: "found" };
+  if (here != null) return { y: here, pages: 0, end: "found" };
   let rows = screenRows(t);
   key(s, fromTop ? TO_TOP : TO_END);
   rows = await frame(t, rows);
   const t0 = Date.now();
-  let said = false, end: HuntEnd = "budget";
-  for (let i = 0; i < HUNT_PAGES && Date.now() - t0 < BUDGET_MS && !calledOff; i++) {
+  let said = false, pages = 0, end: HuntEnd = "budget";
+  for (; pages < HUNT_PAGES && Date.now() - t0 < BUDGET_MS && !calledOff; pages++) {
     const y = onScreen(t, keys);
-    if (y != null) return { y, end: "found" };
+    if (y != null) return { y, pages, end: "found" };
     if (!said && Date.now() - t0 > SAY_MS) { said = true; toast("Looking back through the conversation…"); }
     key(s, fromTop ? PAGE_DOWN : PAGE_UP);
     let next = await frame(t, rows);
@@ -354,7 +355,7 @@ async function hunt(s: Sess, keys: PromptKey[], fromTop: boolean): Promise<Hunte
     rows = next;
   }
   key(s, TO_END); // a hunt that failed must not also lose your place
-  return { y: null, end: calledOff ? "stopped" : end };
+  return { y: null, pages, end: calledOff ? "stopped" : end };
 }
 
 async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
@@ -366,10 +367,10 @@ async function huntFor(s: Sess, p: Prompt): Promise<JumpResult> {
     // `resumeId` is the pane's own id until it picks up a conversation somebody else started,
     // so an unequal one says there is talk above anything this list knows about.
     const fromTop = huntFromTop(s.prompts, p, Date.now(), s.resumeId !== s.id);
-    const { y, end } = await hunt(s, keys, fromTop);
+    const { y, pages, end } = await hunt(s, keys, fromTop);
     if (y != null) { try { flashLine(s.term!, y); } catch { /* renderer between frames */ } }
-    dlog("info", `outline hunt · ${p.id} · from ${fromTop ? "the top" : "the end"}`
-      + ` · ${y != null ? `row ${y}` : end}`);
+    dlog("info", `outline hunt · ${s.id.slice(0, 8)} · ${p.id} · from ${fromTop ? "the top" : "the end"}`
+      + ` · ${pages} pages · ${y != null ? `row ${y}` : end}`);
     return y != null ? "ok" : end === "far" ? "unfound" : end === "stopped" ? "busy" : "deeper";
   } finally { hunting = false; }
 }
