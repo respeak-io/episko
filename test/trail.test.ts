@@ -61,7 +61,7 @@ describe("day grouping", () => {
     expect(out[1].sessions[0].id).toBe("late");
   });
 
-  it("uses the same day key as the Usage tab, so costs can never disagree", () => {
+  it("uses the same day key as Usage & spend, so costs can never disagree", () => {
     // The join is by key; if these two ever drifted the Trail would show a day's
     // sessions against another day's spend.
     expect(dayKeyOf(at(2027, 3, 13, 23, 59).getTime())).toBe(usageWindow(2)[0].key);

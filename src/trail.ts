@@ -22,7 +22,7 @@ export interface TrailEvent {
   title: string; url: string; at: string;
 }
 
-// One local calendar day. `key` is `uDkey`'s format so the Trail and the Usage tab can
+// One local calendar day. `key` is `uDkey`'s format so the Trail and Usage & spend can
 // never disagree about where midnight falls.
 export interface TrailDay {
   key: string;
