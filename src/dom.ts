@@ -6,7 +6,7 @@ export function toast(m: string) { const el = $("toast"); el.textContent = m; el
 
 // Overlays sharing #scrim; the last one to close clears it. ./confirm has its own
 // backdrop and must stay off this list.
-const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "expDlg", "graphDlg", "setDlg", "histDlg", "callDlg"];
+const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "expDlg", "graphDlg", "setDlg", "usageDlg", "histDlg", "callDlg"];
 export function dropScrim() {
   if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
 }
