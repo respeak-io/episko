@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { hasSessionState, type Runnable, type Sess } from "./types";
-import { sessions } from "./state";
+import { sessions, stageGroup } from "./state";
 import { openInputPrompt } from "./taskui";
 import {
   discoverTasks, lastRunnableById, launchWithDeps, prefillInputs, resolveRunInputs, stopRuleBlocked,
@@ -65,17 +65,23 @@ export async function maybeRunOnStop(s: Sess) {
   }
 }
 
-// A fresh pane replaces the old one, so the sidebar doesn't grow a row per attempt.
+// A fresh pane replaces the old one, so the sidebar doesn't grow a row per attempt. It keeps
+// the group: re-running one step is no reason for the fold to lose it (the whole stack is the
+// header's ⟳). Only this step runs — its dependencies are not repeated.
 export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
   const spec = lastRunnableById.get(r.id);
   if (!spec) { toast("Task definition is gone. Rescan"); return; }
+  const grp = { groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot };
   // Reuses the last values silently; ⋯ Parameters is how you change them.
   const ready = resolveRunInputs(spec, s.project, withParams);
-  if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd }); return; }
+  if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd, ...grp }); return; }
   const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
   closeSession(s.id);
-  await launchTask(ready, project, { colorKey, worktree, branch });
+  const id = await launchTask(ready, project, { colorKey, worktree, branch, ...grp });
+  // launchTask stages a group member only while that mosaic is already up; a re-run you
+  // clicked is one you want to watch, so the fresh pane still takes the stage otherwise.
+  if (id && grp.groupId && stageGroup !== grp.groupId) setActive(id);
 }
 
 // No trailing newline: Episko prefills, the human presses Enter (same contract as handToTerminal).

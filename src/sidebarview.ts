@@ -109,6 +109,7 @@ function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster):
     <span class="sglyph ${gcls}">${GLYPH[it.phase] || GLYPH.idle}</span>
     <span class="rgname" title="${esc(it.label)}">${esc(it.label)}</span>${chipHtml}
     <span class="rgtally${failed ? " bad" : ""}">${esc(tally)}</span>
+    <span class="sclose rgredo" data-runagain="${esc(it.id)}" title="Stop this run and start the whole stack again">⟳</span>
     <span class="sclose" data-closerun="${esc(it.id)}" title="Close every pane in this run">✕</span></div>`;
   const body = open ? `<div class="rgsteps">${it.members.map((m) => sessionRow(m, undefined, true)).join("")}</div>` : "";
   return `<div class="rgroup${tiled ? " on" : ""}${open ? " open" : ""}">${head}${body}</div>`;

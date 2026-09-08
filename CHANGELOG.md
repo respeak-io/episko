@@ -50,6 +50,14 @@ The status bar's popovers stop being a dead end.
   from across the rail. It still counts as your turn everywhere else, and a dev server that
   announced an address keeps the plain ✓ — the header pill already counts those.
 
++ **Re-run a whole stack from its sidebar row.** The ⟳ on a run group's header stops every
+  step and starts the chain again from the top; a step's own ⟳ still re-runs just that step,
+  which is what you want when one install flaked after the setup that fed it.
+~ Re-running one step of a run group keeps it in the group instead of dropping a loose row
+  beside the fold it came from.
+! The task inspector's *Send output to …* button no longer overflows the rail when the
+  session it names is long; the full name is in its tooltip.
+
 ## 0.25.1 — 2026-09-06
 Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
 
