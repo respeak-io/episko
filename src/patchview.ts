@@ -4,11 +4,18 @@
 import { alignHunk, type DiffCell, type DiffFile, type DiffHunk, type DiffMode, type Span } from "./diff";
 import { esc, escAttr } from "./format";
 import type { Chip } from "./health";
+import type { StatusFile } from "./types";
 
-// Shared with the working-set peek's file list, so one file cannot be called two things.
-export const DSTAT: Record<DiffFile["status"], [string, string]> = {
-  modified: ["M", "s-mod"], added: ["A", "s-add"], deleted: ["D", "s-del"], renamed: ["R", "s-ren"],
+// One letter, one colour, wherever a changed file is named: these headers, the index rail,
+// the ⑃ dialog's working-tree fact and the dashboard's Working set card. Two keys and one
+// table, because a patch says "modified" where `git status` says M; `?` borrows added's green.
+export const FCLASS: Record<string, string> = {
+  M: "s-mod", A: "s-add", "?": "s-add", D: "s-del", R: "s-ren", C: "s-ren", U: "s-del",
 };
+export const DSTAT: Record<DiffFile["status"], string> = {
+  modified: "M", added: "A", deleted: "D", renamed: "R",
+};
+const fcls = (code: string) => FCLASS[code] ?? "s-mod";
 
 // Folder and name are drawn at different weights, so a list of `src/…` rows is not a wall.
 function splitPath(p: string): [string, string] {
@@ -18,6 +25,35 @@ function splitPath(p: string): [string, string] {
 function dirOf(p: string): string {
   const i = p.lastIndexOf("/");
   return i < 0 ? "" : p.slice(0, i);
+}
+
+// A repo-relative path, folder dimmed. Not the ⑃ dialog's `wtPathHtml`, which answers the
+// same question about an OS path (backslashes, no repo root) and must keep its own splitter.
+function pathHtml(p: string): string {
+  const [dir, name] = splitPath(p);
+  return `${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="em">${esc(name)}</span>`;
+}
+
+// One dirty file as `git status` names it, for the hosts that list a working set without
+// drawing it. `attrs` is how a host makes the row a door; ./patchview knows no paths.
+export function statusRowHtml(f: StatusFile, attrs = ""): string {
+  const name = f.from ? `<span class="from">${esc(f.from)}</span> → ${pathHtml(f.path)}` : pathHtml(f.path);
+  const n = f.added || f.removed
+    ? `<span class="n"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>`
+    : "";
+  return `<li${attrs}><span class="dstat ${fcls(f.code)}">${esc(f.code)}</span><span class="p">${name}</span>${n}</li>`;
+}
+
+/** The files behind a working set, capped by the host. `total` is `dirty` rather than
+ *  `entries.length`, since the backend caps the list and not the count: "…and N more" has
+ *  to speak for the entries nobody sent as well as the ones this host chose not to draw. */
+export function fileSetHtml(
+  entries: StatusFile[], cap: number, total: number, attrs: (f: StatusFile) => string = () => "",
+): string {
+  const shown = entries.slice(0, cap);
+  const rest = total - shown.length;
+  return (shown.length ? `<ul class="fslist">${shown.map((f) => statusRowHtml(f, attrs(f))).join("")}</ul>` : "")
+    + (rest > 0 ? `<div class="fsmore">…and ${rest} more</div>` : "");
 }
 
 function cellText(c: DiffCell): string {
@@ -75,7 +111,7 @@ export function pipsHtml(chips: Chip[]): string {
 
 // `btns` comes from ./diffview, the only place that knows the absolute path the buttons need.
 export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, btns: string, chips: Chip[] = []): string {
-  const [glyph, cls] = DSTAT[f.status];
+  const glyph = DSTAT[f.status], cls = fcls(glyph);
   const [dir, name] = splitPath(f.path);
   const label = f.status === "renamed" && f.oldPath
     ? `<span class="d-old">${esc(f.oldPath)}</span><span class="d-arr">→</span><span class="dp-dir">${esc(dir)}</span>${esc(name)}`
@@ -102,7 +138,7 @@ export function railHtml(files: DiffFile[], active: number, chips: Chip[][] = []
     const d = dirOf(f.path);
     const head = d === dir ? "" : `<div class="dr-dir" title="${escAttr(d || "the project root")}">${esc(d || "/")}</div>`;
     dir = d;
-    const [glyph, cls] = DSTAT[f.status];
+    const glyph = DSTAT[f.status], cls = fcls(glyph);
     const [, name] = splitPath(f.path);
     const n = f.binary ? `<i class="d-bin">bin</i>`
       : `<i class="add">+${f.added}</i><i class="del">−${f.removed}</i>`;

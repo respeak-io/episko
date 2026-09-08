@@ -673,11 +673,13 @@ html.win .wctl { display: flex; }
 
 /* --- working set (git diffstat) --- */
 .wset { border-radius: var(--radius); padding: 11px 12px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 8px; }
-.wset .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
-.wset .add { color: var(--st-done); font-weight: 700; } .wset .del { color: var(--st-attention); font-weight: 700; }
-.wset .files { color: var(--muted); margin-left: auto; }
+/* The peek is drawn in three hosts, so its own look hangs off `.wpeek` and not off any one
+   of them; what stays under `.wset` below is the card around it (branch, sync, buttons). */
+.wpeek .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
+.wpeek .add { color: var(--st-done); font-weight: 700; } .wpeek .del { color: var(--st-attention); font-weight: 700; }
+.wpeek .files { color: var(--muted); margin-left: auto; }
 /* ...unless it is alone on the row (new files only, no line counts), where right-aligning leaves a hole */
-.wset .files.lone { margin-left: 0; margin-right: auto; }
+.wpeek .files.lone { margin-left: 0; margin-right: auto; }
 .stackbar { height: 6px; border-radius: 3px; overflow: hidden; display: flex; background: var(--hair-strong); }
 .stackbar .sa { background: var(--st-done); } .stackbar .sd { background: var(--st-attention); }
 /* No churn to split: the bare track, dimmed. Never a 100%-wide half — see wpeekHtml. */
@@ -1450,13 +1452,24 @@ select.in-ctl { cursor: pointer; }
 /* the working-tree fact names its files, so it carries the diff viewer's +/− colours and .dstat letters */
 .wt-facts dd .add { color: var(--st-done); }
 .wt-facts dd .del { color: var(--st-attention); }
-.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
-.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
-.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
-.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
-.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+/* The dashboard's Working set card. `.ac-b` pads by 3px because its usual children pad
+   themselves, and the peek bleeds -6px to sit its hover highlight under the text, so this
+   is the padding both of them assume — the `.wset` role in the inspector, one card over. */
+.wsb { padding: 8px 7px 9px; }
+
+/* One dirty file, wherever a working set is listed rather than drawn: the fact above and
+   the dashboard's Working set card. A row that is a door says so; the rest are read-only. */
+.fslist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.fslist li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.fslist .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.fslist .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.fslist .from { color: var(--muted-2); text-decoration: line-through; }
+.fslist .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.fslist .add { color: var(--st-done); }
+.fslist .del { color: var(--st-attention); }
+.fslist li[data-diff] { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: 0 -5px; }
+.fslist li[data-diff]:hover { background: var(--surface-2); }
+.fsmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
@@ -2432,7 +2445,8 @@ select.in-ctl { cursor: pointer; }
 .ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
 .ac-empty { padding: 9px 7px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
-.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) 74px; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(74px, auto); gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; min-width: 0; }
+.cr[data-dashwt] { cursor: pointer; }
 .cr:hover { background: var(--surface-2); }
 .cr .k { text-align: center; font-size: 11px; color: var(--muted-2); }
 .cr .ti { min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
@@ -2447,7 +2461,6 @@ select.in-ctl { cursor: pointer; }
 .gsub .dim { color: var(--muted-2); font-family: var(--font-ui); font-size: 10.5px; }
 .gsub .ah { color: var(--st-done); }
 .gsub .bh { color: var(--st-working); }
-.gsub .un { color: var(--st-working); }
 .gbts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 7px 7px; }
 .gbts .gitb { height: 26px; text-align: center; }
 .gbts .gitb.wide { grid-column: 1 / -1; }
@@ -2498,6 +2511,7 @@ select.in-ctl { cursor: pointer; }
 .dbwt-hd .r { text-align: right; }
 .dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
 .dbwt:hover { background: var(--surface); }
+.dbwt[data-dashwt] { cursor: pointer; }
 .dbwt .gl { text-align: center; font-size: 11px; }
 .dbwt .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbwt .pt { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

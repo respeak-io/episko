@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, takeStage, toast } from "./dom";
 import { readList } from "./store";
+import { basename } from "./format";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
@@ -17,7 +18,7 @@ import {
   branchesOverlay, cardSkeleton, checkoutsCard, checkoutsOverlay, closeSheet, dashInspector,
   dashStrip, dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay,
   pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
-  workLogOffer, workOverlay, type DashSync,
+  workLogOffer, worksetCard, workOverlay, type DashSync,
 } from "./dashview";
 import {
   chosenWorktrees, localCands, remoteCands, remoteFor, remotePicks, selectable, sweepPicks,
@@ -38,10 +39,10 @@ import {
   deterministicHeadline, dayFacts, dayIsClosed, humanAuthors, projectDayFacts, sharedDay,
   type TrailCommit, type TrailDay,
 } from "./trail";
-import { statusKey, type DiffStat, type GitActionResult, type WtHead } from "./types";
+import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, ghAccountFor, ghLogins,
+  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
   permissionModeFor, sessions, setActiveId, setMirror,
 } from "./state";
 import { providerPermissionMode } from "./providers";
@@ -63,6 +64,8 @@ export interface DashHost {
   switchBranch: (project: string, repoDir: string, branch: string) => void;
   openRun: (root: string) => void;
   openGraph: (root: string) => void;
+  // The working-set overlay, on a folder. `focus` unfolds one file, as the explorer's ↵ does.
+  openDiff: (workdir: string, title: string, focus?: string) => void;
   openHistory: (root: string) => void;
   openFolder: (dir: string) => void;
   copyPath: (dir: string) => void;
@@ -83,7 +86,7 @@ export interface DashHost {
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
   switchBranch: () => {},
-  openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
+  openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, handToTerminal: () => {}, pickTrunk: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
@@ -122,8 +125,12 @@ let tier: ProjectTier = "none";
 let days: TrailDay[] = [];
 let heads: WtHead[] = [];
 let hasDigest = false;
-// The main checkout against its upstream as of the last fetch (stale on purpose; see `loadSync`).
-let mainStat: DiffStat | null = null;
+// The main checkout: its working set, and its position against the upstream as of the last
+// fetch (stale on purpose; see `loadSync`). `WorkingSet extends DiffStat`, so the Repository
+// card reads the same object the Working set card lists. Three states, ./state's map's own:
+// `undefined` not read yet, `null` read and answerless (an unborn HEAD is a repo with no
+// working set), a value. Merging the first two would skeleton a fresh `git init` forever.
+let mainWork: WorkingSet | null | undefined;
 // The remote op in flight and the folder it runs in; a path so that switching project
 // mid-pull shows "Pulling…" only where it is true. One at a time app-wide, and never
 // folded into `loading`: a write must not blank the timeline.
@@ -226,7 +233,7 @@ async function loadDash(): Promise<void> {
     if (root() !== r) return;
     shared = sn;
     heads = wt.filter((w) => w.exists);
-    if (wantGit) void loadSync(r); else mainStat = null;   // fired, not awaited: nothing else waits on it
+    if (wantGit) void loadSync(r); else mainWork = null;   // fired, not awaited: nothing else waits on it
     // The digest is the project's line, never yours: it seeds `teamSummaries` only.
     for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
     const anyDigest = Object.keys(digest).length > 0
@@ -268,16 +275,38 @@ async function loadGh(r: string, force = false): Promise<void> {
   renderDash();
 }
 
-// The main checkout against its remote, for ⇣ Pull and ⇡ Push: one `git status
-// --porcelain=v2 --branch` via `git_diffstat`, and never a fetch, which could hang 45s on
-// a dead remote. So the numbers are as old as the last fetch, and the verb fetches itself.
+// The main checkout against its remote, for ⇣ Pull and ⇡ Push, and the files behind the
+// Working set card: one `git status --porcelain=v2 --branch` via `git_working_set`, and
+// never a fetch, which could hang 45s on a dead remote. So the numbers are as old as the
+// last fetch, and the verb fetches itself. `git_working_set` is `git_diffstat`'s own
+// process with the entries kept, so naming the files costs nothing over counting them.
 async function loadSync(r: string): Promise<void> {
-  const g = await invoke<DiffStat | null>("git_diffstat", { workdir: mainCheckout(heads, r) })
+  worksetSweptAt = Date.now();   // the gate is time since the last read, not since the last tick
+  const g = await invoke<WorkingSet | null>("git_working_set", { workdir: mainCheckout(heads, r) })
     .catch(() => null);
   if (root() !== r) return;   // the user moved on while this was in flight
-  mainStat = g;
-  renderDash();   // the Repository card is where these numbers are read
+  mainWork = g;
+  renderDash();   // the Repository and Working set cards are where this lands
 }
+
+// The working set goes stale under a running agent, and this pane runs nothing else on a
+// schedule; main.ts drives it beside the sidebar dot's sweep. One local `git status` per
+// sweep, only while a dashboard is up, and never across a git op that is mid-flight.
+const WORKSET_SWEEP_MS = 15_000;
+let worksetSweptAt = 0;
+export function refreshDashWorkset(): void {
+  const r = root();
+  if (!r || !factsKnown || tier === "none" || syncing) return;
+  if (Date.now() - worksetSweptAt < WORKSET_SWEEP_MS) return;
+  void loadSync(r);
+}
+
+// Which checkout the Working set card reads, and what the overlay calls it.
+const worksetDir = () => (root() ? mainCheckout(heads, root()) : "");
+const worksetTitle = () => {
+  const b = heads.find((h) => h.is_main)?.branch ?? "";
+  return b ? `${name()} · ${b}` : name();
+};
 
 // Null until the tier is known, so the card never appears then vanishes on a non-repo;
 // `busy` is keyed to this project, so a fetch in one repo cannot grey another's buttons.
@@ -285,7 +314,7 @@ function syncNow(): DashSync | null {
   if (!factsKnown || tier === "none") return null;
   return {
     branch: heads.find((h) => h.is_main)?.branch ?? "",
-    g: mainStat,
+    g: mainWork ?? null,
     busy: syncing?.root === root() ? syncing.op : "",
   };
 }
@@ -300,7 +329,7 @@ async function syncMain(op: SyncOp): Promise<void> {
   syncing = { root: r, op };
   renderDash();
   let reloading = false;   // the pane is being re-read; skip the finally's re-probe
-  let settled = false;     // mainStat already holds the post-op truth
+  let settled = false;     // mainWork already holds the post-op truth
   // A refusal is not an error: the backend names the command that would work, so hand it
   // over. `verb` rather than `op` because the opening fetch reports under its own name.
   const report = (verb: string, res: GitActionResult): boolean => {
@@ -316,9 +345,9 @@ async function syncMain(op: SyncOp): Promise<void> {
     if (!report("fetch", await invoke<GitActionResult>("git_action", { workdir: dir, op: "fetch" }))) return;
     // `upstream` separates the two zeroes: a branch that tracks nothing also reads 0 behind
     // and 0 ahead, and the backend's refusal is what names the `--set-upstream-to`.
-    const g = await invoke<DiffStat | null>("git_diffstat", { workdir: dir }).catch(() => null);
+    const g = await invoke<WorkingSet | null>("git_working_set", { workdir: dir }).catch(() => null);
     if (root() !== r) return;
-    mainStat = g;
+    mainWork = g;
     if (g?.upstream && (op === "pull" ? g.behind === 0 : g.ahead === 0)) {
       toast(op === "pull"
         ? `pull: already up to date with ${g.upstream}`
@@ -507,10 +536,17 @@ export function renderDash(): void {
   // Notes and the Repository card cross the wait too: notes are localStorage and already
   // correct; the repo card answers from `factsKnown` and the heads probe, and goes first.
   const repo = repoCard(syncNow(), factsKnown);
+  // Above the Repository card: the numbers sit directly over the buttons they gate, and
+  // ⇄ Switch's tooltip is what still names the refusal. It crosses the `loading` branch
+  // for the same reason the repo card does — one local git read, already answered.
+  const wset = worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none");
+  // The main checkout is read by this pane and swept into `dirtyByFolder` for the dot, so
+  // prefer the pane's own: two reads of one folder must not put two numbers on one screen.
+  const statFor = (p: string) => (p === worksetDir() ? mainWork : dirtyByFolder.get(p));
   paint("dashAside", loading
-    ? repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
-    : repo + ghCards
-      + checkoutsCard(heads, liveIn, folderDirty)
+    ? wset + repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
+    : wset + repo + ghCards
+      + checkoutsCard(heads, liveIn, statFor)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason
         ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
@@ -519,7 +555,7 @@ export function renderDash(): void {
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
   if (openView === null) ovl.dataset.view = "";
-  else if (openView === "checkouts") paintOverlay(openView, checkoutsOverlay(heads, liveIn, folderDirty));
+  else if (openView === "checkouts") paintOverlay(openView, checkoutsOverlay(heads, liveIn, statFor));
   else if (openView === "notes") {
     const mineShared = new Set(shared.map((n) => n.id));
     const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
@@ -596,7 +632,7 @@ export function openDashboard(project: string, path: string): void {
     branchData = null; branchPrs = null; branchPrsLoading = false;
     branchPick = new Set(); branchRPick = new Set(); branchResult = null; branchBusy = false;
     // `syncing` is not reset: it names a folder a real git process is still running in.
-    mainStat = null;
+    mainWork = undefined;
   }
   host.renderAll();
   void loadDash();
@@ -704,6 +740,15 @@ export function wireDashboard(): void {
     if (wtadd) { void host.launch(name(), wtadd.dataset.dashwtadd!, { colorKey: root() }); return; }
     const wtterm = t.closest<HTMLElement>("[data-dashwtterm]");
     if (wtterm) { host.openTerminal(wtterm.dataset.dashwtterm!); return; }
+    // After both buttons: they are nested inside the row, and this branch would swallow them.
+    // Only a dirty checkout carries the attribute, so this never opens an empty overlay.
+    const wt = t.closest<HTMLElement>("[data-dashwt]");
+    if (wt) {
+      const dir = wt.dataset.dashwt!;
+      const w = heads.find((h) => h.path === dir);
+      host.openDiff(dir, `${name()} · ${w?.branch || basename(dir)}`);
+      return;
+    }
 
     // ---- the GitHub half ----
     const work = t.closest<HTMLElement>("[data-dashwork]");

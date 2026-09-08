@@ -154,13 +154,13 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
-| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
+| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, which end of a conversation a hunt pages in from (`huntFromTop`), and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 | `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
 **Shared**: `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
-**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was; it also owns the one status-letter table and the one dirty-file row every host that *lists* a working set draws, since two hand-kept copies of that table each carried a comment claiming to be shared with the other), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
 
 **DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `usagedlg` (the Usage & spend window: a report rather than a setting, so its own dialog, and the target of the money and limits popovers' quick opens), `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
@@ -264,7 +264,10 @@ And the things that hold however the files are arranged:
   scroller. Both exist for one question the old single-column list could not answer
   without scrolling back up: *which file am I in*. So `.dfile` must never regain
   `overflow: hidden` (it would make each section its own scrollport and the sticky header
-  would then stick to a box that never scrolls, i.e. not at all), and the rail's spy
+  would then stick to a box that never scrolls, i.e. not at all), **a fold must address its
+  section by index** (`fileSection`, the lookup the rail and *expand all* already used) rather
+  than by walking up from the header, which since the chips joined it in one sticky box lands
+  on that box and silently folds nothing, and the rail's spy
   allows **one header's height of slack** — "the last header above the top edge" is wrong
   by one file for the whole handoff, while an arriving header is pushing the outgoing one
   out. Everything about what a hunk *means* is ./diff's, not the view's: which deletion
@@ -337,14 +340,22 @@ And the things that hold however the files are arranged:
   anything, and the key is retried short for a REPL that wrapped the message itself);
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
   the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
-  end** (the outline knows which half of the conversation a question is in) and stops when a
-  page stops changing the screen — that is the far end (`screenShift` reads 0, and it reads a
-  move in **either** direction, or the rows that never move outvote a page forward) — or when its
+  end**, which the list can only name when it starts where the conversation does
+  (`huntFromTop`: a resumed pane's does once the seed has restored what came before, and
+  anything else is hunted from the live end — judging it by list position alone sent every
+  click to the top of a fourteen-hour conversation), and stops when a page stops changing
+  the screen — that is the far end (`screenShift` reads 0, and it reads a move in **either**
+  direction, or the rows that never move outvote a page forward) — or when its
   time budget does; a write is not a redraw, so "no change" is only believed after the full
-  wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
+  wait, or the footer's own repaint ends the hunt on step one (that shipped). A turn
+  Claude submits *for* you — a background task's notification, a `!` shell line, a slash
+  command's echo — fires `UserPromptSubmit` like any other and is dropped by `isEnvelope`
+  on **both** paths, or the panel fills with `<task-notification>` where the questions
+  should be (that shipped too). Prompts are
   **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
   and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript,
-  once. `docs/sessions.md` has all of it.
+  once, and from the whole of it: the mirror's 512KB tail read holds none of a long
+  conversation's questions. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
@@ -402,7 +413,9 @@ And the things that hold however the files are arranged:
 
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
 - **The app has three lists of files, and they must describe a path the same way.** The
-  working set (git, `wpeekHtml` → the peek), the Context card (the hook stream, `files.ts`)
+  working set (git, `wpeekHtml` → the peek — drawn in every host that asks about one: the
+  inspector, the external mirror, the ⑃ dialog's fact and the dashboard's Working set card,
+  but one list, one row (./patchview's `fileSetHtml`) and one viewer), the Context card (the hook stream, `files.ts`)
   and the explorer (`explore.ts`, the project index). The explorer is the superset: its
   scope chips are *filters* over the other two rather than a fourth idea, it reuses their
   marks and colours, and a row's ↵ hands a changed file to the peek rather than growing a

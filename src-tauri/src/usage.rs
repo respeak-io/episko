@@ -615,75 +615,136 @@ pub(crate) fn read_transcript(cwd: String, session_id: String, limit: usize) -> 
     read_transcript_in(&base, &cwd, &session_id, limit)
 }
 
-fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
+/// The last `limit` questions a session was asked, read from the WHOLE file rather than its
+/// tail: a resumed pane seeds its outline from this, and a day of tool traffic puts every
+/// question of a long conversation outside the window the mirror reads (measured on a 4.5MB
+/// transcript whose newest question sat 3.5MB above it, so the outline restored none of them).
+#[tauri::command(async)]
+pub(crate) fn read_transcript_asked(
+    cwd: String,
+    session_id: String,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    read_asked_in(&base, &cwd, &session_id, limit)
+}
+
+/// The 512KB tail is the mirror's; a reader after the whole conversation asks for `tail: false`.
+fn transcript_reader(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    tail: bool,
+) -> Result<std::io::BufReader<std::fs::File>, String> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let path = project_transcript_dir(base, cwd).join(format!("{session_id}.jsonl"));
     let file = std::fs::File::open(&path).map_err(|e| format!("transcript not found: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
     const CAP: u64 = 512 * 1024;
     let mut reader = BufReader::new(file);
-    if len > CAP {
+    if tail && len > CAP {
         reader.seek(SeekFrom::Start(len - CAP)).map_err(|e| e.to_string())?;
         let mut discard = String::new(); // drop the partial first line
         let _ = reader.read_line(&mut discard);
     }
+    Ok(reader)
+}
 
-    let mut msgs: Vec<TranscriptMsg> = Vec::new();
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        if t != "user" && t != "assistant" {
-            continue;
-        }
-        let at = v.get("timestamp").and_then(|x| x.as_str()).map(str::to_string);
-        let content = v.get("message").and_then(|m| m.get("content"));
-        let mut text = String::new();
-        match content {
-            Some(serde_json::Value::String(s)) => text.push_str(s),
-            Some(serde_json::Value::Array(arr)) => {
-                // Only "text" blocks: tool calls, tool_result echoes and thinking are noise in
-                // a conversation mirror. A tool-only turn collapses to empty and is dropped.
-                for blk in arr {
-                    if blk.get("type").and_then(|x| x.as_str()) == Some("text") {
-                        if let Some(s) = blk.get("text").and_then(|x| x.as_str()) {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(s);
+/// One line as a prose message: None for tool traffic, a torn write and anything not a turn.
+fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if t != "user" && t != "assistant" {
+        return None;
+    }
+    let at = v.get("timestamp").and_then(|x| x.as_str()).map(str::to_string);
+    let content = v.get("message").and_then(|m| m.get("content"));
+    let mut text = String::new();
+    match content {
+        Some(serde_json::Value::String(s)) => text.push_str(s),
+        Some(serde_json::Value::Array(arr)) => {
+            // Only "text" blocks: tool calls, tool_result echoes and thinking are noise in
+            // a conversation mirror. A tool-only turn collapses to empty and is dropped.
+            for blk in arr {
+                if blk.get("type").and_then(|x| x.as_str()) == Some("text") {
+                    if let Some(s) = blk.get("text").and_then(|x| x.as_str()) {
+                        if !text.is_empty() {
+                            text.push('\n');
                         }
+                        text.push_str(s);
                     }
                 }
             }
-            _ => {}
         }
-        let mut text = text.trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        if text.len() > 4000 {
-            // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
-            let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
-            text.truncate(cut);
-            text.push('…');
-        }
-        msgs.push(TranscriptMsg { role: t.to_string(), text, at });
+        _ => {}
     }
+    let mut text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() > 4000 {
+        // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
+        let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
+        text.truncate(cut);
+        text.push('…');
+    }
+    Some(TranscriptMsg {
+        role: t.to_string(),
+        text,
+        at,
+    })
+}
+
+/// Both readers answer with the END of what they found: a mirror shows how a conversation
+/// finished, and an outline seeded with the first 200 questions of one would list the wrong day.
+fn last_n(mut msgs: Vec<TranscriptMsg>, limit: usize) -> Vec<TranscriptMsg> {
     let n = msgs.len();
     if n > limit {
         msgs = msgs.split_off(n - limit);
     }
-    Ok(msgs)
+    msgs
+}
+
+fn read_transcript_in(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    use std::io::BufRead;
+    let reader = transcript_reader(base, cwd, session_id, true)?;
+    let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    for line in reader.lines() {
+        // Skipped rather than stopped on: one unreadable line must not end the read.
+        let Ok(line) = line else { continue };
+        if let Some(msg) = transcript_msg(&line) {
+            msgs.push(msg);
+        }
+    }
+    Ok(last_n(msgs, limit))
+}
+
+fn read_asked_in(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    use std::io::BufRead;
+    let reader = transcript_reader(base, cwd, session_id, false)?;
+    let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        match transcript_msg(&line) {
+            Some(msg) if msg.role == "user" => msgs.push(msg),
+            _ => {}
+        }
+    }
+    Ok(last_n(msgs, limit))
 }
 
 /// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`: the
@@ -1489,6 +1550,42 @@ mod tests {
         // No transcript is an error, not an empty mirror: the UI must tell "nothing was
         // said" from "there is no such session".
         assert!(read_transcript_in(&base, cwd, "no-such-session", 10).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+
+    #[test]
+    fn asked_reads_past_the_tail_the_mirror_stops_at() {
+        let cwd = "/Users/tim/dev/long";
+        let (base, proj) = fixture(cwd);
+        let mut file = String::new();
+        file.push_str(r#"{"type":"user","message":{"content":"the first thing anybody asked"},"timestamp":"2026-09-04T18:50:00.000Z"}"#);
+        file.push('\n');
+        // A day of tool traffic between the two questions, more than the 512KB the mirror
+        // reads: that is how a real conversation buries the questions it was asked.
+        let filler = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "x".repeat(900) }] },
+        })
+        .to_string();
+        for _ in 0..700 {
+            file.push_str(&filler);
+            file.push('\n');
+        }
+        file.push_str(r#"{"type":"user","message":{"content":"and the last one"},"timestamp":"2026-09-05T10:43:00.000Z"}"#);
+        file.push('\n');
+        assert!(file.len() > 512 * 1024, "the fixture has to outgrow the tail read");
+        std::fs::write(proj.join("sid.jsonl"), &file).unwrap();
+
+        let asked = read_asked_in(&base, cwd, "sid", 100).unwrap();
+        let texts: Vec<&str> = asked.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["the first thing anybody asked", "and the last one"]);
+        assert_eq!(asked[0].at.as_deref(), Some("2026-09-04T18:50:00.000Z"));
+
+        // The mirror is unchanged and still cannot reach the first question, which is the point.
+        let mirror = read_transcript_in(&base, cwd, "sid", 100).unwrap();
+        assert!(!mirror.iter().any(|m| m.text == "the first thing anybody asked"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

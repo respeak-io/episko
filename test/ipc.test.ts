@@ -9,7 +9,12 @@ const SRC = new URL("../src/", import.meta.url);
 const RS = new URL("../src-tauri/src/", import.meta.url);
 
 const read = (base: URL, f: string) => readFileSync(new URL(f, base), "utf8");
-const tsFiles = readdirSync(SRC).filter((f) => f.endsWith(".ts"));
+// `src/providers/` counts: an adapter invokes as much as the modules above it, and its calls
+// sat outside this contract for two releases (`read_transcript`, `agent_history`).
+const tsFiles = [
+  ...readdirSync(SRC).filter((f) => f.endsWith(".ts")),
+  ...readdirSync(new URL("providers/", SRC)).filter((f) => f.endsWith(".ts")).map((f) => `providers/${f}`),
+];
 const rsFiles = readdirSync(RS).filter((f) => f.endsWith(".rs"));
 
 // ---------- the Rust half ----------
