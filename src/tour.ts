@@ -81,6 +81,7 @@ export interface Chapter {
 export const RAIL_LEGEND: { glyph: string; cls: string; label: string }[] = [
   { glyph: "●", cls: "g-work",  label: "working" },
   { glyph: "✓", cls: "g-done",  label: "your turn" },
+  { glyph: "⧗", cls: "g-done",  label: "your turn, a job runs on" },
   { glyph: "◆", cls: "g-attn",  label: "blocked on you" },
   { glyph: "◐", cls: "g-bg",    label: "fleet still running" },
   { glyph: "✕", cls: "g-error", label: "the turn broke" },

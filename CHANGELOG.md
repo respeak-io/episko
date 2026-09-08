@@ -45,6 +45,11 @@ The status bar's popovers stop being a dead end.
 ! **A checkout with no session no longer claims to be clean.** Those folders had never been
   measured; the Checkouts card says `—` until they are, and a dirty row opens its own diff.
 
+~ **A pane that finished its turn with a background shell still running wears ⧗, not ✓.**
+  "Your turn" and "your turn, and the CI watcher it started is still going" now read apart
+  from across the rail. It still counts as your turn everywhere else, and a dev server that
+  announced an address keeps the plain ✓ — the header pill already counts those.
+
 ## 0.25.1 — 2026-09-06
 Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
 
