@@ -89,8 +89,8 @@ import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
-  releaseClaimFor, reloadDashGh, renderDash, renderDashHeader, renderDashInspector, setDashHost,
-  wireDashboard,
+  refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
+  renderDashInspector, setDashHost, wireDashboard,
 } from "./dashboard";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -256,6 +256,7 @@ setDashHost({
   },
   openRun: () => { void openRunPicker(); },
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
+  openDiff: (workdir, title, focus) => { void openDiff(workdir, title, focus); },
   refreshGit: () => refreshGitViews(),
   pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
@@ -539,7 +540,7 @@ document.addEventListener("click", (e) => {
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
-  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "");
+  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus);
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
@@ -833,8 +834,10 @@ void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants()
 window.addEventListener("beforeunload", flushRoster);
 
 // The uncommitted-changes dot for every project; s.git alone only covers the active session.
+// The dashboard's Working set card rides the same tick (it holds its own 15s gate), since
+// that pane runs nothing on a schedule of its own.
 refreshDirtyStates(true);
-setInterval(refreshDirtyStates, 5000);
+setInterval(() => { void refreshDirtyStates(); refreshDashWorkset(); }, 5000);
 
 // Git-derived labels. The hook stream pokes the same function on a git command; this
 // interval is the backstop for changes made outside Claude (an editor, your terminal).

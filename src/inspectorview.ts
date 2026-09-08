@@ -229,16 +229,19 @@ const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 
 // marker because Episko never watched it, and the resume usually replayed it into the pane,
 // so the click is what settles it (./terminal searches once and stamps `lost` on a miss).
 // `lost` on a live row means only that the search missed; its submit marker still jumps.
-function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, lines: number): string {
+function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, prefs: OutlinePrefs): string {
   const gone = !anchored && (!p.restored || !!p.lost);
   const why = anchored ? "Jump to it in the terminal"
     : !p.restored ? "Scrolled out of the terminal"
     : p.lost ? "Asked before this pane, and not in its scrollback"
     : "Asked before this pane — click to look for it in the scrollback";
   const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
-  return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(`${promptLabel(p.text)}\n${why}`)}">`
+  // The tooltip is the fold's fallback, not a second copy: a row that unfolds under the pointer
+  // is already showing the words a `title` would then cover up.
+  const tip = prefs.hover ? why : `${promptLabel(p.text)}\n${why}`;
+  return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(tip)}">`
     + `<span class="ol-n">${n}</span>`
-    + `<div class="ol-txt" style="--ol-lines:${lines}">${esc(p.text)}</div>`
+    + `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(p.text)}</div>`
     + `<span class="ol-t">${back}${p.at ? promptClock(p.at) : ""}</span></div>`;
 }
 
@@ -254,7 +257,7 @@ export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<
     : all && total > OUTLINE_SHOW ? `<button class="fx-more" data-olmore="1">Show fewer</button>` : "";
   // Newest first, but numbered from the start of the conversation, so #1 is the first thing asked.
   const rows = s.prompts.slice(total - shown).reverse()
-    .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs.lines)).join("");
+    .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs)).join("");
   return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
 }
 

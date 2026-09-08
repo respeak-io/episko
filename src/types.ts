@@ -290,9 +290,20 @@ export function fanoutText(s: Sess, now = Date.now()): string {
   return s.fanout?.name ? "workflow running" : "background work";
 }
 
-// glyph/CSS bucket: a permission outranks its phase, a live fan-out the done it left
+// A background shell still up that announced no address: a CI watcher or a build the turn ended on
+// top of, where a dev server (./servers' bgKind, which has a URL) is infrastructure you left running.
+export function liveJobs(s: Sess): number {
+  let n = 0;
+  for (const b of s.servers) if (!b.ended && !b.url) n++;
+  return n;
+}
+// Still your turn (needsYou reads the phase); only the glyph differs.
+export const jobWaiting = (s: Sess, now = Date.now()) =>
+  s.phase === "done" && !s.attention && !bgWaiting(s, now) && liveJobs(s) > 0;
+
+// glyph/CSS bucket: a permission outranks its phase, a live fan-out the done it left, a job marks it
 export const statusKey = (s: Sess, now = Date.now()) =>
-  s.attention ? "attention" : bgWaiting(s, now) ? "background" : s.phase;
+  s.attention ? "attention" : bgWaiting(s, now) ? "background" : jobWaiting(s, now) ? "donebg" : s.phase;
 // What a shelve would interrupt: midFlight plus a done turn whose fan-out runs on; both shelve paths read it.
 export const midWork = (s: Sess, now = Date.now()) => midFlight(s) || statusKey(s, now) === "background";
 export const PILL_TEXT: Record<Phase, string> = { idle: "idle", thinking: "thinking…", working: "working…", done: "your turn", error: "error", ended: "ended" };

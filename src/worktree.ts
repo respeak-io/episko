@@ -7,7 +7,8 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
+import { fileSetHtml } from "./patchview";
+import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded, type WorkingSet } from "./types";
 import { extWorking } from "./sidebarview";
 import {
   remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
@@ -472,35 +473,17 @@ function wtCommitKey(d: Dest): string {
   return "";
 }
 
-// Shared with the diff viewer's file headers, so one letter means one thing. `?` borrows `added`'s green.
-const WT_FCLASS: Record<string, string> = {
-  M: "s-mod", A: "s-add", "?": "s-add", D: "s-del", R: "s-ren", C: "s-ren", U: "s-del",
-};
 const WT_FILES_SHOWN = 10; // the pane is a paragraph of facts, not a diff viewer
-
-function wtFileHtml(f: StatusFile): string {
-  const name = f.from
-    ? `<span class="from">${esc(f.from)}</span> → ${wtPathHtml(f.path)}`
-    : wtPathHtml(f.path);
-  const n = f.added || f.removed
-    ? `<span class="n"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>`
-    : "";
-  return `<li><span class="dstat ${WT_FCLASS[f.code] ?? "s-mod"}">${esc(f.code)}</span>`
-    + `<span class="p">${name}</span>${n}</li>`;
-}
 /** `pending` shows until the fetch lands. A worktree row already knows whether it is
  *  dirty from `list_worktrees`, so it says so at once and never flashes the opposite answer. */
 function wtWorkHtml(dir: string, pending: string): string {
   if (!wtDirty.has(dir)) return pending;
   const g = wtDirty.get(dir);
   if (!g || !g.dirty) return `<span class="good">clean</span>`; // null: not a repo, or no commits yet
-  const shown = g.entries.slice(0, WT_FILES_SHOWN);
-  const rest = g.dirty - shown.length;
   return `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
     + (g.added || g.removed ? ` <span class="dim">·</span> <span class="add">+${g.added}</span> <span class="del">−${g.removed}</span>` : "")
     + (g.untracked ? ` <span class="dim">· ${g.untracked} new</span>` : "")
-    + (shown.length ? `<ul class="wt-files">${shown.map(wtFileHtml).join("")}</ul>` : "")
-    + (rest > 0 ? `<div class="wt-fmore">…and ${rest} more</div>` : "");
+    + fileSetHtml(g.entries, WT_FILES_SHOWN, g.dirty);
 }
 
 function wtFacts(pairs: [string, string][]) {

@@ -46,7 +46,9 @@ export async function jumpToPrompt(sid: string, promptId: string) {
   const r = await scrollToPrompt(s, promptId);
   if (r === "ok") return;
   const p = s.prompts.find((x) => x.id === promptId);
-  toast(r === "unfound" ? "Couldn't find that question — it may be further back than the session shows"
+  toast(r === "busy" ? "Stopped looking through the conversation."
+    : r === "deeper" ? "That question is further back than one jump reaches — the conversation kept going"
+    : r === "unfound" ? "Couldn't find that question anywhere in this conversation"
     : p?.restored ? "That question is from before this pane, and isn't in its scrollback"
     : "That far back has scrolled out of this terminal");
   repaintActive(); // the row has just learned it is out of reach

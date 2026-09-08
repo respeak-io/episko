@@ -497,6 +497,7 @@ pub fn run() {
             external::list_external_sessions,
             external::focus_external_session,
             usage::read_transcript,
+            usage::read_transcript_asked,
             usage::move_session_transcript,
             usage::list_past_sessions,
             usage::list_session_history,
