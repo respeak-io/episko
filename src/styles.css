@@ -378,6 +378,10 @@ html.win .wctl { display: flex; }
 .rgname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
 .rgroup.on .rgname { color: var(--accent-ink); }
 .rgrow:hover .sclose { opacity: 1; }
+/* Both group controls are hover-revealed overlays rather than grid cells, so ⟳ sits left of ✕;
+   they abut rather than clear each other, or the tally shows through the seam on hover. */
+.rgredo { right: 22px; }
+.rgredo:hover { color: var(--accent-ink); }
 /* the negative margin buys click area without widening the column */
 .rgtwist { font-size: 11px; color: var(--muted-2); text-align: center; line-height: 1; transition: transform .12s, color .12s; cursor: pointer; margin: -5px; padding: 5px; border-radius: 4px; }
 .rgtwist:hover { color: var(--text); background: var(--surface-2); }
@@ -534,7 +538,7 @@ html.win .wctl { display: flex; }
 .insp-head { padding: 10px 13px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 8px; }
 .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; background: color-mix(in srgb, var(--pc) 14%, transparent); color: var(--pc); border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); }
 .pill .pd { width: 5px; height: 5px; border-radius: 50%; background: var(--pc); }
-.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);}
+.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);} .pill.donebg{--pc:var(--st-done);}
 .insp-scroll { overflow-y: auto; padding: 12px 13px 16px; display: flex; flex-direction: column; gap: 13px; min-height: 0; flex: 1; }
 .insp-empty { color: var(--muted-2); font-size: 11.5px; text-align: center; padding: 30px 10px; }
 
@@ -582,7 +586,7 @@ html.win .wctl { display: flex; }
 .vital .vgauge .glab { grid-area: 2 / 1; font: 9px var(--font-mono); letter-spacing: .03em; text-transform: uppercase; color: var(--muted-2); }
 .vital.st-working{--sc:var(--st-working);} .vital.st-thinking{--sc:var(--st-working);} .vital.st-done{--sc:var(--st-done);}
 .vital.st-attention{--sc:var(--st-attention);} .vital.st-error{--sc:var(--st-error);} .vital.st-idle{--sc:var(--st-idle);} .vital.st-ended{--sc:var(--muted-2);}
-.vital.st-background{--sc:var(--st-bg);}
+.vital.st-background{--sc:var(--st-bg);} .vital.st-donebg{--sc:var(--st-done);}
 .vital .vtop { display: flex; align-items: center; gap: 8px; }
 .vital .heart { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--sc); }
 @media (prefers-reduced-motion: no-preference) { .vital .heart:not(.still) { animation: beat 1.5s ease-in-out infinite; } }
@@ -673,11 +677,13 @@ html.win .wctl { display: flex; }
 
 /* --- working set (git diffstat) --- */
 .wset { border-radius: var(--radius); padding: 11px 12px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 8px; }
-.wset .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
-.wset .add { color: var(--st-done); font-weight: 700; } .wset .del { color: var(--st-attention); font-weight: 700; }
-.wset .files { color: var(--muted); margin-left: auto; }
+/* The peek is drawn in three hosts, so its own look hangs off `.wpeek` and not off any one
+   of them; what stays under `.wset` below is the card around it (branch, sync, buttons). */
+.wpeek .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
+.wpeek .add { color: var(--st-done); font-weight: 700; } .wpeek .del { color: var(--st-attention); font-weight: 700; }
+.wpeek .files { color: var(--muted); margin-left: auto; }
 /* ...unless it is alone on the row (new files only, no line counts), where right-aligning leaves a hole */
-.wset .files.lone { margin-left: 0; margin-right: auto; }
+.wpeek .files.lone { margin-left: 0; margin-right: auto; }
 .stackbar { height: 6px; border-radius: 3px; overflow: hidden; display: flex; background: var(--hair-strong); }
 .stackbar .sa { background: var(--st-done); } .stackbar .sd { background: var(--st-attention); }
 /* No churn to split: the bare track, dimmed. Never a 100%-wide half — see wpeekHtml. */
@@ -1273,7 +1279,7 @@ html.win .wctl { display: flex; }
 .tact { white-space: nowrap; }
 .tact.hero { border-color: var(--accent-line); color: var(--accent-ink); }
 /* full width only in the inspector's stack; in the task panel's footer it sits in a flex row */
-.tacts .tact.hero { width: 100%; }
+.tacts .tact.hero { width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .tact.hero:hover { background: var(--accent-wash); }
 .ext-meta .mono.ok { color: var(--st-done); }
 .ext-meta .mono.bad { color: var(--st-error); }
@@ -1450,13 +1456,24 @@ select.in-ctl { cursor: pointer; }
 /* the working-tree fact names its files, so it carries the diff viewer's +/− colours and .dstat letters */
 .wt-facts dd .add { color: var(--st-done); }
 .wt-facts dd .del { color: var(--st-attention); }
-.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
-.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
-.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
-.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
-.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+/* The dashboard's Working set card. `.ac-b` pads by 3px because its usual children pad
+   themselves, and the peek bleeds -6px to sit its hover highlight under the text, so this
+   is the padding both of them assume — the `.wset` role in the inspector, one card over. */
+.wsb { padding: 8px 7px 9px; }
+
+/* One dirty file, wherever a working set is listed rather than drawn: the fact above and
+   the dashboard's Working set card. A row that is a door says so; the rest are read-only. */
+.fslist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.fslist li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.fslist .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.fslist .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.fslist .from { color: var(--muted-2); text-decoration: line-through; }
+.fslist .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.fslist .add { color: var(--st-done); }
+.fslist .del { color: var(--st-attention); }
+.fslist li[data-diff] { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: 0 -5px; }
+.fslist li[data-diff]:hover { background: var(--surface-2); }
+.fsmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
@@ -1598,8 +1615,18 @@ select.in-ctl { cursor: pointer; }
 .sv-kind { margin-left: 7px; font: 600 9.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted-2); }
 .sv-foot { margin-top: 9px; font-size: 10.5px; color: var(--muted-2); max-width: 62ch; line-height: 1.45; }
 
-/* ---------- Usage analytics tab ---------- */
-.setdlg.wide { width: min(1120px, 96vw); height: min(884px, 92vh); }
+/* ---------- the Usage & spend window (./usagedlg) ----------
+   A report, not a setting, so its own dialog: no tab rail, one scrolling body, and the same
+   chrome as .setdlg so the two read as the same family. Wider and taller than Settings —
+   the heatmap is 53 weeks across and the panel is six cards deep. */
+.usagedlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(1120px, 96vw); height: min(884px, 92vh); z-index: 42; display: flex; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.usagedlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.u-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; }
+.u-body::-webkit-scrollbar { width: 10px; }
+.u-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.u-body::-webkit-scrollbar-thumb:hover { background: var(--muted-2); border: 3px solid transparent; background-clip: padding-box; }
+/* room for the ✕, which floats over the header rather than pushing it down */
+.u-body .u-paneh { padding-right: 30px; }
 .u-pane { display: flex; flex-direction: column; gap: 16px; }
 .u-paneh { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .u-title { margin: 5px 0 3px; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
@@ -2082,8 +2109,17 @@ select.in-ctl { cursor: pointer; }
 .svrpop .sv-foot code { font-family: var(--font-mono); color: var(--muted); }
 
 /* account usage-limits popover (5-hour session + 7-day weekly windows) */
+/* Every status-bar popover names itself, and the right end of that header is where its quick
+   open sits — so the header is one rule for the family, not one per popover. */
+.menupop .up-h, .menupop .sc-h { display: flex; align-items: center; gap: 8px; font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
+/* The quick open itself: an icon, never a row. Negative block margins so adding one does not
+   make the header taller than its text alone. */
+.menupop .pgo { flex: none; margin: -3px -2px -3px auto; display: grid; place-items: center; width: 19px; height: 19px; border-radius: 6px; cursor: pointer; font: 11px var(--font-ui); line-height: 1; letter-spacing: 0; color: var(--muted-2); background: transparent; border: 1px solid transparent; transition: color .14s, background .14s, border-color .14s; }
+.menupop .pgo:hover { color: var(--accent-ink); background: var(--surface); border-color: var(--hair); }
+/* the engine picker's header is the only one that titles a list of choices, so it gets air */
+#enginePop .up-h { padding-bottom: 5px; }
+
 .usagepop { min-width: 244px; gap: 4px; padding: 10px; }
-.usagepop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
 .usagepop .up-row { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; }
 .usagepop .up-row + .up-row { border-top: 1px solid var(--hair); }
 .usagepop .up-top { display: flex; align-items: baseline; gap: 6px; }
@@ -2103,7 +2139,6 @@ select.in-ctl { cursor: pointer; }
 
 /* today's-spend popover: borrows .usagepop's header and note; a spend row is a name + a bar + money */
 .costpop { min-width: 252px; max-width: 320px; gap: 3px; padding: 10px; }
-.costpop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
 .costpop .up-note { font-size: 10px; color: var(--muted-2); padding: 3px 2px; line-height: 1.4; }
 .costpop .cp-tot { font: 700 21px var(--font-mono); color: var(--text); padding: 0 2px 4px; letter-spacing: -.01em; }
 .costpop .cp-lbl { font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 7px 2px 4px; border-top: 1px solid var(--hair); margin-top: 3px; }
@@ -2127,7 +2162,7 @@ select.in-ctl { cursor: pointer; }
 /* --- disk I/O popover (footer "disk") ---
    Wider than the other footer menus: three windows of figures plus three permanent notes. */
 .iopop { width: 320px; max-height: min(560px, 72vh); overflow-y: auto; }
-.iopop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 5px; }
+.iopop .up-h { padding-bottom: 5px; }
 .iopop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 8px 2px 1px; margin-top: 8px; border-top: 1px solid var(--hair); }
 .iopop .up-note { font-size: 10px; color: var(--muted-2); padding: 6px 2px 0; margin: 0; line-height: 1.4; }
 .iopop .io-rate { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
@@ -2148,7 +2183,7 @@ select.in-ctl { cursor: pointer; }
 
 /* keyboard-shortcuts popover (⌘ Shortcuts footer segment) */
 .shortpop { min-width: 262px; gap: 1px; padding: 8px; }
-.shortpop .sc-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 5px; }
+.shortpop .sc-h { padding-bottom: 5px; }
 .shortpop .sc-row { display: flex; align-items: center; gap: 12px; padding: 5px 4px; border-radius: 6px; }
 .shortpop .sc-row:hover { background: var(--surface); }
 .shortpop .sc-desc { font: 500 11.5px var(--font-ui); color: var(--text); }
@@ -2414,7 +2449,8 @@ select.in-ctl { cursor: pointer; }
 .ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
 .ac-empty { padding: 9px 7px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
-.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) 74px; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(74px, auto); gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; min-width: 0; }
+.cr[data-dashwt] { cursor: pointer; }
 .cr:hover { background: var(--surface-2); }
 .cr .k { text-align: center; font-size: 11px; color: var(--muted-2); }
 .cr .ti { min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
@@ -2429,7 +2465,6 @@ select.in-ctl { cursor: pointer; }
 .gsub .dim { color: var(--muted-2); font-family: var(--font-ui); font-size: 10.5px; }
 .gsub .ah { color: var(--st-done); }
 .gsub .bh { color: var(--st-working); }
-.gsub .un { color: var(--st-working); }
 .gbts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 7px 7px; }
 .gbts .gitb { height: 26px; text-align: center; }
 .gbts .gitb.wide { grid-column: 1 / -1; }
@@ -2480,6 +2515,7 @@ select.in-ctl { cursor: pointer; }
 .dbwt-hd .r { text-align: right; }
 .dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
 .dbwt:hover { background: var(--surface); }
+.dbwt[data-dashwt] { cursor: pointer; }
 .dbwt .gl { text-align: center; font-size: 11px; }
 .dbwt .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbwt .pt { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2838,6 +2874,10 @@ select.in-ctl { cursor: pointer; }
 }
 /* Nothing in a preview is a control: no hover states, no pointer, nothing focusable. */
 .fpv-pop, .fpv-pop * { pointer-events: none; }
+/* …and nothing in one may shrink to fit that cap. A scroll region inside a popover
+   (`.cp-sess`) gets min-height: 0 for free, so it collapsed to zero and took the rows out of
+   the MIDDLE of the preview — where the mask exists to fade the tail. */
+.fpv-pop > * { flex: none; }
 
 /* ---- the revive watchdog (Settings › Sessions) --------------------------------
    Same parts as the peek and attention controls; what is new is the ladder. */
@@ -2866,11 +2906,11 @@ select.in-ctl { cursor: pointer; }
    switches are ./motion's table, put on <html> by applyFx. */
 
 /* ---- a closed dialog is not a backdrop ----------------------------------
-   Unconditional: seventeen dialogs stay mounted at opacity: 0 so they can fade, and a backdrop-filter
+   Unconditional: eighteen dialogs stay mounted at opacity: 0 so they can fade, and a backdrop-filter
    on a transparent layer still keeps a blur surface alive. Gated on :not(.show), not visibility: hidden. */
 .expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .graphdlg:not(.show),
 .scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
-.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .cfm-scrim:not(.show),
+.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .cfm-scrim:not(.show),
 .cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
 .cl-dlg:not(.show) {
   backdrop-filter: none;
@@ -2886,7 +2926,7 @@ select.in-ctl { cursor: pointer; }
 :root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg,
 :root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
 :root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
-:root.fx-flat .setdlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
+:root.fx-flat .setdlg, :root.fx-flat .usagedlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
 :root.fx-flat .dsh, :root.fx-flat .cl-dlg, :root.fx-flat .tour-card,
 :root.fx-flat .colorpop, :root.fx-flat .menupop, :root.fx-flat .dbg-panel,
 :root.fx-flat .gcommit, :root.fx-flat .run-grp, :root.fx-flat .bk-h {

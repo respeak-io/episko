@@ -55,6 +55,41 @@ describe("the delegated click dispatcher", () => {
   });
 });
 
+// A footer popover's quick open writes `data-fgo="<target>"`, and main.ts's `openFootTarget`
+// resolves anything but "usage" as a Settings tab id. A misspelt id is silent: `renderSettings`
+// falls back to `SET_TABS[0]`, so the link opens Appearance and looks like it worked.
+
+const SETTINGS_SRC = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
+const FOOTERVIEW = readFileSync(new URL("../src/footerview.ts", import.meta.url), "utf8");
+// Every module that composes a popGoHtml() row. The target is read off the call, like the
+// dashboard's verbs below: in the helper the attribute is `data-fgo="${l.go}"` and carries
+// no literal of its own.
+const GO_FILES = ["footer.ts", "footerview.ts", "usageview.ts", "settings.ts"];
+
+describe("the footer popovers' quick opens", () => {
+  const tabs = [...SETTINGS_SRC.matchAll(/id: "(\w+)", label: "[^"]+"/g)].map((m) => m[1]);
+  const targets = [...new Set(GO_FILES.flatMap((f) =>
+    [...readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8")
+      .matchAll(/\{ go: "([a-z]+)", label:/g)].map((m) => m[1])))];
+
+  it("finds the tabs and the links to compare", () => {
+    expect(tabs.length).toBeGreaterThan(5);
+    expect(targets.length).toBeGreaterThan(1);
+    // The one place the target becomes the attribute; if this moves, the scan above is blind.
+    expect(FOOTERVIEW).toContain('data-fgo="${esc(l.go)}"');
+  });
+
+  it("opens a Settings tab that exists, or the one window of its own", () => {
+    const bad = targets.filter((t) => t !== "usage" && !tabs.includes(t));
+    expect(bad, `data-fgo target(s) naming no Settings tab: ${bad.join(", ")}`).toEqual([]);
+  });
+
+  it("no longer sends anyone to a Usage tab — that panel is its own dialog", () => {
+    expect(tabs).not.toContain("usage");
+    expect(SETTINGS_SRC).not.toContain("usagePanelHtml");
+  });
+});
+
 // The same join one level down: `dashview.ts` writes `data-dashact="<verb>"` and
 // `dashboard.ts`'s `dashAction` is an if-chain over the string; only the spelling joins them.
 
@@ -122,6 +157,46 @@ describe("the project dashboard's verbs", () => {
     // a button reachable only while collapsed is a button nobody finds.
     const railOnly = rail.filter((v) => !rows.includes(v));
     expect(railOnly, `on the rail but not in the panel: ${railOnly.join(", ")}`).toEqual([]);
+  });
+});
+
+// One level wider than the verbs above: `data-dashact` is only one of thirty attributes
+// `dashview.ts` writes, and the pane's listener probes for each of the others by name. An
+// attribute nobody probes for is a row that looks clickable and is not — which is exactly
+// how `data-dashwt` sat there, styled `cursor: pointer`, dispatching nothing.
+
+describe("the project dashboard's own dispatcher", () => {
+  // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
+  // are deliberately not verbs. Adding one here should be a decision, not an oversight.
+  const KEYS = new Set(["br", "day", "note", "sha"]);
+  const emitted = [...new Set([...DASHVIEW.matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
+    .map((m) => m[1]);
+
+  it("finds both halves", () => {
+    // A regex that has stopped matching would pass every assertion below vacuously.
+    expect(emitted.length).toBeGreaterThan(20);
+    expect(probed.length).toBeGreaterThan(15);
+  });
+
+  it("emits no attribute it never probes for — that is a row that does nothing", () => {
+    const dead = emitted.filter((k) => !probed.includes(k) && !KEYS.has(k));
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a checkout's two buttons BEFORE the row that contains them", () => {
+    // ＋ and ❯ are nested inside the row, so a row-level probe placed first would open the
+    // diff instead of launching a session — and `return` does not stop the propagation.
+    expect(probed).toContain("wt");
+    for (const inner of ["wtadd", "wtterm"]) {
+      expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashwt`)
+        .toBeLessThan(probed.indexOf("wt"));
+    }
   });
 });
 

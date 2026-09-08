@@ -1,12 +1,14 @@
 // The project dashboard's markup: data in, string out, like every other *view module.
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
-import { basename, esc, relTime, sparkline, tilde, uUsd2 } from "./format";
+import { basename, esc, escAttr, relTime, sparkline, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
 import { syncState, type Pulse, type ProjectFacts, type ProjectTier, type SyncOp } from "./dash";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
-import type { DiffStat, WtHead } from "./types";
+import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
+import { wpeekHtml } from "./inspectorview";
+import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
 import {
@@ -182,24 +184,30 @@ function card(id: string, title: string, count: string, body: string, enlarge = 
     + `</div><div class="ac-b">${body}</div></div>`;
 }
 
-// Branch and one piece of state only: anything more costs a git process per checkout.
-function checkoutRow(w: WtHead, live: number, dirty: boolean, main: boolean): string {
-  const tag = live ? `<span class="tag acc">${live} live</span>`
-    : dirty ? `<span class="tag warn">dirty</span>`
-    : `<span class="tag ok">clean</span>`;
-  return `<div class="cr" data-dashwt="${esc(w.path)}" title="${esc(tilde(w.path))}">`
+// `undefined` is a folder nothing has measured yet, and it must never read as clean: the
+// map is only filled for folders in play. Live and dirty are both shown — they answer
+// different questions, and a checkout can be either without the other.
+function checkoutTag(g: DiffStat | null | undefined): string {
+  if (g === undefined) return `<span class="tag" title="Not read yet">—</span>`;
+  if (!g || !g.dirty) return `<span class="tag ok">clean</span>`;
+  return `<span class="tag warn">${g.dirty} uncommitted</span>`;
+}
+// A row is a door only when there is something behind it; `.cr[data-dashwt]` is the cursor.
+function checkoutRow(w: WtHead, live: number, g: DiffStat | null | undefined, main: boolean): string {
+  const open = !!g && g.dirty > 0 ? ` data-dashwt="${esc(w.path)}"` : "";
+  return `<div class="cr"${open} title="${esc(tilde(w.path))}">`
     + `<span class="k">${main ? "⌂" : "⑃"}</span>`
     + `<span class="ti mono">${esc(w.branch || basename(w.path))}</span>`
-    + `<span class="rt">${tag}</span></div>`;
+    + `<span class="rt">${live ? `<span class="tag acc">${live} live</span>` : ""}${checkoutTag(g)}</span></div>`;
 }
 
 export function checkoutsCard(
   heads: WtHead[],
   liveFor: (path: string) => number,
-  dirtyFor: (path: string) => boolean,
+  statFor: (path: string) => DiffStat | null | undefined,
 ): string {
   if (heads.length < 2) return ""; // one checkout is not a list worth a card
-  const rows = heads.map((w) => checkoutRow(w, liveFor(w.path), dirtyFor(w.path), w.is_main)).join("");
+  const rows = heads.map((w) => checkoutRow(w, liveFor(w.path), statFor(w.path), w.is_main)).join("");
   return card("checkouts", "Checkouts", String(heads.length), rows);
 }
 
@@ -274,19 +282,37 @@ function syncLine(p: DashSync): string {
   const g = p.g;
   const up = g ? esc(upName(g, p.branch)) : "";
   const old = ` <span class="dim">as of the last fetch</span>`;
-  // Uncommitted work is on this line because it changes what a click does: ⇄ Switch is
-  // refused on a dirty tree, and git refuses ⇣ Pull's fast-forward when it would clobber.
-  const un = g && g.dirty > 0 ? ` <span class="un">· ${g.dirty} uncommitted</span>` : "";
+  // Uncommitted work is the Working set card's, directly above: this line is about the
+  // remote, and `switchSub` still names the dirty-tree refusal on the button it refuses.
   const ah = `<span class="ah">↑${g?.ahead}</span>`, bh = `<span class="bh">↓${g?.behind}</span>`;
   switch (syncState(g)) {
-    case "no-upstream": return `${esc(p.branch || "the main checkout")} tracks no upstream${un}`;
-    case "diverged": return `${ah} ${bh} diverged from ${up}${old}${un}`;
-    case "behind": return `${bh} behind ${up}${old}${un}`;
-    case "ahead": return `${ah} unpushed to ${up}${old}${un}`;
-    case "level": return `in sync with ${up}${old}${un}`;
+    case "no-upstream": return `${esc(p.branch || "the main checkout")} tracks no upstream`;
+    case "diverged": return `${ah} ${bh} diverged from ${up}${old}`;
+    case "behind": return `${bh} behind ${up}${old}`;
+    case "ahead": return `${ah} unpushed to ${up}${old}`;
+    case "level": return `in sync with ${up}${old}`;
     // Not read yet, or not a repo: every verb fetches first, so this is unknown, not wrong.
     default: return `<span class="dim">not read yet · every verb here fetches first</span>`;
   }
+}
+
+const DASH_FILES_SHOWN = 5;   // the aside is a card, not a diff viewer; the rest is a click away
+
+// What is uncommitted in the main checkout, and in which files: the peek every other host
+// draws over ./patchview's rows, so a working set is spelled the same wherever it is asked
+// about. Each row is a door onto that file. No `⤢` — this card's enlargement is the diff
+// overlay, and `data-dashopen-view` must keep meaning one mechanism (`#dashOverlay`).
+export function worksetCard(
+  dir: string, title: string, g: WorkingSet | null | undefined, known: boolean,
+): string {
+  if (!known || !dir) return "";
+  if (g === undefined) return cardSkeleton(2);   // in flight: pending is not clean
+  if (!g || !g.dirty) return "";                 // a card with nothing to say is absent, not empty
+  const door = (f: StatusFile) =>
+    ` data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difffocus="${escAttr(f.path)}"`;
+  const body = `<div class="wsb">${wpeekHtml(dir, title, g)}`
+    + `${fileSetHtml(g.entries, DASH_FILES_SHOWN, g.dirty, door)}</div>`;
+  return card("workset", "Working set", "", body, false);
 }
 
 // `known` is `factsKnown`. Three states, never merged: unknown gets a skeleton, a folder
@@ -441,15 +467,18 @@ export function overlayHtml(title: string, sub: string, body: string, foot: stri
 }
 
 export function checkoutsOverlay(
-  heads: WtHead[], liveFor: (p: string) => number, dirtyFor: (p: string) => boolean,
+  heads: WtHead[], liveFor: (p: string) => number, statFor: (p: string) => DiffStat | null | undefined,
 ): string {
   const rows = heads.map((w) => {
-    const live = liveFor(w.path), dirty = dirtyFor(w.path);
-    return `<div class="dbwt" data-dashwt="${esc(w.path)}">
+    const live = liveFor(w.path), g = statFor(w.path);
+    // Same door as the card's row, and on the same condition; the two ＋/❯ buttons are
+    // nested inside it, so the pane's listener must reach them before this outer verb.
+    const open = !!g && g.dirty > 0 ? ` data-dashwt="${esc(w.path)}"` : "";
+    return `<div class="dbwt"${open}>
       <span class="gl">${w.is_main ? "⌂" : "⑃"}</span>
       <span class="bn mono">${esc(w.branch || basename(w.path))}</span>
       <span class="pt mono">${esc(tilde(w.path))}</span>
-      <span class="tags">${live ? `<span class="tag acc">${live} live</span>` : ""}${dirty ? `<span class="tag warn">uncommitted</span>` : `<span class="tag ok">clean</span>`}</span>
+      <span class="tags">${live ? `<span class="tag acc">${live} live</span>` : ""}${checkoutTag(g)}</span>
       <span class="acts"><button class="act" data-dashwtadd="${esc(w.path)}" title="New session here">＋</button>
         <button class="act" data-dashwtterm="${esc(w.path)}" title="Open a terminal here">❯</button></span>
     </div>`;

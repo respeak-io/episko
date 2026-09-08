@@ -81,6 +81,7 @@ export interface Chapter {
 export const RAIL_LEGEND: { glyph: string; cls: string; label: string }[] = [
   { glyph: "●", cls: "g-work",  label: "working" },
   { glyph: "✓", cls: "g-done",  label: "your turn" },
+  { glyph: "⧗", cls: "g-done",  label: "your turn, a job runs on" },
   { glyph: "◆", cls: "g-attn",  label: "blocked on you" },
   { glyph: "◐", cls: "g-bg",    label: "fleet still running" },
   { glyph: "✕", cls: "g-error", label: "the turn broke" },
@@ -382,9 +383,10 @@ export const CHAPTERS: Chapter[] = [
         done: (w) => isOpen(w, "usage"),
       },
       {
-        anchor: "#setBtn",
+        anchor: "#fCostSeg",
         title: "The whole history",
-        body: "Settings › Usage has every day, per model and per project, back as far as your transcripts go.",
+        body: "Either popover ends on <b>Usage & spend</b>. That window has every day, per model and per "
+          + "project, back as far as your transcripts go.",
       },
     ],
   },

@@ -3,7 +3,7 @@
 
 import { basename, esc, relTime, tilde } from "./format";
 import {
-  apiErrText, fanoutTally, hasSessionState, isAgent, liveCount, orphanAgents, statusKey,
+  apiErrText, fanoutTally, hasSessionState, isAgent, liveCount, liveJobs, orphanAgents, statusKey,
   taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
@@ -39,8 +39,9 @@ export function foldHead(g: GroupDef, sum: GroupSummary, n: number): string {
 export const foldEmpty = () => `<div class="pfempty">Drag a project here</div>`;
 
 // Shared with the mini-rail, the tray and the inspector pill; a new status must also go in tray.ts's SHAPE.
-export const GLYPH: Record<string, string> = { attention: "◆", working: "●", thinking: "●", done: "✓", idle: "○", error: "✕", ended: "·", background: "◐" };
-export const GCLASS: Record<string, string> = { attention: "g-attn", working: "g-work", thinking: "g-work", done: "g-done", idle: "g-idle", error: "g-error", ended: "g-ended", background: "g-bg" };
+export const GLYPH: Record<string, string> = { attention: "◆", working: "●", thinking: "●", done: "✓", donebg: "⧗", idle: "○", error: "✕", ended: "·", background: "◐" };
+// `donebg` keeps done's green: colour carries the urgency (it is still your turn), the shape the nuance.
+export const GCLASS: Record<string, string> = { attention: "g-attn", working: "g-work", thinking: "g-work", done: "g-done", donebg: "g-done", idle: "g-idle", error: "g-error", ended: "g-ended", background: "g-bg" };
 // Row wash while a finish highlight fades (./attn, `applyFlash`); an unlisted state falls back
 // to done's green rather than unlit. A variable, not a class, so it cannot fight `g-*`'s pulse.
 export const LIT_COLOR: Record<string, string> = {
@@ -71,10 +72,12 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   const chipHtml = chip ? clusterChip(chip) : "";
   const fan = fanoutTally(s);
   const carried = fan ? orphanAgents(s).length : 0;
+  const jobs = k === "donebg" ? liveJobs(s) : 0;
   const tip = s.phase === "error" && s.apiErr
     ? `${label} · ${apiErrText(s.apiErr)}`
     : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${liveCount(s)} running${carried ? ` (${carried} from an earlier run)` : ""}`
-      : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
+      : jobs ? `${label} · your turn — ${jobs} background shell${jobs === 1 ? "" : "s"} still running`
+        : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
   // The row stays under the checkout it was launched in: its identity, and where --resume goes.
   const drift = s.drift
     ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
@@ -106,6 +109,7 @@ function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster):
     <span class="sglyph ${gcls}">${GLYPH[it.phase] || GLYPH.idle}</span>
     <span class="rgname" title="${esc(it.label)}">${esc(it.label)}</span>${chipHtml}
     <span class="rgtally${failed ? " bad" : ""}">${esc(tally)}</span>
+    <span class="sclose rgredo" data-runagain="${esc(it.id)}" title="Stop this run and start the whole stack again">⟳</span>
     <span class="sclose" data-closerun="${esc(it.id)}" title="Close every pane in this run">✕</span></div>`;
   const body = open ? `<div class="rgsteps">${it.members.map((m) => sessionRow(m, undefined, true)).join("")}</div>` : "";
   return `<div class="rgroup${tiled ? " on" : ""}${open ? " open" : ""}">${head}${body}</div>`;
