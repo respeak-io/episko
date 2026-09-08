@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.26.0 — 2026-09-08
 What the status bar and the dashboard only summarise now opens in one click — and the
 outline finds the question you clicked.
 
