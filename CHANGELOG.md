@@ -12,49 +12,40 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-The status bar's popovers stop being a dead end.
+What the status bar and the dashboard only summarise now opens in one click — and the
+outline finds the question you clicked.
 
-+ Every popover in the status bar has a **quick open** in its top-right corner, to the panel
-  that answers in full what it only summarises: today's spend and your limits open *Usage &
-  spend*, the shortcut sheet Settings › Keys, the terminal picker Settings › Sessions, and
-  disk I/O Settings › Diagnostics.
-~ **Usage & spend is its own window**, not a Settings tab: nothing in it is a setting, and it
-  was the one tab that had to widen the whole dialog to fit. Open it from either money
-  popover or from `⌘K`.
-~ Settings arrives at the top of the tab a link names, rather than wherever you last left the
-  pane scrolled. The terminal picker names itself, as every other popover in that bar does.
-
-! **Clicking a question in a resumed pane finds it again.** The jump picked which end of the
-  conversation to search from by counting the outline's own rows, so a pane that had resumed
-  one read as *the first question of one* and paged down from the top of a fourteen-hour
-  conversation until it gave up — on a question 66 pages above the live end. It now goes by
-  the question's clock, and only trusts the list when it starts where the conversation does.
-! **A resumed session restores every question it was asked**, not the handful in the last
-  512KB of its transcript. A day of tool traffic buries them many times over, so a long
-  conversation came back with an outline of one.
-! **A `!` shell line and a pasted image's sidecar are not questions either.** Claude submits
-  both for you, through the same hook as a keystroke, and each was listed as one.
++ **What's uncommitted, on the project dashboard.** A *Working set* card names the changed
+  files; the card opens the review overlay, a row opens it on that file.
++ **A quick open in every status-bar popover**, top right, to the panel behind it: today's
+  spend and your limits open *Usage & spend*, the shortcut sheet Settings › Keys, the
+  terminal picker Sessions, disk I/O Diagnostics.
++ **Re-run a whole stack from its run group's header.** ⟳ stops every step and starts the
+  chain again from the top; a step's own ⟳ still re-runs that step alone.
+~ **Usage & spend is its own window.** Nothing in it was a setting, and it was the one
+  Settings tab that had to widen the whole dialog to fit. Open it from either money popover
+  or from `⌘K`.
+~ **A finished turn whose background shell is still running wears ⧗ rather than ✓.** It is
+  still your turn, and a dev server that announced an address keeps the plain tick — the
+  header pill already counts those.
+~ Settings arrives at the top of the tab a link names, rather than wherever you last left
+  the pane scrolled. The terminal picker names itself, as the other popovers do.
+~ Re-running one step of a run group keeps it in the group, instead of dropping a loose row
+  beside the fold it came from.
 ~ A question the jump could not find says which it was: read to the end of the conversation
-  and not in it, or still further back than one jump reaches.
-~ A hovered outline row no longer has a tooltip repeating the question it has just unfolded.
-
-+ **What's uncommitted, on the project dashboard.** A *Working set* card names the main
-  checkout's changed files; the card opens the review overlay, a row opens it on that file.
-! **Clicking a file header in the review overlay folds it again.** The header shares a
-  sticky box with its health chips, so the toggle had been landing on the box, not the file.
+  and not in it, or further back than one jump reaches.
+~ A hovered outline row no longer repeats in a tooltip the question it has just unfolded.
+! **Clicking a question in a resumed pane finds it again.** The jump chose which end to
+  search from by counting the outline's own rows, so a resumed pane paged down from the top
+  of a fourteen-hour conversation and gave up. It goes by the question's clock now.
+! **A resumed session restores every question it was asked**, not the handful in the last
+  512KB of its transcript. A day of tool traffic buries them many times over.
+! A `!` shell line and a pasted image's sidecar are turns Claude submits for you, and each
+  was landing in the outline as a question of yours.
 ! **A checkout with no session no longer claims to be clean.** Those folders had never been
   measured; the Checkouts card says `—` until they are, and a dirty row opens its own diff.
-
-~ **A pane that finished its turn with a background shell still running wears ⧗, not ✓.**
-  "Your turn" and "your turn, and the CI watcher it started is still going" now read apart
-  from across the rail. It still counts as your turn everywhere else, and a dev server that
-  announced an address keeps the plain ✓ — the header pill already counts those.
-
-+ **Re-run a whole stack from its sidebar row.** The ⟳ on a run group's header stops every
-  step and starts the chain again from the top; a step's own ⟳ still re-runs just that step,
-  which is what you want when one install flaked after the setup that fed it.
-~ Re-running one step of a run group keeps it in the group instead of dropping a loose row
-  beside the fold it came from.
+! Clicking a file header in the review overlay folds it again. The header shares a sticky
+  box with its health chips, so the toggle had been landing on the box.
 ! The task inspector's *Send output to …* button no longer overflows the rail when the
   session it names is long; the full name is in its tooltip.
 
