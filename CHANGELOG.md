@@ -38,6 +38,13 @@ The status bar's popovers stop being a dead end.
   and not in it, or still further back than one jump reaches.
 ~ A hovered outline row no longer has a tooltip repeating the question it has just unfolded.
 
++ **What's uncommitted, on the project dashboard.** A *Working set* card names the main
+  checkout's changed files; the card opens the review overlay, a row opens it on that file.
+! **Clicking a file header in the review overlay folds it again.** The header shares a
+  sticky box with its health chips, so the toggle had been landing on the box, not the file.
+! **A checkout with no session no longer claims to be clean.** Those folders had never been
+  measured; the Checkouts card says `—` until they are, and a dirty row opens its own diff.
+
 ## 0.25.1 — 2026-09-06
 Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
 
