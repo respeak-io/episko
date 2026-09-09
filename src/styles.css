@@ -302,6 +302,13 @@ html.win .wctl { display: flex; }
 .sw-hex:focus { border-color: var(--accent-line); }
 .sw-apply { height: 26px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); cursor: pointer; font: 600 11px var(--font-ui); }
 .sw-apply:hover { filter: brightness(1.08); }
+/* Emoji mode: a wider grid than the swatches', and capped so a short window still scrolls it. */
+.colorpop.emo { grid-template-columns: repeat(8, 26px); max-height: min(420px, 80vh); overflow-y: auto; }
+.em-btn { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 16px; line-height: 1; }
+.em-btn:hover { background: var(--surface); border-color: var(--hair-strong); transform: scale(1.12); }
+.em-btn.on { border-color: var(--accent-line); background: var(--surface); }
+.sw-back { text-align: left; padding: 0 8px; }
+.sw-note { grid-column: 1 / -1; color: var(--muted-2); font: 10px var(--font-ui); text-align: center; margin-top: 1px; }
 /* pname flexes + truncates so a long name never wraps the header onto a 2nd row */
 .pname { flex: 0 1 auto; min-width: 0; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pcount { flex: none; margin-left: auto; font: 600 10px var(--font-mono); color: var(--muted-2); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
