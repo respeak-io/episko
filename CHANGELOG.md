@@ -38,6 +38,12 @@ dropdown rather than from a dialog about starting a session.
   counted as *Other*; the bar chart, mix and legend now list each model by name and version,
   a family keeping one colour across its releases.
 
++ **A project's icon can be an emoji.** Project menu › Appearance › *Pick an emoji*: a grid to
+  choose from, or paste anything the OS picker gives you.
++ **Icon discovery reads what `index.html` declares**, so a favicon that is an inline SVG — the
+  emoji-favicon trick — is found at last, as is one under a name nothing could have guessed.
+  Of several declared, the one that survives being shrunk to 15px wins.
+
 ## 0.26.0 — 2026-09-08
 What the status bar and the dashboard only summarise now opens in one click — and the
 outline finds the question you clicked.
@@ -83,12 +89,6 @@ Two outline fixes: jumping to an early question works again, and a background ta
   moved" and gave up, so a question in the first half only resolved from the first screen.
 ! **A background task reporting back is not one of your questions.** Its notification comes
   in through the same hook as a keystroke and was listed as one.
-
-+ **A project's icon can be an emoji.** Project menu › Appearance › *Pick an emoji*: a grid to
-  choose from, or paste anything the OS picker gives you.
-+ **Icon discovery reads what `index.html` declares**, so a favicon that is an inline SVG — the
-  emoji-favicon trick — is found at last, as is one under a name nothing could have guessed.
-  Of several declared, the one that survives being shrunk to 15px wins.
 
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
