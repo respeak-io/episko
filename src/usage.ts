@@ -8,13 +8,46 @@ import { basename } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
 
-// Family, not display name: "Opus 4.8" changes across releases, the tier does not.
-export function modelFamily(m: string): string {
-  const s = (m || "").toLowerCase();
-  if (s.includes("opus")) return "Opus";
-  if (s.includes("sonnet")) return "Sonnet";
-  if (s.includes("haiku")) return "Haiku";
-  return m ? "Other" : "Unknown";
+// One display name per model, reached from both spellings we are given: the transcript scan
+// reports a raw id (`claude-fable-5-1`), the statusLine a display name ("Claude Fable 5.1"),
+// and a day whose tokens split across two keys draws the same model twice. Naming happens on
+// read (`mergeTokenDays`), never in the stores, so a better rule needs no re-scan.
+const TIERS = ["opus", "sonnet", "haiku", "fable"];
+const ACRONYMS = new Set(["gpt", "ai", "llm", "api", "xai"]);
+const isNum = (s: string) => /^\d[\d.]*$/.test(s);
+export function modelName(m: string): string {
+  const bare = (m || "").toLowerCase().trim()
+    .replace(/^(?:us|eu|apac)\./, "")                      // Bedrock region prefix
+    .replace(/^(?:anthropic|openai|google|meta|x-ai)[./]/, "")
+    .replace(/\[[^\]]*]$/, "")                             // the context-window suffix
+    .replace(/-latest$/, "").replace(/-v\d+:\d+$/, "")
+    .replace(/[-@]\d{8}$/, "")                             // release date stamp
+    .replace(/^claude[-\s]/, "");
+  const parts = bare.split(/[-_\s/]+/).filter(Boolean);
+  // `<synthetic>` is Claude Code's own placeholder line (an API error, a hook message), not
+  // a model. Its usage record is all zeroes today, so this only guards the day it isn't.
+  if (!parts.length || bare === "<synthetic>") return "Unknown";
+  const tier = parts.findIndex((p) => TIERS.includes(p));
+  if (tier >= 0) {
+    // The version sits on either side of the tier: `opus-4-8` after it, `3-5-sonnet` before.
+    const run = (from: number, step: number) => {
+      const out: string[] = [];
+      for (let j = from; j >= 0 && j < parts.length && isNum(parts[j]); j += step) out.push(parts[j]);
+      return step < 0 ? out.reverse() : out;
+    };
+    const ver = (run(tier + 1, 1).length ? run(tier + 1, 1) : run(tier - 1, -1)).join(".");
+    const name = parts[tier][0].toUpperCase() + parts[tier].slice(1);
+    return ver ? `${name} ${ver}` : name;
+  }
+  const out: string[] = [];
+  for (const p of parts) {
+    const w = ACRONYMS.has(p) ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1);
+    const prev = out[out.length - 1];
+    // A version joins an acronym with a hyphen, the way its vendor writes it: GPT-5.1.
+    if (isNum(p) && prev && prev === prev.toUpperCase()) out[out.length - 1] = `${prev}-${w}`;
+    else out.push(w);
+  }
+  return out.join(" ").slice(0, 32);
 }
 
 // `cc-usage` is the authoritative per-day total; `cc-usage-detail` layers the per-model /
@@ -63,7 +96,7 @@ export function addUsage(delta: number, s?: Sess) {
   localStorage.setItem("cc-usage", JSON.stringify(usage));
   if (!s || !hasAgentCapability(s, "usage")) return;
   const d = usageDetail[k] || (usageDetail[k] = { models: {}, projects: {} });
-  const fam = modelFamily(s.model);
+  const fam = modelName(s.model);
   d.models[fam] = (d.models[fam] || 0) + delta;
   const proj = s.project || basename(s.workdir) || "unknown";
   d.projects[proj] = (d.projects[proj] || 0) + delta;
@@ -379,22 +412,31 @@ export function resetCostBaselines() { costBaseline.clear(); localStorage.remove
 // (full history); provider deltas record from the first integrated session onward.
 export interface DayUsage {
   day: string; input: number; output: number; cache_read: number; cache_write: number;
-  opus: number; sonnet: number; haiku: number; other: number;
+  models: Record<string, number>; // raw model id in the stores, display name once merged
   sessions: number; projects: Record<string, number>;
 }
+// What an older cache holds: four fixed family columns, and no version to recover.
+interface StoredDay extends DayUsage { opus?: number; sonnet?: number; haiku?: number; other?: number }
+const LEGACY: [keyof StoredDay & string, string][] = [["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"], ["other", "Other"]];
 export type UDay = { key: string; cost: number; tok: number; u?: DayUsage };
 interface LiveTokenDay extends DayUsage { session_ids: string[] }
 const scannedTokenDays: { value: DayUsage[] } = { value: readList<DayUsage>("cc-usage-tokens") };
 const liveTokenDays: LiveTokenDay[] = readList<LiveTokenDay>("cc-agent-usage-tokens");
 function mergeTokenDays(scanned: DayUsage[], live: LiveTokenDay[]): DayUsage[] {
   const by = new Map<string, DayUsage>();
-  const add = (d: DayUsage) => {
+  const add = (d: StoredDay) => {
     let x = by.get(d.day);
     if (!x) {
-      x = { day: d.day, input: 0, output: 0, cache_read: 0, cache_write: 0, opus: 0, sonnet: 0, haiku: 0, other: 0, sessions: 0, projects: {} };
+      x = { day: d.day, input: 0, output: 0, cache_read: 0, cache_write: 0, models: {}, sessions: 0, projects: {} };
       by.set(d.day, x);
     }
-    for (const k of ["input", "output", "cache_read", "cache_write", "opus", "sonnet", "haiku", "other", "sessions"] as const) x[k] += d[k] || 0;
+    for (const k of ["input", "output", "cache_read", "cache_write", "sessions"] as const) x[k] += d[k] || 0;
+    // `modelName` is idempotent, so a key already named (an older row, the other store) is safe.
+    for (const [model, tokens] of Object.entries(d.models || {})) {
+      const nm = modelName(model);
+      x.models[nm] = (x.models[nm] || 0) + tokens;
+    }
+    for (const [k, nm] of LEGACY) { const v = d[k] as number | undefined; if (v) x.models[nm] = (x.models[nm] || 0) + v; }
     for (const [project, tokens] of Object.entries(d.projects || {})) x.projects[project] = (x.projects[project] || 0) + tokens;
   };
   scanned.forEach(add); live.forEach(add);
@@ -438,14 +480,16 @@ export function addAgentTokenUsage(s: Sess, reading: AgentTokenUsage): void {
   const day = todayKey();
   let row = liveTokenDays.find((x) => x.day === day);
   if (!row) {
-    row = { day, input: 0, output: 0, cache_read: 0, cache_write: 0, opus: 0, sonnet: 0, haiku: 0, other: 0, sessions: 0, projects: {}, session_ids: [] };
+    row = { day, input: 0, output: 0, cache_read: 0, cache_write: 0, models: {}, sessions: 0, projects: {}, session_ids: [] };
     liveTokenDays.push(row);
   }
   // OpenAI's input total includes its cached subset; keep `input + cache_read` equal to it.
   const input = Math.max(0, d.inputTokens - d.cachedInputTokens);
   const processed = input + d.cachedInputTokens + d.cacheWriteInputTokens + d.outputTokens;
   row.input += input; row.cache_read += d.cachedInputTokens; row.cache_write += d.cacheWriteInputTokens; row.output += d.outputTokens;
-  row.other += processed;
+  // Attributed to the model the pane is on now, as the $ split is: a reading is a delta, and
+  // the provider's own cumulative total carries no per-model split to diff against.
+  row.models[s.model] = (row.models[s.model] || 0) + processed;
   const project = s.project || basename(s.workdir) || "unknown";
   row.projects[project] = (row.projects[project] || 0) + processed;
   if (!row.session_ids.includes(id)) { row.session_ids.push(id); row.sessions++; }
@@ -458,12 +502,38 @@ export let usageRange = 30; // days the analytics panel looks back
 export function setUsageRange(n: number) { usageRange = n; }
 
 export const U_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-// Sum a day's per-model tokens into a fixed-key record (backfill fields are lowercase).
+// Sum a day's per-model tokens by display name. Only the models actually used appear, so a
+// caller must not index a fixed key set; `modelSeries` gives the order and the colour slot.
 export const uModels = (a: UDay[]): Record<string, number> => {
-  const m: Record<string, number> = { Opus: 0, Sonnet: 0, Haiku: 0, Other: 0 };
-  for (const d of a) if (d.u) { m.Opus += d.u.opus; m.Sonnet += d.u.sonnet; m.Haiku += d.u.haiku; m.Other += d.u.other; }
+  const m: Record<string, number> = {};
+  for (const d of a) if (d.u) for (const [k, v] of Object.entries(d.u.models || {})) m[k] = (m[k] || 0) + v;
   return m;
 };
+
+// A model's colour family: its name without the version, so every Opus shares one hue.
+export const modelKin = (name: string) => name.toLowerCase().split(/[-\s]/)[0] || "unknown";
+const RESIDUE = ["other", "unknown"]; // the two names that mean "we could not tell"
+const verOf = (name: string) => (name.match(/\d+/g) || []).map(Number);
+// Newest first, numerically: "Opus 5" is above "Opus 4.8", which string order gets backwards.
+function newerFirst(a: string, b: string): number {
+  const x = verOf(b), y = verOf(a);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] ?? -1) - (y[i] ?? -1); if (d) return d; }
+  return a.localeCompare(b);
+}
+export interface ModelSeries { name: string; total: number; kin: string; shade: number }
+// The chart's series in one order for every bucket, legend and row. Biggest first, with the
+// residue last; within a family the newest release wears the undimmed hue, so shipping a
+// version dims the old one rather than reshuffling the colours.
+export function modelSeries(models: Record<string, number>): ModelSeries[] {
+  const rows: ModelSeries[] = Object.entries(models).filter(([, v]) => v > 0)
+    .map(([name, total]) => ({ name, total, kin: modelKin(name), shade: 0 }));
+  const res = (r: ModelSeries) => RESIDUE.includes(r.kin) ? 1 : 0;
+  rows.sort((a, b) => res(a) - res(b) || b.total - a.total || a.name.localeCompare(b.name));
+  const kin = new Map<string, ModelSeries[]>();
+  for (const r of rows) { const a = kin.get(r.kin) || []; a.push(r); kin.set(r.kin, a); }
+  for (const a of kin.values()) [...a].sort((x, y) => newerFirst(x.name, y.name)).forEach((r, i) => { r.shade = Math.min(i, 3); });
+  return rows;
+}
 
 // The last n calendar days ending today, oldest first, each joined to its cost and tokens.
 export function usageWindow(n: number): UDay[] {
@@ -485,7 +555,7 @@ export function uBuckets(): UBucket[] {
   const cur = usageWindow(usageRange);
   const mk = (label: string, tip: string, days: UDay[]): UBucket => {
     const models = uModels(days);
-    return { label, tip, total: models.Opus + models.Sonnet + models.Haiku + models.Other, models };
+    return { label, tip, total: Object.values(models).reduce((n, v) => n + v, 0), models };
   };
   if (usageRange <= 31) return cur.map((d) => { const dt = new Date(d.key + "T00:00:00"); return mk(String(dt.getDate()), `${U_MONTHS[dt.getMonth()]} ${dt.getDate()}`, [d]); });
   if (usageRange === 90) {

@@ -30,6 +30,9 @@
   --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-bash:#e0a44a; --tool-task:#6ad0b0; --tool-web:#f0a6d0; --tool-mcp:#9aa0b4;
   /* usage analytics: model families (colourblind-validated), the spend-heatmap ramp, the token-mix ramp */
   --m-opus:#8f74ee; --m-sonnet:#c07d1e; --m-haiku:#149a73; --m-other:#8a8394; --m-unattr:#6b6478;
+  --m-fable:#3f8ee0; --m-gpt:#d3618f; --m-codex:#2ca6b8;
+  /* spares for a provider we ship no hue for, and the ground an older version is faded into */
+  --m-s1:#93b03c; --m-s2:#b968d8; --m-s3:#7f93b8; --m-s4:#cc6a55; --m-fade:#ffffff;
   --u-g0:#191622; --u-g1:#372e57; --u-g2:#544499; --u-g3:#7d63d8; --u-g4:#a78bfa;
   --u-t1:#2c2740; --u-t2:#4a3d7a; --u-t3:#7159c4; --u-t4:#a78bfa;
   /* commit-graph lanes: eight hues that must stay apart from each other and off the accent */
@@ -49,6 +52,8 @@
   --tool-read:#2a7fd0; --tool-edit:#6a45e0; --tool-bash:#b9791a; --tool-task:#128a63; --tool-web:#c04f97; --tool-mcp:#6a6480;
   /* usage analytics — re-stepped for the light ground (own steps, not an inversion) */
   --m-opus:#7c5cf0; --m-sonnet:#b8760f; --m-haiku:#0c8f68; --m-other:#8a8598; --m-unattr:#b8b2c6;
+  --m-fable:#2b6fd0; --m-gpt:#c04270; --m-codex:#0f8fa3;
+  --m-s1:#6e8c1e; --m-s2:#9a45c0; --m-s3:#5a7095; --m-s4:#b34a35; --m-fade:#241d33;
   --u-g0:#eceaf2; --u-g1:#d8cff2; --u-g2:#b7a4ee; --u-g3:#9575e8; --u-g4:#7c5cf0;
   --u-t1:#e4def3; --u-t2:#c3b0ee; --u-t3:#9878e6; --u-t4:#7c5cf0;
   /* lane hues re-stepped: the dark set's pastels vanish on white at 1.6px of stroke */

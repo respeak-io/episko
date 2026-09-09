@@ -934,7 +934,7 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       applyStatusline(s, { cost: { total_cost_usd: 3.0 } });
       expect(s.cost).toBe(3.0);
       expect(Object.values(usage)[0]).toBeCloseTo(3.0, 10); // 1.25 + 1.75, not 4.25
-      expect(Object.values(usageDetail)[0].models).toEqual({ Opus: 3.0 });
+      expect(Object.values(usageDetail)[0].models).toEqual({ "Opus 4.8": 3.0 });
     });
     it("adds nothing when a repeated statusLine reports the same total", () => {
       const s = sess();
