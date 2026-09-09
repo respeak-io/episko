@@ -168,7 +168,7 @@ describe("the project dashboard's verbs", () => {
 describe("the project dashboard's own dispatcher", () => {
   // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
   // are deliberately not verbs. Adding one here should be a decision, not an oversight.
-  const KEYS = new Set(["br", "day", "note", "sha"]);
+  const KEYS = new Set(["day", "note", "sha"]);
   const emitted = [...new Set([...DASHVIEW.matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
@@ -189,6 +189,14 @@ describe("the project dashboard's own dispatcher", () => {
     expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
   });
 
+  it("probes a branch row's own controls BEFORE the row that contains them", () => {
+    // ⇄ sits inside the row, and the row is the tick target, so a row-level probe placed
+    // first would tick a branch instead of switching to it.
+    expect(probed).toContain("br");
+    expect(probed.indexOf("brsw"), "data-dashbrsw must be probed before data-dashbr")
+      .toBeLessThan(probed.indexOf("br"));
+  });
+
   it("probes a checkout's two buttons BEFORE the row that contains them", () => {
     // ＋ and ❯ are nested inside the row, so a row-level probe placed first would open the
     // diff instead of launching a session — and `return` does not stop the propagation.
@@ -196,6 +204,9 @@ describe("the project dashboard's own dispatcher", () => {
     for (const inner of ["wtadd", "wtterm"]) {
       expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashwt`)
         .toBeLessThan(probed.indexOf("wt"));
+      // The Checkouts tab's row is the same shape: both buttons are nested inside it.
+      expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashco`)
+        .toBeLessThan(probed.indexOf("co"));
     }
   });
 });

@@ -135,6 +135,10 @@ export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
 export let stageGroup: string | null = null;
 export function setStageGroup(g: string | null) { stageGroup = g; }
 export const collapsedRuns = new Set<string>(); // not persisted: run ids are per-launch uuids
+// Checkouts a removal is running in, path → repo root. Not persisted; the roster re-read at
+// the end of the removal is what clears an entry. ./grouping keeps the row and its project
+// alive while one is here, because a removal closes the sessions the rail is drawn from.
+export const removingWt = new Map<string, string>();
 export let externals: ExtSession[] = [];
 export function setExternals(l: ExtSession[]) { externals = l; }
 export let dormants: Restorable[] = [];

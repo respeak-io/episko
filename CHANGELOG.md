@@ -12,6 +12,27 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+A branch is one row now, wherever its refs live, and the branch you are on changes from a
+dropdown rather than from a dialog about starting a session.
+
+~ **The Branches view is one table.** Local and remote were two lists with two selections,
+  so clearing a merged feature branch out of both places meant finding it twice. Where it
+  lives is a column; two toggles in the action bar say where a delete lands, and deleting on
+  the remote stays something you switch on, with its warning on the bar that runs it.
++ **Filter chips that are also the quick-selects**: *Merged*, *Gone*, *Stale*, *Local only*,
+  *Checked out*, plus a name filter. Narrow, then `All` — "select everything gone" is two
+  clicks. **Shift-click** takes every row between the last tick and this one.
++ **Checkouts is a second tab of that table**, with the same ticks and a *Remove* that takes
+  the folders and, where git's safe delete accepts them, their branches.
+~ **Switch branch is a dropdown**, on the project's Repository card, on a session's own git
+  card (that pane's checkout moves on its own) and on every row of the Branches view. It
+  switches on the pick; the confirm is left for the case that needs one — sessions that stay
+  open on ground that just moved.
+! **The default branch is never offered for deletion.** Comparing a repo against something
+  other than its default made `main` "merged" like anything else, and it was offered with
+  every other merged branch.
+! Removing a worktree from the sidebar keeps its row, spins it, and stops the project
+  collapsing under the pointer while git works.
 
 ~ **Usage & spend names every model.** Fable, and anything a non-Claude provider runs, was
   counted as *Other*; the bar chart, mix and legend now list each model by name and version,

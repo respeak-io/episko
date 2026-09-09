@@ -1436,6 +1436,11 @@ select.in-ctl { cursor: pointer; }
 .wt-sk i { display: block; height: 9px; border-radius: 4px; background: var(--surface-2); animation: wtpulse 1.35s ease-in-out infinite; }
 .wt-sk i.a { width: 20px; height: 20px; border-radius: 6px; flex: none; }
 @keyframes wtpulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
+/* Mid-removal: the row stays until git says otherwise, and the spinner is what says so. */
+.wthead.going { cursor: default; }
+.wthead.going .wtname { color: var(--muted-2) !important; }
+.wthead.going .u-spin { margin: 0 2px 0 0; }
+.wtsessions.going { opacity: .45; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .wt-sk i { animation: none; opacity: .6; } }
 /* A group heading with nothing under it (only Worktrees renders one; see wtRender): the skeleton
    put the heading on screen, so its silent disappearance reads as a load that never finished. */
@@ -2515,12 +2520,17 @@ select.in-ctl { cursor: pointer; }
 .ovl-f { padding: 8px 14px; border-top: 1px solid var(--hair); font-size: 11px; line-height: 1.5; color: var(--muted-2); background: var(--bg-2); }
 .ovl-f code { font: 10.5px var(--font-mono); color: var(--accent-ink); }
 /* one geometry for header and rows; `dbwt` prefix because .wt-* is the worktree dialog's */
-.dbwt, .dbwt-hd { display: grid; grid-template-columns: 18px 146px minmax(0, 1fr) 178px 81px; gap: 10px; align-items: center; }
+.dbwt, .dbwt-hd { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: 20px minmax(0, 1fr) minmax(0, 200px) minmax(0, 1.25fr) minmax(0, 68px) minmax(0, 54px); }
+.dbwt.off { opacity: .55; cursor: default; }
+.dbwt.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
+.dbwt.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
+.dbwt .tags .warn { font: 10px var(--font-mono); color: var(--st-working); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbwt .tags .dim { font: 10px var(--font-ui); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbwt-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbwt-hd .r { text-align: right; }
-.dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
 .dbwt:hover { background: var(--surface); }
-.dbwt[data-dashwt] { cursor: pointer; }
 .dbwt .gl { text-align: center; font-size: 11px; }
 .dbwt .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbwt .pt { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2582,16 +2592,21 @@ select.in-ctl { cursor: pointer; }
 
 /* ---- the Branches view: the cleanup at the size the decision is, every column with room ----
    The right-hand columns have a known ceiling and are fixed; `auto` would stagger them. */
-.dbbr, .dbbr-hd { display: grid; grid-template-columns: 26px minmax(150px, 1.7fr) minmax(120px, 1.3fr) 92px 92px 84px; gap: 10px; align-items: center; }
+/* Every track is minmax(0, …) so the table shrinks with the pane instead of running off the
+   right edge: the overlay only gets the dashboard's middle column, and that width varies. */
+.dbbr, .dbbr-hd { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: 20px minmax(0, 1.15fr) minmax(0, 108px) minmax(0, 1.4fr) minmax(0, 58px) minmax(0, 74px) minmax(0, 68px) 18px; }
 .dbbr-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbbr-hd .r, .dbbr .r { text-align: right; }
-.dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.dbbr.off { cursor: default; }
 .dbbr:hover { background: var(--surface); }
 .dbbr.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
 .dbbr.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
 .dbbr.off { opacity: .55; }
 .dbbr .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dbbr .why { display: flex; gap: 5px; align-items: center; overflow: hidden; }
+.dbbr .why { display: flex; gap: 4px; align-items: center; overflow: hidden; }
+.dbbr .why .tag { font-size: 9px; padding: 1px 5px; }
 .dbbr .why .warn { font: 10px var(--font-mono); color: var(--st-working); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbbr .st, .dbbr .au, .dbbr .ag { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a result row (name + outcome, no checkbox) gets its own grid, or every name lands in the tick column */
@@ -2604,7 +2619,7 @@ select.in-ctl { cursor: pointer; }
 .brck { width: 15px; height: 15px; border-radius: 4px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface-2); display: grid; place-items: center; padding: 0; line-height: 1; }
 .brck.on { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
 .brck.on::after { content: "✓"; font: 700 10px/1 var(--font-ui); color: var(--st-error); }
-.brck[disabled] { cursor: not-allowed; opacity: .5; }
+.brck[aria-disabled="true"] { cursor: default; opacity: .5; }
 .dbbr-act { display: flex; align-items: center; gap: 8px; padding: 12px 9px 4px; }
 .brgo { font: 600 11.5px var(--font-ui); padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 10%, transparent); color: var(--st-error); }
 .brgo:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); }
@@ -2612,6 +2627,66 @@ select.in-ctl { cursor: pointer; }
 .dbbr-note { font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); padding: 2px 0 8px; }
 .dbbr-note.warn { color: var(--st-working); }
 .dbbr-note b { color: var(--text); font: 600 10px var(--font-mono); }
+/* ---- one table, two tabs: the branch's two homes are a column, not a second list ---- */
+.bvtabs { display: flex; align-items: center; gap: 4px; padding: 0 0 10px; }
+.bvtabs .sp, .bvbar .sp, .bvchips .sp { flex: 1 1 auto; }
+.bvtab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 7px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; font: 600 11.5px var(--font-ui); color: var(--muted); }
+.bvtab:hover { color: var(--text); background: var(--surface); }
+.bvtab.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.bvtab .n { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.bvtab.on .n { color: var(--accent-ink); }
+.bvq { width: 190px; padding: 4px 9px; border-radius: 7px; border: 1px solid var(--hair-strong);
+  background: var(--surface); color: var(--text); font: 11px var(--font-ui); }
+.bvq:focus { outline: none; border-color: var(--accent-line); }
+/* Filter chips ARE the quick-selects: narrow, then All. Counts are over every row, never the shown ones. */
+.bvchips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; padding: 0 0 9px; }
+.bvchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--hair-strong); background: var(--surface); font: 10.5px var(--font-ui); color: var(--muted); }
+.bvchip:hover { color: var(--text); }
+.bvchip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.bvchip .n { font: 9px var(--font-mono); color: var(--muted-2); }
+.bvchip.on .n { color: var(--accent-ink); }
+/* Where it lives, per half: dim when that half can't go, struck-through-red when it is going. */
+.dbbr .wh { display: flex; gap: 5px; align-items: center; overflow: hidden; }
+.hf { flex: none; padding: 1px 5px; border-radius: 4px; font: 9px var(--font-mono); color: var(--muted);
+  border: 1px solid var(--hair); background: var(--surface-2); }
+.hf.no { opacity: .45; }
+.hf.go { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent);
+  background: color-mix(in srgb, var(--st-error) 12%, transparent); }
+.dbbr .ra { display: flex; justify-content: flex-end; }
+.dbbr .ra .act { width: 20px; padding: 0; justify-content: center; opacity: 0; }
+.dbbr:hover .ra .act { opacity: .75; }
+.dbbr .ra .act:hover { opacity: 1; }
+/* The action bar: what is ticked, where a delete lands, and what that actually runs. */
+.bvbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 9px; border-radius: 10px; border: 1px solid var(--hair-strong);
+  background: var(--bg); box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, .55); }
+.bvbar.on { border-color: var(--hair-strong); }
+.bvbar .sel { font: 600 11px var(--font-ui); color: var(--text); }
+.bvbar .scopes { display: flex; align-items: center; gap: 6px; font: 10.5px var(--font-ui); color: var(--muted-2); }
+.bvbar .what { font: 10px var(--font-mono); color: var(--muted-2); }
+.bvbar .hint { font: 10px var(--font-ui); color: var(--st-working); }
+.bvbar .note { flex: 1 0 100%; order: 9; margin-top: 2px; font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); }
+.bvbar .note.warn { color: var(--st-working); }
+.bvbar .note b { color: var(--text); font: 600 10px var(--font-mono); }
+.bvbar.sharing { border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
+.bvbar .hint b { font: 600 10px var(--font-mono); }
+.bvsw { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--hair-strong); background: var(--surface-2); font: 10.5px var(--font-ui); color: var(--muted); }
+.bvsw i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--hair-strong); display: grid; place-items: center; }
+.bvsw.on { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
+.bvsw.on i { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
+.bvsw.on i::after { content: "✓"; font: 700 8.5px/1 var(--font-ui); color: var(--st-error); }
+/* The Repository card's picker and a session's branch chip: the same control, two sizes. */
+.gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.gitb.brpick .c, .bsw .c { flex: none; color: var(--muted-2); font-size: 9px; }
+.gitb.brpick .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsw { max-width: 100%; padding: 1px 6px 1px 4px; margin-left: -4px; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: inherit; font: inherit; }
+.bsw:hover, .bsw.open { border-color: var(--accent-line); background: var(--accent-wash); }
+.bsw .b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }
 .bk-cmp:hover, .bk-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
