@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A project's icon can be an emoji.** Project menu › Appearance › *Pick an emoji*: a grid to
+  choose from, or paste anything the OS picker gives you.
++ **Icon discovery reads what `index.html` declares**, so a favicon that is an inline SVG — the
+  emoji-favicon trick — is found at last, as is one under a name nothing could have guessed.
+  Of several declared, the one that survives being shrunk to 15px wins.
+
 ## 0.25.0 — 2026-09-04
 The questions you asked, listed and clickable — and the paths your agents print are links.
 

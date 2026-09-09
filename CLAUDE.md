@@ -85,7 +85,7 @@ Three hard constraints shape this code:
 | `github.rs` | `gh`: issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force |
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
-| `icons.rs` | project favicon/logo probing + the tray menu's status glyphs (`glyph_rgba`) |
+| `icons.rs` | project favicon/logo probing, including what a page's `<link rel="icon">` declares (which may be the whole icon, inline) + the tray menu's status glyphs (`glyph_rgba`) |
 | `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else; `index_of` is the in-crate half, so `health.rs` measures exactly the files the explorer lists |
 | `health.rs` | what a change did to the shape of the code: code lines with comments stripped, function spans, nesting, approximate cognitive complexity, and the cross-file duplicate index. Facts only — which of them earn a chip is `health.ts`'s |
 | `testutil.rs` | `git`, `scratch_dir`, `cfg(test)` only |
@@ -121,7 +121,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `providers/index.ts` | provider registry: normalized event adapters plus history/read/restore contracts used by shared UI |
 | `providers/control.ts` | provider-specific approval routing, kept out of shared actions and reducers |
 | `providers/codex.ts` | Codex App Server methods/items → normalized events, plus public thread history mapping |
-| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints. So is `cleanTitle` — the OSC title minus Claude's spinner — because that table tracks somebody else's release and belongs where it can be tested. `TitlePrefs` (Settings › Appearance, `cc-title`) only ever **adds** to that table, so a new spinner family needs no release; added codepoints are emitted as `\u{…}` escapes, since the field invites people to type the character class's own syntax |
+| `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints. So is `cleanTitle` — the OSC title minus Claude's spinner — because that table tracks somebody else's release and belongs where it can be tested. `TitlePrefs` (Settings › Appearance, `cc-title`) only ever **adds** to that table, so a new spinner family needs no release; added codepoints are emitted as `\u{…}` escapes, since the field invites people to type the character class's own syntax. `emojiDataUri`/`normEmoji` are here for the same reason: a project's emoji icon is stored as the emoji and read back as an SVG data URI, so every surface that paints an icon keeps taking a URL |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent), plus what a *reader* needs from a hunk: which deletion became which addition (by similarity, not by position), and which words inside that pair moved — including when marking them would be noise |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
 | `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |

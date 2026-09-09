@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, esc, fmtClock, fmtDur,
+  ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc, fmtClock, fmtDur,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, relTime, setHome, sparkline, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tilde, titleExtra,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -432,6 +432,43 @@ describe("elidePath — the Run header's path", () => {
   it("returns the original when eliding would not actually be shorter", () => {
     // head + "…" + last two is longer than the source once the middle is one char.
     expect(elidePath("/a/b/c/d", 4)).toBe("/a/b/c/d");
+  });
+});
+
+describe("normEmoji — what may become a project's icon", () => {
+  it("takes one emoji, however many codepoints it is made of", () => {
+    expect(normEmoji("🎙️")).toBe("🎙️");     // emoji + variation selector
+    expect(normEmoji("👨‍👩‍👧‍👦")).toBe("👨‍👩‍👧‍👦"); // a family is seven, so a character budget would halve it
+    expect(normEmoji("🇩🇪")).toBe("🇩🇪");
+    expect(normEmoji("  🚀 ")).toBe("🚀");
+  });
+  it("refuses what would render as text, or as two icons", () => {
+    expect(normEmoji("")).toBeNull();
+    expect(normEmoji("   ")).toBeNull();
+    expect(normEmoji("hello")).toBeNull();
+    expect(normEmoji("🎙️ 🎧")).toBeNull();      // whitespace inside is two picks, not one
+    expect(normEmoji("🎙️".repeat(9))).toBeNull();
+  });
+  it("allows a short ASCII marker, which renders as itself", () => {
+    expect(normEmoji(":)")).toBe(":)");
+    expect(normEmoji("E")).toBe("E");
+  });
+});
+
+describe("emojiDataUri — an emoji as an image, so every icon surface takes a URL", () => {
+  it("is an SVG data URI carrying the emoji", () => {
+    const uri = emojiDataUri("🎙️");
+    expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
+    expect(decodeURIComponent(uri.slice("data:image/svg+xml,".length))).toContain(">🎙️</text>");
+  });
+  it("escapes the URI's own syntax, so an `<img src>` still parses", () => {
+    // encodeURIComponent, not raw: a `#` would truncate the URI and `"` would end the attribute.
+    const uri = emojiDataUri("#");
+    expect(uri).not.toContain("#");
+    expect(uri).not.toContain('"');
+  });
+  it("escapes XML, so a stray angle bracket cannot reshape the SVG", () => {
+    expect(decodeURIComponent(emojiDataUri("<&").slice(19))).toContain(">&lt;&amp;</text>");
   });
 });
 
