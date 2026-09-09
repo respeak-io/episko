@@ -69,9 +69,10 @@ import {
   closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
+import { closeBranchPop } from "./bpop";
 import {
-  closeBranchPop, closeWt, openWt, setWtCloseSession, setWtHandToTerminal,
-  openBranchPop, setWtLaunch, setWtOnBranchSwitched, setWtRefreshGit, setWtRenderAll,
+  closeWt, openSessionBranchPop, setWtCloseSession, setWtHandToTerminal, switchCheckout,
+  setWtLaunch, setWtOnBranchSwitched, setWtRefreshGit, setWtRenderAll,
   setWtSaveCmpBase, setWtSetActive,
 } from "./worktree";
 import {
@@ -246,10 +247,7 @@ setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
   openTerminal: (dir) => { openTerminalIn(dashMirror()?.name ?? basename(dir), dir); },
-  // armSwitch opens the ⑃ dialog onto the root's switch card; every guard lives there.
-  switchBranch: (project, repoDir, branch) => {
-    void openWt(project, repoDir, branch || null, { manage: true, armSwitch: true });
-  },
+  switchBranch: (project, dir, branch, base) => switchCheckout(project, dir, branch, base),
   // colorKey is the repo root, so the shell nests under its project rather than becoming one.
   handToTerminal: (project, dir, cmd) => {
     void handToTerminal(project, dir, cmd, { colorKey: dashMirror()?.root ?? dir });
@@ -258,7 +256,6 @@ setDashHost({
   openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
   openDiff: (workdir, title, focus) => { void openDiff(workdir, title, focus); },
   refreshGit: () => refreshGitViews(),
-  pickTrunk: (anchor, items, current, onPick) => { openBranchPop(anchor, items, current, onPick); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
   openHistory: () => { void openHistory(true); },
@@ -530,15 +527,16 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
-  if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk]")) closeBranchPop(false);
+  if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
   const dot = t.closest<HTMLElement>(".pdot, .rm-dot");
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
+  else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus);
   else if (el.dataset.close) closeSession(el.dataset.close);

@@ -192,9 +192,11 @@ export function wsetHtml(s: Sess): string {
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
-  // The branch row is about the branch only; file counts belong in wpeekHtml.
+  // The branch row is about the branch only; file counts belong in wpeekHtml. The name is
+  // the control that changes it: this checkout switches on its own, whatever the root is on.
   return `<div class="wset">${diff}
-    <div class="branch"><span>${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span>${sync}</span></div>
+    <div class="branch"><button class="bsw" data-brswitch="${esc(s.id)}" aria-haspopup="listbox"
+        title="Switch this checkout to another branch">${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span><span class="c">▾</span></button>${sync}</div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
 // Fetch / pull / push. Only grey a button when there is nothing to do, never for the
