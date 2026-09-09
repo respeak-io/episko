@@ -124,7 +124,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints. So is `cleanTitle` — the OSC title minus Claude's spinner — because that table tracks somebody else's release and belongs where it can be tested. `TitlePrefs` (Settings › Appearance, `cc-title`) only ever **adds** to that table, so a new spinner family needs no release; added codepoints are emitted as `\u{…}` escapes, since the field invites people to type the character class's own syntax |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent), plus what a *reader* needs from a hunk: which deletion became which addition (by similarity, not by position), and which words inside that pair moved — including when marking them would be noise |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
-| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, how a model is named (`modelName`) and the one order and colour slot every model surface shares (`modelSeries`), the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
@@ -367,6 +367,13 @@ And the things that hold however the files are arranged:
   `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
+- **A model is named on read, and both spellings must land on one name.** The transcript
+  scan stores `message.model` verbatim and the live provider rows store `Sess.model`, so
+  `usage.rs` never spells a family: ./usage's `modelName` turns `claude-fable-5-1` and the
+  statusLine's "Claude Fable 5.1" into one key, or a day's tokens draw the same model twice.
+  It is idempotent (a store may already hold a named key) and it names *everything* — the
+  fixed opus/sonnet/haiku/other columns it replaced filed a whole provider under `Other`.
+  ./usageview owns the colours; `modelSeries` owns the order and which version wears the hue.
 - **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
   one-off.** Each pins the WebView2 compositor to the monitor's refresh rate for as long
   as it exists — 144Hz on a Windows desktop against the 60 this was designed at, which is

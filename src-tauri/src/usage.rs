@@ -405,25 +405,13 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
     out
 }
 
-/// The three model tiers collapsed to a family (matches the frontend's `modelFamily`).
-fn model_family(model: &str) -> &'static str {
-    let s = model.to_ascii_lowercase();
-    if s.contains("opus") {
-        "opus"
-    } else if s.contains("sonnet") {
-        "sonnet"
-    } else if s.contains("haiku") {
-        "haiku"
-    } else {
-        "other"
-    }
-}
-
 struct LineUsage {
-    day: String,           // YYYY-MM-DD from the line's own ISO timestamp (UTC)
-    tokens: [u64; 4],      // [input, output, cache_read, cache_write]
-    family: &'static str,  // opus | sonnet | haiku | other
-    cwd: String,           // the line's cwd verbatim; `project_label` groups it
+    day: String,      // YYYY-MM-DD from the line's own ISO timestamp (UTC)
+    tokens: [u64; 4], // [input, output, cache_read, cache_write]
+    /// `message.model` verbatim. Naming it is the frontend's (`modelName`), so one rule
+    /// covers both spellings and improving it needs no re-scan of every transcript.
+    model: String,
+    cwd: String, // the line's cwd verbatim; `project_label` groups it
     /// `message.id`. Claude Code writes one line per content block, each repeating the
     /// same `usage`, so the scan dedupes on this; a record with no id is counted as it is.
     id: Option<String>,
@@ -465,7 +453,7 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
             g("cache_read_input_tokens"),
             g("cache_creation_input_tokens"),
         ],
-        family: model_family(model),
+        model: model.to_string(),
         cwd,
         id,
     })
@@ -499,10 +487,7 @@ pub(crate) struct DayUsage {
     output: u64,
     cache_read: u64,
     cache_write: u64,
-    opus: u64,
-    sonnet: u64,
-    haiku: u64,
-    other: u64,
+    models: std::collections::BTreeMap<String, u64>,
     sessions: u64,
     projects: std::collections::BTreeMap<String, u64>,
 }
@@ -566,7 +551,7 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
             let mut file_days: HashSet<String> = HashSet::new();
             for line in BufReader::new(file).lines().map_while(Result::ok) {
                 let Some(lu) = parse_usage_line(&line) else { continue };
-                let LineUsage { day, tokens, family, cwd, id } = lu;
+                let LineUsage { day, tokens, model, cwd, id } = lu;
                 // Claimed before the dedupe gate: the session was active that day even if
                 // every line of it is a repeat.
                 file_days.insert(day.clone());
@@ -585,12 +570,7 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
                 e.output += tokens[1];
                 e.cache_read += tokens[2];
                 e.cache_write += tokens[3];
-                match family {
-                    "opus" => e.opus += tot,
-                    "sonnet" => e.sonnet += tot,
-                    "haiku" => e.haiku += tot,
-                    _ => e.other += tot,
-                }
+                *e.models.entry(model).or_insert(0) += tot;
                 *e.projects.entry(project).or_insert(0) += tot;
             }
             for d in file_days {
@@ -1167,19 +1147,19 @@ mod tests {
 
 
     #[test]
-    fn parse_usage_line_extracts_day_tokens_family_and_project() {
+    fn parse_usage_line_extracts_day_tokens_model_and_project() {
         let line = r#"{"type":"assistant","timestamp":"2026-07-21T10:00:00.000Z","cwd":"/Users/tim/dev/episko","message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":4}}}"#;
         let lu = parse_usage_line(line).expect("assistant usage line should parse");
         assert_eq!(lu.day, "2026-07-21");
         assert_eq!(lu.tokens, [10, 20, 300, 4]);
-        assert_eq!(lu.family, "opus");
+        assert_eq!(lu.model, "claude-opus-4-8", "verbatim; the frontend names it");
         assert_eq!(lu.cwd, "/Users/tim/dev/episko"); // verbatim; grouped by project_label
-        // Missing token fields default to 0, an unknown model is "other", no cwd is ""
+        // Missing token fields default to 0, a line with no model reports "", no cwd is ""
         // (`project_label` says "unknown"), and no message.id is None, so the line is counted.
         let partial = r#"{"timestamp":"2026-07-21T10:00:00Z","message":{"usage":{"output_tokens":7}}}"#;
         let lu = parse_usage_line(partial).expect("should parse");
         assert_eq!(lu.tokens, [0, 7, 0, 0]);
-        assert_eq!(lu.family, "other");
+        assert_eq!(lu.model, "");
         assert_eq!(lu.cwd, "");
         assert_eq!(lu.id, None);
         assert_eq!(project_label("", &mut std::collections::HashMap::new()), "unknown");
@@ -1220,7 +1200,7 @@ mod tests {
         assert_eq!(days.len(), 1);
         let d20 = &days[0];
         assert_eq!((d20.input, d20.output), (30, 3), "3 counted responses, not 5 lines");
-        assert_eq!(d20.opus, 33);
+        assert_eq!(d20.models.get("claude-opus-4-8"), Some(&33));
         assert_eq!(d20.projects.get("alpha"), Some(&33));
         assert_eq!(d20.sessions, 1);
 
@@ -1239,14 +1219,6 @@ mod tests {
         assert!(parse_usage_line("not json at all").is_none());
         // A usage record with no timestamp can't be bucketed, so it's dropped.
         assert!(parse_usage_line(r#"{"message":{"usage":{"input_tokens":5}}}"#).is_none());
-    }
-
-    #[test]
-    fn model_family_buckets_by_tier() {
-        assert_eq!(model_family("claude-opus-4-8"), "opus");
-        assert_eq!(model_family("claude-sonnet-4-5"), "sonnet");
-        assert_eq!(model_family("claude-haiku-4-5-20251001"), "haiku");
-        assert_eq!(model_family("some-future-model"), "other");
     }
 
     #[test]
@@ -1638,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_usage_folds_days_families_and_counts_sessions_once() {
+    fn scan_usage_folds_days_models_and_counts_sessions_once() {
         let base = scratch_dir();
         let write = |proj: &str, file: &str, body: &str| {
             let d = base.join("projects").join(proj);
@@ -1682,16 +1654,17 @@ mod tests {
 
         let d20 = &days[0];
         assert_eq!((d20.input, d20.output, d20.cache_read, d20.cache_write), (31, 4, 1, 1));
-        assert_eq!(d20.opus, 11);
-        assert_eq!(d20.sonnet, 22);
-        assert_eq!(d20.other, 4, "an unrecognised model falls into `other`");
-        assert_eq!(d20.haiku, 0);
+        assert_eq!(d20.models.get("claude-opus-4-8"), Some(&11));
+        assert_eq!(d20.models.get("claude-sonnet-4-5"), Some(&22));
+        // Every id gets its own key, this one included: nothing is collapsed into an "other".
+        assert_eq!(d20.models.get("some-future-model"), Some(&4));
+        assert_eq!(d20.models.get("claude-haiku-4-5"), None);
         assert_eq!(d20.sessions, 2, "two files touched this day");
         assert_eq!(d20.projects.get("alpha"), Some(&33), "keyed by cwd basename");
         assert_eq!(d20.projects.get("beta"), Some(&4));
 
         let d21 = &days[1];
-        assert_eq!(d21.haiku, 15);
+        assert_eq!(d21.models.get("claude-haiku-4-5"), Some(&15));
         assert_eq!(d21.sessions, 1, "the SAME file again — counted once per day, not per line");
         assert_eq!(d21.projects.get("beta"), None, "beta wasn't active on the 21st");
 

@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Usage & spend names every model.** Fable, and anything a non-Claude provider runs, was
+  counted as *Other*; the bar chart, mix and legend now list each model by name and version,
+  a family keeping one colour across its releases.
+
 ## 0.26.0 — 2026-09-08
 What the status bar and the dashboard only summarise now opens in one click — and the
 outline finds the question you clicked.
