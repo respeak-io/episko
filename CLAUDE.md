@@ -106,9 +106,9 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 83 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 84 modules
 
-**No framework, and no longer one file.** 83 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 85 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
@@ -124,7 +124,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `format.ts` | durations, paths, escaping, sparklines, recency bands, money and token counts; data in, string out. `dialogBody` is here too: a confirmation's plain-text prose → the markup ./confirm paints. So is `cleanTitle` — the OSC title minus Claude's spinner — because that table tracks somebody else's release and belongs where it can be tested. `TitlePrefs` (Settings › Appearance, `cc-title`) only ever **adds** to that table, so a new spinner family needs no release; added codepoints are emitted as `\u{…}` escapes, since the field invites people to type the character class's own syntax. `emojiDataUri`/`normEmoji` are here for the same reason: a project's emoji icon is stored as the emoji and read back as an SVG data URI, so every surface that paints an icon keeps taking a URL |
 | `diff.ts` | the unified-diff parser behind the working-set viewer (the extraction precedent), plus what a *reader* needs from a hunk: which deletion became which addition (by similarity, not by position), and which words inside that pair moved — including when marking them would be noise |
 | `rl.ts` | account-wide rate limits: merging readings, burn rate, the window forecast |
-| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
+| `usage.ts` | the `cc-usage` daily rollup, `uBuckets`/`uSum`, the day/token join, `daySpend`'s split of a day, how a model is named (`modelName`) and the one order and colour slot every model surface shares (`modelSeries`), the `cc-io` disk rollup and what keeps a claude self-update's ~290 MiB out of it |
 | `phase.ts` | `applyHook` / `applyStatusline`: telemetry → session state. The heart of the display |
 | `files.ts` | the inspector's Context card: which files a session read, edited and created, the ladder a file's kind climbs, and the one-line tally of everything that moved no file |
 | `health.ts` | which of `health.rs`'s measurements are worth saying: the thresholds and where each comes from, the two rules the patch answers alone (silenced errors, no test changed), and what a chip says |
@@ -142,7 +142,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type; capture, filing, removal |
-| `branches.ts` | branch cleanup: what is worth deleting, what blocks it, and what each command is asked for (see docs/worktrees.md) |
+| `branches.ts` | branches as ONE row each wherever their refs live: what is worth deleting, which half of it may go, what blocks each, the filter chips that double as quick-selects, and where a checkout can switch to (see docs/worktrees.md) |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `explore.ts` | the explorer's rules: browse vs. find over one index, the scope filters, the touch join, what ↵ does (see docs/explorer.md) |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
@@ -154,19 +154,19 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `motion.ts` | which visual effects may cost a GPU frame: the table, the store, and the classes `<html>` carries for the two standing switches plus the background pause |
 | `tour.ts` | the guided tour's chapters and rules: when the picker is offered, what a step waits for, which panel its anchor needs open, and why a release intro is just a chapter (see docs/tour.md) |
 | `revive.ts` | carrying on after the API kills a turn: which failures a retry can fix, the backoff ladder, and the three things it must never type into |
-| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
+| `outline.ts` | the conversation outline: what counts as a question worth listing, how a prompt is normalised and capped, which of Claude's four `SessionStart` sources starts a new one, which end of a conversation a hunt pages in from (`huntFromTop`), and what a resumed pane recovers from its transcript (`seedPrompts`, `isEnvelope`) |
 | `perf.ts` | what the interface weighs and what that is allowed to mean: the counter table and the three kinds (only an unbounded one may accuse), the drift between two readings, the greppable log line, and the scrollback knob |
 | `store.ts` | reading a `cc-` key without trusting it: `safeParse`, `readObj`, `readList`, and what each answers for a truncated or wrongly shaped value |
 
-**Shared**: `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
+**Shared**: `bpop.ts` (the branch chooser `#bPop`, opened from the ⑃ dialog, the dashboard's Repository chip, a Branches row's ⇄ and a session's git card), `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
-**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was), `footerview` (the engine picker and the shortcut sheet — extracted from `footer.ts` because `footer` imports `settings`, so Settings' previews of those popovers could not have reached them otherwise).
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was; it also owns the one status-letter table and the one dirty-file row every host that *lists* a working set draws, since two hand-kept copies of that table each carried a comment claiming to be shared with the other), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
 
-**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
+**DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `usagedlg` (the Usage & spend window: a report rather than a setting, so its own dialog, and the target of the money and limits popovers' quick opens), `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 83 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 84 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -218,6 +218,20 @@ And the things that hold however the files are arranged:
   out. That is how the dashboard shipped in 0.13.0 with its entry point disconnected.
   `test/dispatch.test.ts` now compares the two halves in both directions (an unlisted
   branch is unreachable; a listed attribute with no branch silently swallows clicks).
+- **Every status-bar popover carries a quick open, and its destination is checked.** The
+  popovers summarise; the panel that answers in full is one click away (`popGoHtml` in
+  ./footerview, `data-fgo`, `openFootTarget` in main.ts). It is **one icon in the header's
+  right corner, never a row of its own** — these are menus, and a full-width button at the
+  foot read as the main event rather than the way out; the name an icon owes you is its
+  tooltip. That corner is why the header is one rule for the whole family
+  (`.menupop .up-h, .menupop .sc-h`) and why the engine picker grew a header at all.
+  `"usage"` is the Usage & spend window; **every other value is a Settings tab id**, and a
+  misspelt one is silent — `renderSettings` falls back to `SET_TABS[0]`, so the link opens
+  *Appearance* and looks like it worked. `test/dispatch.test.ts` holds the two lists
+  together. The previews in Settings › Footer paint it with the same renderer (they are
+  inert: `.fpv-pop` kills pointer events), and nothing inside one may shrink to fit that
+  preview's height cap — a scroll region gets `min-height: 0` for free and collapsed to
+  nothing, taking rows out of the *middle*, where the mask exists to fade the tail.
 - **Read every shortcut from its binding.** `keyPrefs` (./state, from `keys.ts`) is the
   one table; `matchAction` dispatches it in main.ts, Settings › Keys rebinds it, and the
   footer popover, the palette hints and the sidebar's button titles all *read* it. Never
@@ -245,12 +259,35 @@ And the things that hold however the files are arranged:
 - **Event wiring**: `listen("pty-output" | "pty-exit" | "telemetry" | "permission" | "agent-event" | "tray-select")` at the bottom of `main.ts`. Claude telemetry routes by stable launch id; provider events carry `sessionId` + `provider` and are rejected if either does not match the pane.
 - `applyHook` maps Claude lifecycle events and `applyStatusline` fills its model/context/cost/duration. `applyAgentEvent` maps normalized provider events onto the same state machine. Claude account limits remain in global `rl`; integrated-provider limits live on `Sess.rateLimits` and fan out only between panes whose non-null opaque `rateLimitScope` matches.
 - **The inspector's Context card is a *set of files*, not a log of tool calls** (`files.ts`, `contextHtml`). `Sess.files` holds one entry per path with a `kind` that only ever climbs read → edited → created, because an agent re-reads what it just wrote constantly and a last-verb-wins field would demote half the edited files seconds later. It is fed from **PostToolUse**, not the Pre hook the timeline opens on: `tool_response.type` is what distinguishes a `Write` that created from one that overwrote. **Bash is deliberately not modelled** — `touch`, `>` and `sed -i` reach us as a shell string, and what they did to the tree is already answered correctly by the working-set card that reads git; the non-file tools are summarised in one line instead. The old timeline is still there under the card's `Tools` tab, one line per call, and **a row opens ./callsheet** rather than unfolding: `tool_input` and `tool_response` as ./toolio renders them, capped at capture (4000 chars a side) because a `Read` response is an entire file, and held in memory only — a tool payload must never reach `localStorage`. **A payload does not go in the rail.** 296px is ~38 characters of 10.5px mono, and every one of these is an 80–120 column artifact, so the row unfolding two `<pre>`s into it rendered a four-line patch as eleven and (with the `overflow-wrap: anywhere` that width forces) broke a diff's `+`/`−` off the lines that carry their meaning. What stays on the row is what a rail is good at — which call, how long, and the **first line of a failure's reason**, the one payload promoted out of a click because it has no other surface in the app. Two joins there are load-bearing. **Pair a call's Pre and Post hooks by `tool_use_id`, never by tool name**: the name picks the most recent open call so named, which is wrong whenever two calls of one tool overlap, and hanging an output off the wrong row is a lie the card states in full (the name match survives only as the fallback for a payload with no id). And **a failure carries no `tool_response` at all** — `PostToolUseFailure` puts the reason in a plain-string `error` — so anything reading a result has to read both fields.
+- **A branch is ONE row wherever its refs live, and the scope toggles say where a delete
+  lands — never what may be ticked.** Local and remote were two tables with two selections,
+  so deleting a merged feature branch from both places was two hunts and two clicks; where it
+  lives is a *property* (the Where cell), and `anyDeletable` gates the checkbox so a repo whose
+  work all sits on the remote does not open with every row inert. `locally` is armed and
+  `on <remote>` is not: the shared write is always something you turned on, and its warning
+  rides **inside** the sticky action bar, because above the table it scrolled out of view
+  exactly when it mattered. Two branches are refused whatever the evidence says — the trunk in
+  force, and **the remote's own `is_default`**, which is the one that bites: the trunk is
+  overridable, so a repo comparing against `origin/dev` finds `main` genuinely "merged into
+  origin/dev" and would otherwise offer to delete it. The filter chips ARE the quick-selects
+  (narrow, then `All`), shift-click takes the range in the order on screen and adds rather than
+  toggles, and Checkouts is a **tab** of the same table rather than a fourth place that lists
+  folders. Full rules in `docs/worktrees.md`.
+- **Switching a branch is a dropdown, in four places, over one verb** (`switchCheckout`;
+  `switchOptions`/`midFlightText` in ./branches are the rules, so no surface grows its own).
+  It switches on the pick: `switch_branch` already refuses a running task and a target checked
+  out elsewhere and hands a dirty tree to a terminal, the frontend adds the half only it can
+  see (a pane mid-turn), and the one confirm left is for sessions that **stay open** on new
+  ground. A dialog that only ever says yes is a click, not a question.
 - **The diff overlay is a review surface, and it is shaped like a pull request** — an
   index rail that is always on screen and file headers that **stick** to the top of the
   scroller. Both exist for one question the old single-column list could not answer
   without scrolling back up: *which file am I in*. So `.dfile` must never regain
   `overflow: hidden` (it would make each section its own scrollport and the sticky header
-  would then stick to a box that never scrolls, i.e. not at all), and the rail's spy
+  would then stick to a box that never scrolls, i.e. not at all), **a fold must address its
+  section by index** (`fileSection`, the lookup the rail and *expand all* already used) rather
+  than by walking up from the header, which since the chips joined it in one sticky box lands
+  on that box and silently folds nothing, and the rail's spy
   allows **one header's height of slack** — "the last header above the top edge" is wrong
   by one file for the whole handoff, while an arriving header is pushing the outgoing one
   out. Everything about what a hunk *means* is ./diff's, not the view's: which deletion
@@ -323,13 +360,22 @@ And the things that hold however the files are arranged:
   anything, and the key is retried short for a REPL that wrapped the message itself);
   ./terminal walks the wrap-runs and, on a plain scrollback, takes the nearest hit at or above
   the submit marker it kept as a hint. A hunt on the alternate screen starts from the **nearer
-  end** (the outline knows which half of the conversation a question is in) and stops when a
-  page stops changing the screen — that is the far end (`screenShift` reads 0) — or when its
+  end**, which the list can only name when it starts where the conversation does
+  (`huntFromTop`: a resumed pane's does once the seed has restored what came before, and
+  anything else is hunted from the live end — judging it by list position alone sent every
+  click to the top of a fourteen-hour conversation), and stops when a page stops changing
+  the screen — that is the far end (`screenShift` reads 0, and it reads a move in **either**
+  direction, or the rows that never move outvote a page forward) — or when its
   time budget does; a write is not a redraw, so "no change" is only believed after the full
-  wait, or the footer's own repaint ends the hunt on step one (that shipped). Prompts are
+  wait, or the footer's own repaint ends the hunt on step one (that shipped). A turn
+  Claude submits *for* you — a background task's notification, a `!` shell line, a slash
+  command's echo — fires `UserPromptSubmit` like any other and is dropped by `isEnvelope`
+  on **both** paths, or the panel fills with `<task-notification>` where the questions
+  should be (that shipped too). Prompts are
   **in memory only**, like a tool payload, and `/clear` empties the list while `/compact`
   and `/resume` do not. A **resumed** pane seeds its list from the provider's transcript,
-  once. `docs/sessions.md` has all of it.
+  once, and from the whole of it: the mirror's 512KB tail read holds none of a long
+  conversation's questions. `docs/sessions.md` has all of it.
 - **A turn the API killed ends in `error`.** `StopFailure` sets `Sess.apiErr`; **`endTurn` is the single place that decides done vs. error**; every surface reads `phaseText(s)`, never `PILL_TEXT[s.phase]` directly. The trap (a 60s idle nudge that relabels the failure) shipped once; see `docs/architecture.md`.
 - **`done` is not an absorbing state, and a queued prompt is not the end of a turn.**
   Claude Code fires `UserPromptSubmit` the moment you press Enter, mid-turn included, so
@@ -341,11 +387,18 @@ And the things that hold however the files are arranged:
   `docs/architecture.md`.
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
+- **A model is named on read, and both spellings must land on one name.** The transcript
+  scan stores `message.model` verbatim and the live provider rows store `Sess.model`, so
+  `usage.rs` never spells a family: ./usage's `modelName` turns `claude-fable-5-1` and the
+  statusLine's "Claude Fable 5.1" into one key, or a day's tokens draw the same model twice.
+  It is idempotent (a store may already hold a named key) and it names *everything* — the
+  fixed opus/sonnet/haiku/other columns it replaced filed a whole provider under `Other`.
+  ./usageview owns the colours; `modelSeries` owns the order and which version wears the hue.
 - **An infinite animation and a `backdrop-filter` are a per-frame GPU cost, not a
   one-off.** Each pins the WebView2 compositor to the monitor's refresh rate for as long
   as it exists — 144Hz on a Windows desktop against the 60 this was designed at, which is
   why the complaint arrived from Windows and not from the Mac. Two rules follow. **A
-  dialog that stays mounted at `opacity: 0` must not keep its blur**: seventeen do (that
+  dialog that stays mounted at `opacity: 0` must not keep its blur**: eighteen do (that
   is what lets them fade), and each was a live render surface for a panel nobody can see,
   so the blur is gated on `:not(.show)`. And **the switches are ./motion's table and
   nothing else** — `fx-still` (cancel), `fx-flat` (no blur) and `fx-idle` (paused while
@@ -387,7 +440,9 @@ And the things that hold however the files are arranged:
 
 - **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. The single write inside `~/.claude` is *Move session*'s transcript move. Everything else is `localStorage` and the app dirs.
 - **The app has three lists of files, and they must describe a path the same way.** The
-  working set (git, `wpeekHtml` → the peek), the Context card (the hook stream, `files.ts`)
+  working set (git, `wpeekHtml` → the peek — drawn in every host that asks about one: the
+  inspector, the external mirror, the ⑃ dialog's fact and the dashboard's Working set card,
+  but one list, one row (./patchview's `fileSetHtml`) and one viewer), the Context card (the hook stream, `files.ts`)
   and the explorer (`explore.ts`, the project index). The explorer is the superset: its
   scope chips are *filters* over the other two rather than a fourth idea, it reuses their
   marks and colours, and a row's ↵ hands a changed file to the peek rather than growing a
@@ -465,6 +520,16 @@ And the things that hold however the files are arranged:
   splits on *evidence* (an address, announced or adopted) rather than on the command
   string, for the same reason ./health has no `.unwrap()` rule: a rule that fires on
   ordinary commands teaches you to ignore the row that matters.
+- **A turn that ended on top of a job says so, and still needs you.** `statusKey` answers
+  **`donebg`** (⧗, in *done's* green) for a `done` pane with a live background shell that
+  announced no address — a CI watcher, a build, a test run. `needsYou` and `urgencyRank` read
+  the phase and are deliberately untouched: unlike a fan-out (◐, which suppresses the badge
+  because its agents report back into the turn), nothing here will continue the conversation,
+  so the agent is waiting on you either way and only the glyph differs. A **server** (`bgKind`:
+  it has a URL) keeps the plain ✓ — infrastructure you left running, already counted by the
+  header pill; a glyph that fires on every pane with a `pnpm dev` behind it teaches you to
+  ignore it. `liveJobs`/`jobWaiting` are spelled in ./types rather than read from ./servers,
+  which imports it.
 - **A task's server URL is latched as its output streams, never rescanned from `tail`.**
   `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
   after the first HMR line — a URL read back off the tail would appear and then silently
@@ -531,7 +596,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/dashboard.md`**: the project dashboard and its GitHub half. Three tiers (GitHub / git / neither); per-project cost comes from `cc-usage-detail`, never `cc-usage`; a claim is only ever a hint; a day's two generated sentences must never be mixed, and only the project half is committable (`.episko/digest.md`).
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.
-- **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), and drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch).
+- **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch), and the Branches view — one row per branch with the scope toggles deciding where a delete lands, never what may be ticked, and the default branch refused whatever the trunk is set to.
 - **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, shelving (a shelved session becomes the same restorable row a quit writes — never a second kind of row — and the dormant entry must go on the list *before* `closeSession` flushes the roster), and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
 - **`docs/providers.md`**: the provider contract, shared capability matrix, adapter/backend boundaries, feature checklist and the definition of done for adding first-class agents.
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas), the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items), and the OS dialogs Episko stopped drawing (`confirm.ts` — a native box cannot mark its destructive button; the file picker is the one that stays).

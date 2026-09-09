@@ -12,6 +12,77 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+A branch is one row now, wherever its refs live, and the branch you are on changes from a
+dropdown rather than from a dialog about starting a session.
+
+~ **The Branches view is one table.** Local and remote were two lists with two selections,
+  so clearing a merged feature branch out of both places meant finding it twice. Where it
+  lives is a column; two toggles in the action bar say where a delete lands, and deleting on
+  the remote stays something you switch on, with its warning on the bar that runs it.
++ **Filter chips that are also the quick-selects**: *Merged*, *Gone*, *Stale*, *Local only*,
+  *Checked out*, plus a name filter. Narrow, then `All` — "select everything gone" is two
+  clicks. **Shift-click** takes every row between the last tick and this one.
++ **Checkouts is a second tab of that table**, with the same ticks and a *Remove* that takes
+  the folders and, where git's safe delete accepts them, their branches.
+~ **Switch branch is a dropdown**, on the project's Repository card, on a session's own git
+  card (that pane's checkout moves on its own) and on every row of the Branches view. It
+  switches on the pick; the confirm is left for the case that needs one — sessions that stay
+  open on ground that just moved.
+! **The default branch is never offered for deletion.** Comparing a repo against something
+  other than its default made `main` "merged" like anything else, and it was offered with
+  every other merged branch.
+! Removing a worktree from the sidebar keeps its row, spins it, and stops the project
+  collapsing under the pointer while git works.
+
+~ **Usage & spend names every model.** Fable, and anything a non-Claude provider runs, was
+  counted as *Other*; the bar chart, mix and legend now list each model by name and version,
+  a family keeping one colour across its releases.
+
+## 0.26.0 — 2026-09-08
+What the status bar and the dashboard only summarise now opens in one click — and the
+outline finds the question you clicked.
+
++ **What's uncommitted, on the project dashboard.** A *Working set* card names the changed
+  files; the card opens the review overlay, a row opens it on that file.
++ **A quick open in every status-bar popover**, top right, to the panel behind it: today's
+  spend and your limits open *Usage & spend*, the shortcut sheet Settings › Keys, the
+  terminal picker Sessions, disk I/O Diagnostics.
++ **Re-run a whole stack from its run group's header.** ⟳ stops every step and starts the
+  chain again from the top; a step's own ⟳ still re-runs that step alone.
+~ **Usage & spend is its own window.** Nothing in it was a setting, and it was the one
+  Settings tab that had to widen the whole dialog to fit. Open it from either money popover
+  or from `⌘K`.
+~ **A finished turn whose background shell is still running wears ⧗ rather than ✓.** It is
+  still your turn, and a dev server that announced an address keeps the plain tick — the
+  header pill already counts those.
+~ Settings arrives at the top of the tab a link names, rather than wherever you last left
+  the pane scrolled. The terminal picker names itself, as the other popovers do.
+~ Re-running one step of a run group keeps it in the group, instead of dropping a loose row
+  beside the fold it came from.
+~ A question the jump could not find says which it was: read to the end of the conversation
+  and not in it, or further back than one jump reaches.
+~ A hovered outline row no longer repeats in a tooltip the question it has just unfolded.
+! **Clicking a question in a resumed pane finds it again.** The jump chose which end to
+  search from by counting the outline's own rows, so a resumed pane paged down from the top
+  of a fourteen-hour conversation and gave up. It goes by the question's clock now.
+! **A resumed session restores every question it was asked**, not the handful in the last
+  512KB of its transcript. A day of tool traffic buries them many times over.
+! A `!` shell line and a pasted image's sidecar are turns Claude submits for you, and each
+  was landing in the outline as a question of yours.
+! **A checkout with no session no longer claims to be clean.** Those folders had never been
+  measured; the Checkouts card says `—` until they are, and a dirty row opens its own diff.
+! Clicking a file header in the review overlay folds it again. The header shares a sticky
+  box with its health chips, so the toggle had been landing on the box.
+! The task inspector's *Send output to …* button no longer overflows the rail when the
+  session it names is long; the full name is in its tooltip.
+
+## 0.25.1 — 2026-09-06
+Two outline fixes: jumping to an early question works again, and a background task's report is not one of your questions.
+
+! **Jumping to an early question works again.** The outline read a page forward as "nothing
+  moved" and gave up, so a question in the first half only resolved from the first screen.
+! **A background task reporting back is not one of your questions.** Its notification comes
+  in through the same hook as a keystroke and was listed as one.
 
 + **A project's icon can be an emoji.** Project menu › Appearance › *Pick an emoji*: a grid to
   choose from, or paste anything the OS picker gives you.

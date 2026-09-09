@@ -1,14 +1,17 @@
-// The usage surfaces as markup: the forecast rows the footer popup and Settings › Usage share,
-// the analytics panel and the disk I/O popover. The data lives in ./usage and ./rl.
-// `refreshTokens` stays in the wiring layer and owns `tokenScanning` via setTokenScanning.
+// The usage surfaces as markup: the forecast rows the footer popup and the Usage & spend
+// window share, the analytics panel that window draws, and the disk I/O popover. The data
+// lives in ./usage and ./rl; ./usagedlg owns the window and drives `tokenScanning` through
+// setTokenScanning.
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
+import { popGoHtml } from "./footerview";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
 import {
-  dayIo, ioDayCount, ioSameNote, ioTotal, todayKey, tokenDays, U_MONTHS, uBuckets, uDkey,
-  uModels, usage, usageRange, usageWindow, uSum, type DaySpend, type UDay,
+  dayIo, ioDayCount, ioSameNote, ioTotal, modelSeries, todayKey, tokenDays, U_MONTHS, uBuckets,
+  uDkey, uModels, usage, usageRange, usageWindow, uSum,
+  type DaySpend, type ModelSeries, type UDay,
 } from "./usage";
 
 // Plain-language forecast line for a window ("→ ~86% by reset" / "runs out …").
@@ -70,7 +73,9 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
       : !d.sessions.length
         ? "No per-session split for this day: it predates the record."
         : "";
-  return `<div class="up-h">Today's spend</div>
+  return `<div class="up-h">Today's spend${
+    popGoHtml({ go: "usage", label: "Usage & spend", sub: "every day, per model and per project" })
+  }</div>
     <div class="cp-tot">${uUsd2(d.total)}</div>
     ${rows ? `<div class="cp-lbl">By project</div>${rows}` : ""}
     ${sess ? `<div class="cp-lbl">By session</div><div class="cp-sess">${sess}</div>` : ""}
@@ -80,8 +85,24 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
 export let tokenScanning = false;
 export function setTokenScanning(v: boolean) { tokenScanning = v; }
 const USAGE_RANGES: [number, string][] = [[7, "7D"], [30, "30D"], [90, "90D"], [365, "12M"]];
-const MODEL_ORDER = ["Opus", "Sonnet", "Haiku", "Other"];
-const MODEL_VAR: Record<string, string> = { Opus: "--m-opus", Sonnet: "--m-sonnet", Haiku: "--m-haiku", Other: "--m-other" };
+const KIN_VAR: Record<string, string> = {
+  opus: "--m-opus", sonnet: "--m-sonnet", haiku: "--m-haiku", fable: "--m-fable",
+  gpt: "--m-gpt", codex: "--m-codex", other: "--m-other", unknown: "--m-other",
+};
+const SPARE_VAR = ["--m-s1", "--m-s2", "--m-s3", "--m-s4"];
+const SHADE = [100, 74, 54, 40];
+// One colour per model for every surface in the panel: its family's hue, faded a step per
+// older version, and a spare hue for a provider we ship no colour for.
+function modelColors(rows: ModelSeries[]): Map<string, string> {
+  const spare = new Map<string, string>(), out = new Map<string, string>();
+  for (const r of rows) {
+    let v = KIN_VAR[r.kin];
+    if (!v) { if (!spare.has(r.kin)) spare.set(r.kin, SPARE_VAR[spare.size % SPARE_VAR.length]); v = spare.get(r.kin)!; }
+    const pct = SHADE[r.shade] ?? SHADE[SHADE.length - 1];
+    out.set(r.name, pct === 100 ? `var(${v})` : `color-mix(in srgb, var(${v}) ${pct}%, var(--m-fade))`);
+  }
+  return out;
+}
 
 const U_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -169,23 +190,22 @@ function uHeatmap(): string {
 function uBars(): string {
   const data = uBuckets();
   const max = Math.max(...data.map((d) => d.total), 1), H = 168;
-  const parts: [string, string][] = [["Haiku", "--m-haiku"], ["Sonnet", "--m-sonnet"], ["Opus", "--m-opus"], ["Other", "--m-other"]];
+  // One order for every column and the legend, from the range's totals: a bucket that happens
+  // to be all Haiku must still stack its segment where every other bucket puts Haiku.
+  const series = modelSeries(uModels(usageWindow(usageRange)));
+  const color = modelColors(series);
   const gap = data.length > 40 ? "2px" : data.length > 16 ? "4px" : "7px";
   const cols = data.map((d) => {
     let segs = "";
-    for (const [m, cssvar] of parts) { const v = d.models[m] || 0; if (v > 0) segs += `<i class="u-seg" style="height:${(v / max * H).toFixed(1)}px;background:var(${cssvar})"></i>`; }
-    const lines = parts.filter(([m]) => (d.models[m] || 0) > 0).map(([m]) => `${m} ${uTok(d.models[m])}`);
+    for (const r of series) { const v = d.models[r.name] || 0; if (v > 0) segs += `<i class="u-seg" style="height:${(v / max * H).toFixed(1)}px;background:${color.get(r.name)}"></i>`; }
+    const lines = series.filter((r) => (d.models[r.name] || 0) > 0).map((r) => `${r.name} ${uTok(d.models[r.name])}`);
     const tip = [d.tip, ...lines, `Total ${uTok(d.total)}`].join("||");
     return `<div class="u-col" data-tip="${esc(tip)}"><div class="u-stack">${segs}</div></div>`;
   }).join("");
   const step = Math.ceil(data.length / 12);
   const labels = data.map((d, i) => `<span>${(i % step === 0 || i === data.length - 1) ? esc(d.label) : ""}</span>`).join("");
   const title = usageRange <= 31 ? `Last ${usageRange} days` : usageRange === 90 ? "Last 90 days · weekly" : "Last 12 months · monthly";
-  const anyOther = data.some((d) => (d.models.Other || 0) > 0);
-  const legModels: [string, string][] = anyOther
-    ? [["Opus", "--m-opus"], ["Sonnet", "--m-sonnet"], ["Haiku", "--m-haiku"], ["Other", "--m-other"]]
-    : [["Opus", "--m-opus"], ["Sonnet", "--m-sonnet"], ["Haiku", "--m-haiku"]];
-  const legend = legModels.map(([m, c]) => `<span class="u-lg"><i style="background:var(${c})"></i>${m}</span>`).join("");
+  const legend = series.map((r) => `<span class="u-lg"><i style="background:${color.get(r.name)}"></i>${esc(r.name)}</span>`).join("");
   const empty = !data.some((d) => d.total > 0);
   const plot = empty && tokenScanning
     ? `<div class="u-skelbar" style="height:${H}px"></div>`
@@ -198,11 +218,12 @@ function uBars(): string {
 }
 
 function uModelMix(): string {
-  const models = uModels(usageWindow(usageRange));
-  const total = models.Opus + models.Sonnet + models.Haiku + models.Other;
-  const rows = MODEL_ORDER.filter((m) => models[m] > 0).map((m) => {
-    const v = models[m], pct = total ? v / total * 100 : 0;
-    return `<div class="u-srow"><div class="u-stop"><span class="u-sw" style="background:var(${MODEL_VAR[m]})"></span><span class="u-snm">${m}</span><span class="u-susd mono">${uTok(v)}</span></div><div class="u-strack"><i style="width:${pct.toFixed(1)}%;background:var(${MODEL_VAR[m]})"></i></div></div>`;
+  const series = modelSeries(uModels(usageWindow(usageRange)));
+  const color = modelColors(series);
+  const total = series.reduce((n, r) => n + r.total, 0);
+  const rows = series.map((r) => {
+    const pct = total ? r.total / total * 100 : 0;
+    return `<div class="u-srow"><div class="u-stop"><span class="u-sw" style="background:${color.get(r.name)}"></span><span class="u-snm">${esc(r.name)}</span><span class="u-susd mono">${uTok(r.total)}</span></div><div class="u-strack"><i style="width:${pct.toFixed(1)}%;background:${color.get(r.name)}"></i></div></div>`;
   }).join("");
   const body = total > 0
     ? `<div class="u-share">${rows}</div>`
@@ -383,7 +404,9 @@ export function ioPopHtml(d: IoPop): string {
     `<div class="io-rate"><span class="io-k">${k}</span><span class="io-bar${m.cls}"><i style="width:${m.pct}%"></i></span><span class="io-v">${esc(m.txt)}</span></div>`;
   const wins = d.windows.map((w) =>
     `<div class="io-w" title="${esc(w.tip)}"><span class="io-wk">${esc(w.label)}</span><span class="io-wv">${esc(w.text)}</span></div>`).join("");
-  return `<div class="up-h">Disk I/O</div>
+  return `<div class="up-h">Disk I/O${
+    popGoHtml({ go: "diag", label: "Diagnostics", sub: "what the interface itself is holding" })
+  }</div>
     ${meter("read", rate(d.readBps))}${meter("write", rate(d.writeBps))}
     <div class="io-wins">${wins}</div>
     ${d.note ? `<p class="up-note">${esc(d.note)}</p>` : ""}

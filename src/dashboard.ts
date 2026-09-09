@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, takeStage, toast } from "./dom";
 import { readList } from "./store";
+import { basename } from "./format";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
@@ -14,14 +15,17 @@ import {
   type SyncOp,
 } from "./dash";
 import {
-  branchesOverlay, cardSkeleton, checkoutsCard, checkoutsOverlay, closeSheet, dashInspector,
+  branchesOverlay, cardSkeleton, checkoutsCard, closeSheet, dashInspector,
   dashStrip, dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay,
   pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
-  workLogOffer, workOverlay, type DashSync,
+  workLogOffer, worksetCard, workOverlay, type CleanReport, type DashSync,
 } from "./dashview";
+import { openBranchPop } from "./bpop";
 import {
-  chosenWorktrees, localCands, remoteCands, remoteFor, remotePicks, selectable, sweepPicks,
-  trunkOf, trunkOptions, type BranchInfo, type MergedPrs, type SweepResult, type WtInfo,
+  branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks,
+  orderRows, rangePick, removableCheckouts, remoteFor, remotePicks, selectable, switchable,
+  switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo, type BranchRow,
+  type CheckoutRow, type MergedPrs, type SweepResult, type WtInfo,
 } from "./branches";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
@@ -38,11 +42,11 @@ import {
   deterministicHeadline, dayFacts, dayIsClosed, humanAuthors, projectDayFacts, sharedDay,
   type TrailCommit, type TrailDay,
 } from "./trail";
-import { statusKey, type DiffStat, type GitActionResult, type WtHead } from "./types";
+import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { usageDetail, usageWindow } from "./usage";
 import {
-  accentFor, cmpBase, dashMirror, effectiveAgent, externals, folderDirty, ghAccountFor, ghLogins,
-  permissionModeFor, sessions, setActiveId, setMirror,
+  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
+  permissionModeFor, removingWt, sessions, setActiveId, setMirror,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { refreshGhAccounts } from "./actions";
@@ -59,10 +63,12 @@ export interface DashHost {
   // Prefill, never run: `git_action` refuses what it cannot finish safely and names the
   // command that would; this is where that command goes.
   handToTerminal: (project: string, dir: string, cmd: string) => void;
-  // Opens the ⑃ dialog's switch card rather than switching: every guard already lives there.
-  switchBranch: (project: string, repoDir: string, branch: string) => void;
+  // The switch itself; every guard lives behind it (./worktree's `switchCheckout`).
+  switchBranch: (project: string, dir: string, branch: string, base: string | null) => Promise<boolean>;
   openRun: (root: string) => void;
   openGraph: (root: string) => void;
+  // The working-set overlay, on a folder. `focus` unfolds one file, as the explorer's ↵ does.
+  openDiff: (workdir: string, title: string, focus?: string) => void;
   openHistory: (root: string) => void;
   openFolder: (dir: string) => void;
   copyPath: (dir: string) => void;
@@ -70,11 +76,6 @@ export interface DashHost {
   renderAll: () => void;
   // ---- what the Branches view needs and this module doesn't own ----
   refreshGit: () => Promise<void>;   // re-read the ⑃ roster; renderAll only paints it
-  // The shared branch popover (the ⑃ dialog owns the element), for changing the trunk.
-  pickTrunk: (
-    anchor: HTMLElement, items: { name: string; note: string }[], current: string,
-    onPick: (ref: string) => void,
-  ) => void;
   saveTrunk: (repoDir: string, ref: string) => void;   // a stored preference, so the write is actions.ts's
   // Pin the project to a GitHub account (`null` follows gh's active one). A stored
   // preference like `saveTrunk`; the write also drops the previous account's cached reads.
@@ -82,10 +83,10 @@ export interface DashHost {
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
-  switchBranch: () => {},
-  openRun: () => {}, openGraph: () => {}, openHistory: () => {}, openFolder: () => {},
+  switchBranch: async () => false,
+  openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, setActive: () => {}, renderAll: () => {},
-  refreshGit: async () => {}, handToTerminal: () => {}, pickTrunk: () => {}, saveTrunk: () => {},
+  refreshGit: async () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
@@ -122,8 +123,12 @@ let tier: ProjectTier = "none";
 let days: TrailDay[] = [];
 let heads: WtHead[] = [];
 let hasDigest = false;
-// The main checkout against its upstream as of the last fetch (stale on purpose; see `loadSync`).
-let mainStat: DiffStat | null = null;
+// The main checkout: its working set, and its position against the upstream as of the last
+// fetch (stale on purpose; see `loadSync`). `WorkingSet extends DiffStat`, so the Repository
+// card reads the same object the Working set card lists. Three states, ./state's map's own:
+// `undefined` not read yet, `null` read and answerless (an unborn HEAD is a repo with no
+// working set), a value. Merging the first two would skeleton a fresh `git init` forever.
+let mainWork: WorkingSet | null | undefined;
 // The remote op in flight and the folder it runs in; a path so that switching project
 // mid-pull shows "Pulling…" only where it is true. One at a time app-wide, and never
 // folded into `loading`: a write must not blank the timeline.
@@ -151,7 +156,7 @@ let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: run
 const summaries = new Map<string, string>();
 const teamSummaries = new Map<string, string>();
 const openDays = new Set<string>();   // keyed by day, so it survives the timeline repaint
-let openView: "checkouts" | "notes" | "work" | "triage" | "branches" | null = null;
+let openView: "notes" | "work" | "triage" | "branches" | null = null;
 
 /// ---- the Branches view ----------------------------------------------------------
 // Read when the view opens, not with the dashboard: three git calls and a network one
@@ -160,10 +165,17 @@ let branchData: { branches: BranchInfo[]; worktrees: WtInfo[] } | null = null;
 let branchPrs: MergedPrs | null = null;
 let branchPrsLoading = false;
 // Two sets, not one: the halves run different commands, so a tick on one side must not arm the other.
+// One selection for one table; the scopes decide where a delete lands, never what may be
+// ticked. `branchLast` anchors a shift-click against the order actually on screen.
 let branchPick = new Set<string>();
-let branchRPick = new Set<string>();
+let branchScopes = { local: true, remote: false };
+let branchTab: "branches" | "checkouts" = "branches";
+let branchFilter: BranchFilter = "all";
+let branchQuery = "";
+let branchLast = "";
+let coPick = new Set<string>();
 let branchBusy = false;
-let branchResult: { swept: SweepResult; wts: { label: string; ok: boolean; note: string }[]; remote?: string } | null = null;
+let branchResult: CleanReport | null = null;
 // The one day out at the model right now; a value, not a set, because `runSummaryQueue` is sequential.
 let writing: { key: string; scope: "me" | "project" } | null = null;
 // Which half of a pass is running; lets a shared box be drawn before its sentence exists.
@@ -226,7 +238,7 @@ async function loadDash(): Promise<void> {
     if (root() !== r) return;
     shared = sn;
     heads = wt.filter((w) => w.exists);
-    if (wantGit) void loadSync(r); else mainStat = null;   // fired, not awaited: nothing else waits on it
+    if (wantGit) void loadSync(r); else mainWork = null;   // fired, not awaited: nothing else waits on it
     // The digest is the project's line, never yours: it seeds `teamSummaries` only.
     for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
     const anyDigest = Object.keys(digest).length > 0
@@ -268,16 +280,38 @@ async function loadGh(r: string, force = false): Promise<void> {
   renderDash();
 }
 
-// The main checkout against its remote, for ⇣ Pull and ⇡ Push: one `git status
-// --porcelain=v2 --branch` via `git_diffstat`, and never a fetch, which could hang 45s on
-// a dead remote. So the numbers are as old as the last fetch, and the verb fetches itself.
+// The main checkout against its remote, for ⇣ Pull and ⇡ Push, and the files behind the
+// Working set card: one `git status --porcelain=v2 --branch` via `git_working_set`, and
+// never a fetch, which could hang 45s on a dead remote. So the numbers are as old as the
+// last fetch, and the verb fetches itself. `git_working_set` is `git_diffstat`'s own
+// process with the entries kept, so naming the files costs nothing over counting them.
 async function loadSync(r: string): Promise<void> {
-  const g = await invoke<DiffStat | null>("git_diffstat", { workdir: mainCheckout(heads, r) })
+  worksetSweptAt = Date.now();   // the gate is time since the last read, not since the last tick
+  const g = await invoke<WorkingSet | null>("git_working_set", { workdir: mainCheckout(heads, r) })
     .catch(() => null);
   if (root() !== r) return;   // the user moved on while this was in flight
-  mainStat = g;
-  renderDash();   // the Repository card is where these numbers are read
+  mainWork = g;
+  renderDash();   // the Repository and Working set cards are where this lands
 }
+
+// The working set goes stale under a running agent, and this pane runs nothing else on a
+// schedule; main.ts drives it beside the sidebar dot's sweep. One local `git status` per
+// sweep, only while a dashboard is up, and never across a git op that is mid-flight.
+const WORKSET_SWEEP_MS = 15_000;
+let worksetSweptAt = 0;
+export function refreshDashWorkset(): void {
+  const r = root();
+  if (!r || !factsKnown || tier === "none" || syncing) return;
+  if (Date.now() - worksetSweptAt < WORKSET_SWEEP_MS) return;
+  void loadSync(r);
+}
+
+// Which checkout the Working set card reads, and what the overlay calls it.
+const worksetDir = () => (root() ? mainCheckout(heads, root()) : "");
+const worksetTitle = () => {
+  const b = heads.find((h) => h.is_main)?.branch ?? "";
+  return b ? `${name()} · ${b}` : name();
+};
 
 // Null until the tier is known, so the card never appears then vanishes on a non-repo;
 // `busy` is keyed to this project, so a fetch in one repo cannot grey another's buttons.
@@ -285,7 +319,7 @@ function syncNow(): DashSync | null {
   if (!factsKnown || tier === "none") return null;
   return {
     branch: heads.find((h) => h.is_main)?.branch ?? "",
-    g: mainStat,
+    g: mainWork ?? null,
     busy: syncing?.root === root() ? syncing.op : "",
   };
 }
@@ -300,7 +334,7 @@ async function syncMain(op: SyncOp): Promise<void> {
   syncing = { root: r, op };
   renderDash();
   let reloading = false;   // the pane is being re-read; skip the finally's re-probe
-  let settled = false;     // mainStat already holds the post-op truth
+  let settled = false;     // mainWork already holds the post-op truth
   // A refusal is not an error: the backend names the command that would work, so hand it
   // over. `verb` rather than `op` because the opening fetch reports under its own name.
   const report = (verb: string, res: GitActionResult): boolean => {
@@ -316,9 +350,9 @@ async function syncMain(op: SyncOp): Promise<void> {
     if (!report("fetch", await invoke<GitActionResult>("git_action", { workdir: dir, op: "fetch" }))) return;
     // `upstream` separates the two zeroes: a branch that tracks nothing also reads 0 behind
     // and 0 ahead, and the backend's refusal is what names the `--set-upstream-to`.
-    const g = await invoke<DiffStat | null>("git_diffstat", { workdir: dir }).catch(() => null);
+    const g = await invoke<WorkingSet | null>("git_working_set", { workdir: dir }).catch(() => null);
     if (root() !== r) return;
-    mainStat = g;
+    mainWork = g;
     if (g?.upstream && (op === "pull" ? g.behind === 0 : g.ahead === 0)) {
       toast(op === "pull"
         ? `pull: already up to date with ${g.upstream}`
@@ -444,12 +478,22 @@ function invalidatePaintCache(): void { painted.clear(); }
 // smaller repaint. Restored only when the same view is still up.
 function paintOverlay(view: string, html: string): void {
   const ovl = $("dashOverlay");
-  const keep = ovl.dataset.view === view ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : 0;
+  const same = ovl.dataset.view === view;
+  const keep = same ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : 0;
+  // The filter box lives inside the painted markup, so every keystroke would otherwise
+  // replace the element under the caret. Its value is rendered from state, so only the
+  // focus and the caret have to come back.
+  const q = ovl.querySelector<HTMLInputElement>(".bvq");
+  const caret = same && q && document.activeElement === q ? q.selectionStart : null;
   ovl.dataset.view = view;
   paint("dashOverlay", html);
   if (keep) {
     const b = ovl.querySelector<HTMLElement>(".ovl-b");
     if (b) b.scrollTop = keep;
+  }
+  if (caret !== null) {
+    const n = ovl.querySelector<HTMLInputElement>(".bvq");
+    if (n) { n.focus(); n.setSelectionRange(caret, caret); }
   }
 }
 
@@ -507,10 +551,17 @@ export function renderDash(): void {
   // Notes and the Repository card cross the wait too: notes are localStorage and already
   // correct; the repo card answers from `factsKnown` and the heads probe, and goes first.
   const repo = repoCard(syncNow(), factsKnown);
+  // Above the Repository card: the numbers sit directly over the buttons they gate, and
+  // ⇄ Switch's tooltip is what still names the refusal. It crosses the `loading` branch
+  // for the same reason the repo card does — one local git read, already answered.
+  const wset = worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none");
+  // The main checkout is read by this pane and swept into `dirtyByFolder` for the dot, so
+  // prefer the pane's own: two reads of one folder must not put two numbers on one screen.
+  const statFor = (p: string) => (p === worksetDir() ? mainWork : dirtyByFolder.get(p));
   paint("dashAside", loading
-    ? repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
-    : repo + ghCards
-      + checkoutsCard(heads, liveIn, folderDirty)
+    ? wset + repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
+    : wset + repo + ghCards
+      + checkoutsCard(heads, liveIn, statFor)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason
         ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
@@ -519,7 +570,6 @@ export function renderDash(): void {
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
   if (openView === null) ovl.dataset.view = "";
-  else if (openView === "checkouts") paintOverlay(openView, checkoutsOverlay(heads, liveIn, folderDirty));
   else if (openView === "notes") {
     const mineShared = new Set(shared.map((n) => n.id));
     const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
@@ -528,10 +578,13 @@ export function renderDash(): void {
   else if (openView === "work") paintOverlay(openView, workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
   else if (openView === "branches") {
-    const local = localCandsNow(), remote = remoteCandsNow();
+    const rows = branchRowsNow();
     paintOverlay(openView, branchesOverlay({
-      local, remote, picked: branchPick, rpicked: branchRPick,
-      trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(remote),
+      tab: branchTab, rows, checkouts: checkoutRowsNow(),
+      picked: branchPick, cpicked: coPick,
+      filter: branchFilter, query: branchQuery, now,
+      scopes: branchScopes,
+      trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       prs: branchPrs, prsLoading: branchPrsLoading,
       busy: branchBusy, loading: branchData === null, result: branchResult,
     }));
@@ -594,9 +647,10 @@ export function openDashboard(project: string, path: string): void {
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
     // Branch state never carries across projects: another repo's merges must not vouch for this one.
     branchData = null; branchPrs = null; branchPrsLoading = false;
-    branchPick = new Set(); branchRPick = new Set(); branchResult = null; branchBusy = false;
+    branchPick = new Set(); coPick = new Set(); branchResult = null; branchBusy = false;
+    branchTab = "branches"; branchFilter = "all"; branchQuery = ""; branchLast = "";
     // `syncing` is not reset: it names a folder a real git process is still running in.
-    mainStat = null;
+    mainWork = undefined;
   }
   host.renderAll();
   void loadDash();
@@ -643,57 +697,67 @@ export function wireDashboard(): void {
 
     const view = t.closest<HTMLElement>("[data-dashopen-view]");
     if (view) {
-      openView = view.dataset.dashopenView as typeof openView;
+      // Checkouts is a tab of the Branches view, not a view: one table, one selection model.
+      const v = view.dataset.dashopenView!;
+      const branchy = v === "branches" || v === "checkouts";
+      if (branchy) branchTab = v === "checkouts" ? "checkouts" : "branches";
+      openView = branchy ? "branches" : (v as typeof openView);
       renderDash();
-      if (openView === "branches") void loadBranches();
+      if (branchy) void loadBranches();
       return;
     }
     if (t.closest("[data-dashclose-view]")) { openView = null; branchResult = null; renderDash(); return; }
 
     // ---- the Branches view ----
-    const brpick = t.closest<HTMLElement>("[data-dashbrpick]");
-    if (brpick) {
-      // "<half>:<branch>": a branch name may contain "/", so split on the first colon only.
-      const raw = brpick.dataset.dashbrpick!;
-      const cut = raw.indexOf(":");
-      const half = raw.slice(0, cut), n = raw.slice(cut + 1);
-      const set = half === "remote" ? branchRPick : branchPick;
-      if (set.has(n)) set.delete(n); else set.add(n);
+    // Every nested control is probed before the row that contains it; a row-level probe
+    // placed first would swallow the click meant for the button inside it.
+    const brtab = t.closest<HTMLElement>("[data-dashbrtab]");
+    if (brtab) { branchTab = brtab.dataset.dashbrtab as typeof branchTab; renderDash(); return; }
+
+    const brfilter = t.closest<HTMLElement>("[data-dashbrfilter]");
+    if (brfilter) { branchFilter = brfilter.dataset.dashbrfilter as BranchFilter; renderDash(); return; }
+
+    // `All` ticks what the filter is showing, which is what makes the chips quick-selects.
+    if (t.closest("[data-dashbrall]")) {
+      for (const n of selectable(shownRows())) branchPick.add(n);
       renderDash();
       return;
     }
-    const brall = t.closest<HTMLElement>("[data-dashbrall]");
-    if (brall) {
-      if (brall.dataset.dashbrall === "remote") branchRPick = selectable(remoteCandsNow());
-      else branchPick = selectable(localCandsNow());
+    if (t.closest("[data-dashbrnone]")) { branchPick = new Set(); branchLast = ""; renderDash(); return; }
+
+    const brscope = t.closest<HTMLElement>("[data-dashbrscope]");
+    if (brscope) {
+      const k = brscope.dataset.dashbrscope as "local" | "remote";
+      branchScopes = { ...branchScopes, [k]: !branchScopes[k] };
       renderDash();
       return;
     }
-    const brnone = t.closest<HTMLElement>("[data-dashbrnone]");
-    if (brnone) {
-      if (brnone.dataset.dashbrnone === "remote") branchRPick = new Set(); else branchPick = new Set();
-      renderDash();
-      return;
-    }
-    const brrun = t.closest<HTMLElement>("[data-dashbrrun]");
-    if (brrun) {
-      if (brrun.dataset.dashbrrun === "remote") void runRemoteClean(); else void runLocalClean();
-      return;
-    }
+    const brsw = t.closest<HTMLElement>("[data-dashbrsw]");
+    if (brsw) { void switchTo(brsw.dataset.dashbrsw!); return; }
+
+    const brswitch = t.closest<HTMLElement>("[data-dashswitch]");
+    if (brswitch) { void openSwitchPop(brswitch); return; }
+
+    if (t.closest("[data-dashbrrun]")) { void runClean(); return; }
     if (t.closest("[data-dashbrdone]")) { branchResult = null; renderDash(); return; }
     if (t.closest("[data-dashbrterm]")) {
-      const cmd = branchResult?.swept.suggest;
+      const cmd = branchResult?.local?.suggest;
       // Never run from a click: a `-D` goes to a terminal where it can be read first.
       if (cmd) { openView = null; branchResult = null; renderDash(); host.handToTerminal(name(), root(), cmd); }
       return;
     }
     const brtrunk = t.closest<HTMLElement>("[data-dashbrtrunk]");
-    if (brtrunk) { host.pickTrunk(brtrunk, trunkOptions(branchData?.branches ?? []), cmpBase[root()] ?? "", (ref) => {
+    if (brtrunk) { openBranchPop(brtrunk, trunkOptions(branchData?.branches ?? []).map((o) => ({ ...o })), cmpBase[root()] ?? "", (ref) => {
       host.saveTrunk(root(), ref);
       branchData = null;                 // the numbers are git's, so they have to be re-read
       renderDash();
       void loadBranches(true);
     }); return; }
+
+    // ---- the Checkouts tab ----
+    if (t.closest("[data-dashcoall]")) { coPick = removableCheckouts(checkoutRowsNow()); renderDash(); return; }
+    if (t.closest("[data-dashconone]")) { coPick = new Set(); renderDash(); return; }
+    if (t.closest("[data-dashcorun]")) { void runCheckoutClean(); return; }
 
     const drop = t.closest<HTMLElement>("[data-dashdrop]");
     if (drop) { removeNote(drop.dataset.dashdrop!); renderDash(); return; }
@@ -704,6 +768,21 @@ export function wireDashboard(): void {
     if (wtadd) { void host.launch(name(), wtadd.dataset.dashwtadd!, { colorKey: root() }); return; }
     const wtterm = t.closest<HTMLElement>("[data-dashwtterm]");
     if (wtterm) { host.openTerminal(wtterm.dataset.dashwtterm!); return; }
+    // After both buttons: they are nested inside the row, and this branch would swallow them.
+    // Only a dirty checkout carries the attribute, so this never opens an empty overlay.
+    const wt = t.closest<HTMLElement>("[data-dashwt]");
+    if (wt) {
+      const dir = wt.dataset.dashwt!;
+      const w = heads.find((h) => h.path === dir);
+      host.openDiff(dir, `${name()} · ${w?.branch || basename(dir)}`);
+      return;
+    }
+    // The Checkouts tab's row, after the ＋/❯ nested in it, like the card's row above.
+    const co = t.closest<HTMLElement>("[data-dashco]");
+    if (co) { toggleCheckout(co.dataset.dashco!); return; }
+    // The Branches tab's row, last of its family: ⇄ and the box both sit inside it.
+    const br = t.closest<HTMLElement>("[data-dashbr]");
+    if (br) { toggleBranch(br.dataset.dashbr!, e.shiftKey); return; }
 
     // ---- the GitHub half ----
     const work = t.closest<HTMLElement>("[data-dashwork]");
@@ -731,6 +810,14 @@ export function wireDashboard(): void {
     if (claimSw) { togglePolicy(claimSw.dataset.dashclaim!); return; }
     const url = t.closest<HTMLElement>("[data-dashurl]");
     if (url?.dataset.dashurl) { void openUrl(url.dataset.dashurl).catch(() => {}); return; }
+  });
+
+  // The Branches view's filter box; everything else in this pane is a click.
+  $("dashPane").addEventListener("input", (e) => {
+    const q = (e.target as HTMLElement).closest<HTMLInputElement>(".bvq");
+    if (!q) return;
+    branchQuery = q.value;
+    renderDash();
   });
 
   // The sheets sit over the whole stage, outside #dashPane, so they get their own handler.
@@ -770,8 +857,6 @@ function dashAction(act: string): void {
   else if (act === "run") host.openRun(r);
   else if (act === "pull") void syncMain("pull");
   else if (act === "push") void syncMain("push");
-  // Seeded from the heads probe, or the ⑃ dialog's switch card reads "—" until its own call lands.
-  else if (act === "switch") host.switchBranch(n, r, heads.find((h) => h.is_main)?.branch ?? "");
   else if (act === "graph") host.openGraph(r);
   else if (act === "cleanup") openBranchesView(n, r);
   else if (act === "history") host.openHistory(r);
@@ -797,7 +882,8 @@ async function loadBranches(force = false): Promise<void> {
   branchData = { branches, worktrees };
   // Nothing is ticked on arrival: deleting is opt-in, and a stale tick may name a branch that is gone.
   branchPick = new Set();
-  branchRPick = new Set();
+  coPick = new Set();
+  branchLast = "";
   renderDash();
   if (branchPrs || branchPrsLoading) return;
   branchPrsLoading = true;
@@ -808,51 +894,83 @@ async function loadBranches(force = false): Promise<void> {
   renderDash();   // the answer can only add rows, and they arrive unticked like the rest
 }
 
-const localCandsNow = () => branchData ? localCands({
+const branchRowsNow = (): BranchRow[] => branchData ? branchRows({
   branches: branchData.branches,
   worktrees: branchData.worktrees,
   prs: branchPrs?.prs ?? [],
   liveIn: (p) => [...sessions.values()].filter((s) => s.workdir === p).length,
   externalIn: (p) => externals.some((e) => e.cwd === p),
 }) : [];
-const remoteCandsNow = () => branchData ? remoteCands(branchData.branches, branchPrs?.prs ?? []) : [];
 
-// Delete the ticked local branches, checkouts first (git refuses to delete a branch a
-// worktree holds). Everything reaching here is clean, unlocked and idle (`block`
-// guarantees it), so nothing is forced and no session is closed.
-async function runLocalClean(): Promise<void> {
+const checkoutRowsNow = (): CheckoutRow[] => branchData ? checkoutRows({
+  worktrees: branchData.worktrees,
+  liveIn: (p) => [...sessions.values()].filter((s) => s.workdir === p).length,
+  externalIn: (p) => externals.some((e) => e.cwd === p),
+}) : [];
+
+// What the table is showing right now, which is what `All` and a shift-click range mean.
+const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, branchQuery, Date.now()));
+
+function toggleBranch(name: string, range: boolean): void {
+  const shown = shownRows();
+  const pickable = selectable(shown);
+  if (!pickable.has(name)) return;   // an off row is shown for its reason, never ticked
+  // Shift takes everything between the last tick and this one, in the order on screen, and
+  // adds rather than toggles: a range that flipped each row would undo half of itself.
+  if (range && branchLast && branchLast !== name) {
+    for (const n of rangePick(shown.map((r) => r.name), branchLast, name)) {
+      if (pickable.has(n)) branchPick.add(n);
+    }
+  } else if (branchPick.has(name)) branchPick.delete(name);
+  else branchPick.add(name);
+  branchLast = name;
+  renderDash();
+}
+
+function toggleCheckout(path: string): void {
+  if (!removableCheckouts(checkoutRowsNow()).has(path)) return;
+  if (coPick.has(path)) coPick.delete(path); else coPick.add(path);
+  renderDash();
+}
+
+// Delete the ticked branches wherever the scopes point. Checkouts first (git refuses to
+// delete a branch a worktree holds), then the local refs, then the remote ones: a remote
+// delete that ran first would leave the evidence for the local half gone.
+async function runClean(): Promise<void> {
   const r = root();
-  const cands = localCandsNow();
-  const picks = sweepPicks(cands, branchPick);
-  if (!r || branchBusy || !picks.length) return;
+  const rows = branchRowsNow();
+  const picks = branchScopes.local ? localPicks(rows, branchPick) : [];
+  const rpicks = branchScopes.remote ? remotePicks(rows, branchPick) : [];
+  if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
+  const remote = remoteFor(rows);
   branchBusy = true;
   renderDash();
-  const wts: { label: string; ok: boolean; note: string }[] = [];
+  const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
   try {
-    for (const w of chosenWorktrees(cands, branchPick)) {
-      const label = w.path.split(/[/\\]/).filter(Boolean).pop() ?? w.path;
-      try {
-        const res = await invoke<{ ok: boolean; summary: string; stranded?: unknown }>(
-          "remove_worktree", { repoDir: r, path: w.path, branch: w.branch, deleteBranch: true });
-        dlog(res.ok ? "info" : "warn", `branches · worktree ${label} · ${res.summary}`);
-        // A stranded removal is `ok: true`: the worktree is unregistered, so the branch is deletable.
-        wts.push({ label, ok: res.ok, note: res.stranded ? "removed; folder still on disk" : res.summary });
-      } catch (e) {
-        wts.push({ label, ok: false, note: String(e) });
-      }
+    if (picks.length) {
+      for (const w of chosenWorktrees(rows, branchPick)) report.wts.push(await removeOne(r, w));
+      report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
+      dlog("info", `branches · ${report.local.summary}`);
     }
-    const swept = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
-    dlog("info", `branches · ${swept.summary}`);
+    if (rpicks.length) {
+      const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks: rpicks });
+      dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
+      report.remote = { swept, remote };
+      // A remote delete leaves refs/remotes alone until a fetch prunes them.
+      await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
+    }
+    report.summary = [report.local?.summary, report.remote?.swept.summary].filter(Boolean).join(" · ");
     // Guarded on the project throughout: a sweep outlives a stage switch, and its result
     // and toast belong to the repo it ran in, not to whatever is on screen when it lands.
     if (root() !== r) return;
-    toast(swept.summary);
-    branchResult = { swept, wts };
+    toast(report.summary);
+    branchResult = report;
   } catch (e) {
     dlog("error", `branches clean failed: ${e}`);
     if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
+    branchPick = new Set();
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
       await host.refreshGit();
@@ -861,31 +979,71 @@ async function runLocalClean(): Promise<void> {
   }
 }
 
-// Delete the ticked remote branches: no worktrees, no local refs, no force of any kind.
-async function runRemoteClean(): Promise<void> {
+// Remove the ticked checkouts. Every one reaching here is clean, unlocked and idle, so the
+// branch goes with it only where git's safe delete accepts it (`deleteBranch`).
+async function runCheckoutClean(): Promise<void> {
   const r = root();
-  const cands = remoteCandsNow();
-  const picks = remotePicks(cands, branchRPick);
-  if (!r || branchBusy || !picks.length) return;
-  const remote = remoteFor(cands);
+  const rows = chosenCheckouts(checkoutRowsNow(), coPick);
+  if (!r || branchBusy || !rows.length) return;
   branchBusy = true;
   renderDash();
-  try {
-    const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks });
-    dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
-    // The fetch still runs for the repo that was swept; only the reporting is guarded.
-    const landed = root() === r;
-    if (landed) { toast(swept.summary); branchResult = { swept, wts: [], remote }; }
-    // A remote delete leaves refs/remotes alone until a fetch prunes them.
-    await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
-  } catch (e) {
-    dlog("error", `remote clean failed: ${e}`);
-    if (root() === r) toast("remote: " + e);
-  } finally {
-    branchBusy = false;
-    if (root() === r) await loadBranches(true);
-    renderDash();
+  const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
+  for (const c of rows) report.wts.push(await removeOne(r, c.wt));
+  const ok = report.wts.filter((w) => w.ok).length;
+  report.summary = `${ok} of ${rows.length} checkout${rows.length === 1 ? "" : "s"} removed`;
+  branchBusy = false;
+  coPick = new Set();
+  if (root() === r) {
+    toast(report.summary);
+    branchResult = report;
+    await loadBranches(true);
+    await host.refreshGit();
   }
+  renderDash();
+}
+
+/** One `remove_worktree`, reported the way both runs above report it. The rail is marked for
+ *  the whole call, so a batch spins each folder where it lives rather than dropping it. */
+async function removeOne(repoDir: string, w: WtInfo): Promise<{ label: string; ok: boolean; note: string }> {
+  const label = w.path.split(/[/\\]/).filter(Boolean).pop() ?? w.path;
+  removingWt.set(w.path, repoDir);
+  host.renderAll();
+  try {
+    const res = await invoke<{ ok: boolean; summary: string; stranded?: unknown }>(
+      "remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch: true });
+    dlog(res.ok ? "info" : "warn", `branches · worktree ${label} · ${res.summary}`);
+    // A stranded removal is `ok: true`: the worktree is unregistered, so the branch is deletable.
+    return { label, ok: res.ok, note: res.stranded ? "removed; folder still on disk" : res.summary };
+  } catch (e) {
+    return { label, ok: false, note: String(e) };
+  } finally {
+    removingWt.delete(w.path);
+  }
+}
+
+/** The Repository card's branch chip. The list is git's, so it is read before the popover
+ *  opens rather than shown stale: this control is reachable without the Branches view. */
+async function openSwitchPop(anchor: HTMLElement): Promise<void> {
+  const r = root();
+  await loadBranches();
+  if (root() !== r) return;
+  const here = heads.find((h) => h.is_main)?.branch ?? "";
+  openBranchPop(anchor, switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], r),
+    here, (n) => void switchTo(n));
+}
+
+// The ⇄ on a row, and the picker on the Repository card: one switch, every guard in the
+// backend, and the refusal handed to a terminal rather than swallowed.
+async function switchTo(branch: string): Promise<void> {
+  const r = root();
+  if (!r || branchBusy) return;
+  const target = switchable(switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], r))
+    .find((o) => o.name === branch);
+  if (!target) { toast(`${branch} is checked out elsewhere`); return; }
+  await host.switchBranch(name(), r, branch, target.base ?? null);
+  branchData = null;
+  renderDash();
+  void loadBranches(true);
 }
 
 // Open the view from anywhere; the ⑃ dialog's brooms point here.

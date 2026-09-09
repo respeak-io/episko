@@ -4,7 +4,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import {
   addIo, addUsage, costDelta, dayIo, daySpend, flushIo, flushUsageDetail, installGrown,
   ioCreditBps, ioDayCount, ioDelta, ioExcludedMb, ioSameNote, ioTotal,
-  modelFamily,
+  modelName, modelSeries,
   resetCostBaselines, resetIoRollup, resetUsageWrites, setTokenDays, setUsageRange, splitIo,
   todayKey, tokenDays, tokenScanAt, uBuckets, uDkey, uModels, usage, usageDetail,
   usageWindow, uSum, type DayUsage, type UDay,
@@ -35,7 +35,7 @@ const sess = (o: Partial<Sess>): Sess =>
 // One transcript-scanned day, with only the fields under test spelled out.
 const day = (d: string, o: Partial<DayUsage> = {}): DayUsage => ({
   day: d, input: 0, output: 0, cache_read: 0, cache_write: 0,
-  opus: 0, sonnet: 0, haiku: 0, other: 0, sessions: 0, projects: {}, ...o,
+  models: {}, sessions: 0, projects: {}, ...o,
 });
 
 describe("todayKey / uDkey — the calendar-day key both stores are keyed by", () => {
@@ -142,15 +142,31 @@ describe("costDelta — what a running total owes the day", () => {
   });
 });
 
-describe("modelFamily — collapsing display names to a tier", () => {
-  it("matches the family anywhere in the name, case-insensitively", () => {
-    expect(modelFamily("Claude Opus 4.8")).toBe("Opus");
-    expect(modelFamily("sonnet-4-5")).toBe("Sonnet");
-    expect(modelFamily("Haiku 4.5")).toBe("Haiku");
+describe("modelName — one display name per model, from either spelling", () => {
+  it("names an Anthropic tier with its version, id or display name alike", () => {
+    // The scan sees the id and the statusLine the display name; both must land on one key.
+    expect(modelName("claude-opus-4-8")).toBe("Opus 4.8");
+    expect(modelName("Claude Opus 4.8")).toBe("Opus 4.8");
+    expect(modelName("claude-fable-5-1")).toBe("Fable 5.1");
+    expect(modelName("claude-opus-5")).toBe("Opus 5");
   });
-  it("distinguishes an unrecognised model from no model at all", () => {
-    expect(modelFamily("gpt-9")).toBe("Other");
-    expect(modelFamily("")).toBe("Unknown");
+  it("strips what carries no meaning: date stamps, context suffixes, vendor prefixes", () => {
+    expect(modelName("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
+    expect(modelName("claude-opus-5[1m]")).toBe("Opus 5");
+    expect(modelName("us.anthropic.claude-3-5-sonnet-20241022-v2:0")).toBe("Sonnet 3.5");
+  });
+  it("names another provider's model too, rather than calling it Other", () => {
+    expect(modelName("gpt-5.1-codex-max")).toBe("GPT-5.1 Codex Max");
+    expect(modelName("codex-mini-latest")).toBe("Codex Mini");
+    expect(modelName("gemini-2.5-pro")).toBe("Gemini 2.5 Pro");
+  });
+  it("is idempotent, since a store may already hold a named key", () => {
+    for (const n of ["Opus 4.8", "GPT-5.1 Codex Max", "Codex Mini", "Unknown"]) expect(modelName(n)).toBe(n);
+  });
+  it("still has one word for no model at all", () => {
+    expect(modelName("")).toBe("Unknown");
+    expect(modelName("   ")).toBe("Unknown");
+    expect(modelName("<synthetic>")).toBe("Unknown"); // Claude Code's placeholder line
   });
 });
 
@@ -181,7 +197,7 @@ describe("addUsage — the daily $ rollup", () => {
     expect(usageDetail).toEqual({});
   });
   it("counts the total but records no split for a non-agent pane", () => {
-    // Shell and task panes have no model; attributing to a family would be an invention.
+    // Shell and task panes have no model; naming one would be an invention.
     addUsage(2, sess({ kind: "shell" }));
     addUsage(3, sess({ kind: "task" }));
     expect(usage["2027-03-14"]).toBe(5);
@@ -193,7 +209,7 @@ describe("addUsage — the daily $ rollup", () => {
       addUsage(1, sess({ model: "Claude Opus 4.8" }));
       addUsage(2, sess({ model: "Sonnet 4.5" }));
       addUsage(4, sess({ model: "Claude Opus 4.8" }));
-      expect(usageDetail["2027-03-14"].models).toEqual({ Opus: 5, Sonnet: 2 });
+      expect(usageDetail["2027-03-14"].models).toEqual({ "Opus 4.8": 5, "Sonnet 4.5": 2 });
     });
     it("attributes it to the session's project", () => {
       addUsage(1, sess({ project: "epi" }));
@@ -227,7 +243,7 @@ describe("addUsage — the daily $ rollup", () => {
       addUsage(1, sess({ id: "a", model: "Haiku 4.5", project: "epi", title: "t" }));
       expect(JSON.parse(store.get("cc-usage-detail")!)).toEqual({
         "2027-03-14": {
-          models: { Haiku: 1 }, projects: { epi: 1 },
+          models: { "Haiku 4.5": 1 }, projects: { epi: 1 },
           sess: { a: { usd: 1, title: "t", project: "epi" } },
         },
       });
@@ -764,15 +780,50 @@ describe("uSum / uModels — the two summaries the panel builds on", () => {
     expect(uSum(w, (d) => d.tok)).toBe(30);
     expect(uSum([], (d) => d.cost)).toBe(0);
   });
-  it("uModels sums per family across days and keeps all four keys present", () => {
-    // The bar chart indexes by a fixed key set; a family with no tokens must read 0, not be missing.
+  it("uModels sums per model across days, listing only what was used", () => {
     const w: UDay[] = [
-      { key: "a", cost: 0, tok: 0, u: day("a", { opus: 1, sonnet: 2 }) },
-      { key: "b", cost: 0, tok: 0, u: day("b", { opus: 4, other: 8 }) },
+      { key: "a", cost: 0, tok: 0, u: day("a", { models: { "Opus 5": 1, "Sonnet 4.5": 2 } }) },
+      { key: "b", cost: 0, tok: 0, u: day("b", { models: { "Opus 5": 4, "Fable 5.1": 8 } }) },
       { key: "c", cost: 0, tok: 0 }, // never scanned — contributes nothing
     ];
-    expect(uModels(w)).toEqual({ Opus: 5, Sonnet: 2, Haiku: 0, Other: 8 });
-    expect(uModels([])).toEqual({ Opus: 0, Sonnet: 0, Haiku: 0, Other: 0 });
+    expect(uModels(w)).toEqual({ "Opus 5": 5, "Sonnet 4.5": 2, "Fable 5.1": 8 });
+    expect(uModels([])).toEqual({});
+  });
+});
+
+describe("modelSeries — the order and colour slot every model surface shares", () => {
+  it("ranks by tokens and keeps the residue last, however big it is", () => {
+    const r = modelSeries({ "Opus 5": 10, Unknown: 999, "Fable 5.1": 40 });
+    expect(r.map((x) => x.name)).toEqual(["Fable 5.1", "Opus 5", "Unknown"]);
+  });
+  it("drops a model with no tokens rather than drawing an empty series", () => {
+    expect(modelSeries({ "Opus 5": 0, "Haiku 4.5": 3 }).map((x) => x.name)).toEqual(["Haiku 4.5"]);
+  });
+  it("gives one family one hue, undimmed on its newest version", () => {
+    // Versions compare numerically: 5 is newer than 4.8, which string order gets backwards.
+    const r = modelSeries({ "Opus 4.8": 90, "Opus 5": 10, "GPT-5.1 Codex": 5 });
+    const by = Object.fromEntries(r.map((x) => [x.name, x]));
+    expect(by["Opus 5"].kin).toBe("opus");
+    expect(by["Opus 4.8"].kin).toBe("opus");
+    expect(by["GPT-5.1 Codex"].kin).toBe("gpt");
+    expect(by["Opus 5"].shade).toBe(0);
+    expect(by["Opus 4.8"].shade).toBe(1);
+    expect(by["GPT-5.1 Codex"].shade).toBe(0);
+  });
+});
+
+describe("the token stores' model keys — named on read, never on write", () => {
+  it("names a raw id and sums the two spellings of one model into one key", () => {
+    setTokenDays([day("2027-03-14", { models: { "claude-opus-4-8": 3, "Opus 4.8": 4 } })]);
+    expect(tokenDays[0].models).toEqual({ "Opus 4.8": 7 });
+    // Stored verbatim: a better naming rule must not need a re-scan of every transcript.
+    expect(JSON.parse(store.get("cc-usage-tokens")!)[0].models["claude-opus-4-8"]).toBe(3);
+  });
+  it("folds a cache written before models were named", () => {
+    const legacy = { day: "2027-03-14", input: 0, output: 0, cache_read: 0, cache_write: 0, opus: 5, other: 2, sessions: 0, projects: {} };
+    setTokenDays([legacy as unknown as DayUsage]);
+    // The version is gone for good, so the old column keeps its unversioned name.
+    expect(tokenDays[0].models).toEqual({ Opus: 5, Other: 2 });
   });
 });
 
@@ -793,9 +844,9 @@ describe("uBuckets — the bar chart's x-axis, one shape per range", () => {
   });
   it("totals a bucket from its days' per-model tokens", () => {
     setUsageRange(7);
-    setTokenDays([day("2027-03-14", { opus: 3, haiku: 4 })]);
+    setTokenDays([day("2027-03-14", { models: { "claude-opus-5": 3, "claude-haiku-4-5": 4 } })]);
     const last = uBuckets()[6];
-    expect(last.models).toEqual({ Opus: 3, Sonnet: 0, Haiku: 4, Other: 0 });
+    expect(last.models).toEqual({ "Opus 5": 3, "Haiku 4.5": 4 });
     expect(last.total).toBe(7);
   });
   it("buckets 90D into weeks of seven, labelled by the week's first day", () => {

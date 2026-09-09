@@ -405,25 +405,13 @@ fn scan_history_in(base: &Path, limit: usize) -> Vec<HistorySession> {
     out
 }
 
-/// The three model tiers collapsed to a family (matches the frontend's `modelFamily`).
-fn model_family(model: &str) -> &'static str {
-    let s = model.to_ascii_lowercase();
-    if s.contains("opus") {
-        "opus"
-    } else if s.contains("sonnet") {
-        "sonnet"
-    } else if s.contains("haiku") {
-        "haiku"
-    } else {
-        "other"
-    }
-}
-
 struct LineUsage {
-    day: String,           // YYYY-MM-DD from the line's own ISO timestamp (UTC)
-    tokens: [u64; 4],      // [input, output, cache_read, cache_write]
-    family: &'static str,  // opus | sonnet | haiku | other
-    cwd: String,           // the line's cwd verbatim; `project_label` groups it
+    day: String,      // YYYY-MM-DD from the line's own ISO timestamp (UTC)
+    tokens: [u64; 4], // [input, output, cache_read, cache_write]
+    /// `message.model` verbatim. Naming it is the frontend's (`modelName`), so one rule
+    /// covers both spellings and improving it needs no re-scan of every transcript.
+    model: String,
+    cwd: String, // the line's cwd verbatim; `project_label` groups it
     /// `message.id`. Claude Code writes one line per content block, each repeating the
     /// same `usage`, so the scan dedupes on this; a record with no id is counted as it is.
     id: Option<String>,
@@ -465,7 +453,7 @@ fn parse_usage_line(line: &str) -> Option<LineUsage> {
             g("cache_read_input_tokens"),
             g("cache_creation_input_tokens"),
         ],
-        family: model_family(model),
+        model: model.to_string(),
         cwd,
         id,
     })
@@ -499,10 +487,7 @@ pub(crate) struct DayUsage {
     output: u64,
     cache_read: u64,
     cache_write: u64,
-    opus: u64,
-    sonnet: u64,
-    haiku: u64,
-    other: u64,
+    models: std::collections::BTreeMap<String, u64>,
     sessions: u64,
     projects: std::collections::BTreeMap<String, u64>,
 }
@@ -566,7 +551,7 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
             let mut file_days: HashSet<String> = HashSet::new();
             for line in BufReader::new(file).lines().map_while(Result::ok) {
                 let Some(lu) = parse_usage_line(&line) else { continue };
-                let LineUsage { day, tokens, family, cwd, id } = lu;
+                let LineUsage { day, tokens, model, cwd, id } = lu;
                 // Claimed before the dedupe gate: the session was active that day even if
                 // every line of it is a repeat.
                 file_days.insert(day.clone());
@@ -585,12 +570,7 @@ fn scan_usage_in(base: &Path, days: u64) -> Result<Vec<DayUsage>, String> {
                 e.output += tokens[1];
                 e.cache_read += tokens[2];
                 e.cache_write += tokens[3];
-                match family {
-                    "opus" => e.opus += tot,
-                    "sonnet" => e.sonnet += tot,
-                    "haiku" => e.haiku += tot,
-                    _ => e.other += tot,
-                }
+                *e.models.entry(model).or_insert(0) += tot;
                 *e.projects.entry(project).or_insert(0) += tot;
             }
             for d in file_days {
@@ -615,75 +595,136 @@ pub(crate) fn read_transcript(cwd: String, session_id: String, limit: usize) -> 
     read_transcript_in(&base, &cwd, &session_id, limit)
 }
 
-fn read_transcript_in(base: &Path, cwd: &str, session_id: &str, limit: usize) -> Result<Vec<TranscriptMsg>, String> {
+/// The last `limit` questions a session was asked, read from the WHOLE file rather than its
+/// tail: a resumed pane seeds its outline from this, and a day of tool traffic puts every
+/// question of a long conversation outside the window the mirror reads (measured on a 4.5MB
+/// transcript whose newest question sat 3.5MB above it, so the outline restored none of them).
+#[tauri::command(async)]
+pub(crate) fn read_transcript_asked(
+    cwd: String,
+    session_id: String,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    read_asked_in(&base, &cwd, &session_id, limit)
+}
+
+/// The 512KB tail is the mirror's; a reader after the whole conversation asks for `tail: false`.
+fn transcript_reader(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    tail: bool,
+) -> Result<std::io::BufReader<std::fs::File>, String> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let path = project_transcript_dir(base, cwd).join(format!("{session_id}.jsonl"));
     let file = std::fs::File::open(&path).map_err(|e| format!("transcript not found: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
     const CAP: u64 = 512 * 1024;
     let mut reader = BufReader::new(file);
-    if len > CAP {
+    if tail && len > CAP {
         reader.seek(SeekFrom::Start(len - CAP)).map_err(|e| e.to_string())?;
         let mut discard = String::new(); // drop the partial first line
         let _ = reader.read_line(&mut discard);
     }
+    Ok(reader)
+}
 
-    let mut msgs: Vec<TranscriptMsg> = Vec::new();
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        if t != "user" && t != "assistant" {
-            continue;
-        }
-        let at = v.get("timestamp").and_then(|x| x.as_str()).map(str::to_string);
-        let content = v.get("message").and_then(|m| m.get("content"));
-        let mut text = String::new();
-        match content {
-            Some(serde_json::Value::String(s)) => text.push_str(s),
-            Some(serde_json::Value::Array(arr)) => {
-                // Only "text" blocks: tool calls, tool_result echoes and thinking are noise in
-                // a conversation mirror. A tool-only turn collapses to empty and is dropped.
-                for blk in arr {
-                    if blk.get("type").and_then(|x| x.as_str()) == Some("text") {
-                        if let Some(s) = blk.get("text").and_then(|x| x.as_str()) {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(s);
+/// One line as a prose message: None for tool traffic, a torn write and anything not a turn.
+fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if t != "user" && t != "assistant" {
+        return None;
+    }
+    let at = v.get("timestamp").and_then(|x| x.as_str()).map(str::to_string);
+    let content = v.get("message").and_then(|m| m.get("content"));
+    let mut text = String::new();
+    match content {
+        Some(serde_json::Value::String(s)) => text.push_str(s),
+        Some(serde_json::Value::Array(arr)) => {
+            // Only "text" blocks: tool calls, tool_result echoes and thinking are noise in
+            // a conversation mirror. A tool-only turn collapses to empty and is dropped.
+            for blk in arr {
+                if blk.get("type").and_then(|x| x.as_str()) == Some("text") {
+                    if let Some(s) = blk.get("text").and_then(|x| x.as_str()) {
+                        if !text.is_empty() {
+                            text.push('\n');
                         }
+                        text.push_str(s);
                     }
                 }
             }
-            _ => {}
         }
-        let mut text = text.trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        if text.len() > 4000 {
-            // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
-            let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
-            text.truncate(cut);
-            text.push('…');
-        }
-        msgs.push(TranscriptMsg { role: t.to_string(), text, at });
+        _ => {}
     }
+    let mut text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() > 4000 {
+        // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
+        let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
+        text.truncate(cut);
+        text.push('…');
+    }
+    Some(TranscriptMsg {
+        role: t.to_string(),
+        text,
+        at,
+    })
+}
+
+/// Both readers answer with the END of what they found: a mirror shows how a conversation
+/// finished, and an outline seeded with the first 200 questions of one would list the wrong day.
+fn last_n(mut msgs: Vec<TranscriptMsg>, limit: usize) -> Vec<TranscriptMsg> {
     let n = msgs.len();
     if n > limit {
         msgs = msgs.split_off(n - limit);
     }
-    Ok(msgs)
+    msgs
+}
+
+fn read_transcript_in(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    use std::io::BufRead;
+    let reader = transcript_reader(base, cwd, session_id, true)?;
+    let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    for line in reader.lines() {
+        // Skipped rather than stopped on: one unreadable line must not end the read.
+        let Ok(line) = line else { continue };
+        if let Some(msg) = transcript_msg(&line) {
+            msgs.push(msg);
+        }
+    }
+    Ok(last_n(msgs, limit))
+}
+
+fn read_asked_in(
+    base: &Path,
+    cwd: &str,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<TranscriptMsg>, String> {
+    use std::io::BufRead;
+    let reader = transcript_reader(base, cwd, session_id, false)?;
+    let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        match transcript_msg(&line) {
+            Some(msg) if msg.role == "user" => msgs.push(msg),
+            _ => {}
+        }
+    }
+    Ok(last_n(msgs, limit))
 }
 
 /// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`: the
@@ -1106,19 +1147,19 @@ mod tests {
 
 
     #[test]
-    fn parse_usage_line_extracts_day_tokens_family_and_project() {
+    fn parse_usage_line_extracts_day_tokens_model_and_project() {
         let line = r#"{"type":"assistant","timestamp":"2026-07-21T10:00:00.000Z","cwd":"/Users/tim/dev/episko","message":{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":4}}}"#;
         let lu = parse_usage_line(line).expect("assistant usage line should parse");
         assert_eq!(lu.day, "2026-07-21");
         assert_eq!(lu.tokens, [10, 20, 300, 4]);
-        assert_eq!(lu.family, "opus");
+        assert_eq!(lu.model, "claude-opus-4-8", "verbatim; the frontend names it");
         assert_eq!(lu.cwd, "/Users/tim/dev/episko"); // verbatim; grouped by project_label
-        // Missing token fields default to 0, an unknown model is "other", no cwd is ""
+        // Missing token fields default to 0, a line with no model reports "", no cwd is ""
         // (`project_label` says "unknown"), and no message.id is None, so the line is counted.
         let partial = r#"{"timestamp":"2026-07-21T10:00:00Z","message":{"usage":{"output_tokens":7}}}"#;
         let lu = parse_usage_line(partial).expect("should parse");
         assert_eq!(lu.tokens, [0, 7, 0, 0]);
-        assert_eq!(lu.family, "other");
+        assert_eq!(lu.model, "");
         assert_eq!(lu.cwd, "");
         assert_eq!(lu.id, None);
         assert_eq!(project_label("", &mut std::collections::HashMap::new()), "unknown");
@@ -1159,7 +1200,7 @@ mod tests {
         assert_eq!(days.len(), 1);
         let d20 = &days[0];
         assert_eq!((d20.input, d20.output), (30, 3), "3 counted responses, not 5 lines");
-        assert_eq!(d20.opus, 33);
+        assert_eq!(d20.models.get("claude-opus-4-8"), Some(&33));
         assert_eq!(d20.projects.get("alpha"), Some(&33));
         assert_eq!(d20.sessions, 1);
 
@@ -1178,14 +1219,6 @@ mod tests {
         assert!(parse_usage_line("not json at all").is_none());
         // A usage record with no timestamp can't be bucketed, so it's dropped.
         assert!(parse_usage_line(r#"{"message":{"usage":{"input_tokens":5}}}"#).is_none());
-    }
-
-    #[test]
-    fn model_family_buckets_by_tier() {
-        assert_eq!(model_family("claude-opus-4-8"), "opus");
-        assert_eq!(model_family("claude-sonnet-4-5"), "sonnet");
-        assert_eq!(model_family("claude-haiku-4-5-20251001"), "haiku");
-        assert_eq!(model_family("some-future-model"), "other");
     }
 
     #[test]
@@ -1493,6 +1526,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+
+    #[test]
+    fn asked_reads_past_the_tail_the_mirror_stops_at() {
+        let cwd = "/Users/tim/dev/long";
+        let (base, proj) = fixture(cwd);
+        let mut file = String::new();
+        file.push_str(r#"{"type":"user","message":{"content":"the first thing anybody asked"},"timestamp":"2026-09-04T18:50:00.000Z"}"#);
+        file.push('\n');
+        // A day of tool traffic between the two questions, more than the 512KB the mirror
+        // reads: that is how a real conversation buries the questions it was asked.
+        let filler = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "x".repeat(900) }] },
+        })
+        .to_string();
+        for _ in 0..700 {
+            file.push_str(&filler);
+            file.push('\n');
+        }
+        file.push_str(r#"{"type":"user","message":{"content":"and the last one"},"timestamp":"2026-09-05T10:43:00.000Z"}"#);
+        file.push('\n');
+        assert!(file.len() > 512 * 1024, "the fixture has to outgrow the tail read");
+        std::fs::write(proj.join("sid.jsonl"), &file).unwrap();
+
+        let asked = read_asked_in(&base, cwd, "sid", 100).unwrap();
+        let texts: Vec<&str> = asked.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["the first thing anybody asked", "and the last one"]);
+        assert_eq!(asked[0].at.as_deref(), Some("2026-09-04T18:50:00.000Z"));
+
+        // The mirror is unchanged and still cannot reach the first question, which is the point.
+        let mirror = read_transcript_in(&base, cwd, "sid", 100).unwrap();
+        assert!(!mirror.iter().any(|m| m.text == "the first thing anybody asked"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn read_transcript_truncates_a_huge_message() {
         let cwd = "/Users/tim/dev/huge";
@@ -1541,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_usage_folds_days_families_and_counts_sessions_once() {
+    fn scan_usage_folds_days_models_and_counts_sessions_once() {
         let base = scratch_dir();
         let write = |proj: &str, file: &str, body: &str| {
             let d = base.join("projects").join(proj);
@@ -1585,16 +1654,17 @@ mod tests {
 
         let d20 = &days[0];
         assert_eq!((d20.input, d20.output, d20.cache_read, d20.cache_write), (31, 4, 1, 1));
-        assert_eq!(d20.opus, 11);
-        assert_eq!(d20.sonnet, 22);
-        assert_eq!(d20.other, 4, "an unrecognised model falls into `other`");
-        assert_eq!(d20.haiku, 0);
+        assert_eq!(d20.models.get("claude-opus-4-8"), Some(&11));
+        assert_eq!(d20.models.get("claude-sonnet-4-5"), Some(&22));
+        // Every id gets its own key, this one included: nothing is collapsed into an "other".
+        assert_eq!(d20.models.get("some-future-model"), Some(&4));
+        assert_eq!(d20.models.get("claude-haiku-4-5"), None);
         assert_eq!(d20.sessions, 2, "two files touched this day");
         assert_eq!(d20.projects.get("alpha"), Some(&33), "keyed by cwd basename");
         assert_eq!(d20.projects.get("beta"), Some(&4));
 
         let d21 = &days[1];
-        assert_eq!(d21.haiku, 15);
+        assert_eq!(d21.models.get("claude-haiku-4-5"), Some(&15));
         assert_eq!(d21.sessions, 1, "the SAME file again — counted once per day, not per line");
         assert_eq!(d21.projects.get("beta"), None, "beta wasn't active on the 21st");
 

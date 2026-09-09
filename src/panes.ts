@@ -20,7 +20,7 @@ import {
 } from "./types";
 import { readList } from "./store";
 import { seedPrompts } from "./outline";
-import { readProviderHistory } from "./providers";
+import { readProviderAsked } from "./providers";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import {
@@ -38,7 +38,8 @@ import { openWt, refreshWtDialog } from "./worktree";
 import { adoptIdentity, nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
-import { execCmd, exitWaiters, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { runRunnable } from "./taskui";
 import {
   accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
   effectiveAgent, engineDef,
@@ -185,13 +186,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
 }
 
 // A resumed pane starts blind: its questions are in the provider's transcript, not in the
-// hooks it is about to receive. Both roles are read, so the window is generous; ./outline
-// keeps the user turns and refuses a second seeding.
-const SEED_READ = 240;
+// hooks it is about to receive. The questions alone and from the whole file, since a tail read
+// of a day's work holds none of them (docs/sessions.md); ./outline refuses a second seeding.
+const SEED_READ = 200; // what the outline would keep anyway (PROMPT_CAP)
 async function seedOutline(s: Sess, resumeId: string) {
   if (!s.provider) return;
   try {
-    const msgs = await readProviderHistory(s.provider, resumeId, s.workdir, SEED_READ);
+    const msgs = await readProviderAsked(s.provider, resumeId, s.workdir, SEED_READ);
     if (sessions.get(s.id) !== s) return; // closed while we read
     if (seedPrompts(s.prompts, msgs).length) renderAll();
   } catch (e) {
@@ -430,7 +431,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
@@ -545,6 +546,30 @@ export async function closeRunGroup(gid: string) {
     if (!ok) return;
   }
   for (const id of members.map((x) => x.id)) closeSession(id);
+}
+
+// The ⟳ beside it: the whole stack again from the chain root, which is the only way a
+// half-failed run gets a clean one — a step's own ⟳ skips the setup it depended on. Stops
+// first, so nothing outlives the run it belonged to.
+export async function rerunRunGroup(gid: string) {
+  const members = groupMembers(gid);
+  const head = members[0]?.run;
+  if (!head) return;
+  const root = head.groupRoot ? lastRunnableById.get(head.groupRoot) : undefined;
+  if (!root) { toast("Task definition is gone. Rescan"); return; }
+  if (root.blocked) { toast(`${root.label}: ${root.blocked}`); return; }
+  const live = members.filter((m) => m.run?.exitCode == null);
+  if (live.length) {
+    const ok = await ask(
+      `${live.length} of ${members.length} ${live.length === 1 ? "task is" : "tasks are"} still running.\n\nStarting over stops ${live.length === 1 ? "it" : "them"} first.`,
+      { title: `Run ${head.groupLabel ?? "this run"} again?`, kind: "warning", okLabel: "Stop and re-run", cancelLabel: "Keep running" },
+    );
+    if (!ok) return;
+  }
+  const { project, colorKey, worktree, branch } = members[0];
+  for (const id of members.map((x) => x.id)) closeSession(id);
+  // The attended door, so an ${input:…} still asks and a dependency cycle still refuses.
+  runRunnable(root, project, { colorKey, worktree, branch, discoveredIn: head.root });
 }
 
 // Presentational only, so it repaints the sidebar and nothing else.

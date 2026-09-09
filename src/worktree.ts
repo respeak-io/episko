@@ -7,14 +7,18 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
-import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type StatusFile, type Stranded, type WorkingSet } from "./types";
+import { fileSetHtml } from "./patchview";
+import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded, type WorkingSet } from "./types";
 import { extWorking } from "./sidebarview";
+import { checkoutDir } from "./gitwatch";
+import { bPopOpen, closeBranchPop, openBranchPop } from "./bpop";
 import {
-  remoteOf as branchRemoteOf, trunkOf, trunkOptions, type BranchInfo, type WtInfo,
+  remoteOf as branchRemoteOf, midFlightText, switchable as pickSwitchable, switchOptions,
+  trunkOf, trunkOptions, type BranchInfo, type BranchPick, type WtInfo,
 } from "./branches";
 import {
-  cmpBase, effectiveAgent, engineDef, externals, permissionModeFor, sessions, termEngine,
-  worktreesByRepo,
+  cmpBase, effectiveAgent, engineDef, externals, permissionModeFor, removingWt, sessions,
+  termEngine, worktreesByRepo,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { agentLogo } from "./providers/logos";
@@ -472,35 +476,17 @@ function wtCommitKey(d: Dest): string {
   return "";
 }
 
-// Shared with the diff viewer's file headers, so one letter means one thing. `?` borrows `added`'s green.
-const WT_FCLASS: Record<string, string> = {
-  M: "s-mod", A: "s-add", "?": "s-add", D: "s-del", R: "s-ren", C: "s-ren", U: "s-del",
-};
 const WT_FILES_SHOWN = 10; // the pane is a paragraph of facts, not a diff viewer
-
-function wtFileHtml(f: StatusFile): string {
-  const name = f.from
-    ? `<span class="from">${esc(f.from)}</span> → ${wtPathHtml(f.path)}`
-    : wtPathHtml(f.path);
-  const n = f.added || f.removed
-    ? `<span class="n"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>`
-    : "";
-  return `<li><span class="dstat ${WT_FCLASS[f.code] ?? "s-mod"}">${esc(f.code)}</span>`
-    + `<span class="p">${name}</span>${n}</li>`;
-}
 /** `pending` shows until the fetch lands. A worktree row already knows whether it is
  *  dirty from `list_worktrees`, so it says so at once and never flashes the opposite answer. */
 function wtWorkHtml(dir: string, pending: string): string {
   if (!wtDirty.has(dir)) return pending;
   const g = wtDirty.get(dir);
   if (!g || !g.dirty) return `<span class="good">clean</span>`; // null: not a repo, or no commits yet
-  const shown = g.entries.slice(0, WT_FILES_SHOWN);
-  const rest = g.dirty - shown.length;
   return `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
     + (g.added || g.removed ? ` <span class="dim">·</span> <span class="add">+${g.added}</span> <span class="del">−${g.removed}</span>` : "")
     + (g.untracked ? ` <span class="dim">· ${g.untracked} new</span>` : "")
-    + (shown.length ? `<ul class="wt-files">${shown.map(wtFileHtml).join("")}</ul>` : "")
-    + (rest > 0 ? `<div class="wt-fmore">…and ${rest} more</div>` : "");
+    + fileSetHtml(g.entries, WT_FILES_SHOWN, g.dirty);
 }
 
 function wtFacts(pairs: [string, string][]) {
@@ -759,14 +745,10 @@ function wtSwitchHtml(): string {
   const extBusy = extHere.filter(extWorking);
   const pick = wtSwitchable();
   if (busy.length || extBusy.length) {
-    const agents = busy.filter(isAgent).length;
-    const runs = busy.filter((s) => s.kind === "task").length;
-    const what: string[] = [];
-    if (agents) what.push(`${agents} agent${agents === 1 ? " is" : "s are"} mid-turn`);
-    if (runs) what.push(`${runs} task${runs === 1 ? " is" : "s are"} still running`);
-    if (extBusy.length) what.push(`${extBusy.length} session${extBusy.length === 1 ? " is" : "s are"} working outside Episko`);
+    const what = midFlightText(
+      busy.filter(isAgent).length, busy.filter((s) => s.kind === "task").length, extBusy.length);
     return `<div class="wt-danger"><span class="q">Switch this folder's branch?</span>`
-      + `<span class="w"><span class="em">${what.join(", ")}.</span> `
+      + `<span class="w"><span class="em">${what}.</span> `
       + `Switching would move the ground under that work mid-edit, so Episko won't, though only while it lasts. `
       + `Simply having a session open here doesn't block it: wait for this to land, or stop it.</span>`
       + (busy.length ? wtSessHtml(busy) : "")
@@ -808,135 +790,88 @@ function wtSwitchHtml(): string {
     + `<button class="wt-cbtn ghost" type="button" data-wtact="cancel">Cancel</button></span></div>`;
 }
 
-/** Branches the root can move to, plus the remote-only ones the switch cuts a local ref from. */
-function wtSwitchOptions(): BranchPick[] {
-  // One checkout per branch, so anything held is listed disabled with the reason: omitting
-  // it silently made `dev` look like it had gone missing.
-  const held = new Map<string, string>();
-  for (const w of wtWts) if (!w.is_main && w.branch) held.set(w.branch, basename(w.path));
-  const local = wtBranches.map((b) => b.current
-    ? { name: b.name, note: "already checked out here", disabled: true }
-    : held.has(b.name)
-      ? { name: b.name, note: `checked out in ${held.get(b.name)}/`, disabled: true }
-      : { name: b.name, note: b.rel || "" });
-  // Remote-only rows have no local ref (git_branch_list says so), so none is held; `base`
-  // makes the cut ref track its origin. Last and marked: the only options that add a name.
-  const remote = wtRemotes.map((b) => ({
-    name: b.name, ic: "⇣", base: b.upstream,
-    note: `only on ${wtRemoteOf(b)}; creates a local branch tracking it`,
-  }));
-  return [...local, ...remote];
-}
-const wtSwitchable = () => wtSwitchOptions().filter((o) => !o.disabled);
+// ./branches owns which branches a checkout can move to; this dialog is one of its surfaces.
+const wtSwitchOptions = (): BranchPick[] =>
+  switchOptions(wtBranches.concat(wtRemotes), wtWts, wtCtx?.repoDir ?? "");
+const wtSwitchable = () => pickSwitchable(wtSwitchOptions());
 async function wtDoSwitch() {
   if (!wtCtx || wtBusy) return;
   const { project, repoDir } = wtCtx;
-  const pick = wtSwitchable();
-  const target = pick.find((o) => o.name === wtSwitchTo) ?? pick[0];
-  const branch = target?.name;
-  if (!branch) return;
+  const target = wtSwitchable().find((o) => o.name === wtSwitchTo) ?? wtSwitchable()[0];
+  if (!target) return;
   wtBusy = true;
   try {
-    // `base` is null unless the target is remote-only; the backend ignores it for a branch
-    // that exists locally by now, so a seconds-old list is safe to send.
-    const r = await invoke<GitActionResult>("switch_branch", { repoDir, branch, base: target.base ?? null });
-    dlog(r.ok ? "info" : "warn", `switch · ${basename(repoDir)} · ${r.summary}`);
-    toast(r.ok ? r.summary : `${r.summary} → opening a terminal`);
-    if (!r.ok && r.suggest) {
-      closeWt();
-      await handToTerminal(project, repoDir, r.suggest, { colorKey: repoDir });
-      return;
-    }
-    wtArmed = ""; wtSwitchTo = ""; wtRepoBranch = branch;
-    onBranchSwitched(repoDir);
-    await wtLoad(true);
-    // Sessions here still show the branch they were launched on; the app moved HEAD itself,
-    // so it must not wait for the 4s poll to correct them.
-    void refreshGitViews();
-  } catch (e) {
-    dlog("error", `switch failed: ${e}`);
-    toast("switch: " + e);
+    if (await switchCheckout(project, repoDir, target.name, target.base ?? null)) {
+      wtArmed = ""; wtSwitchTo = ""; wtRepoBranch = target.name;
+      await wtLoad(true);
+    } else closeWt();
   } finally { wtBusy = false; renderAll(); }
 }
 
-// ---------- branch chooser ----------
-// One picker for the new-worktree base and the root-switch target, in the .menupop idiom.
-// At body level (#bPop) because .wtdlg is overflow:hidden; typing filters, since a repo
-// can hold BRANCH_LIST_CAP refs.
-interface BranchPick {
-  name: string;
-  note: string;
-  disabled?: boolean; // shown but not choosable, with `note` saying why: a row that vanishes reads as a bug
-  ic?: string;        // row glyph override; only the remote-only rows set it (⇣)
-  base?: string;      // remote-tracking ref to cut from when there is no local ref (see switch_branch)
+/** The branch chip on a session's git card. A pane's own checkout switches independently of
+ *  the repo root, so the list is read for the checkout it sits in, not for the project. */
+export async function openSessionBranchPop(anchor: HTMLElement, sessionId: string): Promise<void> {
+  const s = sessions.get(sessionId);
+  if (!s?.workdir) return;
+  const dir = checkoutDir(s.workdir, worktreesByRepo.get(s.colorKey) ?? []);
+  const [branches, worktrees] = await Promise.all([
+    invoke<BranchInfo[]>("git_branch_list", { repoDir: dir, base: cmpBase[s.colorKey] ?? null }).catch(() => [] as BranchInfo[]),
+    invoke<WtInfo[]>("list_worktrees", { repoDir: dir }).catch(() => [] as WtInfo[]),
+  ]);
+  if (!sessions.has(sessionId)) return;   // the pane closed while git was answering
+  openBranchPop(anchor, switchOptions(branches, worktrees, dir), s.branch || "",
+    (n) => { void switchCheckout(s.project, dir, n, branches.find((b) => b.name === n && b.remote)?.upstream ?? null); });
 }
-let bPopItems: BranchPick[] = [];
-let bPopSel = 0;
-let bPopOn: ((name: string) => void) | null = null;
-let bPopAnchor: HTMLElement | null = null;
 
-function bPopOpen() { return $("bPop").classList.contains("show"); }
-// Exported for the Branches view's trunk chip (via `DashHost.pickTrunk`), so the popover
-// and its keyboard handling exist once.
-export function openBranchPop(anchor: HTMLElement, items: BranchPick[], current: string, onPick: (name: string) => void) {
-  bPopItems = items; bPopOn = onPick; bPopAnchor = anchor;
-  const at = items.findIndex((i) => i.name === current);
-  bPopSel = at >= 0 && !items[at].disabled ? at : bPopFirst(items);
-  const pop = $("bPop");
-  pop.innerHTML = `<div class="bp-q"><span>❯</span><input id="bPopQ" spellcheck="false" autocomplete="off" placeholder="Filter branches…" aria-label="Filter branches" /></div><div class="bp-list" id="bPopList" role="listbox"></div>`;
-  pop.classList.add("show");
-  anchor.classList.add("open");
-  renderBranchPop();
-  // Anchor below the trigger, flipping above when that would run off the bottom.
-  const r = anchor.getBoundingClientRect(), h = pop.offsetHeight;
-  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + "px";
-  pop.style.top = (r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
-  setTimeout(() => ($("bPopQ") as HTMLInputElement)?.focus(), 20);
-}
-function renderBranchPop() {
-  const q = (($("bPopQ") as HTMLInputElement)?.value || "").trim().toLowerCase();
-  const shown = bPopItems.filter((i) => !q || i.name.toLowerCase().includes(q));
-  if (bPopSel >= shown.length) bPopSel = Math.max(0, shown.length - 1);
-  $("bPopList").innerHTML = shown.length
-    ? shown.map((i, n) => `<button class="mp-item${n === bPopSel ? " on" : ""}${i.disabled ? " dis" : ""}" type="button" role="option"`
-        + ` aria-selected="${n === bPopSel}" aria-disabled="${!!i.disabled}"${i.disabled ? " disabled" : ""} data-bpick="${esc(i.name)}">`
-        + `<span class="mp-ic">${i.disabled ? "⊘" : i.ic || "⌥"}</span><span class="mp-main"><span class="mp-l">${esc(i.name)}</span>`
-        + (i.note ? `<span class="mp-s">${esc(i.note)}</span>` : "")
-        + `</span><span class="mp-check">✓</span></button>`).join("")
-    : `<div class="bp-none">No branch matches that.</div>`;
-  $("bPopList").querySelector(".mp-item.on")?.scrollIntoView({ block: "nearest" });
-}
-function bPopShown(): BranchPick[] {
-  const q = (($("bPopQ") as HTMLInputElement)?.value || "").trim().toLowerCase();
-  return bPopItems.filter((i) => !q || i.name.toLowerCase().includes(q));
-}
-/** Next choosable row in `dir`, or stay put: arrows step over the disabled entries. */
-function bPopStep(shown: BranchPick[], from: number, dir: 1 | -1): number {
-  for (let i = from + dir; i >= 0 && i < shown.length; i += dir) if (!shown[i].disabled) return i;
-  return from;
-}
-const bPopFirst = (shown: BranchPick[]) => { const i = shown.findIndex((x) => !x.disabled); return i < 0 ? 0 : i; };
-export function closeBranchPop(refocus = true) {
-  if (!bPopOpen()) return;
-  $("bPop").classList.remove("show");
-  bPopAnchor?.classList.remove("open");
-  bPopAnchor = null; bPopOn = null;
-  if (refocus && $("wtDlg").classList.contains("show")) ($("wtQ") as HTMLInputElement).focus();
-}
-function bPopPick(name: string) { const cb = bPopOn; closeBranchPop(); cb?.(name); }
+/** Move a checkout to another branch. `switch_branch` holds every guard it can see (a task
+ *  running here, the target checked out elsewhere, a dirty tree it hands to a terminal); this
+ *  adds the one only the frontend knows — a pane mid-turn — and warns about what survives.
+ *  `base` is the remote-tracking ref a remote-only target is cut from. */
+export async function switchCheckout(
+  project: string, dir: string, branch: string, base: string | null,
+): Promise<boolean> {
+  const here = wtSessionsIn(dir);
+  const busy = here.filter(midFlight);
+  const extHere = externals.filter((e) => wtNorm(e.cwd) === wtNorm(dir));
+  const extBusy = extHere.filter(extWorking);
+  const what = midFlightText(
+    busy.filter(isAgent).length, busy.filter((s) => s.kind === "task").length, extBusy.length);
+  if (what) { toast(`${what} in ${basename(dir)} — switching would move the ground under it`); return false; }
+  // Nothing here is mid-turn, so no work is cut off. What survives is warned about rather than
+  // prevented: this folder is where the next prompt or command in those panes lands.
+  const stay = here.filter((s) => !isExited(s)).length + extHere.length;
+  if (stay && !await ask(
+    `Switch ${basename(dir)} to ${branch}?
 
-$("bPop").addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-bpick]");
-  if (b) bPopPick(b.dataset.bpick!);
-});
-$("bPop").addEventListener("input", () => { bPopSel = bPopFirst(bPopShown()); renderBranchPop(); });
-$("bPop").addEventListener("keydown", (e) => {
-  const shown = bPopShown();
-  if (e.key === "ArrowDown") { e.preventDefault(); bPopSel = bPopStep(shown, bPopSel, 1); renderBranchPop(); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); bPopSel = bPopStep(shown, bPopSel, -1); renderBranchPop(); }
-  else if (e.key === "Enter") { e.preventDefault(); const p = shown[bPopSel]; if (p && !p.disabled) bPopPick(p.name); }
-  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeBranchPop(); }
-});
+`
+    + `${stay} session${stay === 1 ? "" : "s"} stay${stay === 1 ? "s" : ""} open here. Nothing is mid-turn, `
+    + `so no work is cut off — but the next thing that happens in ${stay === 1 ? "it" : "them"} happens on ${branch}, `
+    + `however the conversation reads.`,
+    { title: "Switch branch", kind: "warning", okLabel: "Switch", cancelLabel: "Cancel" })) return false;
+  try {
+    // `base` is ignored by the backend for a branch that exists locally by now, so a
+    // seconds-old list is safe to send.
+    const r = await invoke<GitActionResult>("switch_branch", { repoDir: dir, branch, base: base || null });
+    dlog(r.ok ? "info" : "warn", `switch · ${basename(dir)} · ${r.summary}`);
+    toast(r.ok ? r.summary : `${r.summary} → opening a terminal`);
+    if (!r.ok) {
+      if (r.suggest) await handToTerminal(project, dir, r.suggest, { colorKey: dir });
+      return false;
+    }
+    onBranchSwitched(dir);
+    // Sessions here still show the branch they were launched on; the app moved HEAD itself,
+    // so it must not wait for the 4s poll to correct them.
+    void refreshGitViews();
+    return true;
+  } catch (e) {
+    dlog("error", `switch failed: ${e}`);
+    toast("switch: " + e);
+    return false;
+  }
+}
+
+// Where focus goes when the chooser closes; the popover itself knows no dialog.
+const wtRefocus = () => { if ($("wtDlg").classList.contains("show")) ($("wtQ") as HTMLInputElement).focus(); };
 
 function wtPickBtn(kind: "base" | "switch", label: string): string {
   return `<button class="wt-pick" type="button" data-wtpick="${kind}" aria-haspopup="listbox">`
@@ -1109,6 +1044,11 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
     if (!await ask(`Remove the worktree at ${basename(path)}/?\n\n${closes}, the folder goes, and its branch is deleted only if it's fully merged.`,
       { title: "Remove worktree", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" })) return;
   }
+  // Marked BEFORE the sessions close: the rail is drawn from them, so without this the row
+  // (and sometimes its whole project) leaves the moment you confirm, seconds before git has
+  // done anything. ./grouping keeps both alive while the mark is here; ./sidebarview spins it.
+  removingWt.set(at, repoDir);
+  renderAll();
   // Wait for the processes to be reaped: git deletes the directory before it unregisters the
   // worktree, and Windows won't delete a directory a live process sits in.
   await closeSessionsIn(live);
@@ -1125,6 +1065,8 @@ export async function removeWorktreeAt(project: string, repoDir: string, path: s
   } catch (e) {
     dlog("error", `worktree remove failed: ${e}`);
     toast("worktree: " + e);
+  } finally {
+    removingWt.delete(at);
   }
   renderAll();
 }
@@ -1163,11 +1105,11 @@ $("wtDlg").addEventListener("click", (e) => {
         if (!wtCtx) return;
         saveCmpBase(wtCtx.repoDir, n);
         void wtReadLocal(true);
-      });
+      }, wtRefocus);
     } else if (pick.dataset.wtpick === "base") {
-      openBranchPop(pick, wtBaseOptions(), wtBase || head, (n) => { wtBase = n === head ? "" : n; wtRender(); });
+      openBranchPop(pick, wtBaseOptions(), wtBase || head, (n) => { wtBase = n === head ? "" : n; wtRender(); }, wtRefocus);
     } else {
-      openBranchPop(pick, wtSwitchOptions(), wtSwitchTo || wtSwitchable()[0]?.name || "", (n) => { wtSwitchTo = n; wtRender(); });
+      openBranchPop(pick, wtSwitchOptions(), wtSwitchTo || wtSwitchable()[0]?.name || "", (n) => { wtSwitchTo = n; wtRender(); }, wtRefocus);
     }
     return;
   }

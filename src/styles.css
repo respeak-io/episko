@@ -30,6 +30,9 @@
   --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-bash:#e0a44a; --tool-task:#6ad0b0; --tool-web:#f0a6d0; --tool-mcp:#9aa0b4;
   /* usage analytics: model families (colourblind-validated), the spend-heatmap ramp, the token-mix ramp */
   --m-opus:#8f74ee; --m-sonnet:#c07d1e; --m-haiku:#149a73; --m-other:#8a8394; --m-unattr:#6b6478;
+  --m-fable:#3f8ee0; --m-gpt:#d3618f; --m-codex:#2ca6b8;
+  /* spares for a provider we ship no hue for, and the ground an older version is faded into */
+  --m-s1:#93b03c; --m-s2:#b968d8; --m-s3:#7f93b8; --m-s4:#cc6a55; --m-fade:#ffffff;
   --u-g0:#191622; --u-g1:#372e57; --u-g2:#544499; --u-g3:#7d63d8; --u-g4:#a78bfa;
   --u-t1:#2c2740; --u-t2:#4a3d7a; --u-t3:#7159c4; --u-t4:#a78bfa;
   /* commit-graph lanes: eight hues that must stay apart from each other and off the accent */
@@ -49,6 +52,8 @@
   --tool-read:#2a7fd0; --tool-edit:#6a45e0; --tool-bash:#b9791a; --tool-task:#128a63; --tool-web:#c04f97; --tool-mcp:#6a6480;
   /* usage analytics — re-stepped for the light ground (own steps, not an inversion) */
   --m-opus:#7c5cf0; --m-sonnet:#b8760f; --m-haiku:#0c8f68; --m-other:#8a8598; --m-unattr:#b8b2c6;
+  --m-fable:#2b6fd0; --m-gpt:#c04270; --m-codex:#0f8fa3;
+  --m-s1:#6e8c1e; --m-s2:#9a45c0; --m-s3:#5a7095; --m-s4:#b34a35; --m-fade:#241d33;
   --u-g0:#eceaf2; --u-g1:#d8cff2; --u-g2:#b7a4ee; --u-g3:#9575e8; --u-g4:#7c5cf0;
   --u-t1:#e4def3; --u-t2:#c3b0ee; --u-t3:#9878e6; --u-t4:#7c5cf0;
   /* lane hues re-stepped: the dark set's pastels vanish on white at 1.6px of stroke */
@@ -385,6 +390,10 @@ html.win .wctl { display: flex; }
 .rgname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
 .rgroup.on .rgname { color: var(--accent-ink); }
 .rgrow:hover .sclose { opacity: 1; }
+/* Both group controls are hover-revealed overlays rather than grid cells, so ⟳ sits left of ✕;
+   they abut rather than clear each other, or the tally shows through the seam on hover. */
+.rgredo { right: 22px; }
+.rgredo:hover { color: var(--accent-ink); }
 /* the negative margin buys click area without widening the column */
 .rgtwist { font-size: 11px; color: var(--muted-2); text-align: center; line-height: 1; transition: transform .12s, color .12s; cursor: pointer; margin: -5px; padding: 5px; border-radius: 4px; }
 .rgtwist:hover { color: var(--text); background: var(--surface-2); }
@@ -541,7 +550,7 @@ html.win .wctl { display: flex; }
 .insp-head { padding: 10px 13px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 8px; }
 .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; background: color-mix(in srgb, var(--pc) 14%, transparent); color: var(--pc); border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); }
 .pill .pd { width: 5px; height: 5px; border-radius: 50%; background: var(--pc); }
-.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);}
+.pill.attention{--pc:var(--st-attention);} .pill.working{--pc:var(--st-working);} .pill.thinking{--pc:var(--st-working);} .pill.done{--pc:var(--st-done);} .pill.idle{--pc:var(--st-idle);} .pill.error{--pc:var(--st-error);} .pill.ended{--pc:var(--muted-2);} .pill.background{--pc:var(--st-bg);} .pill.donebg{--pc:var(--st-done);}
 .insp-scroll { overflow-y: auto; padding: 12px 13px 16px; display: flex; flex-direction: column; gap: 13px; min-height: 0; flex: 1; }
 .insp-empty { color: var(--muted-2); font-size: 11.5px; text-align: center; padding: 30px 10px; }
 
@@ -589,7 +598,7 @@ html.win .wctl { display: flex; }
 .vital .vgauge .glab { grid-area: 2 / 1; font: 9px var(--font-mono); letter-spacing: .03em; text-transform: uppercase; color: var(--muted-2); }
 .vital.st-working{--sc:var(--st-working);} .vital.st-thinking{--sc:var(--st-working);} .vital.st-done{--sc:var(--st-done);}
 .vital.st-attention{--sc:var(--st-attention);} .vital.st-error{--sc:var(--st-error);} .vital.st-idle{--sc:var(--st-idle);} .vital.st-ended{--sc:var(--muted-2);}
-.vital.st-background{--sc:var(--st-bg);}
+.vital.st-background{--sc:var(--st-bg);} .vital.st-donebg{--sc:var(--st-done);}
 .vital .vtop { display: flex; align-items: center; gap: 8px; }
 .vital .heart { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--sc); }
 @media (prefers-reduced-motion: no-preference) { .vital .heart:not(.still) { animation: beat 1.5s ease-in-out infinite; } }
@@ -680,11 +689,13 @@ html.win .wctl { display: flex; }
 
 /* --- working set (git diffstat) --- */
 .wset { border-radius: var(--radius); padding: 11px 12px; background: var(--surface); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 8px; }
-.wset .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
-.wset .add { color: var(--st-done); font-weight: 700; } .wset .del { color: var(--st-attention); font-weight: 700; }
-.wset .files { color: var(--muted); margin-left: auto; }
+/* The peek is drawn in three hosts, so its own look hangs off `.wpeek` and not off any one
+   of them; what stays under `.wset` below is the card around it (branch, sync, buttons). */
+.wpeek .wtop { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); }
+.wpeek .add { color: var(--st-done); font-weight: 700; } .wpeek .del { color: var(--st-attention); font-weight: 700; }
+.wpeek .files { color: var(--muted); margin-left: auto; }
 /* ...unless it is alone on the row (new files only, no line counts), where right-aligning leaves a hole */
-.wset .files.lone { margin-left: 0; margin-right: auto; }
+.wpeek .files.lone { margin-left: 0; margin-right: auto; }
 .stackbar { height: 6px; border-radius: 3px; overflow: hidden; display: flex; background: var(--hair-strong); }
 .stackbar .sa { background: var(--st-done); } .stackbar .sd { background: var(--st-attention); }
 /* No churn to split: the bare track, dimmed. Never a 100%-wide half — see wpeekHtml. */
@@ -1280,7 +1291,7 @@ html.win .wctl { display: flex; }
 .tact { white-space: nowrap; }
 .tact.hero { border-color: var(--accent-line); color: var(--accent-ink); }
 /* full width only in the inspector's stack; in the task panel's footer it sits in a flex row */
-.tacts .tact.hero { width: 100%; }
+.tacts .tact.hero { width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .tact.hero:hover { background: var(--accent-wash); }
 .ext-meta .mono.ok { color: var(--st-done); }
 .ext-meta .mono.bad { color: var(--st-error); }
@@ -1432,6 +1443,11 @@ select.in-ctl { cursor: pointer; }
 .wt-sk i { display: block; height: 9px; border-radius: 4px; background: var(--surface-2); animation: wtpulse 1.35s ease-in-out infinite; }
 .wt-sk i.a { width: 20px; height: 20px; border-radius: 6px; flex: none; }
 @keyframes wtpulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
+/* Mid-removal: the row stays until git says otherwise, and the spinner is what says so. */
+.wthead.going { cursor: default; }
+.wthead.going .wtname { color: var(--muted-2) !important; }
+.wthead.going .u-spin { margin: 0 2px 0 0; }
+.wtsessions.going { opacity: .45; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .wt-sk i { animation: none; opacity: .6; } }
 /* A group heading with nothing under it (only Worktrees renders one; see wtRender): the skeleton
    put the heading on screen, so its silent disappearance reads as a load that never finished. */
@@ -1457,13 +1473,24 @@ select.in-ctl { cursor: pointer; }
 /* the working-tree fact names its files, so it carries the diff viewer's +/− colours and .dstat letters */
 .wt-facts dd .add { color: var(--st-done); }
 .wt-facts dd .del { color: var(--st-attention); }
-.wt-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.wt-files li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
-.wt-files .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
-.wt-files .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.wt-files .from { color: var(--muted-2); text-decoration: line-through; }
-.wt-files .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
-.wt-fmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+/* The dashboard's Working set card. `.ac-b` pads by 3px because its usual children pad
+   themselves, and the peek bleeds -6px to sit its hover highlight under the text, so this
+   is the padding both of them assume — the `.wset` role in the inspector, one card over. */
+.wsb { padding: 8px 7px 9px; }
+
+/* One dirty file, wherever a working set is listed rather than drawn: the fact above and
+   the dashboard's Working set card. A row that is a door says so; the rest are read-only. */
+.fslist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.fslist li { display: flex; align-items: center; gap: 7px; font: 11px var(--font-mono); line-height: 1.35; }
+.fslist .dstat { width: 14px; height: 14px; border-radius: 3px; font-size: 9px; }
+.fslist .p { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.fslist .from { color: var(--muted-2); text-decoration: line-through; }
+.fslist .n { flex: none; font-size: 10px; letter-spacing: -.01em; }
+.fslist .add { color: var(--st-done); }
+.fslist .del { color: var(--st-attention); }
+.fslist li[data-diff] { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: 0 -5px; }
+.fslist li[data-diff]:hover { background: var(--surface-2); }
+.fsmore { margin-top: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 
 /* a consequence the row can't fit: divergence, detachment, a taken folder */
 .wt-warn { border-left: 2px solid var(--st-working); border-radius: 0 7px 7px 0; background: color-mix(in srgb, var(--st-working) 10%, transparent); padding: 9px 11px; font: 11px/1.5 var(--font-ui); color: var(--muted); }
@@ -1605,8 +1632,18 @@ select.in-ctl { cursor: pointer; }
 .sv-kind { margin-left: 7px; font: 600 9.5px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted-2); }
 .sv-foot { margin-top: 9px; font-size: 10.5px; color: var(--muted-2); max-width: 62ch; line-height: 1.45; }
 
-/* ---------- Usage analytics tab ---------- */
-.setdlg.wide { width: min(1120px, 96vw); height: min(884px, 92vh); }
+/* ---------- the Usage & spend window (./usagedlg) ----------
+   A report, not a setting, so its own dialog: no tab rail, one scrolling body, and the same
+   chrome as .setdlg so the two read as the same family. Wider and taller than Settings —
+   the heatmap is 53 weeks across and the panel is six cards deep. */
+.usagedlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(1120px, 96vw); height: min(884px, 92vh); z-index: 42; display: flex; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.usagedlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.u-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; }
+.u-body::-webkit-scrollbar { width: 10px; }
+.u-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.u-body::-webkit-scrollbar-thumb:hover { background: var(--muted-2); border: 3px solid transparent; background-clip: padding-box; }
+/* room for the ✕, which floats over the header rather than pushing it down */
+.u-body .u-paneh { padding-right: 30px; }
 .u-pane { display: flex; flex-direction: column; gap: 16px; }
 .u-paneh { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .u-title { margin: 5px 0 3px; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
@@ -2089,8 +2126,17 @@ select.in-ctl { cursor: pointer; }
 .svrpop .sv-foot code { font-family: var(--font-mono); color: var(--muted); }
 
 /* account usage-limits popover (5-hour session + 7-day weekly windows) */
+/* Every status-bar popover names itself, and the right end of that header is where its quick
+   open sits — so the header is one rule for the family, not one per popover. */
+.menupop .up-h, .menupop .sc-h { display: flex; align-items: center; gap: 8px; font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
+/* The quick open itself: an icon, never a row. Negative block margins so adding one does not
+   make the header taller than its text alone. */
+.menupop .pgo { flex: none; margin: -3px -2px -3px auto; display: grid; place-items: center; width: 19px; height: 19px; border-radius: 6px; cursor: pointer; font: 11px var(--font-ui); line-height: 1; letter-spacing: 0; color: var(--muted-2); background: transparent; border: 1px solid transparent; transition: color .14s, background .14s, border-color .14s; }
+.menupop .pgo:hover { color: var(--accent-ink); background: var(--surface); border-color: var(--hair); }
+/* the engine picker's header is the only one that titles a list of choices, so it gets air */
+#enginePop .up-h { padding-bottom: 5px; }
+
 .usagepop { min-width: 244px; gap: 4px; padding: 10px; }
-.usagepop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
 .usagepop .up-row { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; }
 .usagepop .up-row + .up-row { border-top: 1px solid var(--hair); }
 .usagepop .up-top { display: flex; align-items: baseline; gap: 6px; }
@@ -2110,7 +2156,6 @@ select.in-ctl { cursor: pointer; }
 
 /* today's-spend popover: borrows .usagepop's header and note; a spend row is a name + a bar + money */
 .costpop { min-width: 252px; max-width: 320px; gap: 3px; padding: 10px; }
-.costpop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 3px; }
 .costpop .up-note { font-size: 10px; color: var(--muted-2); padding: 3px 2px; line-height: 1.4; }
 .costpop .cp-tot { font: 700 21px var(--font-mono); color: var(--text); padding: 0 2px 4px; letter-spacing: -.01em; }
 .costpop .cp-lbl { font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 7px 2px 4px; border-top: 1px solid var(--hair); margin-top: 3px; }
@@ -2134,7 +2179,7 @@ select.in-ctl { cursor: pointer; }
 /* --- disk I/O popover (footer "disk") ---
    Wider than the other footer menus: three windows of figures plus three permanent notes. */
 .iopop { width: 320px; max-height: min(560px, 72vh); overflow-y: auto; }
-.iopop .up-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 5px; }
+.iopop .up-h { padding-bottom: 5px; }
 .iopop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 8px 2px 1px; margin-top: 8px; border-top: 1px solid var(--hair); }
 .iopop .up-note { font-size: 10px; color: var(--muted-2); padding: 6px 2px 0; margin: 0; line-height: 1.4; }
 .iopop .io-rate { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
@@ -2155,7 +2200,7 @@ select.in-ctl { cursor: pointer; }
 
 /* keyboard-shortcuts popover (⌘ Shortcuts footer segment) */
 .shortpop { min-width: 262px; gap: 1px; padding: 8px; }
-.shortpop .sc-h { font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); padding: 0 2px 5px; }
+.shortpop .sc-h { padding-bottom: 5px; }
 .shortpop .sc-row { display: flex; align-items: center; gap: 12px; padding: 5px 4px; border-radius: 6px; }
 .shortpop .sc-row:hover { background: var(--surface); }
 .shortpop .sc-desc { font: 500 11.5px var(--font-ui); color: var(--text); }
@@ -2421,7 +2466,8 @@ select.in-ctl { cursor: pointer; }
 .ac-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
 .ac-empty { padding: 9px 7px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
-.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) 74px; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(74px, auto); gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; min-width: 0; }
+.cr[data-dashwt] { cursor: pointer; }
 .cr:hover { background: var(--surface-2); }
 .cr .k { text-align: center; font-size: 11px; color: var(--muted-2); }
 .cr .ti { min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
@@ -2436,7 +2482,6 @@ select.in-ctl { cursor: pointer; }
 .gsub .dim { color: var(--muted-2); font-family: var(--font-ui); font-size: 10.5px; }
 .gsub .ah { color: var(--st-done); }
 .gsub .bh { color: var(--st-working); }
-.gsub .un { color: var(--st-working); }
 .gbts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 7px 7px; }
 .gbts .gitb { height: 26px; text-align: center; }
 .gbts .gitb.wide { grid-column: 1 / -1; }
@@ -2482,10 +2527,16 @@ select.in-ctl { cursor: pointer; }
 .ovl-f { padding: 8px 14px; border-top: 1px solid var(--hair); font-size: 11px; line-height: 1.5; color: var(--muted-2); background: var(--bg-2); }
 .ovl-f code { font: 10.5px var(--font-mono); color: var(--accent-ink); }
 /* one geometry for header and rows; `dbwt` prefix because .wt-* is the worktree dialog's */
-.dbwt, .dbwt-hd { display: grid; grid-template-columns: 18px 146px minmax(0, 1fr) 178px 81px; gap: 10px; align-items: center; }
+.dbwt, .dbwt-hd { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: 20px minmax(0, 1fr) minmax(0, 200px) minmax(0, 1.25fr) minmax(0, 68px) minmax(0, 54px); }
+.dbwt.off { opacity: .55; cursor: default; }
+.dbwt.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
+.dbwt.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
+.dbwt .tags .warn { font: 10px var(--font-mono); color: var(--st-working); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbwt .tags .dim { font: 10px var(--font-ui); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbwt-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbwt-hd .r { text-align: right; }
-.dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbwt { min-height: 40px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
 .dbwt:hover { background: var(--surface); }
 .dbwt .gl { text-align: center; font-size: 11px; }
 .dbwt .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2548,16 +2599,21 @@ select.in-ctl { cursor: pointer; }
 
 /* ---- the Branches view: the cleanup at the size the decision is, every column with room ----
    The right-hand columns have a known ceiling and are fixed; `auto` would stagger them. */
-.dbbr, .dbbr-hd { display: grid; grid-template-columns: 26px minmax(150px, 1.7fr) minmax(120px, 1.3fr) 92px 92px 84px; gap: 10px; align-items: center; }
+/* Every track is minmax(0, …) so the table shrinks with the pane instead of running off the
+   right edge: the overlay only gets the dashboard's middle column, and that width varies. */
+.dbbr, .dbbr-hd { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: 20px minmax(0, 1.15fr) minmax(0, 108px) minmax(0, 1.4fr) minmax(0, 58px) minmax(0, 74px) minmax(0, 68px) 18px; }
 .dbbr-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbbr-hd .r, .dbbr .r { text-align: right; }
-.dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); }
+.dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.dbbr.off { cursor: default; }
 .dbbr:hover { background: var(--surface); }
 .dbbr.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
 .dbbr.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
 .dbbr.off { opacity: .55; }
 .dbbr .bn { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dbbr .why { display: flex; gap: 5px; align-items: center; overflow: hidden; }
+.dbbr .why { display: flex; gap: 4px; align-items: center; overflow: hidden; }
+.dbbr .why .tag { font-size: 9px; padding: 1px 5px; }
 .dbbr .why .warn { font: 10px var(--font-mono); color: var(--st-working); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbbr .st, .dbbr .au, .dbbr .ag { font-size: 9.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a result row (name + outcome, no checkbox) gets its own grid, or every name lands in the tick column */
@@ -2570,7 +2626,7 @@ select.in-ctl { cursor: pointer; }
 .brck { width: 15px; height: 15px; border-radius: 4px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface-2); display: grid; place-items: center; padding: 0; line-height: 1; }
 .brck.on { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
 .brck.on::after { content: "✓"; font: 700 10px/1 var(--font-ui); color: var(--st-error); }
-.brck[disabled] { cursor: not-allowed; opacity: .5; }
+.brck[aria-disabled="true"] { cursor: default; opacity: .5; }
 .dbbr-act { display: flex; align-items: center; gap: 8px; padding: 12px 9px 4px; }
 .brgo { font: 600 11.5px var(--font-ui); padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 10%, transparent); color: var(--st-error); }
 .brgo:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); }
@@ -2578,6 +2634,66 @@ select.in-ctl { cursor: pointer; }
 .dbbr-note { font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); padding: 2px 0 8px; }
 .dbbr-note.warn { color: var(--st-working); }
 .dbbr-note b { color: var(--text); font: 600 10px var(--font-mono); }
+/* ---- one table, two tabs: the branch's two homes are a column, not a second list ---- */
+.bvtabs { display: flex; align-items: center; gap: 4px; padding: 0 0 10px; }
+.bvtabs .sp, .bvbar .sp, .bvchips .sp { flex: 1 1 auto; }
+.bvtab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 7px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; font: 600 11.5px var(--font-ui); color: var(--muted); }
+.bvtab:hover { color: var(--text); background: var(--surface); }
+.bvtab.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.bvtab .n { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.bvtab.on .n { color: var(--accent-ink); }
+.bvq { width: 190px; padding: 4px 9px; border-radius: 7px; border: 1px solid var(--hair-strong);
+  background: var(--surface); color: var(--text); font: 11px var(--font-ui); }
+.bvq:focus { outline: none; border-color: var(--accent-line); }
+/* Filter chips ARE the quick-selects: narrow, then All. Counts are over every row, never the shown ones. */
+.bvchips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; padding: 0 0 9px; }
+.bvchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--hair-strong); background: var(--surface); font: 10.5px var(--font-ui); color: var(--muted); }
+.bvchip:hover { color: var(--text); }
+.bvchip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.bvchip .n { font: 9px var(--font-mono); color: var(--muted-2); }
+.bvchip.on .n { color: var(--accent-ink); }
+/* Where it lives, per half: dim when that half can't go, struck-through-red when it is going. */
+.dbbr .wh { display: flex; gap: 5px; align-items: center; overflow: hidden; }
+.hf { flex: none; padding: 1px 5px; border-radius: 4px; font: 9px var(--font-mono); color: var(--muted);
+  border: 1px solid var(--hair); background: var(--surface-2); }
+.hf.no { opacity: .45; }
+.hf.go { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent);
+  background: color-mix(in srgb, var(--st-error) 12%, transparent); }
+.dbbr .ra { display: flex; justify-content: flex-end; }
+.dbbr .ra .act { width: 20px; padding: 0; justify-content: center; opacity: 0; }
+.dbbr:hover .ra .act { opacity: .75; }
+.dbbr .ra .act:hover { opacity: 1; }
+/* The action bar: what is ticked, where a delete lands, and what that actually runs. */
+.bvbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 9px; border-radius: 10px; border: 1px solid var(--hair-strong);
+  background: var(--bg); box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, .55); }
+.bvbar.on { border-color: var(--hair-strong); }
+.bvbar .sel { font: 600 11px var(--font-ui); color: var(--text); }
+.bvbar .scopes { display: flex; align-items: center; gap: 6px; font: 10.5px var(--font-ui); color: var(--muted-2); }
+.bvbar .what { font: 10px var(--font-mono); color: var(--muted-2); }
+.bvbar .hint { font: 10px var(--font-ui); color: var(--st-working); }
+.bvbar .note { flex: 1 0 100%; order: 9; margin-top: 2px; font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); }
+.bvbar .note.warn { color: var(--st-working); }
+.bvbar .note b { color: var(--text); font: 600 10px var(--font-mono); }
+.bvbar.sharing { border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
+.bvbar .hint b { font: 600 10px var(--font-mono); }
+.bvsw { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--hair-strong); background: var(--surface-2); font: 10.5px var(--font-ui); color: var(--muted); }
+.bvsw i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--hair-strong); display: grid; place-items: center; }
+.bvsw.on { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
+.bvsw.on i { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
+.bvsw.on i::after { content: "✓"; font: 700 8.5px/1 var(--font-ui); color: var(--st-error); }
+/* The Repository card's picker and a session's branch chip: the same control, two sizes. */
+.gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.gitb.brpick .c, .bsw .c { flex: none; color: var(--muted-2); font-size: 9px; }
+.gitb.brpick .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsw { max-width: 100%; padding: 1px 6px 1px 4px; margin-left: -4px; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: inherit; font: inherit; }
+.bsw:hover, .bsw.open { border-color: var(--accent-line); background: var(--accent-wash); }
+.bsw .b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }
 .bk-cmp:hover, .bk-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
@@ -2845,6 +2961,10 @@ select.in-ctl { cursor: pointer; }
 }
 /* Nothing in a preview is a control: no hover states, no pointer, nothing focusable. */
 .fpv-pop, .fpv-pop * { pointer-events: none; }
+/* …and nothing in one may shrink to fit that cap. A scroll region inside a popover
+   (`.cp-sess`) gets min-height: 0 for free, so it collapsed to zero and took the rows out of
+   the MIDDLE of the preview — where the mask exists to fade the tail. */
+.fpv-pop > * { flex: none; }
 
 /* ---- the revive watchdog (Settings › Sessions) --------------------------------
    Same parts as the peek and attention controls; what is new is the ladder. */
@@ -2873,11 +2993,11 @@ select.in-ctl { cursor: pointer; }
    switches are ./motion's table, put on <html> by applyFx. */
 
 /* ---- a closed dialog is not a backdrop ----------------------------------
-   Unconditional: seventeen dialogs stay mounted at opacity: 0 so they can fade, and a backdrop-filter
+   Unconditional: eighteen dialogs stay mounted at opacity: 0 so they can fade, and a backdrop-filter
    on a transparent layer still keeps a blur surface alive. Gated on :not(.show), not visibility: hidden. */
 .expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .graphdlg:not(.show),
 .scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
-.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .cfm-scrim:not(.show),
+.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .cfm-scrim:not(.show),
 .cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
 .cl-dlg:not(.show) {
   backdrop-filter: none;
@@ -2893,7 +3013,7 @@ select.in-ctl { cursor: pointer; }
 :root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg,
 :root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
 :root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
-:root.fx-flat .setdlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
+:root.fx-flat .setdlg, :root.fx-flat .usagedlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
 :root.fx-flat .dsh, :root.fx-flat .cl-dlg, :root.fx-flat .tour-card,
 :root.fx-flat .colorpop, :root.fx-flat .menupop, :root.fx-flat .dbg-panel,
 :root.fx-flat .gcommit, :root.fx-flat .run-grp, :root.fx-flat .bk-h {

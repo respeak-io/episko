@@ -56,10 +56,9 @@ import {
   stopRules, taskPrefs, untrustProject, type Provider, type TaskPrefs,
 } from "./tasks";
 import { isDone, parseTourState, pickerChapters, TOUR_KEY } from "./tour";
-import { costPopHtml, ioPopHtml, usagePanelHtml, usageRow } from "./usageview";
-import { enginePopHtml, shortPopHtml } from "./footerview";
+import { costPopHtml, ioPopHtml, usageRow } from "./usageview";
+import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
-import { setUsageRange } from "./usage";
 import { providerAdapter, providerPermissionMode } from "./providers";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
@@ -72,7 +71,6 @@ export interface SettingsHost {
   setEngine: (id: Engine) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
-  refreshTokens: (force?: boolean) => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
   // repaint; state.ts's same-named setters only assign. They come through the host
   // because ./actions imports this module and a direct import back would be a cycle.
@@ -132,7 +130,7 @@ function permissionControl(): SetControl {
 let host: SettingsHost = {
   startTour: () => {},
   setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
-  bumpFont: () => {}, applyFontSize: () => {}, refreshTokens: () => {},
+  bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
@@ -167,8 +165,7 @@ type SetControl =
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm
   // dialog's red.
   | { kind: "action"; set: string; label: string; hint?: string; btn: string; danger?: boolean };
-// `render` replaces the control list with a bespoke pane (the Usage tab) and widens the dialog.
-interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[]; render?: () => string }
+interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[] }
 
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
@@ -225,7 +222,11 @@ const FPV_OPEN: Partial<Record<FootSeg, { cls: string; body: string }>> = {
   },
   limits: {
     cls: "usagepop",
-    body: `<div class="up-h">Claude usage limits</div>`
+    // The header is hand-drawn, like the foot below it — but its quick open is the real
+    // renderer, so this preview cannot claim an icon the popover does not have.
+    body: `<div class="up-h">Claude usage limits${
+      popGoHtml({ go: "usage", label: "Usage & spend", sub: "the burn rate behind these, and every day so far" })
+    }</div>`
       + usageRow("Session", "5-hour window", fpvFc(12, 13, 28 * 60))
       + usageRow("Weekly", "7-day window", fpvFc(4, 10, 4 * 86400 + 7 * 3600))
       + `<div class="up-foot"><span>today <b>$110.19</b></span><span>8 live · account-wide</span></div>`,
@@ -469,18 +470,20 @@ const SET_TABS: SetTab[] = [
       },
     ],
   },
-  {
-    id: "usage", label: "Usage", glyph: "▦",
-    controls: () => [],
-    render: () => usagePanelHtml(),
-  },
 ];
 
 export let setTab = "appearance";
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); renderSettings(); }
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
-export function openSettingsOn(tab: string) { setTab = tab; openSettings(); }
+// The scroll is reset, unlike a rail click's: this arrives from somewhere else entirely
+// (a footer popover's quick open, the tour), and landing halfway down a tab nobody
+// scrolled reads as a broken link.
+export function openSettingsOn(tab: string) {
+  setTab = tab;
+  $("setBody").scrollTop = 0;
+  openSettings();
+}
 export function closeSettings() {
   // Disarm first: the recorder listens on `window` and would go on swallowing every chord.
   stopKeyRec();
@@ -493,13 +496,11 @@ export function renderSettings() {
     `<button class="set-tab ${t.id === setTab ? "on" : ""}" data-settab="${t.id}"><span class="set-tglyph">${t.glyph}</span>${esc(t.label)}</button>`
   ).join("");
   const tab = SET_TABS.find((t) => t.id === setTab) || SET_TABS[0];
-  $("setDlg").classList.toggle("wide", !!tab.render);
   // Preserve scroll across the rebuild; the Worktrees grid scrolls.
   const body = $("setBody");
   const sc = body.scrollTop;
-  body.innerHTML = tab.render ? tab.render() : tab.controls().map(renderSetControl).join("");
+  body.innerHTML = tab.controls().map(renderSetControl).join("");
   body.scrollTop = sc;
-  if (tab.id === "usage") host.refreshTokens(); // kick the (throttled, cached) token scan
 }
 // Demo roster for the grouping previews: static, and self-contained so the real sidebar
 // renderers stay out of a settings pane.
@@ -1349,8 +1350,6 @@ $("setBody").addEventListener("click", (e) => {
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");
   if (kb) { applyKeySetting(kb.dataset.setkey!); return; }
-  const r = (e.target as HTMLElement).closest<HTMLElement>("[data-urange]");
-  if (r) { setUsageRange(+r.dataset.urange!); renderSettings(); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");
   if (o) applySetting(o.dataset.set!, o.dataset.val!);
 });
@@ -1393,20 +1392,7 @@ $("setBody").addEventListener("mouseout", (e) => {
   demoAdvance(peekLeaveAll(demoPeek, Date.now(), peekPrefs));
 });
 
-// The Usage panel's tooltip, on <body> rather than #setBody so a renderSettings() rebuild never drops it.
-const uTip = Object.assign(document.createElement("div"), { className: "u-tip", hidden: true });
-document.body.appendChild(uTip);
-$("setBody").addEventListener("mousemove", (e) => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
-  if (!t) { uTip.hidden = true; return; }
-  // dataset.tip is HTML-decoded on read; re-escape each line before re-inserting.
-  uTip.innerHTML = t.dataset.tip!.split("||").map(esc).join("<br>");
-  uTip.hidden = false;
-  uTip.style.left = e.clientX + "px";
-  uTip.style.top = (e.clientY - 14) + "px";
-});
 $("setBody").addEventListener("mouseleave", () => {
-  uTip.hidden = true;
   // No mouseover fires on leaving, so forget the row or a return to it would not replay.
   attnHover = null;
 });

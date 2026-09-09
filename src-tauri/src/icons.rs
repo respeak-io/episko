@@ -334,6 +334,13 @@ fn shape_sdf(shape: &str, x: f32, y: f32) -> f32 {
         // ◐ background fan-out: a ring with its left half filled, the union (`min`) of the
         // outline and a half-plane clipped to the inner disc.
         "half" => ((len - 8.5).abs() - 1.3).min((len - 7.6).max(x)),
+        // ⧗ your turn with a job still running: two cones meeting at the waist, capped top and
+        // bottom. The slope is normalised like the diamond's, or the sides would AA differently.
+        "hourglass" => {
+            let cone = ((x.abs() - 0.79 * y.abs()) * 0.78).max(y.abs() - 7.4);
+            let bar = |cy: f32| (x.abs() - 6.8).max((y - cy).abs() - 1.0);
+            cone.min(bar(-8.2)).min(bar(8.2))
+        }
         // `●` working / thinking, and the fallback.
         _ => len - 9.0,
     }
@@ -386,7 +393,7 @@ mod tests {
     #[test]
     fn each_shape_draws_something_different() {
         let alpha = |s: &str| glyph_rgba(s, [255, 255, 255]).chunks(4).map(|p| p[3] as u32).sum::<u32>();
-        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small", "half", "dchevron"];
+        let names = ["disc", "ring", "diamond", "check", "cross", "chevron", "small", "half", "dchevron", "hourglass"];
         let mut seen: Vec<u32> = names.iter().map(|s| alpha(s)).collect();
         let before = seen.len();
         seen.sort_unstable();

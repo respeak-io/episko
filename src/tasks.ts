@@ -15,6 +15,7 @@ export interface TaskLaunchOpts {
   forSession?: string; // the session whose turn this run verifies (run-on-stop)
   groupId?: string;    // one dependsOn chain's sidebar group; set only by launchWithDeps
   groupLabel?: string;
+  groupRoot?: string;
 }
 
 // Pane, log, toast and repaint belong to main.ts and arrive as settable hooks.
@@ -198,11 +199,12 @@ export async function launchWithDeps(
   // One group per launch: `opts.groupId` is only set by this recursion, so `??` makes outermost win.
   const groupId = opts.groupId ?? crypto.randomUUID();
   const groupLabel = opts.groupLabel ?? r.label;
+  const groupRoot = opts.groupRoot ?? r.id;
 
   // A dependency keeps `focus`, the group and `discoveredIn` (it came out of that same
   // discovery, and `declaredOwnCwd` compares against it), not the rule pane's `forSession`.
-  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, groupId, groupLabel };
-  opts = { ...opts, groupId, groupLabel }; // the chain's own pane joins the group too
+  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, groupId, groupLabel, groupRoot };
+  opts = { ...opts, groupId, groupLabel, groupRoot }; // the chain's own pane joins the group too
   // The memo is claimed synchronously, before the first await, so racing branches can't both start it.
   const runDep = (d: Runnable): Promise<boolean> => {
     const already = started.get(d.id);

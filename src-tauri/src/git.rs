@@ -823,6 +823,21 @@ pub(crate) struct BranchInfo {
     /// What a REMOTE row's `ahead`/`behind` were measured against ("origin/main"). Empty on a
     /// local row, and on a row whose remote has no known default (its counts are then unmeasured).
     base: String,
+    /// The remote-tracking ref that EXISTS for this name, tracked or not; empty when there is
+    /// none. `upstream` is only what the branch FOLLOWS, and a branch pushed without `-u`
+    /// follows nothing, so a "where does this live" reading off `upstream` says local-only.
+    /// Empty when `gone`: the ref it names is exactly the one the remote no longer has.
+    remote_ref: String,
+    /// `remote_ref`'s own tip. A remote delete is refused if the ref moved since the row was
+    /// read, and on a local row the LOCAL sha is a different commit, so it cannot stand in.
+    remote_sha: String,
+    /// Versus the trunk on every row kind, so one column can mean one thing. Both 0 with no
+    /// trunk, and on a git too old for `%(ahead-behind:)`.
+    t_ahead: u32,
+    t_behind: u32,
+    /// This IS the remote's default branch. Independent of `base`, which is overridable: a
+    /// repo comparing against `origin/dev` must still never be offered `main` to delete.
+    is_default: bool,
     author: String, // the tip commit's author, which is what GitHub's branches view shows
     sha: String,    // the tip when read; a remote delete is refused if it moved (`RemotePick`)
     rel: String,
@@ -953,22 +968,34 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     // LC_ALL=C also pins `%(upstream:track)` to English "ahead"/"behind".
     let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
 
+    let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    // "origin" when there is no remote at all: nothing below can then match it anyway.
+    let primary: &str = if remotes.is_empty() { "origin" } else { primary_remote(&remotes) };
+    // The remote's OWN default, read whatever the caller asked to compare against. The trunk
+    // is overridable and the default is not: a repo comparing against `origin/dev` still must
+    // not offer to delete `main`, which is only "merged" in the sense every branch is.
+    let default_ref = (!remotes.is_empty())
+        .then(|| remote_default(&repo_dir, primary))
+        .flatten();
+    // Its branch half ("main"), which is what a LOCAL row has to be compared against.
+    let default_name = default_ref.as_deref()
+        .and_then(|d| d.strip_prefix(primary))
+        .and_then(|r| r.strip_prefix('/'))
+        .unwrap_or("")
+        .to_string();
     // The trunk everything is measured against: the caller's `base` if git resolves it, else
-    // the primary remote's default. One choice for remote ahead/behind AND local `merged`.
+    // that default. One choice for remote ahead/behind AND local `merged`.
     let asked = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     let trunk = asked
         .filter(|b| {
             git(&["-C", &repo_dir, "rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
                 .is_ok_and(|o| o.status.success())
         })
-        .or_else(|| {
-            let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-                    .lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
-                _ => Vec::new(),
-            };
-            (!remotes.is_empty()).then(|| remote_default(&repo_dir, primary_remote(&remotes))).flatten()
-        });
+        .or_else(|| default_ref.clone());
 
     let taken: std::collections::HashSet<String> =
         match git(&["-C", &repo_dir, "worktree", "list", "--porcelain"]) {
@@ -1004,15 +1031,28 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     };
 
     // Tab-separated: neither a branch name nor a relative date ("3 days ago") holds a tab.
-    let out = match git(&[
-        "-C", &repo_dir,
-        "for-each-ref",
-        "--sort=-committerdate",
-        "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(upstream)\t%(upstream:short)\t%(upstream:track,nobracket)\t%(authorname)\t%(objectname)",
-        "refs/heads",
-    ]) {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
+    // The trailing `%(ahead-behind:)` is git 2.41+ and an older git fails the WHOLE listing
+    // on it, so the retry without it is what keeps local rows on a Debian-stable git.
+    const LFMT: &str = "--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(upstream)\t%(upstream:short)\t%(upstream:track,nobracket)\t%(authorname)\t%(objectname)";
+    let lfmt = |with_base: Option<&str>| match with_base {
+        Some(b) => format!("{LFMT}\t%(ahead-behind:{b})"),
+        None => LFMT.to_string(),
+    };
+    let heads = |fmt: &str| {
+        git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", fmt, "refs/heads"])
+            .ok()
+            .filter(|o| o.status.success())
+    };
+    let mut have_lab = trunk.is_some();
+    let out = match heads(&lfmt(trunk.as_deref())) {
+        Some(o) => o,
+        None => {
+            have_lab = false;
+            match heads(&lfmt(None)) {
+                Some(o) => o,
+                None => return vec![],
+            }
+        }
     };
     let text = String::from_utf8_lossy(&out.stdout);
 
@@ -1050,6 +1090,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         let (ahead, behind) = if gone { (0, 0) } else { (field("ahead "), field("behind ")) };
         let author = parts.next().unwrap_or("").trim().to_string();
         let sha = parts.next().unwrap_or("").trim().to_string();
+        let (t_ahead, t_behind) = ahead_behind(parts.next().unwrap_or(""), have_lab);
 
         res.push(BranchInfo {
             checked_out: taken.contains(&name),
@@ -1062,27 +1103,23 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             remote: false,
             // What `merged` was decided against; a local row's ahead/behind is still vs its own upstream.
             base: merged_base.clone().unwrap_or_default(),
+            // What it follows, until the remote pass finds a ref it merely has.
+            remote_ref: if gone { String::new() } else { upstream.clone() },
+            remote_sha: String::new(),
+            is_default: !default_name.is_empty() && default_name == name,
+            t_ahead, t_behind,
             name, upstream, ahead, behind, gone, rel, unix, author, sha,
         });
     }
 
     // ---- remote-only branches ------------------------------------------------------
-    // Remote names are read, not assumed: "origin/feature/x" has to be split back into remote + branch.
-    let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    };
+    // Remote names were read above, not assumed: "origin/feature/x" has to be split back
+    // into remote + branch.
     if remotes.is_empty() {
         return res;
     }
     // A remote-only row is measured against the trunk (its remote's default branch, what
     // GitHub shows). ONE base: rows from another remote are left uncompared.
-    let primary = primary_remote(&remotes);
     let base = trunk;
     let rfmt = |with_base: Option<&str>| match with_base {
         Some(b) => format!("--format=%(refname:short)\t%(committerdate:unix)\t%(committerdate:relative)\t%(authorname)\t%(objectname)\t%(ahead-behind:{b})"),
@@ -1108,6 +1145,10 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     };
     let rtext = String::from_utf8_lossy(&rout.stdout);
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Where a local row sits, so a ref it merely HAS (rather than follows) can reach it.
+    // Owned keys: the loop below pushes to `res`, which a borrowed key would forbid.
+    let at: std::collections::HashMap<String, usize> =
+        res.iter().enumerate().map(|(i, b)| (b.name.clone(), i)).collect();
     for line in rtext.lines() {
         if seen.len() >= BRANCH_LIST_CAP {
             break;
@@ -1129,8 +1170,24 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             Some(l) => l,
             None => continue,
         };
-        // A name that exists locally is not remote-only; two remotes with one branch is one destination.
-        if local == "HEAD" || local_names.contains(local) || !seen.insert(local.to_string()) {
+        if local == "HEAD" {
+            continue;
+        }
+        // A name that exists locally is not remote-only, but its row still wants to know the
+        // ref is there: a branch pushed without `-u` follows nothing and would read local-only.
+        if local_names.contains(local) {
+            if let Some(row) = at.get(local).and_then(|i| res.get_mut(*i)) {
+                let mine = short.strip_prefix(primary).is_some_and(|s| s.starts_with('/'));
+                if mine || row.remote_ref.is_empty() {
+                    row.remote_ref = short.to_string();
+                    // `short` is already consumed, so objectname is the fourth field left.
+                    row.remote_sha = parts.clone().nth(3).unwrap_or("").trim().to_string();
+                }
+            }
+            continue;
+        }
+        // Two remotes with one branch is one destination.
+        if !seen.insert(local.to_string()) {
             continue;
         }
         let unix = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
@@ -1139,19 +1196,20 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         let sha = parts.next().unwrap_or("").trim().to_string();
         // "<ahead> <behind>" relative to `base`. Only the primary remote's refs are comparable;
         // other remotes keep zeros and `base: ""` tells the UI not to draw a comparison.
-        let ab = parts.next().unwrap_or("").trim();
         let mine = have_ab && short.strip_prefix(primary).is_some_and(|s| s.starts_with('/'));
-        let (ahead, behind) = if mine {
-            let mut n = ab.split_whitespace().filter_map(|v| v.parse::<u32>().ok());
-            (n.next().unwrap_or(0), n.next().unwrap_or(0))
-        } else { (0, 0) };
+        let (ahead, behind) = ahead_behind(parts.next().unwrap_or(""), mine);
         res.push(BranchInfo {
             name: local.to_string(),
             current: false,
             checked_out: false,
             upstream: short.to_string(),
+            remote_ref: short.to_string(),
+            remote_sha: sha.clone(),
+            is_default: default_ref.as_deref() == Some(short),
             ahead,
             behind,
+            t_ahead: ahead,
+            t_behind: behind,
             gone: false,
             // The basis on which a remote branch may be offered for deletion; no base offers nothing.
             merged: mine && ahead == 0 && base.is_some(),
@@ -1164,6 +1222,16 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         });
     }
     res
+}
+
+/// `%(ahead-behind:<ref>)` reads "<ahead> <behind>". `measured` is false when the field was
+/// never asked for (no trunk, an older git, another remote), and then zeros mean "unmeasured".
+fn ahead_behind(field: &str, measured: bool) -> (u32, u32) {
+    if !measured {
+        return (0, 0);
+    }
+    let mut n = field.split_whitespace().filter_map(|v| v.parse::<u32>().ok());
+    (n.next().unwrap_or(0), n.next().unwrap_or(0))
 }
 
 /// The remote a cleanup pushes to: `origin` when present, else the first configured.
@@ -3501,6 +3569,68 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
         let _ = std::fs::remove_dir_all(&theirs);
+    }
+
+    /// Where a branch lives, and where it stands, on the ONE row that carries it: a ref the
+    /// branch merely has counts as much as one it follows, and the trunk gap is on every row.
+    #[test]
+    fn git_branch_list_reports_a_ref_it_has_and_the_trunk_gap_on_local_rows() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let commit = |msg: &str| git(&dir, &[
+            "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg,
+        ]);
+        commit("base");
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+
+        git(&dir, &["checkout", "-q", "-b", "tracked"]);
+        commit("tracked work");
+        git(&dir, &["push", "-q", "-u", "origin", "tracked"]);
+        // Pushed WITHOUT -u: the ref is on the remote, and the branch follows nothing.
+        git(&dir, &["checkout", "-q", "-b", "untracked", "main"]);
+        commit("untracked work");
+        git(&dir, &["push", "-q", "origin", "untracked"]);
+        git(&dir, &["checkout", "-q", "-b", "purely-local", "main"]);
+        commit("never pushed");
+
+        git(&dir, &["checkout", "-q", "main"]);
+        commit("trunk moves 1");
+        commit("trunk moves 2");
+        git(&dir, &["push", "-q", "origin", "main"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "main"]);
+
+        let bs = git_branch_list(dir.to_str().unwrap().to_string(), None);
+        let by = |n: &str| bs.iter().find(|b| b.name == n).unwrap_or_else(|| panic!("{n} missing from {bs:?}"));
+
+        assert_eq!(by("tracked").remote_ref, "origin/tracked", "a followed ref is one it has: {bs:?}");
+        let un = by("untracked");
+        assert!(un.upstream.is_empty(), "pushed without -u, so it follows nothing: {bs:?}");
+        assert_eq!(un.remote_ref, "origin/untracked", "the ref is on the remote all the same: {bs:?}");
+        assert!(by("purely-local").remote_ref.is_empty(), "nothing on any remote: {bs:?}");
+        // The ref's OWN tip, not the branch's: a remote delete is refused if it has moved.
+        let head = |r: &str| String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["rev-parse", r]).output().unwrap().stdout).trim().to_string();
+        assert_eq!(un.remote_sha, head("refs/remotes/origin/untracked"), "{bs:?}");
+        // Every local row is measured against the trunk, so one column can mean one thing.
+        assert_eq!((un.t_ahead, un.t_behind), (1, 2), "its own commit, and two it lacks: {bs:?}");
+        assert_eq!((by("tracked").t_ahead, by("tracked").t_behind), (1, 2), "{bs:?}");
+        assert_eq!((by("main").t_ahead, by("main").t_behind), (0, 0), "level with the trunk: {bs:?}");
+        // Read from the remote itself, never from `base`, which the caller can override.
+        assert!(by("main").is_default, "origin's own default: {bs:?}");
+        assert!(!by("tracked").is_default, "{bs:?}");
+        let asked = git_branch_list(dir.to_str().unwrap().to_string(), Some("refs/heads/tracked".into()));
+        let m = asked.iter().find(|b| b.name == "main").expect("main listed");
+        assert!(m.is_default, "an overridden trunk does not un-default main: {asked:?}");
+        // Unchanged meaning: a local row's ahead/behind is still versus its OWN upstream.
+        assert_eq!((by("tracked").ahead, by("tracked").behind), (0, 0), "pushed, so level: {bs:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     /// The guards on the one write that changes things for other people: the default branch

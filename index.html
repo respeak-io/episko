@@ -376,6 +376,13 @@
       </section>
     </div>
 
+    <!-- Usage & spend. Its own window rather than a Settings tab: nothing in it is a setting,
+         and the status bar's money and limits popovers open straight into it (./usagedlg). -->
+    <div class="usagedlg" id="usageDlg" role="dialog" aria-modal="true" aria-label="Usage and spend">
+      <button class="set-x" id="usageClose" title="Close (Esc)" aria-label="Close usage">✕</button>
+      <div class="u-body" id="usageBody"></div>
+    </div>
+
     <div class="dbg-panel" id="dbgPanel" hidden>
       <div class="dbg-head">
         <b>Debug console</b>
