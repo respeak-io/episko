@@ -134,6 +134,27 @@ export function elidePath(p: string, max = 44): string {
   return short.length < p.length ? short : p;
 }
 
+// ---------- emoji as an icon ----------
+
+// One emoji, or null. Codepoints rather than `.length`: a family is seven of them and a flag
+// two, so a character budget would cut one in half. Whitespace inside means two icons, not one.
+export function normEmoji(raw: string): string | null {
+  const t = raw.trim();
+  const cps = [...t];
+  if (!cps.length || cps.length > 12 || /\s/.test(t)) return null;
+  // A typed word would render as a word; two ASCII characters (`:)`, a letter) are fine.
+  return cps.length > 2 && /^[\x20-\x7e]+$/.test(t) ? null : t;
+}
+
+// An emoji as an image, the trick a page uses for an emoji favicon. Every surface that paints
+// a project icon takes a URL, so going through one keeps them all on a single code path.
+export function emojiDataUri(em: string): string {
+  const font = "Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">`
+    + `<text x="50" y=".9em" font-size="90" text-anchor="middle" font-family="${font}">${esc(em)}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 // ---------- colour ----------
 export function hslToHex(h: number, s: number, l: number): string {
   const a = s * Math.min(l, 1 - l);

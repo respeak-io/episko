@@ -1,21 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
-  chosenWorktrees, localCands, localStanding, remoteCands, remoteFor, remoteOf, remotePicks,
-  orderCands, selectable, standing, sweepPicks, trunkOf, trunkOptions,
-  type BranchInfo, type CleanCtx, type MergedPr, type WtInfo,
+  anyDeletable, branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterCounts,
+  filterRows, localPicks, orderRows, rangePick, removableCheckouts, remoteFor, remoteOf,
+  remotePicks, selectable, switchable, switchOptions, trunkOf, trunkOptions, trunkText,
+  whereText, midFlightText, syncText,
+  type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type WtInfo,
 } from "../src/branches";
 
 // The module that decides to delete things, so these are the rules with teeth: what is
-// offered, what is refused, and which of the two claims the backend re-checks. It lived
-// in the ⑃ dialog's markup before, where the only way to verify it was to open the dialog
-// and look at it.
+// offered, what is refused, and which of the two claims the backend re-checks. A branch is
+// ONE row wherever its refs live, and each half of it carries its own permission.
 
 const B = (name: string, o: Partial<BranchInfo> = {}): BranchInfo => ({
   name, current: false, checked_out: false, upstream: `origin/${name}`,
   ahead: 0, behind: 0, gone: false, merged: false, remote: false,
   base: "origin/main", author: "T", sha: "1a2b3c4", rel: "3 days ago", unix: 1,
+  remote_ref: `origin/${name}`, remote_sha: "1a2b3c4", t_ahead: 0, t_behind: 0,
+  is_default: false,
   ...o,
 });
+// A branch that lives only on this machine: nothing on any remote carries the name.
+const LOCAL = (name: string, o: Partial<BranchInfo> = {}) =>
+  B(name, { upstream: "", remote_ref: "", remote_sha: "", ...o });
 const W = (branch: string, o: Partial<WtInfo> = {}): WtInfo => ({
   path: `/wt/${branch}`, branch, is_main: false, dirty: false, merged: true,
   locked: false, exists: true, ...o,
@@ -26,202 +32,362 @@ const PR = (number: number, branch: string): MergedPr =>
 const ctx = (o: Partial<CleanCtx> = {}): CleanCtx => ({
   branches: [], worktrees: [], prs: [], liveIn: () => 0, externalIn: () => false, ...o,
 });
+const rows = (o: Partial<CleanCtx> = {}) => branchRows(ctx(o));
+const row = (rs: ReturnType<typeof rows>, n: string) => rs.find((r) => r.name === n)!;
 
-describe("what a local cleanup offers", () => {
-  it("offers gone, merged and PR-merged branches — and nothing else", () => {
-    const branches = [
-      B("gone-one", { gone: true }),
-      B("merged-one", { merged: true }),
-      B("squashed", { ahead: 3 }),          // neither gone nor merged: only its PR vouches
-      B("live-work", { ahead: 2 }),         // nothing vouches for it at all
-    ];
-    const c = localCands(ctx({ branches, prs: [PR(63, "squashed")] }));
-    expect(c.map((x) => x.br.name).sort()).toEqual(["gone-one", "merged-one", "squashed"]);
-    expect(c.find((x) => x.br.name === "live-work")).toBeUndefined();
+describe("one row per branch, wherever it lives", () => {
+  it("says where a branch is, and counts a ref it merely has as living there", () => {
+    const rs = rows({ branches: [
+      B("tracked"),
+      B("untracked", { upstream: "", remote_ref: "origin/untracked" }),
+      LOCAL("mine"),
+      B("theirs", { remote: true }),
+      B("orphan", { gone: true }),
+    ] });
+    expect(whereText(row(rs, "tracked"))).toBe("local · origin");
+    // Pushed without -u, so it follows nothing — and it is still on origin.
+    expect(whereText(row(rs, "untracked"))).toBe("local · origin");
+    expect(whereText(row(rs, "mine"))).toBe("local");
+    expect(whereText(row(rs, "theirs"))).toBe("origin");
+    // `gone` names a ref the remote no longer has, so it is not somewhere the branch lives.
+    expect(whereText(row(rs, "orphan"))).toBe("local · remote deleted");
+    expect(row(rs, "orphan").hasRemote).toBe(false);
   });
 
-  it("never offers the branch you are on, whatever else is true of it", () => {
-    // git refuses to delete a checked-out branch, so an offer could only ever be an error.
-    const branches = [B("dev", { current: true, merged: true, gone: true })];
-    expect(localCands(ctx({ branches }))).toEqual([]);
-  });
-
-  it("forces only with PR evidence, and only where -d will actually refuse", () => {
-    const branches = [
-      B("squashed", { ahead: 3 }),                  // PR merged, contained in nothing
-      B("pr-and-merged", { merged: true }),         // PR merged AND already in the trunk
-      B("gone-unmerged", { gone: true, ahead: 1 }), // gone, but nothing says it landed
-    ];
-    const prs = [PR(1, "squashed"), PR(2, "pr-and-merged")];
-    const by = Object.fromEntries(localCands(ctx({ branches, prs })).map((c) => [c.br.name, c]));
-    expect(by["squashed"].force).toBe(true);
-    // A merged branch needs no force; claiming one would inflate the warning into noise.
-    expect(by["pr-and-merged"].force).toBe(false);
-    // The one that matters: `gone` is not evidence that the work landed. An unmerged
-    // branch whose remote someone deleted is unpushed work.
-    expect(by["gone-unmerged"].force).toBe(false);
-  });
-
-  it("blocks a branch whose checkout is busy, dirty, locked or someone else's", () => {
-    const branches = ["busy", "dirty", "locked", "foreign", "free"].map((n) => B(n, { gone: true }));
-    const worktrees = [
-      W("busy"), W("dirty", { dirty: true }), W("locked", { locked: true }),
-      W("foreign"), W("free"),
-    ];
-    const c = localCands(ctx({
-      branches, worktrees,
-      liveIn: (p) => (p === "/wt/busy" ? 2 : 0),
-      externalIn: (p) => p === "/wt/foreign",
-    }));
-    const by = Object.fromEntries(c.map((x) => [x.br.name, x]));
-    expect(by["busy"].block).toContain("2 sessions");
-    expect(by["dirty"].block).toContain("uncommitted");
-    expect(by["locked"].block).toContain("locked");
-    expect(by["foreign"].block).toContain("outside Episko");
-    // A clean, idle checkout is not a blocker — it goes with the branch.
-    expect(by["free"].block).toBe("");
-    expect(by["free"].wt?.path).toBe("/wt/free");
-    expect(selectable(c)).toEqual(new Set(["free"]));
-  });
-
-  it("puts what can go first and what can't at the back, keeping git's order in each", () => {
-    // The rows you can tick should not sit behind the ones you can't — and the blocked
-    // ones still belong on screen, because "why isn't this offered?" needs an answer.
-    const branches = [
-      B("blocked-newest", { gone: true }), B("free-a", { gone: true }),
-      B("blocked-older", { gone: true }), B("free-b", { merged: true }),
-    ];
-    const worktrees = [W("blocked-newest", { dirty: true }), W("blocked-older", { dirty: true })];
-    const ordered = orderCands(localCands(ctx({ branches, worktrees })));
-    expect(ordered.map((c) => c.br.name)).toEqual(["free-a", "free-b", "blocked-newest", "blocked-older"]);
-  });
-
-  it("names the trunk it is measuring against, not 'the main branch'", () => {
-    const c = localCands(ctx({ branches: [B("m", { merged: true, base: "origin/develop" })] }));
-    expect(c[0].why).toBe("merged into origin/develop");
+  it("never lists a branch twice, however many places it lives", () => {
+    const rs = rows({ branches: [B("feat"), B("other", { remote: true })] });
+    expect(rs.map((r) => r.name)).toEqual(["feat", "other"]);
   });
 });
 
-describe("what a remote cleanup offers", () => {
-  const rows = [
-    B("landed", { remote: true, merged: true, behind: 3 }),
-    B("squashed", { remote: true, ahead: 2, behind: 5 }),
-    B("in-flight", { remote: true, ahead: 4 }),
-    B("uncomparable", { remote: true, base: "", upstream: "upstream/uncomparable" }),
-  ];
-  const c = remoteCands(rows, [PR(63, "squashed")]);
-  const by = Object.fromEntries(c.map((x) => [x.br.name, x]));
+describe("what the local half offers", () => {
+  it("offers gone, merged and PR-merged branches — and nothing else", () => {
+    const rs = rows({
+      branches: [B("gone-one", { gone: true }), B("merged-one", { merged: true }),
+        B("squashed"), B("busy")],
+      prs: [PR(12, "squashed")],
+    });
+    expect(rs.filter((r) => r.local.ok).map((r) => r.name).sort())
+      .toEqual(["gone-one", "merged-one", "squashed"]);
+    expect(row(rs, "busy").local.block).toBe("nothing says it has landed");
+  });
 
+  it("never offers the branch you are on, whatever else is true of it", () => {
+    const rs = rows({ branches: [B("main", { current: true, merged: true })] });
+    expect(row(rs, "main").local.ok).toBe(false);
+    expect(row(rs, "main").local.block).toBe("the branch you are on");
+  });
+
+  // The backend keeps the trunk out of `merged`, so a PR merged off it is the only way it
+  // reaches here at all — and force-deleting what every number is measured against is not it.
+  // The one the redesign nearly shipped wrong: with the trunk overridden to origin/dev,
+  // `main` is genuinely contained in it, so every evidence test said yes.
+  it("never offers the remote's default branch, whatever the trunk is set to", () => {
+    const rs = rows({
+      branches: [B("main", { merged: true, is_default: true, base: "origin/dev" })],
+    });
+    expect(row(rs, "main").local.ok).toBe(false);
+    expect(row(rs, "main").local.block).toBe("the repository's default branch");
+    expect(row(rs, "main").remote.ok).toBe(false);
+  });
+
+  it("never offers the trunk's own local ref, PR or no PR", () => {
+    const rs = rows({
+      branches: [B("dev", { upstream: "origin/dev", remote_ref: "origin/dev", base: "origin/dev" })],
+      prs: [PR(2297, "dev")],
+    });
+    expect(row(rs, "dev").local.ok).toBe(false);
+    expect(row(rs, "dev").local.force).toBe(false);
+    expect(row(rs, "dev").remote.ok).toBe(false);
+  });
+
+  it("forces only with PR evidence, and only where -d will actually refuse", () => {
+    const rs = rows({
+      branches: [B("squashed"), B("really-merged", { merged: true }), B("orphan", { gone: true })],
+      prs: [PR(9, "squashed"), PR(10, "really-merged")],
+    });
+    expect(row(rs, "squashed").local.force).toBe(true);
+    // Contained in the trunk, so `-d` takes it: a force would be reaching for nothing.
+    expect(row(rs, "really-merged").local.force).toBe(false);
+    // An unmerged branch whose remote was deleted is unpushed work, never a force.
+    expect(row(rs, "orphan").local.force).toBe(false);
+  });
+
+  it("blocks a branch whose checkout is busy, dirty, locked or someone else's", () => {
+    const b = [B("live", { merged: true }), B("dirty", { merged: true }),
+      B("locked", { merged: true }), B("theirs", { merged: true }), B("free", { merged: true })];
+    const worktrees = [W("live"), W("dirty", { dirty: true }), W("locked", { locked: true }),
+      W("theirs"), W("free")];
+    const rs = rows({
+      branches: b, worktrees,
+      liveIn: (p) => (p === "/wt/live" ? 2 : 0),
+      externalIn: (p) => p === "/wt/theirs",
+    });
+    expect(row(rs, "live").local.block).toBe("2 sessions open in its worktree");
+    expect(row(rs, "dirty").local.block).toBe("its worktree has uncommitted changes");
+    expect(row(rs, "locked").local.block).toBe("its worktree is locked");
+    expect(row(rs, "theirs").local.block).toBe("a session outside Episko is running there");
+    expect(row(rs, "free").local.ok).toBe(true);
+    // A blocked row is still shown; the reason is how you learn why it isn't offered.
+    expect(rs).toHaveLength(5);
+  });
+});
+
+describe("what the remote half offers", () => {
   it("offers only what is provably in the trunk, or provably merged", () => {
-    expect(by["landed"].block).toBe("");
-    expect(by["squashed"].block).toBe("");
-    // The one with real work on it: refused, and the row says how much.
-    expect(by["in-flight"].block).toContain("4 commits not in origin/main");
+    const rs = rows({
+      branches: [B("landed", { remote: true, merged: true }),
+        B("wip", { remote: true, t_ahead: 3 }),
+        B("squashed", { remote: true, t_ahead: 2 })],
+      prs: [PR(4, "squashed")],
+    });
+    expect(rs.filter((r) => r.remote.ok).map((r) => r.name).sort()).toEqual(["landed", "squashed"]);
+    expect(row(rs, "wip").remote.block).toBe("3 commits not in origin/main");
   });
 
   it("refuses a row it could not compare at all", () => {
-    // A second remote, a missing origin/HEAD, or a git too old for %(ahead-behind:).
-    // Not knowing is a reason to refuse — the zeros do NOT mean "in sync".
-    expect(by["uncomparable"].block).toContain("upstream");
-    expect(selectable(c)).toEqual(new Set(["landed", "squashed"]));
+    const rs = rows({ branches: [B("x", { remote: true, base: "", upstream: "other/x", remote_ref: "other/x" })] });
+    expect(row(rs, "x").remote.ok).toBe(false);
+    expect(row(rs, "x").remote.block).toBe("no comparison against other's default branch");
   });
 
-  it("never offers a force, whatever the evidence", () => {
-    // `git push --delete` is public and there is no safe/forced distinction to make: a
-    // protected-branch refusal is the server's answer, not ours to route around.
-    expect(c.every((x) => !x.force)).toBe(true);
+  it("never offers the trunk itself", () => {
+    const rs = rows({ branches: [B("main", { merged: true, upstream: "origin/main", remote_ref: "origin/main" })] });
+    expect(row(rs, "main").remote.ok).toBe(false);
+  });
+
+  // The evidence a local row gathers is about ITS tip; it only carries to the remote ref
+  // while the two are the same commit. Anything else is one fetch away from being knowable.
+  it("refuses the remote half of a local row whose ref is on another commit", () => {
+    const rs = rows({ branches: [B("ahead-of-it", { merged: true, remote_sha: "9999999" })] });
+    expect(row(rs, "ahead-of-it").local.ok).toBe(true);
+    expect(row(rs, "ahead-of-it").remote.ok).toBe(false);
+    expect(row(rs, "ahead-of-it").remote.block).toBe("origin/ahead-of-it is on another commit — fetch first");
   });
 
   it("splits <remote>/<name> at the right slash", () => {
-    // git permits a branch name with slashes in it; splitting at the first one would
-    // name the wrong remote.
-    expect(remoteOf(B("feat/deep/name", { remote: true, upstream: "origin/feat/deep/name" }))).toBe("origin");
-    expect(remoteFor(c)).toBe("origin");
-    // With nothing selectable, the remote still comes from a row rather than a guess.
-    expect(remoteFor(remoteCands([rows[3]], []))).toBe("upstream");
+    expect(remoteOf(B("feature/x", { remote: true, upstream: "origin/feature/x", remote_ref: "origin/feature/x" }))).toBe("origin");
+    expect(remoteOf(B("x", { remote: true, upstream: "up/stream/x", remote_ref: "up/stream/x" }))).toBe("up/stream");
+    expect(remoteFor(rows({ branches: [B("a", { remote: true, merged: true, upstream: "fork/a", remote_ref: "fork/a" })] }))).toBe("fork");
   });
 });
 
 describe("what the commands are asked for", () => {
-  const branches = [
-    B("gone-one", { gone: true }),
-    B("squashed", { ahead: 3 }),
-    B("held", { gone: true }),
-    B("busy", { gone: true }),
-  ];
-  const worktrees = [W("held"), W("busy")];
-  const cands = localCands(ctx({
-    branches, worktrees, prs: [PR(9, "squashed")],
-    liveIn: (p) => (p === "/wt/busy" ? 1 : 0),
-  }));
+  const rs = () => rows({
+    branches: [B("gone-one", { gone: true }), B("merged-one", { merged: true }),
+      B("squashed"), B("held", { merged: true }), B("theirs", { remote: true, merged: true })],
+    worktrees: [W("merged-one"), W("held", { dirty: true })],
+    prs: [PR(7, "squashed")],
+  });
 
   it("passes each branch's own claims through", () => {
-    const picks = sweepPicks(cands, new Set(["gone-one", "squashed"]));
+    const picks = localPicks(rs(), new Set(["gone-one", "squashed", "merged-one"]));
     expect(picks).toEqual([
       { branch: "gone-one", gone: true, force: false },
+      { branch: "merged-one", gone: false, force: false },
       { branch: "squashed", gone: false, force: true },
     ]);
   });
 
-  it("drops a blocked row even when the caller asks for it", () => {
-    // Defence in depth: the UI can't tick a blocked row, but nothing downstream should
-    // depend on the UI being the only caller.
-    expect(sweepPicks(cands, new Set(["busy"]))).toEqual([]);
-    expect(chosenWorktrees(cands, new Set(["busy"]))).toEqual([]);
+  it("drops a blocked or unarmed row even when the caller asks for it", () => {
+    expect(localPicks(rs(), new Set(["held"]))).toEqual([]);
+    // A remote-only row has no local ref, so the local command can never name it.
+    expect(localPicks(rs(), new Set(["theirs"])).map((p) => p.branch)).toEqual([]);
   });
 
   it("collects the checkouts that have to be removed first", () => {
-    // git refuses to delete a branch a worktree holds, so this ordering is not a
-    // preference — a branch whose checkout is still there cannot go.
-    expect(chosenWorktrees(cands, new Set(["held", "gone-one"])).map((w) => w.path)).toEqual(["/wt/held"]);
+    expect(chosenWorktrees(rs(), new Set(["merged-one", "held"])).map((w) => w.branch))
+      .toEqual(["merged-one"]);
   });
 
-  it("carries the sha a remote row was showing", () => {
-    // The backend refuses the delete if the ref has moved since; that check is only
-    // possible because the sha travels with the pick.
-    const rc = remoteCands([B("landed", { remote: true, merged: true, sha: "deadbee" })], []);
-    expect(remotePicks(rc, new Set(["landed"]))).toEqual([{ branch: "landed", sha: "deadbee" }]);
+  it("carries the sha the REMOTE ref was showing, never the local tip", () => {
+    const list = rows({ branches: [B("landed", { merged: true, sha: "aaa", remote_sha: "aaa" })] });
+    expect(remotePicks(list, new Set(["landed"]))).toEqual([{ branch: "landed", sha: "aaa" }]);
+  });
+});
+
+describe("selecting", () => {
+  const rs = () => rows({
+    branches: [B("a", { merged: true }), B("b", { merged: true }), B("c", { merged: true }),
+      B("busy"), B("d", { merged: true })],
+  });
+
+  // The scopes decide where a delete lands, never what may be ticked: a repo whose branches
+  // all live on the remote would otherwise open with every row inert.
+  it("offers every row either half can act on", () => {
+    expect([...selectable(rs())].sort()).toEqual(["a", "b", "c", "d"]);
+    expect(anyDeletable(row(rs(), "busy"))).toBe(false);
+  });
+
+  it("takes the inclusive range between two rows, in the order on screen", () => {
+    const order = ["a", "b", "busy", "c", "d"];
+    expect(rangePick(order, "b", "c")).toEqual(["b", "busy", "c"]);
+    expect(rangePick(order, "c", "b")).toEqual(["b", "busy", "c"]);
+    expect(rangePick(order, "b", "b")).toEqual(["b"]);
+  });
+
+  it("falls back to the row clicked when the anchor has scrolled out of the filter", () => {
+    expect(rangePick(["a", "b"], "gone-from-view", "b")).toEqual(["b"]);
+    expect(rangePick(["a", "b"], "a", "not-here")).toEqual([]);
+  });
+
+  it("puts what can go first and what can't at the back, keeping git's order in each", () => {
+    const list = rows({
+      branches: [B("x"), B("offered", { merged: true }), B("blocked", { merged: true }), B("y")],
+      worktrees: [W("blocked", { locked: true })],
+    });
+    expect(orderRows(list).map((r) => r.name)).toEqual(["offered", "blocked", "x", "y"]);
+  });
+});
+
+describe("the filter chips, which are also the quick-selects", () => {
+  const NOW = 1_800_000_000_000;
+  const day = (n: number) => Math.round((NOW - n * 864e5) / 1000);
+  const list = () => rows({
+    branches: [
+      B("fresh-merged", { merged: true, unix: day(1) }),
+      B("old-merged", { merged: true, unix: day(90) }),
+      B("orphan", { gone: true, unix: day(2) }),
+      LOCAL("only-here", { unix: day(3) }),
+      B("theirs", { remote: true, unix: day(4) }),
+      B("held", { merged: true, unix: day(5) }),
+    ],
+    worktrees: [W("held")],
+  });
+
+  it("narrows to what each chip names", () => {
+    const only = (f: Parameters<typeof filterRows>[1]) =>
+      filterRows(list(), f, "", NOW).map((r) => r.name).sort();
+    expect(only("merged")).toEqual(["fresh-merged", "held", "old-merged"]);
+    expect(only("gone")).toEqual(["orphan"]);
+    expect(only("stale")).toEqual(["old-merged"]);
+    // A gone branch IS only on this machine now, so the two chips overlap, correctly.
+    expect(only("localonly")).toEqual(["only-here", "orphan"]);
+    expect(only("checkout")).toEqual(["held"]);
+    expect(only("all")).toHaveLength(6);
+  });
+
+  it("filters by name on top of the chip", () => {
+    expect(filterRows(list(), "merged", "old", NOW).map((r) => r.name)).toEqual(["old-merged"]);
+    expect(filterRows(list(), "gone", "old", NOW)).toEqual([]);
+  });
+
+  // A chip reading 0 because another chip is on would say nothing about the repo.
+  it("counts over every row, never over the shown ones", () => {
+    const c = filterCounts(list(), NOW);
+    expect(c.all).toBe(6);
+    expect(c.merged).toBe(3);
+    expect(c.gone).toBe(1);
+    expect(c.localonly).toBe(2);
+  });
+});
+
+describe("what a row says", () => {
+  it("measures every row against the trunk, so the column means one thing", () => {
+    expect(trunkText(B("x", { t_ahead: 2, t_behind: 30 }))).toBe("↑2 ↓30");
+    expect(trunkText(B("x", { t_behind: 30 }))).toBe("↓30");
+    expect(trunkText(B("x"))).toBe("even");
+    expect(trunkText(B("x", { base: "" }))).toBe("not compared");
+  });
+
+  it("answers a different question about the ref a branch follows", () => {
+    expect(syncText(B("x", { ahead: 2 }))).toBe("2 unpushed");
+    expect(syncText(B("x"))).toBe("in sync with origin/x");
+    expect(syncText(LOCAL("x"))).toBe("never pushed");
+    expect(syncText(B("x", { upstream: "", remote_ref: "origin/x" }))).toBe("not tracking origin/x");
+    expect(syncText(B("x", { gone: true }))).toBe("its remote branch was deleted");
   });
 });
 
 describe("the trunk", () => {
-  const branches = [
-    B("dev", { current: true, upstream: "origin/dev" }),
-    B("feat", { upstream: "" }),
-    B("theirs", { remote: true, upstream: "origin/theirs" }),
-  ];
+  const list = [B("main", { upstream: "origin/main" }), B("dev", { upstream: "origin/dev" })];
 
   it("is read off the rows, not off what was asked for", () => {
-    // A stored override that no longer resolves comes back as git's real default, so the
-    // chip shows what was used rather than a lie.
-    expect(trunkOf(branches)).toBe("origin/main");
+    expect(trunkOf(list)).toBe("origin/main");
     expect(trunkOf([B("x", { base: "" })])).toBe("");
   });
 
   it("always offers the trunk in force, which nothing need track", () => {
-    const opts = trunkOptions(branches).map((o) => o.name);
-    expect(opts[0]).toBe("");            // automatic — clears the override
-    expect(opts[1]).toBe("origin/main"); // in use now, and in nobody's `upstream`
-    expect(opts).toContain("origin/dev");
-    expect(opts).toContain("feat");      // a local branch is a legitimate trunk
-    expect(new Set(opts).size).toBe(opts.length);   // no duplicates
+    const opts = trunkOptions([B("dev", { upstream: "origin/dev", base: "origin/main" })]);
+    expect(opts.map((o) => o.name)).toContain("origin/main");
+    expect(opts[0].name).toBe("");
+  });
+});
+
+describe("where a checkout can move to", () => {
+  const branches = [
+    B("here", { current: true }), B("free"), B("held"),
+    B("theirs", { remote: true, upstream: "origin/theirs" }),
+  ];
+  const wts = [W("held", { path: "/wt/held" })];
+
+  it("lists a held branch disabled rather than dropping it", () => {
+    const opts = switchOptions(branches, wts, "/repo");
+    const by = (n: string) => opts.find((o) => o.name === n)!;
+    expect(by("held").disabled).toBe(true);
+    expect(by("held").note).toBe("checked out in held/");
+    expect(by("here").disabled).toBe(true);
+    expect(by("free").disabled).toBeUndefined();
+    expect(switchable(opts).map((o) => o.name)).toEqual(["free", "theirs"]);
   });
 
-  it("says a remote row's standing in words, without naming the trunk on every row", () => {
-    // The view names the trunk once, in its footer. Repeating it down the column is what
-    // squeezed the branch name — the one thing each row is actually about.
-    expect(standing(B("a", { ahead: 2, behind: 3 }))).toBe("2 ahead · 3 behind");
-    expect(standing(B("b"))).toBe("even");
-    // Not "even": the comparison could not be made at all, and the two must not look alike.
-    expect(standing(B("c", { base: "" }))).toBe("not compared");
+  it("does not call the checkout you are switching a holder of its own branch", () => {
+    const opts = switchOptions([B("held")], [W("held", { path: "/wt/held" })], "/wt/held");
+    expect(opts[0].disabled).toBeUndefined();
   });
 
-  it("answers a different question for a local row, because it is one", () => {
-    // A local branch's ahead/behind are versus its OWN upstream, not versus the trunk —
-    // putting both under one heading would mix two incompatible numbers in one column.
-    expect(localStanding(B("a", { ahead: 2 }))).toBe("2 unpushed");
-    expect(localStanding(B("b", { gone: true }))).toBe("remote deleted");
-    expect(localStanding(B("c", { upstream: "" }))).toBe("never pushed");
-    expect(localStanding(B("d"))).toBe("pushed");
+  it("marks a remote-only target and carries the ref it is cut from", () => {
+    const t = switchOptions(branches, wts, "/repo").find((o) => o.name === "theirs")!;
+    expect(t.base).toBe("origin/theirs");
+    expect(t.note).toBe("only on origin; creates a local branch tracking it");
+  });
+
+  it("says what a switch would interrupt, and nothing when it would interrupt nothing", () => {
+    expect(midFlightText(1, 0, 0)).toBe("1 agent is mid-turn");
+    expect(midFlightText(2, 1, 3))
+      .toBe("2 agents are mid-turn, 1 task is still running, 3 sessions are working outside Episko");
+    expect(midFlightText(0, 0, 0)).toBe("");
+  });
+});
+
+describe("the checkouts half", () => {
+  const cctx = (o: Partial<CheckoutCtx> = {}): CheckoutCtx => ({
+    worktrees: [], liveIn: () => 0, externalIn: () => false, ...o,
+  });
+  const list = () => checkoutRows(cctx({
+    worktrees: [
+      W("main", { path: "/repo", is_main: true }),
+      W("clean"),
+      W("busy"),
+      W("dirty", { dirty: true }),
+      W("locked", { locked: true }),
+      W("vanished", { exists: false }),
+    ],
+    liveIn: (p) => (p === "/wt/busy" ? 1 : 0),
+  }));
+  const at = (n: string) => list().find((c) => c.wt.branch === n)!;
+
+  it("never offers the project's own folder", () => {
+    expect(at("main").ok).toBe(false);
+    expect(at("main").block).toBe("the project's own folder");
+  });
+
+  it("refuses what remove_worktree would refuse, in its own words", () => {
+    expect(at("busy").block).toBe("1 session open here");
+    expect(at("dirty").block).toBe("uncommitted changes");
+    expect(at("locked").block).toBe("locked");
+    expect(at("clean").ok).toBe(true);
+  });
+
+  // A folder git records and disk has lost is a prune: dirty and locked mean nothing there.
+  it("offers a vanished folder and says removing it loses nothing", () => {
+    expect(at("vanished").ok).toBe(true);
+    expect(at("vanished").note).toBe("folder is gone — removing only clears git's record");
+  });
+
+  it("hands the command only what it may act on", () => {
+    expect([...removableCheckouts(list())].sort()).toEqual(["/wt/clean", "/wt/vanished"]);
+    const picked = new Set(["/wt/clean", "/wt/dirty", "/repo"]);
+    expect(chosenCheckouts(list(), picked).map((c) => c.wt.branch)).toEqual(["clean"]);
   });
 });

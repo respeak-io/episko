@@ -7,7 +7,7 @@ import {
   taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId,
+  accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId, removingWt,
   peekPrefs, stageGroup, wtGroup,
 } from "./state";
 import {
@@ -134,14 +134,17 @@ export function groupBody(p: ProjGroup): string {
     if (cl.length >= 2) return cl.filter(clusterIsLive).map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
       const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("");
+      // Mid-removal: the spinner is the only thing on screen saying so, and neither the ＋ nor
+      // the menu may stay live, or a second right-click queues a second removal of one folder.
+      const going = removingWt.has(c.key);
       // `data-root` is the repo root, the colorKey every session in the project groups by.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
         + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
-      return `<div class="wthead" ${wtMenuAttrs(p, c)}>`
-        + `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`
-        + `<span class="wtname" style="color:${col}" title="${esc(clusterTip(c))}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${n}</span>${add}</div>`
-        + `<div class="wtsessions" style="--wtc:${col}">${body}</div>`;
+      return `<div class="wthead${going ? " going" : ""}"${going ? ` aria-busy="true"` : ` ${wtMenuAttrs(p, c)}`}>`
+        + (going ? `<span class="u-spin"></span>` : `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`)
+        + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(c.branch)}</span>`
+        + `<span class="wtcount">${going ? "" : n}</span>${going ? "" : add}</div>`
+        + `<div class="wtsessions${going ? " going" : ""}" style="--wtc:${col}">${body}</div>`;
     }).join("");
   } else if (wtGroup === "chip") {
     const cl = clusterByWorktree(p, true);

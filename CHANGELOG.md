@@ -12,6 +12,30 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+Branches are one table now, Usage & spend names every model it used to file under *Other*,
+and a project's icon can be an emoji.
+
++ **Filter chips that are also the quick-selects** in Branches: *Merged*, *Gone*, *Stale*,
+  *Local only*, *Checked out*, a name filter, and shift-click for a range.
++ **Checkouts is a second tab of that table**, with the same ticks and a *Remove* that takes
+  the folders and, where git's safe delete accepts them, their branches.
++ **A project's icon can be an emoji.** Project menu › Appearance › *Pick an emoji*: a grid to
+  choose from, or whatever the OS picker hands over.
++ **Icon discovery reads what `index.html` declares**, so a favicon that is an inline SVG is
+  found at last, as is one under a name nothing could have guessed.
+~ **The Branches view is one table.** Local and remote were two lists with two selections, so
+  clearing a merged branch out of both meant finding it twice. Where it lives is a column now,
+  and two toggles in the action bar say where a delete lands.
+~ **Switch branch is a dropdown**, on the project's Repository card, on a session's own git
+  card and on every row of the Branches view. It switches on the pick, and the one confirm
+  left is for sessions that stay open on ground that just moved.
+~ **Usage & spend names every model.** Fable, and anything a non-Claude provider runs, was
+  counted as *Other*; the chart, the mix and the legend name each one, a family keeping its
+  colour across releases.
+! **The default branch is never offered for deletion.** Comparing a repo against something
+  other than its default made `main` "merged" like any other branch.
+! Removing a worktree from the sidebar keeps its row until git is done, instead of collapsing
+  the project under the pointer.
 
 ## 0.26.0 — 2026-09-08
 What the status bar and the dashboard only summarise now opens in one click — and the

@@ -11,7 +11,7 @@ import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
   accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty,
-  projGroups, projOrder, sessions, sortMode, wtGroup, worktreesByRepo,
+  projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
 
@@ -59,7 +59,11 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
   for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
   return order;
 }
-export const clusterIsLive = (c: WtCluster): boolean => c.sessions.length + c.externals.length > 0;
+// A removal closes the checkout's sessions BEFORE git touches anything, so a row filtered on
+// liveness alone vanishes the instant you confirm it — no spinner, no sign, and the project
+// reflows under the pointer. A pending removal keeps its row until the roster says it is gone.
+export const clusterIsLive = (c: WtCluster): boolean =>
+  c.sessions.length + c.externals.length > 0 || removingWt.has(c.key);
 // toplevel mode: one group per worktree; the root checkout keeps the project's identity.
 export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
   const out: ProjGroup[] = [];
@@ -95,6 +99,13 @@ export function allProjects(): ProjGroup[] {
     let p = byName.get(d.project) || byPath.get(d.colorKey);
     if (!p) { p = { name: d.project, path: d.colorKey, accent: accentFor(d.colorKey), sessions: [], externals: [], dormants: [] }; list.push(p); byName.set(d.project, p); byPath.set(d.colorKey, p); }
     p.dormants.push(d);
+  }
+  // A project whose only sessions were in the checkout being removed would otherwise leave
+  // the rail mid-removal and come back when it finished, which reads as the app collapsing.
+  for (const repo of removingWt.values()) {
+    if (byPath.has(repo)) continue;
+    const p = { name: basename(repo), path: repo, accent: accentFor(repo), sessions: [], externals: [], dormants: [] };
+    list.push(p); byPath.set(repo, p); byName.set(p.name, p);
   }
   return list;
 }

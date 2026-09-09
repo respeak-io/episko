@@ -3,11 +3,11 @@
 // clears every other mode's target. Nothing here is on renderAll()'s path.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, FILE_MANAGER, toast } from "./dom";
+import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
-import { clearIcon, customIcons, iconFor, pickCustomIcon, resetCustomIcon } from "./icons";
+import { clearIcon, customIcons, emojiFor, iconFor, pickCustomIcon, resetCustomIcon, setEmojiIcon } from "./icons";
 import { openWt, removeWorktreeAt } from "./worktree";
 import {
   collapseAllProjGroups, copyPath, deleteProjectGroup, newProjectGroup, openTerminalIn,
@@ -46,6 +46,18 @@ export function setProjMenuHost(h: typeof host) { host = h; }
 // ---------- the appearance panel ----------
 // 12 perceptually distinct hues around the wheel
 const SWATCHES = ["#f2555a", "#fb923c", "#facc15", "#a3e635", "#34d399", "#2dd4bf", "#22d3ee", "#38bdf8", "#818cf8", "#a78bfa", "#d084f5", "#f472b6"];
+// A starting point, eight to a row, not a catalogue: the field below the grid takes anything
+// the OS picker (⌃⌘Space / Win+.) hands over, which is the actual escape hatch.
+const EMOJI = [
+  "🎙️", "🎧", "🎵", "🎬", "📷", "🎨", "✏️", "📝",
+  "🚀", "⚡", "🔥", "✨", "💡", "🧠", "🤖", "👾",
+  "🐛", "🔧", "🔨", "⚙️", "🧪", "🔬", "🔭", "🧭",
+  "📦", "🗂️", "📚", "📊", "📈", "🧮", "🗄️", "🔐",
+  "🌐", "🛰️", "📡", "☁️", "🖥️", "💾", "🕹️", "🧩",
+  "🌱", "🌳", "🍀", "🌊", "🏔️", "🌙", "⭐", "🌈",
+  "🐙", "🐧", "🐳", "🦀", "🦊", "🐝", "🦉", "🐢",
+  "🎯", "🏁", "🏆", "🔔", "⏱️", "📌", "🧵", "🪄",
+];
 let popKey: string | null = null;
 function normalizeHex(v: string): string | null {
   let x = v.trim().replace(/^#/, "");
@@ -58,23 +70,43 @@ function placePop(el: HTMLElement, x: number, y: number) {
   el.style.left = Math.max(8, Math.min(x, window.innerWidth - el.offsetWidth - 8)) + "px";
   el.style.top = Math.max(8, Math.min(y, window.innerHeight - el.offsetHeight - 8)) + "px";
 }
+const colorPopHtml = (key: string) => {
+  const cur = accentFor(key).toLowerCase();
+  return SWATCHES.map((c) => `<button class="sw-btn ${c === cur ? "on" : ""}" style="background:${c}" data-c="${c}"></button>`).join("") +
+    `<div class="sw-row"><input class="sw-hex" type="text" spellcheck="false" placeholder="#hex" value="${cur}" maxlength="7" /><button class="sw-apply">Set</button></div>` +
+    `<button class="sw-auto" data-c="auto">Auto color</button>` +
+    `<button class="sw-auto" data-c="emoji">Pick an emoji…${emojiFor(key) ? ` ${emojiFor(key)}` : ""}</button>` +
+    `<button class="sw-auto" data-c="seticon">Set custom logo…</button>` +
+    (customIcons[key] ? `<button class="sw-auto" data-c="reseticon">Restore repo logo</button>` : "") +
+    (iconFor(key) ? `<button class="sw-auto" data-c="delicon">Use color dot (hide icon)</button>` : "");
+};
+const emojiPopHtml = (key: string) => {
+  const cur = emojiFor(key);
+  return `<button class="sw-auto sw-back" data-c="back">‹ Color &amp; logo</button>` +
+    EMOJI.map((e) => `<button class="em-btn${e === cur ? " on" : ""}" data-c="em:${e}" title="${e}">${e}</button>`).join("") +
+    `<div class="sw-row"><input class="sw-hex sw-emin" type="text" spellcheck="false" placeholder="paste any emoji" value="${cur || ""}" /><button class="sw-apply sw-emset">Set</button></div>` +
+    `<div class="sw-note">${IS_MAC ? "⌃⌘Space" : "Win + ."} opens the system picker</div>` +
+    (cur ? `<button class="sw-auto" data-c="reseticon">Remove emoji</button>` : "");
+};
+// Where the panel was opened, so the emoji mode lands on the same pixels the colours did.
+let popAt = { x: 0, y: 0, flip: undefined as DOMRect | undefined };
+function renderPop(mode: "color" | "emoji") {
+  if (!popKey) return;
+  const pop = $("colorPop");
+  pop.classList.toggle("emo", mode === "emoji");
+  pop.innerHTML = mode === "emoji" ? emojiPopHtml(popKey) : colorPopHtml(popKey);
+  pop.classList.add("show"); // shown before measuring, or offsetWidth reads 0
+  let x = popAt.x;
+  if (popAt.flip && x + pop.offsetWidth > window.innerWidth - 8) x = popAt.flip.left - pop.offsetWidth - 6;
+  placePop(pop, x, popAt.y);
+}
 // Opens standalone at the cursor or as the context menu's submenu; `flipFrom` is the
 // parent menu's rect, so a panel that won't fit to its right lands on its left instead.
 export function openColorPopover(key: string, x: number, y: number, flipFrom?: DOMRect) {
   popKey = key;
+  popAt = { x, y, flip: flipFrom };
   closeFootMenus("colorPop");
-  const cur = accentFor(key).toLowerCase();
-  const pop = $("colorPop");
-  pop.innerHTML =
-    SWATCHES.map((c) => `<button class="sw-btn ${c === cur ? "on" : ""}" style="background:${c}" data-c="${c}"></button>`).join("") +
-    `<div class="sw-row"><input class="sw-hex" type="text" spellcheck="false" placeholder="#hex" value="${cur}" maxlength="7" /><button class="sw-apply">Set</button></div>` +
-    `<button class="sw-auto" data-c="auto">Auto color</button>` +
-    `<button class="sw-auto" data-c="seticon">Set custom logo…</button>` +
-    (customIcons[key] ? `<button class="sw-auto" data-c="reseticon">Restore repo logo</button>` : "") +
-    (iconFor(key) ? `<button class="sw-auto" data-c="delicon">Use color dot (hide icon)</button>` : "");
-  pop.classList.add("show"); // shown before measuring, or offsetWidth reads 0
-  if (flipFrom && x + pop.offsetWidth > window.innerWidth - 8) x = flipFrom.left - pop.offsetWidth - 6;
-  placePop(pop, x, y);
+  renderPop("color");
 }
 export function closeColorPop() {
   $("colorPop").classList.remove("show");
@@ -98,14 +130,25 @@ function commitHex(v: string) {
   if (!h) { toast("Enter a valid hex, e.g. #7c5cff"); return; }
   setColor(popKey, h);
 }
+function commitEmoji(v: string) {
+  // A refused value leaves the panel up to retype in, so this must ask whether it took
+  // rather than read the store back: the project may already have had an emoji.
+  if (popKey && setEmojiIcon(popKey, v)) { closeCtxMenu(); closeColorPop(); }
+}
 $("colorPop").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
+  if (t.classList.contains("sw-emset")) { const inp = $("colorPop").querySelector<HTMLInputElement>(".sw-emin"); if (inp) commitEmoji(inp.value); return; }
   if (t.classList.contains("sw-apply")) { const inp = $("colorPop").querySelector<HTMLInputElement>(".sw-hex"); if (inp) commitHex(inp.value); return; }
   const b = t.closest<HTMLElement>("[data-c]");
   if (!b || !popKey) return;
-  // Every button here commits, so the whole stack (submenu + menu) closes with it.
+  // The two mode switches redraw in place; everything else commits, so the whole stack
+  // (submenu + menu) closes with it.
+  if (b.dataset.c === "emoji") { renderPop("emoji"); return; }
+  if (b.dataset.c === "back") { renderPop("color"); return; }
   const key = popKey;
+  const em = b.dataset.c?.startsWith("em:") ? b.dataset.c.slice(3) : null;
   closeCtxMenu();
+  if (em) { setEmojiIcon(key, em); closeColorPop(); return; }
   if (b.dataset.c === "delicon") { clearIcon(key); closeColorPop(); return; }
   if (b.dataset.c === "seticon") { closeColorPop(); pickCustomIcon(key); return; }
   if (b.dataset.c === "reseticon") { resetCustomIcon(key); closeColorPop(); return; }
@@ -113,7 +156,10 @@ $("colorPop").addEventListener("click", (e) => {
 });
 $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
   const t = e.target as HTMLElement;
-  if (t.classList.contains("sw-hex") && e.key === "Enter") { e.preventDefault(); commitHex((t as HTMLInputElement).value); }
+  if (e.key !== "Enter") return;
+  // The emoji field carries `sw-hex` for its skin, so it must be asked about first.
+  if (t.classList.contains("sw-emin")) { e.preventDefault(); commitEmoji((t as HTMLInputElement).value); return; }
+  if (t.classList.contains("sw-hex")) { e.preventDefault(); commitHex((t as HTMLInputElement).value); }
 });
 // ---------- project context menu ----------
 // Right-click on anything carrying a project folder (`data-key`): one verb per row, with
