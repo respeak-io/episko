@@ -389,6 +389,7 @@ export interface Sess {
   // another checkout of this repo (Drift.via, ./gitwatch); display-only, workdir is unchanged until followed
   drift: Drift | null;
   model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
+  apiMs: number | null; apiMsSince: number; // the API's own clock and when it last moved (./phase)
   tokenUsage: AgentTokenUsage | null;
   rateLimits: AgentRateLimit[];
   rateLimitScope: string | null; // opaque; account-wide quota is shared only between equal non-null scopes

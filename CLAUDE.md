@@ -385,6 +385,14 @@ And the things that hold however the files are arranged:
   "done"`: unbounded, one `Stop` silenced every later `PreToolUse`/`PostToolUse` and the
   row claimed your turn for the whole of the next turn. Both shipped; see
   `docs/architecture.md`.
+- **A prompt that was never dispatched leaves `thinking` with nothing that can end it.**
+  `UserPromptSubmit` fires at Enter, so a prompt cancelled with Esc (or edited and re-sent)
+  from a *finished* pane starts no turn, gets no `Stop`, and gets no idle `Notification`
+  either — text back in the composer is not an idle REPL. `applyStatusline` calls it `idle`
+  after `TURN_STALL_MS` (3 min), and only when **both** clocks are stale: `phaseSince` and
+  `apiMsSince`, since `cost.total_api_duration_ms` is added to as a request *completes* and
+  is flat through any single in-flight response. `idle`, not `done` — nothing was asked of
+  you, so no badge or chime is invented. `thinking` only (`docs/architecture.md`).
 - **A turn that ended while its agents run on stays `background`.** The `Workflow` tool returns a run id in ~2s and `Stop` fires while its fleet runs for another twenty minutes, so `done` alone stopped meaning "your turn". `Sess.fanout` holds the run (named from the `PreToolUse{Workflow}` payload, with no disk and no backend) and **`Sess.agents` holds the agents still up, keyed by the `agent_id` both `Subagent*` hooks carry** — identity rather than a counter, for the same reason a tool call's Pre and Post pair by `tool_use_id`. Read it through `liveAgents`/`liveCount`, never by `.size`: an agent a *newer* fan-out inherited is stamped `orphanedAt` by `startFanout` and ages out on its own short window, because the hour that guards a live fleet only guards a ghost once the run that would report its Stop has been replaced (that is the "34 / 36" bug — see `docs/architecture.md`). `statusKey` answers `"background"` for a live fleet, and `needsYou` says no. **Never add a status to `GLYPH`/`GCLASS` without also adding it to `tray.ts`'s `SHAPE`**; see `docs/architecture.md`.
 - **A `localStorage` write on the telemetry path is a disk write**: statusLines land every ~10s per session. Three cadences, chosen deliberately: eager (`cc-usage`, small and unreconstructable), only-when-changed (`cc-cost-base`), floored and flushed on quit/midnight (`cc-usage-detail` 30s, `cc-io` 60s). Cap anything keyed by day. Sizes and reasoning: `docs/architecture.md`.
 - **A model is named on read, and both spellings must land on one name.** The transcript
@@ -565,6 +573,15 @@ And the things that hold however the files are arranged:
   `renderAllNow` — never at the five events that can set it, and never from `phaseSince`,
   which a permission does not move. Don't fold the filter into `needsYou`: `syncAttn`
   asks that one, and the two would then flip each other every paint (`docs/architecture.md`).
+- **A pending ask is retired by the call it gated, never by the next call to start.** Claude
+  runs tools in parallel and a subagent's hooks arrive under the **parent's** id, so on a busy
+  pane another `PreToolUse` lands a second or two after every question — `clearPending` there
+  took the ◆ out almost as fast as it appeared and answered the still-held request `terminal`,
+  which is what made this look intermittent instead of broken. `releaseAnswered` (./permissions)
+  retires only the asks whose call reported back (`PostToolUse`/`PostToolUseFailure`); anything
+  else waits for a turn boundary. The join is the **tool plus its command** — Claude's
+  `PermissionRequest` payload carries no `tool_use_id` — so both sides run the same `permCmd`
+  over the same `tool_input` (`docs/architecture.md`).
 - **Every yes/no question goes through `ask` in `confirm.ts`, and nothing is ever asked
   natively.** `ask()` from `@tauri-apps/plugin-dialog` draws an OS box — system font,
   system button order, no way to mark which of the two answers deletes something, and
