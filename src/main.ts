@@ -31,7 +31,7 @@ import {
   addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
@@ -50,7 +50,7 @@ import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
-  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit,
+  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
 } from "./panes";
@@ -218,7 +218,7 @@ setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
   setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize,
-  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
@@ -836,6 +836,10 @@ window.addEventListener("beforeunload", flushRoster);
 // that pane runs nothing on a schedule of its own.
 refreshDirtyStates(true);
 setInterval(() => { void refreshDirtyStates(); refreshDashWorkset(); }, 5000);
+
+// Auto-fetch. A fixed tick asking ./autofetch whether the checkout on stage is due one,
+// never an interval rebuilt when the cadence changes; arriving at a pane asks as well.
+setInterval(() => { void tickAutoFetch(); }, 20_000);
 
 // Git-derived labels. The hook stream pokes the same function on a git command; this
 // interval is the backstop for changes made outside Claude (an editor, your terminal).

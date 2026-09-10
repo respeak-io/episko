@@ -65,6 +65,18 @@ Timings live in `cc-peek`, set in Settings › Worktrees over a **live preview b
 
 **`path_holders` names the holder; killing one is a different decision.** Two probes: a `sysinfo` cwd scan (any OS) and, on Windows, the Restart Manager (`RmGetList`) for open handles; both degrade to "found nothing" (a diagnostic shown *after* a failure; a handle can release in between). `PathHolder.ours` splits the repair: a process Episko launched is cleared silently; anything else goes in a dialog naming it. `purge_worktree_folder` **re-probes before killing** (pids are reused) and refuses a path without a grandparent.
 
+## Auto-fetch: keeping "2 behind" true
+
+Every ahead/behind figure in the app is `upstream_state`'s, which reads `refs/remotes` and never the network, so it was **only ever as fresh as your last manual fetch** — a session opened on a branch a colleague had moved said *in sync* and meant it. `autofetch.ts` holds the rule, `tickAutoFetch` in `panes.ts` runs it, Settings › Git switches it (`cc-autofetch`, on by default, 5 minutes).
+
+- **Only the checkout on stage.** The active pane's, on arrival (`setActive`) and on a 20s tick that mostly answers "not due". Not favourites, not the dashboard, not the other panes: a behind count nobody is reading is not worth a round trip, and the dashboard's ⇣/⇡ already fetch for themselves. A repo whose pane you have visited is fresh for every other surface anyway, since refs are shared.
+- **Due is keyed by repo, never by checkout** (`fetchedByRepo`, keyed on `colorKey`): every worktree shares one `refs/remotes`, so one fetch answers for all of them and switching between two checkouts of a repo must not fetch twice.
+- **It reuses `git_action(op:"fetch")`** rather than growing a second definition of what a fetch is, but it is the quiet caller: no toast and no terminal handoff, because nobody asked for this one. The failure lands in `episko.log` and in the sync chip's tooltip — a frozen count reads exactly like a true one, so the card has to be able to say the number is old.
+- **A failing remote is backed off, not retried** (`fetchGapMs`, doubling to a cap): `git_run` gives an unreachable host **45 seconds** before it kills the process, and the usual cause — a laptop off the network — announces its return to nothing.
+- **`gitBusy` is the one lock**, shared with the buttons, so an automatic fetch and a clicked one can never run at once; `gitOp` is what lets the card say *fetch…* rather than only dimming.
+
+**The card must be on screen before the fetch matters.** `s.git` comes from the dirty poll's map, so a new pane used to show no git card at all until that poll came round — up to five seconds of the panel silently reflowing when it landed. `refreshSessionStats` now asks for a never-read folder itself, alongside the I/O sample rather than after it, and `wsetSkeleton` holds the space meanwhile. `dirtyByFolder.has(dir)` is what separates *still reading* from *not a repo*: the `null` it stores is an answer, an absent key is not one yet.
+
 ## Branch cleanup: the rules, and the room they need
 
 **`branches.ts` owns the rules** (pure, tested) and **the dashboard's full-screen Branches view runs them**, in two tabs over one table shape. Three evidence bases feed it (`gone`, meaning its remote branch was deleted; `merged`, meaning already in the trunk; and a merged pull request) and `sweep_branches` / `delete_remote_branches` are the only things that delete.

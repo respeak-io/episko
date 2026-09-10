@@ -7,12 +7,12 @@ import { $, stageGen, toast } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
-import { activeId, outlinePrefs, revivePrefs, sessions } from "./state";
+import { activeId, dirtyByFolder, outlinePrefs, revivePrefs, sessions } from "./state";
 import { reviveStatus } from "./revive";
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
   contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, outlineHtml,
-  planHtml, RISK_LABEL, vitalHtml, wsetHtml,
+  planHtml, RISK_LABEL, vitalHtml, wsetHtml, wsetSkeleton,
 } from "./inspectorview";
 import { anchoredPrompts, scrollToPrompt } from "./terminal";
 
@@ -111,6 +111,9 @@ export function renderInspector(s: Sess | null) {
   // Above the plan and the Context card: what you asked and what the tree looks like are
   // both read far more often than the file set, which is the card you scroll to.
   if (s.git) html.push(wsetHtml(s));
+  // `dirtyByFolder` is what separates "still reading" from "not a repo": a null it holds is
+  // an answer, an absent key is not one yet. An external-engine pane never gets a card.
+  else if (!s.external && s.workdir && !dirtyByFolder.has(s.workdir)) html.push(wsetSkeleton());
   if (outlinePrefs.enabled) html.push(outlineHtml(s, outlinePrefs, anchoredPrompts(s), outlineAll));
   if (s.todos.length) html.push(planHtml(s));
   html.push(contextHtml(s, openGroups, ctxMode));

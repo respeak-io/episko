@@ -10,13 +10,14 @@ import { ask } from "./confirm";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell, shelveSession } from "./panes";
+import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { renderSettings } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  attnPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
@@ -42,6 +43,7 @@ import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
+import type { AutoFetchPrefs } from "./autofetch";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -220,6 +222,15 @@ export function setRevivePrefs(p: RevivePrefs) {
   localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
   renderAll();
   renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// The tick reads these live, so nothing is rescheduled; the kick is so that switching it
+// on answers now rather than at the next tick, which is what makes the switch feel real.
+export function setAutoFetchPrefs(p: AutoFetchPrefs) {
+  setAutoFetchPrefsState(p);
+  localStorage.setItem("cc-autofetch", JSON.stringify(autoFetchPrefs));
+  renderSettings();
+  void tickAutoFetch();
 }
 
 // renderSettings only: ./debug reads vitalsPrefs live on its tick, so no interval is rebuilt.

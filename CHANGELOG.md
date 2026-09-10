@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Auto-fetch, so "2 behind" is true when you read it.** The checkout you are looking at is
+  fetched when you open or switch to a session and every five minutes it stays on screen —
+  nothing else, because a behind count nobody is reading is not worth a round trip. Settings ›
+  Git switches it and sets the interval; a remote that can't be reached is backed off rather
+  than retried, and the card says so instead of showing a frozen number.
+~ **A session's git card appears at once.** It waited for the 5s working-tree poll before
+  drawing anything, so a new pane had no branch, no counts and then a card that shoved the
+  panel down when it landed. The folder is read on arrival now, with a skeleton in its place.
+! **A long branch name no longer pushes the ahead/behind count out of the git card.** The
+  count is what you came for, so the name is what gives way.
+
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,
 and a project's icon can be an emoji.
