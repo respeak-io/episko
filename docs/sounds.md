@@ -5,7 +5,7 @@ uses: everything that can be reasoned about (the catalogue, the tones as data, t
 clamping, the suppression rules) is pure and tested; the file that owns an
 `AudioContext` does nothing a test would want to assert.
 
-Settings › Sounds is the whole UI. State lives in `state.ts` (`soundPrefs`, one JSON
+Settings › Attention is the whole UI. State lives in `state.ts` (`soundPrefs`, one JSON
 blob under `cc-sound`), persistence and the repaint in `actions.ts`, exactly as the peek
 timings and the project groups do.
 
@@ -96,7 +96,7 @@ its attack clamped, or it would ramp up past its own end and never come back dow
 
 ## The settings pane
 
-Every button in Settings › Sounds **plays what it does**: changing a tone, switching an
+Every button in Settings › Attention **plays what it does**: changing a tone, switching an
 event on, nudging the volume. That is not a flourish: a column of names ("Chime",
 "Drop", "Buzz") is unusable, because nobody knows what a Drop is until they have heard
 one, and a pane you cannot audition is one you set at random once and never revisit.

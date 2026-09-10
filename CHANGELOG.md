@@ -45,6 +45,16 @@ that name Episko have a tab that explains them.
   something it ran, or the app itself.
 + **A question card says what is being asked.** `AskUserQuestion` keeps its ask in a list the
   card did not read, so it named a tool and showed nothing under it.
++ **Settings is one page, with a search.** Twelve sections under three headings, named for the
+  surface or the question rather than the feature that shipped them; the rail follows the scroll
+  and turns into a match count when you type. `@changed` lists what differs from its default,
+  `@new` what arrived since you last read What's new, and ⌘K finds a setting by name.
++ **Every setting says its value, and a changed one can go back.** A bar marks a row that differs
+  from its default and ⟲ restores it; the big panels fold to one line, and a search hit inside
+  one opens it on the matching line. Usage & spend and What's new have a door in the rail.
+~ **Every hint is one sentence, with the reasoning behind *why*.** The same facts, read when you
+  want them; the search reads both halves. A quick open lands on its row, lit for a moment,
+  rather than at the top of a tab.
 ~ **A session's git card appears at once.** It waited for the 5s working-tree poll before
   drawing anything, so a new pane had no branch, no counts and then a card that shoved the
   panel down when it landed. The folder is read on arrival now, with a skeleton in its place.

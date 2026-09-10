@@ -8,21 +8,29 @@ export interface VisualFxDef {
   id: VisualFx;
   cls: string; // put on <html> by applyFx when the effect is OFF
   label: string;
-  hint: string;
+  hint: string;   // the one sentence on the page
+  more: string;   // the why, folded
+  aliases: string[];
 }
 
 export const VISUAL_FX: readonly VisualFxDef[] = [
   {
     id: "motion", cls: "fx-still", label: "Animations",
-    hint: "The pulsing rail glyphs, the inspector's heartbeat, the loading shimmers and the panel fades. Switching this off is what the OS's own reduce-motion setting already does — Episko follows that too, so if you have set it system-wide this row is already answered.",
+    hint: "The pulsing glyphs, the heartbeat, the shimmers and the fades.",
+    more: "Off does what the OS's reduce-motion setting does, and Episko follows that too, so a system-wide choice has already answered this row. The four animations that carry a state switch to a still form; nothing goes missing.",
+    aliases: ["motion", "reduce motion", "transitions", "pulse", "gpu"],
   },
   {
     id: "blur", cls: "fx-flat", label: "Background blur",
-    hint: "The frosted glass behind dialogs, popovers and the command palette. Decoration only: with it off the same panels get a solid background, which is cheaper to composite and identical to read.",
+    hint: "The frosted glass behind dialogs, popovers and the palette.",
+    more: "Decoration only. Off, the same panels get a solid background, cheaper to draw and identical to read.",
+    aliases: ["frosted", "glass", "backdrop", "gpu"],
   },
   {
     id: "idle", cls: "fx-idle", label: "Keep animating in the background",
-    hint: "Off, Episko stops animating the moment the window loses focus and picks up again when you come back — nothing is lost, since an animation you cannot see is telling you nothing. Leave it off unless you keep the window visible beside something else and want the rail moving while you work there.",
+    hint: "Keep the rail moving while another app is in front.",
+    more: "Off, everything pauses the moment the window loses focus and resumes when you come back; an animation you cannot see tells you nothing. On is for a window kept visible beside your other work.",
+    aliases: ["pause", "unfocused", "battery", "background"],
   },
 ];
 

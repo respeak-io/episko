@@ -33,7 +33,7 @@ export function enginePopHtml(available: readonly Engine[], current: Engine): st
   // to sit in. Where the terminal opens is one of three facts a launch resolves; the other
   // two are only settable in Settings, so the picker says where the rest of the answer lives.
   return `<div class="up-h">New sessions open in${
-    popGoHtml({ go: "sessions", label: "Session defaults", sub: "which agent, and how it starts" })
+    popGoHtml({ go: "launching", label: "Session defaults", sub: "which agent, and how it starts" })
   }</div>${items}`;
 }
 

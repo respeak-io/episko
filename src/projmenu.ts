@@ -498,7 +498,7 @@ function openAgentPicker(key: string, x: number, y: number) {
         : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
         : tilde(a.path ?? ""),
     })),
-    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Sessions · ${defaultAgentDef().label}` } : null,
+    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Launching · ${defaultAgentDef().label}` } : null,
     // Below the fold, what Episko supports but this machine lacks: folded so they don't
     // bury the pickable rows, present so a missing row isn't read as "not supported".
     ...(missing.length ? [null, {

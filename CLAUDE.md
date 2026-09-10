@@ -106,13 +106,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 85 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 86 modules
 
-**No framework, and no longer one file.** 85 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 86 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (forty-two, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (forty-three, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -131,6 +131,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `toolio.ts` | what a tool call *was* and what came back: the three response shapes worth modelling by hand, the generic dump for everything else, the cap both sides are cut to as they land, and what Copy hands over |
 | `termlinks.ts` | what in a pane's output is worth a click: where a URL ends and the sentence's punctuation begins, and — for a path — the ordered readings it might be, since a folder a person named has spaces in it. Proposals only; disk decides |
 | `palette.ts` | ⌘K ranking: fuzzy match, scoring, prefix parsing, frecency |
+| `setsearch.ts` | the Settings search: what a word may match and in what order it is reported, the five `@` words, and a highlight that never nests |
 | `grouping.ts` | what the sidebar shows and in what order; `urgencyRank`, `needsYou`/`attnPending`/`syncAttn`, `nextAfterClose`, `dormantBusy`, and the run-group fold (`foldRunGroups`, `groupPhase`, `nextInGroup`) |
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
@@ -167,7 +168,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 85 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 86 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -226,10 +227,10 @@ And the things that hold however the files are arranged:
   foot read as the main event rather than the way out; the name an icon owes you is its
   tooltip. That corner is why the header is one rule for the whole family
   (`.menupop .up-h, .menupop .sc-h`) and why the engine picker grew a header at all.
-  `"usage"` is the Usage & spend window; **every other value is a Settings tab id**, and a
-  misspelt one is silent — `renderSettings` falls back to `SET_TABS[0]`, so the link opens
-  *Appearance* and looks like it worked. `test/dispatch.test.ts` holds the two lists
-  together. The previews in Settings › Footer paint it with the same renderer (they are
+  `"usage"` is the Usage & spend window; **every other value is a Settings section id**, and
+  a misspelt one is silent — `openSettingsOn` scrolls nowhere and the page opens at the top,
+  which looks like it worked. `test/dispatch.test.ts` holds the two lists
+  together. The previews in Settings › Status bar paint it with the same renderer (they are
   inert: `.fpv-pop` kills pointer events), and nothing inside one may shrink to fit that
   preview's height cap — a scroll region gets `min-height: 0` for free and collapsed to
   nothing, taking rows out of the *middle*, where the mask exists to fade the tail.
@@ -272,7 +273,7 @@ And the things that hold however the files are arranged:
   tooltip, because a count frozen by an unreachable remote reads exactly like a true one.
   `git_run` gives that remote **45s** before killing it, so a failing repo is backed off
   rather than retried, and `gitBusy` is the one lock an automatic and a clicked fetch share.
-  Settings › Git; docs/worktrees.md.
+  Settings › On its own; docs/worktrees.md.
 - **A branch is ONE row wherever its refs live, and the scope toggles say where a delete
   lands — never what may be ticked.** Local and remote were two tables with two selections,
   so deleting a merged feature branch from both places was two hunts and two clicks; where it
@@ -645,6 +646,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/tour.md`**: the guided tour. It opens on the *absence* of `cc-tour` and never after an update; a release intro is a chapter with a `since`, not a second mechanism; the veil is `pointer-events:none` so the lit control is the live one, and it must never join `SCRIM_DLGS`; a missing anchor skips a step **unless the step is waiting**, because a waiting step's anchor is usually what it is waiting for. **Write a step against the app, never against a mock, and walk it before you believe it** — every bug this feature has had was a card pointing confidently at something that was not there.
 - **`docs/explorer.md`**: the project explorer (⌘P). One index feeds both modes; the marks come from the other two file lists; `git ls-files` is why there is no ignore parser; nothing watches the filesystem, and this is not the feature that changes that.
 - **`docs/macos-access.md`**: why a macOS permission dialog names Episko when it was an agent that reached. The app may explain, detect, deep-link and reset — it can never grant, and it never recommends full disk access, since every agent it launches inherits one.
+- **`docs/settings.md`**: one page under three headings, the rail as a scroll spy, the search's fields and `@` words, `isDefault`/`reset` per control, and the two contract tests that hold the section ids (a tab's `id`/`label` stay on one line, and nothing else in `settings.ts` may use that shape).
 - **`docs/sounds.md`**: sound alerts. The hard part is playing one sound instead of six: the same moment reaches the frontend twice *by design*, so every play is gated, except that a more urgent event still gets through the burst window, which is the point. Anything that fires on routine activity ships switched off.
 
 ## Notes on scope & doc drift
