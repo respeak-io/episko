@@ -148,7 +148,7 @@ describe("the project dashboard's verbs", () => {
   });
 
   it("routes the card's clicks, which are not the inspector's listener", () => {
-    const pane = DASHBOARD.slice(DASHBOARD.indexOf('$("dashPane").addEventListener'));
+    const pane = DASHBOARD.slice(DASHBOARD.indexOf('$("dashPane").addEventListener("click"'));
     expect(pane.slice(0, pane.indexOf("\n  });"))).toContain('closest<HTMLElement>("[data-dashact]")');
   });
 
@@ -172,6 +172,11 @@ describe("the project dashboard's own dispatcher", () => {
   const emitted = [...new Set([...DASHVIEW.matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
+  // The ordering rules below are about ONE if-chain, so they read only the click listener:
+  // the pane also has a `contextmenu` one, whose own probes say nothing about that order.
+  const CLICK = DASHBOARD.slice(DASHBOARD.indexOf('$("dashPane").addEventListener("click"'));
+  const clickProbed = [...CLICK.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
+    .map((m) => m[1]);
 
   it("finds both halves", () => {
     // A regex that has stopped matching would pass every assertion below vacuously.
@@ -192,21 +197,23 @@ describe("the project dashboard's own dispatcher", () => {
   it("probes a branch row's own controls BEFORE the row that contains them", () => {
     // ⇄ sits inside the row, and the row is the tick target, so a row-level probe placed
     // first would tick a branch instead of switching to it.
-    expect(probed).toContain("br");
-    expect(probed.indexOf("brsw"), "data-dashbrsw must be probed before data-dashbr")
-      .toBeLessThan(probed.indexOf("br"));
+    expect(clickProbed).toContain("br");
+    for (const inner of ["brsw", "brmenu"]) {
+      expect(clickProbed.indexOf(inner), `data-dash${inner} must be probed before data-dashbr`)
+        .toBeLessThan(clickProbed.indexOf("br"));
+    }
   });
 
   it("probes a checkout's two buttons BEFORE the row that contains them", () => {
     // ＋ and ❯ are nested inside the row, so a row-level probe placed first would open the
     // diff instead of launching a session — and `return` does not stop the propagation.
-    expect(probed).toContain("wt");
+    expect(clickProbed).toContain("wt");
     for (const inner of ["wtadd", "wtterm"]) {
-      expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashwt`)
-        .toBeLessThan(probed.indexOf("wt"));
+      expect(clickProbed.indexOf(inner), `data-dash${inner} must be probed before data-dashwt`)
+        .toBeLessThan(clickProbed.indexOf("wt"));
       // The Checkouts tab's row is the same shape: both buttons are nested inside it.
-      expect(probed.indexOf(inner), `data-dash${inner} must be probed before data-dashco`)
-        .toBeLessThan(probed.indexOf("co"));
+      expect(clickProbed.indexOf(inner), `data-dash${inner} must be probed before data-dashco`)
+        .toBeLessThan(clickProbed.indexOf("co"));
     }
   });
 });

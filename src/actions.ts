@@ -73,10 +73,11 @@ export function openTerminalIn(project: string, dir: string) {
   void launchShell(project, dir, { colorKey: dir });
 }
 // Tauri's clipboard plugin, never navigator.clipboard: that raises an OS permission prompt.
-export async function copyPath(dir: string) {
-  try { await writeText(dir); toast("Path copied"); }
-  catch { toast(dir); } // clipboard denied — at least show what it was
+export async function copyText(text: string, said = "Copied") {
+  try { await writeText(text); toast(said); }
+  catch { toast(text); } // clipboard denied — at least show what it was
 }
+export const copyPath = (dir: string) => copyText(dir, "Path copied");
 
 export async function openProjectFolder(key: string) {
   try { await invoke("open_folder", { dir: key }); }

@@ -22,11 +22,13 @@ import {
 } from "./dashview";
 import { openBranchPop } from "./bpop";
 import {
-  branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks,
-  orderRows, rangePick, removableCheckouts, remoteFor, remotePicks, selectable, switchable,
-  switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo, type BranchRow,
-  type CheckoutRow, type MergedPrs, type SweepResult, type WtInfo,
+  branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
+  NO_PROTECT, orderRows, rangePick, removableCheckouts, remoteFor, remotePicks, selectable,
+  switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo,
+  type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
+  type WtInfo,
 } from "./branches";
+import { openBranchMenu } from "./projmenu";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
   resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
@@ -49,13 +51,13 @@ import {
   permissionModeFor, removingWt, sessions, setActiveId, setMirror,
 } from "./state";
 import { providerPermissionMode } from "./providers";
-import { refreshGhAccounts } from "./actions";
+import { copyText, refreshGhAccounts } from "./actions";
 
 // What this pane does but does not own; one host object rather than a dozen setters.
 export interface DashHost {
   // `string | null`, never `unknown`: call sites guard on `typeof sid !== "string"`, and
   // a `void`-returning launch would make all of them take the failure branch silently.
-  launch: (project: string, workdir: string, opts?: { colorKey?: string; agent?: string }) => Promise<string | null>;
+  launch: (project: string, workdir: string, opts?: { colorKey?: string; agent?: string; worktree?: string | null; branch?: string }) => Promise<string | null>;
   // What a person's ＋ wants: the new-session dialog on a repo, a plain launch elsewhere.
   // `launch` above is the unconditional verb a dispatch wants.
   requestLaunch: (project: string, path: string, known: { branch: string } | null) => void;
@@ -162,6 +164,9 @@ let openView: "notes" | "work" | "triage" | "branches" | null = null;
 // Read when the view opens, not with the dashboard: three git calls and a network one
 // for a surface most visits never open. `null` means not read yet (the skeleton).
 let branchData: { branches: BranchInfo[]; worktrees: WtInfo[] } | null = null;
+// Both lists at once: the committed one refuses the delete (git.rs re-reads it), GitHub's is
+// read-only evidence about the remote ref. `branchLock` decides which one a row is wearing.
+let branchProtect: ProtectCtx = NO_PROTECT;
 let branchPrs: MergedPrs | null = null;
 let branchPrsLoading = false;
 // Two sets, not one: the halves run different commands, so a tick on one side must not arm the other.
@@ -581,10 +586,12 @@ export function renderDash(): void {
     const rows = branchRowsNow();
     paintOverlay(openView, branchesOverlay({
       tab: branchTab, rows, checkouts: checkoutRowsNow(),
+      root: root(), project: name(),
       picked: branchPick, cpicked: coPick,
       filter: branchFilter, query: branchQuery, now,
       scopes: branchScopes,
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
+      protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
       busy: branchBusy, loading: branchData === null, result: branchResult,
     }));
@@ -646,7 +653,7 @@ export function openDashboard(project: string, path: string): void {
     gh = { available: false, reason: null, threads: [], viewer: null };
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
     // Branch state never carries across projects: another repo's merges must not vouch for this one.
-    branchData = null; branchPrs = null; branchPrsLoading = false;
+    branchData = null; branchPrs = null; branchPrsLoading = false; branchProtect = NO_PROTECT;
     branchPick = new Set(); coPick = new Set(); branchResult = null; branchBusy = false;
     branchTab = "branches"; branchFilter = "all"; branchQuery = ""; branchLast = "";
     // `syncing` is not reset: it names a folder a real git process is still running in.
@@ -734,6 +741,16 @@ export function wireDashboard(): void {
     }
     const brsw = t.closest<HTMLElement>("[data-dashbrsw]");
     if (brsw) { void switchTo(brsw.dataset.dashbrsw!); return; }
+
+    // The same menu the right-click opens, at the button rather than at the pointer. The click
+    // must stop here: main.ts's outside-click closer would otherwise shut the menu this opened.
+    const brmenu = t.closest<HTMLElement>("[data-dashbrmenu]");
+    if (brmenu) {
+      e.stopPropagation();
+      const box = brmenu.getBoundingClientRect();
+      openRowMenu(brmenu.dataset.dashbrmenu!, box.left, box.bottom + 4);
+      return;
+    }
 
     const brswitch = t.closest<HTMLElement>("[data-dashswitch]");
     if (brswitch) { void openSwitchPop(brswitch); return; }
@@ -829,6 +846,16 @@ export function wireDashboard(): void {
     if (act === "close") { void doClose(); return; }
     if (act === "dispatch") { void doDispatch(); return; }
   });
+  // A branch row's menu. Checkout rows carry `data-wt` instead and are answered by ./projmenu's
+  // document-level handler, which is the same menu a ⑃ cluster header opens.
+  $("dashPane").addEventListener("contextmenu", (e) => {
+    const br = (e.target as HTMLElement).closest<HTMLElement>("[data-dashbr]");
+    if (!br?.dataset.dashbr) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openRowMenu(br.dataset.dashbr, e.clientX, e.clientY);
+  });
+
   $("dashScrim").addEventListener("click", () => { sheet = null; renderDash(); });
 
   ($("dashJotHost") as HTMLElement).addEventListener("submit", (e) => {
@@ -874,12 +901,14 @@ function dashAction(act: string): void {
 async function loadBranches(force = false): Promise<void> {
   const r = root();
   if (!r || (branchData && !force)) return;
-  const [branches, worktrees] = await Promise.all([
+  const [branches, worktrees, protect] = await Promise.all([
     invoke<BranchInfo[]>("git_branch_list", { repoDir: r, base: cmpBase[r] ?? null }).catch(() => [] as BranchInfo[]),
     invoke<WtInfo[]>("list_worktrees", { repoDir: r }).catch(() => [] as WtInfo[]),
+    readProtect(r),
   ]);
   if (root() !== r) return;                      // the stage moved to another project
   branchData = { branches, worktrees };
+  branchProtect = protect;
   // Nothing is ticked on arrival: deleting is opt-in, and a stale tick may name a branch that is gone.
   branchPick = new Set();
   coPick = new Set();
@@ -887,10 +916,16 @@ async function loadBranches(force = false): Promise<void> {
   renderDash();
   if (branchPrs || branchPrsLoading) return;
   branchPrsLoading = true;
-  const prs = await invoke<MergedPrs>("gh_merged_prs", { root: r, force: false, account: ghAccountFor(r) }).catch(() => null);
+  const [prs, ghLocks] = await Promise.all([
+    invoke<MergedPrs>("gh_merged_prs", { root: r, force: false, account: ghAccountFor(r) }).catch(() => null),
+    invoke<GhProtected>("gh_protected_branches", { root: r, force: false, account: ghAccountFor(r) }).catch(() => null),
+  ]);
   branchPrsLoading = false;
   if (root() !== r) return;   // guarded on the project, not a load counter: this lands after the git reads
   branchPrs = prs ?? { available: false, reason: "gh could not be reached", prs: [] };
+  // gh being unreachable is already said once, by the merged-PR note; an empty list here just
+  // means GitHub protects nothing we could see.
+  branchProtect = { ...branchProtect, github: ghLocks?.available ? ghLocks.names : [] };
   renderDash();   // the answer can only add rows, and they arrive unticked like the rest
 }
 
@@ -900,12 +935,14 @@ const branchRowsNow = (): BranchRow[] => branchData ? branchRows({
   prs: branchPrs?.prs ?? [],
   liveIn: (p) => [...sessions.values()].filter((s) => s.workdir === p).length,
   externalIn: (p) => externals.some((e) => e.cwd === p),
+  protect: branchProtect,
 }) : [];
 
 const checkoutRowsNow = (): CheckoutRow[] => branchData ? checkoutRows({
   worktrees: branchData.worktrees,
   liveIn: (p) => [...sessions.values()].filter((s) => s.workdir === p).length,
   externalIn: (p) => externals.some((e) => e.cwd === p),
+  protect: branchProtect,
 }) : [];
 
 // What the table is showing right now, which is what `All` and a shift-click range mean.
@@ -1044,6 +1081,113 @@ async function switchTo(branch: string): Promise<void> {
   branchData = null;
   renderDash();
   void loadBranches(true);
+}
+
+// ---------- the lock, and the row menu that sets it ----------
+
+/// What `git::list_protected_branches` answers; `readable: false` is a file that exists and
+/// does not parse, which protects nothing and must not read as an empty list.
+interface ProtectList { patterns: string[]; readable: boolean }
+interface GhProtected { available: boolean; reason: string | null; names: string[] }
+
+async function readProtect(r: string): Promise<ProtectCtx> {
+  const list = await invoke<ProtectList>("list_protected_branches", { repoDir: r })
+    .catch(() => ({ patterns: [], readable: true } as ProtectList));
+  // GitHub's half arrives later, with the merged PRs; the committed one is local and instant.
+  return { patterns: list.patterns, readable: list.readable, github: branchProtect.github };
+}
+
+/** The lock is committed, so the very first one asks (`withConsent`): a new file in someone's
+ *  repo is a real side effect. Only an exact name is ever written — a glob is hand-edited,
+ *  and the menu row says so rather than offering a click that would unprotect its siblings. */
+async function setProtect(branch: string, protect: boolean): Promise<void> {
+  const r = root();
+  if (!r) return;
+  try {
+    const wrote = await withConsent(
+      (create) => invoke("set_protected_branch", { repoDir: r, branch, protect, create }),
+      ".episko/episko.toml",
+      "Protecting a branch stops Episko deleting it, for everyone who pulls the repo.");
+    if (!wrote) return;
+    branchProtect = await readProtect(r);
+    toast(protect ? `${branch} is protected` : `${branch} is no longer protected`);
+    renderDash();
+  } catch (e) {
+    toast(`Could not write .episko/episko.toml: ${e}`);
+  }
+}
+
+/** ＋ on a row: a session on this branch wherever it already lives, and a worktree for it
+ *  where it lives nowhere. A remote-only row cuts its local ref from the remote one, which is
+ *  the `base` rule `switch_branch` and the ⑃ dialog already share. */
+async function newSessionOn(r: BranchRow): Promise<void> {
+  const proj = root();
+  if (!proj || branchBusy) return;
+  const title = name();
+  if (r.wt) {
+    void host.launch(title, r.wt.path, { colorKey: proj, worktree: r.wt.branch, branch: r.name });
+    return;
+  }
+  if (r.br.current) {
+    void host.launch(title, proj, { colorKey: proj, worktree: null, branch: r.name });
+    return;
+  }
+  branchBusy = true;
+  renderDash();
+  try {
+    const base = r.hasLocal ? null : (r.br.upstream || r.remoteRef || null);
+    const path = await invoke<string>("create_worktree", { repoDir: proj, branch: r.name, base });
+    void host.launch(title, path, { colorKey: proj, worktree: r.name, branch: r.name });
+    toast(`Worktree ${r.name} created`);
+    await host.refreshGit();
+  } catch (e) {
+    dlog("error", `branches · worktree ${r.name}: ${e}`);
+    toast("worktree: " + e);
+  } finally {
+    branchBusy = false;
+    await loadBranches(true);
+    renderDash();
+  }
+}
+
+// Where a session on this row would start: its own worktree, the project's folder when the
+// branch is checked out there, and nowhere at all until one is made.
+const dirOf = (r: BranchRow) => r.wt ? r.wt.path : r.br.current ? root() : "";
+
+function openRowMenu(branch: string, x: number, y: number): void {
+  const proj = root();
+  const r = branchRowsNow().find((q) => q.name === branch);
+  if (!proj || !r) return;
+  const dir = dirOf(r);
+  // Why this checkout cannot move to the branch, in `switchOptions`' own words; a row that is
+  // simply absent from the list is one this folder was never offered.
+  const opt = switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], proj)
+    .find((o) => o.name === branch);
+  openBranchMenu({
+    branch,
+    root: proj,
+    dir,
+    live: dir ? [...sessions.values()].filter((sess) => sess.workdir === dir).length : 0,
+    lock: r.lock ? { by: r.lock.by, exact: r.lock.exact, text: lockText(r.lock) } : null,
+    // `current` is git's answer for `root` itself, which is the folder `switchTo` moves — not
+    // the roster's `is_main`, which names a different folder when the project IS a worktree.
+    hereBranch: branchData?.branches.find((b) => b.current)?.name ?? "",
+    switchNote: !opt ? `${basename(proj)}/ was not offered this branch`
+      // `switchOptions` writes its notes for a picker anchored on a folder, so its "here" is
+      // said again here, where the label has just named which folder that is.
+      : r.br.current ? "it is already checked out there"
+      : opt.disabled ? opt.note : "",
+  }, x, y, (act) => { void runRowAct(act, branch); });
+}
+
+async function runRowAct(act: string, branch: string): Promise<void> {
+  const r = branchRowsNow().find((q) => q.name === branch);
+  if (!r) return;
+  if (act === "brcopy") { void copyText(branch, "Branch name copied"); return; }
+  if (act === "brswitch") { void switchTo(branch); return; }
+  if (act === "brterm") { const d = dirOf(r); if (d) host.openTerminal(d); return; }
+  if (act === "brlaunch") { await newSessionOn(r); return; }
+  if (act === "brprotect" || act === "brunprotect") await setProtect(branch, act === "brprotect");
 }
 
 // Open the view from anywhere; the ⑃ dialog's brooms point here.
